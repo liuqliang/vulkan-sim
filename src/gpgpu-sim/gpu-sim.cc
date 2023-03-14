@@ -672,6 +672,10 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
       opp, "-gpgpu_ptx_sim_mode", OPT_INT32,
       &(gpgpu_ctx->func_sim->g_ptx_sim_mode),
       "Select between Performance (default) or Functional simulation (1)", "0");
+  option_parser_register(
+      opp, "-gpgpu_rt_traversal_key", OPT_INT32,
+      &(gpgpu_ctx->func_sim->g_rt_traversal_key),
+      "Choose the traversal order preference", "0");
   option_parser_register(opp, "-gpgpu_clock_domains", OPT_CSTR,
                          &gpgpu_clock_domains,
                          "Clock Domain Frequencies in MhZ {<Core Clock>:<ICNT "
@@ -1528,7 +1532,9 @@ void gpgpu_sim::gpu_print_stat() {
   fprintf(statfout, "rt_max_tree_depth = %d\n", gpgpu_ctx->func_sim->g_max_tree_depth);
   fprintf(statfout, "rt_max_nodes_per_ray = %d\n", gpgpu_ctx->func_sim->g_max_nodes_per_ray);
   fprintf(statfout, "rt_tot_nodes_per_ray = %d\n", gpgpu_ctx->func_sim->g_tot_nodes_per_ray);
+  fprintf(statfout, "rt_tot_nodes_per_anyhit_ray = %d\n", gpgpu_ctx->func_sim->g_tot_nodes_per_anyhit_ray);
   fprintf(statfout, "rt_avg_nodes_per_ray = %f\n", (float)gpgpu_ctx->func_sim->g_tot_nodes_per_ray/(gpgpu_ctx->func_sim->g_n_closesthit_rays + gpgpu_ctx->func_sim->g_n_anyhit_rays));
+  fprintf(statfout, "rt_avg_nodes_per_anyhit_ray = %f\n", (float)gpgpu_ctx->func_sim->g_tot_nodes_per_anyhit_ray/gpgpu_ctx->func_sim->g_n_anyhit_rays);
   fprintf(statfout, "g_inst_type_latency = ");
   for (unsigned i=0; i<28; i++) {
     fprintf(statfout, "%lld ", gpgpu_ctx->func_sim->g_inst_type_latency[i]);

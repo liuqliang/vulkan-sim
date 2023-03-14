@@ -34,6 +34,7 @@
 #include <string>
 #include <fstream>
 #include <cmath>
+#include <random>
 #define BOOST_FILESYSTEM_VERSION 3
 #define BOOST_FILESYSTEM_NO_DEPRECATED 
 #include <boost/filesystem.hpp>
@@ -266,6 +267,48 @@ btree_node read_btree_node(memory_space *mem, void* node_addr) {
     RT_DPRINTF("[%6d] ", current_node.child_indices[current_node.n_children]);
     RT_DPRINTF("\n");
     return current_node;
+}
+
+void reorder_child_nodes(child_node* children, std::map<float, child_node>& reordered_children, int key) {
+    for (int i=0; i<6; i++) {
+        // Only add childs that are hit
+        if (children[i].hit) {
+            // No reordering
+            if (key == 0) {
+                reordered_children[(float)i] = children[i];
+            }
+
+            // Reorder by surface area
+            else if (key == 1) {
+                // Duplicate SA? 
+                while (reordered_children.find(children[i].surface_area) != reordered_children.end()) {
+                    children[i].surface_area *= 1.0001;
+                }
+                reordered_children[children[i].surface_area] = children[i];
+            }
+
+            // Reorder by thit
+            else if (key == 2) {
+                while (reordered_children.find(1.0f/children[i].thit) != reordered_children.end()) {
+                    children[i].thit *= 1.0001;
+                }
+                reordered_children[1.0f/children[i].thit] = children[i];
+            }
+
+            // Random
+            else if (key == 3) {
+                int val = rand() % 100;
+                while (reordered_children.find(val) != reordered_children.end()) {
+                    val = rand() % 100;
+                }
+                reordered_children[float(val)] = children[i];
+            }
+
+            else {
+                assert(0);
+            }
+        }
+    }
 }
 
 typedef struct StackEntry {
@@ -1073,24 +1116,27 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
     std::ofstream traversalFile;
 
-    if (debugTraversal)
-    {
-        traversalFile.open("traversal.txt");
-        traversalFile << "starting traversal\n";
-        traversalFile << "origin = (" << origin.x << ", " << origin.y << ", " << origin.z << "), ";
-        traversalFile << "direction = (" << direction.x << ", " << direction.y << ", " << direction.z << "), ";
-        traversalFile << "tmin = " << Tmin << ", tmax = " << Tmax << std::endl << std::endl;
-    }
-
 
     bool terminateOnFirstHit = rayFlags & SpvRayFlagsTerminateOnFirstHitKHRMask;
     bool skipClosestHitShader = rayFlags & SpvRayFlagsSkipClosestHitShaderKHRMask;
     bool skipAnyHitShader = rayFlags & SpvRayFlagsOpaqueKHRMask;
 
+    if (debugTraversal)
+    {
+        traversalFile.open("traversal.txt", std::ios_base::app);
+        traversalFile << "RAY: ";
+        if (terminateOnFirstHit) 
+            traversalFile << "(anyhit) ";
+        traversalFile << "origin = (" << origin.x << ", " << origin.y << ", " << origin.z << "), ";
+        traversalFile << "direction = (" << direction.x << ", " << direction.y << ", " << direction.z << "), ";
+        traversalFile << "tmin = " << Tmin << ", tmax = " << Tmax << std::endl << std::endl;
+    }
+
     std::vector<MemoryTransactionRecord> transactions;
     std::vector<MemoryStoreTransactionRecord> store_transactions;
 
     gpgpu_context *ctx = GPGPU_Context();
+    int key = ctx->func_sim->g_rt_traversal_key;
 
     if (terminateOnFirstHit) ctx->func_sim->g_n_anyhit_rays++;
     else ctx->func_sim->g_n_closesthit_rays++;
@@ -1189,73 +1235,85 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                 traversalFile << std::endl;
             }
 
-            bool child_hit[6];
-            float thit[6];
+            uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
+
+            child_node children[6];
             for(int i = 0; i < 6; i++)
             {
+                children[i].child_index = i;
+                children[i].child_addr = child_addr;
+
                 if (node.ChildSize[i] > 0)
                 {
                     float3 idir = calculate_idir(ray.get_direction()); //TODO: this works wierd if one of ray dimensions is 0
                     float3 lo, hi;
                     set_child_bounds(&node, i, &lo, &hi);
 
-                    child_hit[i] = ray_box_test(lo, hi, idir, ray.get_origin(), ray.get_tmin(), ray.get_tmax(), thit[i]);
-                    if(child_hit[i] && thit[i] >= min_thit)
-                        child_hit[i] = false;
+                    children[i].hit = ray_box_test(lo, hi, idir, ray.get_origin(), ray.get_tmin(), ray.get_tmax(), children[i].thit);
+                    if(children[i].hit && children[i].thit >= min_thit)
+                        children[i].hit = false;
 
-                    
+                    // Calculate surface area
+                    children[i].surface_area = 0.0f;
+                    if (children[i].hit) {
+                        float x_len = hi.x - lo.x;
+                        float y_len = hi.y - lo.y;
+                        float z_len = hi.z - lo.z;
+                        float SA = (2 * x_len * y_len) + (2 * x_len * z_len) + (2 * y_len * z_len);
+                        children[i].surface_area = SA;
+                    }
+
                     if (debugTraversal)
                     {
-                        if(child_hit[i])
+                        if (children[i].hit) {
                             traversalFile << "hit child number " << i << ", ";
-                        else
+                            traversalFile << "SA = " << children[i].surface_area << ", ";
+                            traversalFile << "thit = " << children[i].thit << ", ";
+                        }
+                        else {
                             traversalFile << "missed child number " << i << ", ";
+                        }
                         traversalFile << "lo = (" << lo.x << ", " << lo.y << ", " << lo.z << "), ";
                         traversalFile << "hi = (" << hi.x << ", " << hi.y << ", " << hi.z << ")" << std::endl;
                     }
                 }
                 else
-                    child_hit[i] = false;
+                    children[i].hit = false;
+
+                child_addr += node.ChildSize[i] * 64;
             }
 
-            uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
-            for(int i = 0; i < 6; i++)
-            {
-                if(child_hit[i])
+
+            // Reorder child nodes
+            std::map<float,child_node> reordered_children; 
+            reorder_child_nodes(children, reordered_children, key);
+
+            if (debugTraversal)
+                traversalFile << "Reordered children: ";
+            for (auto child : reordered_children) {
+                int i = child.second.child_index;
+                uint8_t *addr_i = child.second.child_addr;
+                if (debugTraversal)
+                    traversalFile << i << " (" << (void *)addr_i << "), ";
+
+                if(node.ChildType[i] != NODE_TYPE_INTERNAL)
                 {
-                    if (debugTraversal)
-                    {
-                        traversalFile << "add child node " << (void *)child_addr << ", child number " << i << ", type " << node.ChildType[i] << ", to stack" << std::endl;
-                    }
-                    if(node.ChildType[i] != NODE_TYPE_INTERNAL)
-                    {
-                        assert(node.ChildType[i] == NODE_TYPE_INSTANCE);
-                        stack.push_back(StackEntry(child_addr, true, true));
-                        assert(tree_level_map.find(node_addr) != tree_level_map.end());
-                        tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
-                    }
-                    else
-                    {
-                        if(next_node_addr == NULL) {
-                            next_node_addr = child_addr; // TODO: sort by thit
-                            assert(tree_level_map.find(node_addr) != tree_level_map.end());
-                            tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
-                        }
-                        else {
-                            stack.push_back(StackEntry(child_addr, true, false));
-                            assert(tree_level_map.find(node_addr) != tree_level_map.end());
-                            tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
-                        }
-                    }
+                    assert(node.ChildType[i] == NODE_TYPE_INSTANCE);
+                    stack.push_back(StackEntry(addr_i, true, true));
+                    assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                    tree_level_map[addr_i] = tree_level_map[node_addr] + 1;
                 }
                 else
                 {
-                    if (debugTraversal)
-                    {
-                        traversalFile << "ignoring missed node " << (void *)child_addr << ", child number " << i << ", type " << node.ChildType[i] << std::endl;
-                    }
+                    stack.push_back(StackEntry(addr_i, true, false));
+                    assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                    tree_level_map[addr_i] = tree_level_map[node_addr] + 1;
                 }
-                child_addr += node.ChildSize[i] * 64;
+            }
+
+            if (reordered_children.size() > 0 && next_node_addr == NULL && !stack.back().leaf) {
+                next_node_addr = stack.back().addr;
+                stack.pop_back();
             }
 
             if (debugTraversal)
@@ -1365,72 +1423,83 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         traversalFile << std::endl;
                     }
 
-                    bool child_hit[6];
-                    float thit[6];
+                    child_node children[6];
+                    uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
+
                     for(int i = 0; i < 6; i++)
                     {
+                        children[i].child_index = i;
+                        children[i].child_addr = child_addr;
+
                         if (node.ChildSize[i] > 0)
                         {
                             float3 idir = calculate_idir(objectRay.get_direction()); //TODO: this works wierd if one of ray dimensions is 0
                             float3 lo, hi;
                             set_child_bounds(&node, i, &lo, &hi);
 
-                            child_hit[i] = ray_box_test(lo, hi, idir, objectRay.get_origin(), objectRay.get_tmin(), objectRay.get_tmax(), thit[i]);
-                            if(child_hit[i] && thit[i] >= min_thit * worldToObject_tMultiplier)
-                                child_hit[i] = false;
+                            children[i].hit = ray_box_test(lo, hi, idir, objectRay.get_origin(), objectRay.get_tmin(), objectRay.get_tmax(), children[i].thit);
+                            if(children[i].hit && children[i].thit >= min_thit * worldToObject_tMultiplier)
+                                children[i].hit = false;
+
+                            // Calculate surface area
+                            children[i].surface_area = 0.0f;
+                            if (children[i].hit) {
+                                float x_len = hi.x - lo.x;
+                                float y_len = hi.y - lo.y;
+                                float z_len = hi.z - lo.z;
+                                float SA = (2 * x_len * y_len) + (2 * x_len * z_len) + (2 * y_len * z_len);
+                                children[i].surface_area = SA;
+                            }
 
                             if (debugTraversal)
                             {
-                                if(child_hit[i])
+                                if(children[i].hit) {
                                     traversalFile << "hit child number " << i << ", ";
-                                else
+                                    traversalFile << "SA = " << children[i].surface_area << ", ";
+                                    traversalFile << "thit = " << children[i].thit << ", ";
+                                }
+                                else {
                                     traversalFile << "missed child number " << i << ", ";
+                                }
                                 traversalFile << "lo = (" << lo.x << ", " << lo.y << ", " << lo.z << "), ";
                                 traversalFile << "hi = (" << hi.x << ", " << hi.y << ", " << hi.z << ")" << std::endl;
                             }
                         }
                         else
-                            child_hit[i] = false;
+                            children[i].hit = false;
+
+                        child_addr += node.ChildSize[i] * 64;
                     }
 
-                    uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
-                    for(int i = 0; i < 6; i++)
-                    {
-                        if(child_hit[i])
-                        {
-                            if (debugTraversal)
-                            {
-                                traversalFile << "add child node " << (void *)child_addr << ", child number " << i << ", type " << node.ChildType[i] << ", to stack" << std::endl;
-                            }
+                    // Reorder child nodes
+                    std::map<float,child_node> reordered_children;
+                    reorder_child_nodes(children, reordered_children, key);
 
-                            if(node.ChildType[i] != NODE_TYPE_INTERNAL)
-                            {
-                                stack.push_back(StackEntry(child_addr, false, true));
-                                assert(tree_level_map.find(node_addr) != tree_level_map.end());
-                                tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
-                            }
-                            else
-                            {
-                                if(next_node_addr == 0) {
-                                    next_node_addr = child_addr; // TODO: sort by thit
-                                    assert(tree_level_map.find(node_addr) != tree_level_map.end());
-                                    tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
-                                }
-                                else {
-                                    stack.push_back(StackEntry(child_addr, false, false));
-                                    assert(tree_level_map.find(node_addr) != tree_level_map.end());
-                                    tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
-                                }
-                            }
+                    if (debugTraversal)
+                        traversalFile << "Reordered children: ";
+                    for (auto child : reordered_children) {
+                        int i = child.second.child_index;
+                        uint8_t *addr_i = child.second.child_addr;
+                        if (debugTraversal)
+                            traversalFile << i << " (" << (void *)addr_i << "), ";
+                        
+                        if(node.ChildType[i] != NODE_TYPE_INTERNAL)
+                        {
+                            stack.push_back(StackEntry(addr_i, false, true));
+                            assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                            tree_level_map[addr_i] = tree_level_map[node_addr] + 1;
                         }
                         else
                         {
-                            if (debugTraversal)
-                            {
-                                traversalFile << "ignoring missed node " << (void *)child_addr << ", child number " << i << ", type " << node.ChildType[i] << std::endl;
-                            }
+                            stack.push_back(StackEntry(addr_i, false, false));
+                            assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                            tree_level_map[addr_i] = tree_level_map[node_addr] + 1;
                         }
-                        child_addr += node.ChildSize[i] * 64;
+                    }
+
+                    if (reordered_children.size() > 0 && next_node_addr == NULL && !stack.back().leaf) {
+                        next_node_addr = stack.back().addr;
+                        stack.pop_back();
                     }
 
                     if (debugTraversal)
@@ -1658,6 +1727,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         thread->RT_thread_data->set_hitAttribute(barycentric, pI, thread);
 
         // store_transactions.push_back(MemoryStoreTransactionRecord(&traversal_data, sizeof(traversal_data), StoreTransactionType::Traversal_Results));
+        if (debugTraversal)
+            traversalFile << "HIT" << std::endl;
     }
     else if (hit_procedural)
     {
@@ -1668,6 +1739,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     {
         VSIM_DPRINTF("gpgpusim: Ray [%d] missed.\n", thread->get_uid());
         traversal_data.hit_geometry = false;
+        if (debugTraversal)
+            traversalFile << "MISS" << std::endl;
     }
 
     memory_space *mem = thread->get_global_memory();
@@ -1680,6 +1753,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
     if (debugTraversal)
     {
+        traversalFile << "\n\n";
         traversalFile.close();
     }
 
@@ -1687,6 +1761,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         ctx->func_sim->g_max_nodes_per_ray = total_nodes_accessed;
     }
     ctx->func_sim->g_tot_nodes_per_ray += total_nodes_accessed;
+
+    if (terminateOnFirstHit)
+        ctx->func_sim->g_tot_nodes_per_anyhit_ray += total_nodes_accessed;
 
     unsigned level = 0;
     for (auto it=tree_level_map.begin(); it!=tree_level_map.end(); it++) {
@@ -2047,6 +2124,7 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
                       uint32_t launch_depth,
                       uint64_t launch_size_addr) {
     printf("gpgpusim: launching cmd trace ray\n");
+    srand(0);
     // launch_width = 224;
     // launch_height = 160;
     init(launch_width, launch_height);
@@ -2169,6 +2247,7 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
             gridDim.x++;
     }
     printf("gpgpusim: launch dimensions %d x %d x %d\n", gridDim.x, gridDim.y, gridDim.z);
+    printf("gpgpusim: traversing with key %d\n", ctx->func_sim->g_rt_traversal_key);
 
     gpgpu_ptx_sim_arg_list_t args;
     // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(

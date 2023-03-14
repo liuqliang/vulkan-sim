@@ -162,12 +162,14 @@ class cuda_sim {
   unsigned g_n_closesthit_rays = 0;
   unsigned g_max_nodes_per_ray = 0;
   unsigned g_tot_nodes_per_ray = 0;
+  unsigned g_tot_nodes_per_anyhit_ray = 0;
   unsigned g_max_tree_depth = 0;
   unsigned g_total_shaders = 0;
   unsigned long long g_inst_type_latency[28] = {0};
   unsigned g_inst_class_stat[16][20] = {};
   std::vector<std::pair<unsigned, unsigned> > g_traceray_instructions;
-  
+  int g_rt_traversal_key;
+
   char *cdp_latency_str;
   int g_ptx_kernel_count;  // used for classification stat collection purposes
   std::map<const void *, std::string>
