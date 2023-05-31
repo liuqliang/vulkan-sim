@@ -243,7 +243,7 @@ stream_manager::stream_manager(gpgpu_sim *gpu, bool cuda_launch_blocking) {
 }
 
 bool stream_manager::operation(bool *sim) {
-  bool check = special_check_finished_kernel();
+  bool check = check_finished_kernel();
   pthread_mutex_lock(&m_lock);
   //    if(check)m_gpu->print_stats();
   stream_operation op = front();
@@ -493,6 +493,7 @@ void stream_manager::push(stream_operation op) {
       if (wait_amount > wait_cap) wait_amount = wait_cap;
     }
   }
+  usleep(10000);
 }
 
 void stream_manager::pushCudaStreamWaitEventToAllStreams(CUevent_st *e,
