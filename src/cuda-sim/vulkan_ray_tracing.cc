@@ -114,7 +114,7 @@ void* VulkanRayTracing::launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_D
 std::vector<void*> VulkanRayTracing::child_addrs_from_driver;
 bool VulkanRayTracing::dumped = false;
 
-bool use_external_launcher = false;
+bool use_external_launcher = true;
 const bool dump_trace = false;
 
 bool VulkanRayTracing::_init_ = false;
