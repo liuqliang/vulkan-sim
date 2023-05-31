@@ -515,9 +515,18 @@ void warp_inst_t::generate_mem_accesses() {
     std::map<new_addr_type, active_mask_t>::iterator a;
     for (unsigned thread = 0; thread < m_config->warp_size; thread++) {
       if (!active(thread)) continue;
-      for (unsigned thread_access=0; thread_access<MAX_ACCESSES_PER_INSN_PER_THREAD; thread_access++) {
-        new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[thread_access];
-        if (addr == 0) break;
+      
+      if (space.get_type() == tex_space) {
+        for (unsigned thread_access=0; thread_access<MAX_ACCESSES_PER_INSN_PER_THREAD; thread_access++) {
+          new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[thread_access];
+          if (addr == 0) break;
+          unsigned block_address = line_size_based_tag_func(addr, cache_block_size);
+          accesses[block_address].set(thread);
+          unsigned idx = addr - block_address;
+          for (unsigned i = 0; i < data_size; i++) byte_mask.set(idx + i);
+        }
+      } else if (space.get_type() == param_space_kernel || space.get_type() == const_space) {
+        new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[0];
         unsigned block_address = line_size_based_tag_func(addr, cache_block_size);
         accesses[block_address].set(thread);
         unsigned idx = addr - block_address;

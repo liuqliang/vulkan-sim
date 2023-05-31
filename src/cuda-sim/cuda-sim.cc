@@ -2909,6 +2909,7 @@ unsigned gpgpu_context::translate_pc_to_ptxlineno(unsigned pc, unsigned &shader)
   const ptx_instruction *pInsn = pc_to_instruction(pc);
   std::string source_filename = pInsn->source_file_str();
   unsigned ptx_line_number = pInsn->source_line();
+  shader = 0;
 
   if (source_filename.find("MESA") != std::string::npos) {
     std::string shader_str = source_filename.substr(source_filename.size()-5, 1);

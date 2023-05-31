@@ -117,7 +117,7 @@ void* VulkanRayTracing::tlas_addr;
 
 bool VulkanRayTracing::dumped = false;
 
-bool use_external_launcher = false;
+bool use_external_launcher = true;
 const bool dump_trace = false;
 
 bool VulkanRayTracing::_init_ = false;
