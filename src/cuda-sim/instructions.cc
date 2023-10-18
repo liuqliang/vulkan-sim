@@ -3425,7 +3425,7 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
   } else {
-    assert(0); //MRS_TODO: what happends here? turn this to 64 bit as well
+    // assert(0); //MRS_TODO: what happends here? turn this to 64 bit as well
     ptx_reg_t data1, data2, data3, data4;
     mem->read(addr, size / 8, &data1.s64);
     mem->read(addr + size / 8, size / 8, &data2.s64);
@@ -5872,7 +5872,7 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     // memcpy(address, &data.s64, size / 8);
     // *address = data.f32;
   } else {
-    assert (0);
+    // assert (0);
     if (vector_spec == V2_TYPE) {
       ptx_reg_t *ptx_regs = new ptx_reg_t[2];
       thread->get_vector_operand_values(src1, ptx_regs, 2);
