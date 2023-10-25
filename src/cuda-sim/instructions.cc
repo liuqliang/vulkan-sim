@@ -2203,6 +2203,16 @@ void call_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     gpgpusim_cuda_vprintf(pI, thread, target_func);
     return;
   }
+  else if (fname.find("__TreeUnitSearch") != std::string::npos) {
+    unsigned n_return = target_func->has_return();
+    assert(n_return == 0);
+    unsigned n_args = target_func->num_args();
+    assert(n_args == 5);
+
+    rt_traverse_tree(pI, thread);
+    return;
+  }
+  
 #if (CUDART_VERSION >= 5000)
   // Jin: handle device runtime apis for CDP
   else if (fname == "cudaGetParameterBufferV2") {

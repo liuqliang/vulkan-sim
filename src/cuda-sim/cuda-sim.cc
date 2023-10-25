@@ -827,6 +827,8 @@ void ptx_instruction::set_opcode_and_latency() {
     case CALL_OP: {
       if (m_is_printf || m_is_cdp) {
         op = ALU_OP;
+      } else if (m_is_raytrace) {
+        op = RT_CORE_OP;
       } else
         op = CALL_OPS;
       break;
@@ -1141,7 +1143,7 @@ void ptx_instruction::pre_decode() {
         cache_op = CACHE_WRITE_BACK;
       else if (m_opcode == ATOM_OP)
         cache_op = CACHE_GLOBAL;
-      else if (m_opcode == TRACE_RAY_OP)
+      else if (m_opcode == TRACE_RAY_OP || m_is_raytrace)
         cache_op = CACHE_ALL;
       break;
   }
@@ -2070,7 +2072,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       inst.data_size = insn_data_size;
     }
 
-    if (pI->get_opcode() == TRACE_RAY_OP) { 
+    if (pI->get_opcode() == TRACE_RAY_OP || pI->m_is_raytrace) { 
       // Copy list of accesses to warp instruction
       inst.set_rt_mem_transactions(lane_id, RT_transactions);
       inst.set_rt_mem_store_transactions(lane_id, RT_store_transactions);
@@ -2165,7 +2167,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
 
     // "Return values"
     if (!skip) {
-      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP || inst_opcode == TRACE_RAY_OP ||
+      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP || inst_opcode == TRACE_RAY_OP || inst.m_is_raytrace ||
               inst_opcode == TXL_OP || inst_opcode == IMG_DEREF_LD_OP || inst_opcode == IMG_DEREF_ST_OP))) {
         inst.space = insn_space;
         inst.set_addr(lane_id, insn_memaddr);

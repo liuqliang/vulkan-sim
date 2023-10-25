@@ -245,6 +245,8 @@ struct lvp_descriptor;
       fflush(stdout); \
    }
 
+void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread);
+
 class VulkanRayTracing
 {
 private:
@@ -269,8 +271,6 @@ public:
     static IntersectionTableType intersectionTableType;
 
 private:
-    static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
-    static float3 Barycentric(float3 p, float3 a, float3 b, float3 c);
     static std::vector<shader_stage_info> shaders;
 
     static void init(uint32_t launch_width, uint32_t launch_height);
@@ -295,6 +295,9 @@ public:
     
     static void load_descriptor(const ptx_instruction *pI, ptx_thread_info *thread);
 
+    static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
+    static float3 Barycentric(float3 p, float3 a, float3 b, float3 c);
+    
     static void setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreateInfos);
     static void setGeometries(VkAccelerationStructureGeometryKHR* pGeometries, uint32_t geometryCount);
     static void setAccelerationStructure(VkAccelerationStructureKHR accelerationStructure);

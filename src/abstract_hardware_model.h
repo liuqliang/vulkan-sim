@@ -1278,6 +1278,7 @@ class warp_inst_t : public inst_t {
     m_mem_accesses_created = false;
     m_cache_hit = false;
     m_is_printf = false;
+    m_is_raytrace = false;
     m_is_cdp = 0;
     should_do_atomic = true;
     m_has_pred = false;
@@ -1569,6 +1570,7 @@ class warp_inst_t : public inst_t {
   // Jin: cdp support
  public:
   int m_is_cdp;
+  bool m_is_raytrace;
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);
