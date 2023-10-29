@@ -295,6 +295,7 @@ public:
     
     static void load_descriptor(const ptx_instruction *pI, ptx_thread_info *thread);
 
+    static bool rtao_ray_triangle_test(float4 v00, float4 v11, float4 v22, Ray ray_properties, float* thit, float3* bary);
     static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
     static float3 Barycentric(float3 p, float3 a, float3 b, float3 c);
     

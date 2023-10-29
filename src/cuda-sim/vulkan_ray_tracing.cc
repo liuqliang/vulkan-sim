@@ -239,20 +239,24 @@ typedef struct StackEntry {
     StackEntry(uint8_t* addr, bool topLevel, bool leaf): addr(addr), topLevel(topLevel), leaf(leaf) {}
 } StackEntry;
 
+// Search Conditions (Ray - 48 bytes)
 typedef struct TreeSearchConditions {
-    // Temporarily define as a ray
-    float4 origin_tmin;
-    float4 dir_tmax;
-    void* triangle_addr;
-    bool anyhit;
+    uint32_t values[12];
+    // RTAO:
+    //  [0-3] float4 origin_tmin;
+    //  [4-7] float4 dir_tmax;
+    //  [8]   void* triangle_addr;
+    //  [9]   bool anyhit;
 } TreeSearchConditions;
 
+// Search results (HitPayload - 32 bytes)
 typedef struct TreeSearchResults {
-    // Temporary definition
-    bool valid;
-    float thit;
-    float3 bary;
-    int tri_id;
+    uint32_t values[8];
+    // RTAO:
+    // [0]   bool valid;
+    // [1]   float thit;
+    // [2-4] float3 bary;
+    // [5]   int tri_id;
 } TreeSearchResults;
 
 void read_traverse_tree_args(const ptx_instruction *pI, ptx_thread_info *thread, TreeSearchConditions& conditions, addr_t& TreeRootAddr, unsigned& node_processing_configuration, unsigned& leaf_processing_configuration, TreeSearchResults** results_payload_addr) {
@@ -270,14 +274,14 @@ void read_traverse_tree_args(const ptx_instruction *pI, ptx_thread_info *thread,
     arg++;
     const operand_info &param_op2 = pI->operand_lookup(arg + 1);    
     from_addr = param_op2.get_symbol()->get_address();
-    size = sizeof(addr_t);
+    size = sizeof(void *);
     thread->m_local_mem->read(from_addr, size, &TreeRootAddr);
 
     // Tree search results
     arg++;
     const operand_info &param_op5 = pI->operand_lookup(arg + 1);    
     from_addr = param_op5.get_symbol()->get_address();
-    size = sizeof(void *);
+    size = sizeof(TreeSearchResults *);
     thread->m_local_mem->read(from_addr, size, results_payload_addr);
     
     // Node processing
@@ -301,7 +305,7 @@ bool rt_decode_node(unsigned node_type, memory_space *mem, void* node_addr, addr
 
         // CUDA magic ray tracing
         case 0: 
-            addr_t tri_addr = conditions.triangle_addr;
+            addr_t tri_addr = conditions.values[8];
             int index = (int)node_addr - (int)tri_addr;
             return index >= 0;
 
@@ -332,10 +336,10 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
             n1hi = {n1xy.y, n1xy.w, n01z.w};
 
             float thit0, thit1;
-            float tmin = conditions.origin_tmin.w;
-            float tmax = conditions.dir_tmax.w;
-            float3 direction = {conditions.dir_tmax.x, conditions.dir_tmax.y, conditions.dir_tmax.z};
-            float3 origin = {conditions.origin_tmin.x, conditions.origin_tmin.y, conditions.origin_tmin.z};
+            float tmin = *(float*)&conditions.values[3];
+            float tmax = *(float*)&conditions.values[7];
+            float3 origin = {*(float*)&conditions.values[0], *(float*)&conditions.values[1], *(float*)&conditions.values[2]};
+            float3 direction = {*(float*)&conditions.values[4], *(float*)&conditions.values[5], *(float*)&conditions.values[6]};
 
             float3 idir = calculate_idir(direction);
             bool child0_hit = ray_box_test(n0lo, n0hi, idir, origin, tmin, tmax, thit0);
@@ -349,7 +353,7 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
             addr_t next_addr;
             if (child0_hit) {
                 if ((int)child0_addr < 0) {
-                    addr_t tri_base_addr = conditions.triangle_addr;
+                    addr_t tri_base_addr = (addr_t)conditions.values[8];
                     next_addr = ~child0_addr;
                     next_addr *= 0x10;
                     next_addr += tri_base_addr;
@@ -361,7 +365,7 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
             }
             if (child1_hit) {
                 if ((int)child1_addr < 0) {
-                    addr_t tri_base_addr = conditions.triangle_addr;
+                    addr_t tri_base_addr = (addr_t)conditions.values[8];
                     next_addr = ~child1_addr;
                     next_addr *= 0x10;
                     next_addr += tri_base_addr;
@@ -381,42 +385,80 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
     return next_nodes;
 }
 
-TreeSearchResults rt_process_leaf_node(unsigned leaf_type, memory_space *mem, void* leaf_addr, addr_t root_node_addr,TreeSearchConditions conditions) {
+TreeSearchResults rt_process_leaf_node(unsigned leaf_type, memory_space *mem, void* leaf_addr, addr_t root_node_addr, TreeSearchConditions conditions, std::vector<MemoryTransactionRecord> &transactions) {
     TreeSearchResults results;
     switch (leaf_type) {
-        case 0:
-            float3 p0, p1, p2;
-            leaf_addr = (unsigned)leaf_addr & 0xffffffff;
-            mem->read(leaf_addr, sizeof(float3), &p0);
-            mem->read(leaf_addr + sizeof(float3), sizeof(float3), &p1);
-            mem->read(leaf_addr + 2*sizeof(float3), sizeof(float3), &p2);
 
-            float thit0, thit1;
-            float tmin = conditions.origin_tmin.w;
-            float tmax = conditions.dir_tmax.w;
-            float3 direction = {conditions.dir_tmax.x, conditions.dir_tmax.y, conditions.dir_tmax.z};
-            float3 origin = {conditions.origin_tmin.x, conditions.origin_tmin.y, conditions.origin_tmin.z};
+        // CUDA magic ray tracing (pre-processed geometry)
+        case 0:
+
+            float tmin = *(float*)&conditions.values[3];
+            float tmax = *(float*)&conditions.values[7];
+            float3 origin = {*(float*)&conditions.values[0], *(float*)&conditions.values[1], *(float*)&conditions.values[2]};
+            float3 direction = {*(float*)&conditions.values[4], *(float*)&conditions.values[5], *(float*)&conditions.values[6]};
 
             Ray ray;
             ray.make_ray(origin, direction, tmin, tmax);
+            float thit = tmax;
+            results.values[0] = 0;
 
-            float thit;
-            bool hit = VulkanRayTracing::mt_ray_triangle_test(p0, p1, p2, ray, &thit);
+            float4 p0, p1, p2;
+            leaf_addr = (unsigned)leaf_addr & 0xffffffff;
+            addr_t tri_base_addr = (addr_t)conditions.values[8];
 
-            if (hit) {
-                results.valid = true;
-                float3 object_intersection_point = origin + make_float3(direction.x * thit, direction.y * thit, direction.z * thit);
-                float3 barycentric = VulkanRayTracing::Barycentric(object_intersection_point, p0, p1, p2);
-                results.bary = barycentric;
-                results.thit = thit;
+            mem->read(leaf_addr, sizeof(float4), &p0);
+            mem->read(leaf_addr + sizeof(float4), sizeof(float4), &p1);
+            mem->read(leaf_addr + 2*sizeof(float4), sizeof(float4), &p2);
 
-                addr_t tri_base_addr = conditions.triangle_addr;
+            while (true) {
+
                 addr_t tri_addr = leaf_addr - tri_base_addr;
-                results.tri_id = tri_addr >> 4;
+                RT_DPRINTF("triangle %d (%5.3f %5.3f %5.3f %5.3f), (%5.3f, %5.3f, %5.3f %5.3f), (%5.3f, %5.3f, %5.3f %5.3f) ", 
+                    tri_addr >> 4,
+                    p0.x, p0.y, p0.z, p0.w,
+                    p1.x, p1.y, p1.z, p1.w,
+                    p2.x, p2.y, p2.z, p2.w);
+
+                float3 bary;
+                bool hit = VulkanRayTracing::rtao_ray_triangle_test(p0, p1, p2, ray, &thit, &bary);
+
+                if (hit) {
+                    RT_DPRINTF("hit\n");
+                    results.values[0] = 1;
+                    results.values[1] = *(uint32_t*)&thit;
+                    results.values[2] = *(uint32_t*)&bary.x;
+                    results.values[3] = *(uint32_t*)&bary.y;
+                    results.values[4] = *(uint32_t*)&bary.z;
+                    results.values[5] = (uint32_t)(tri_addr >> 4);
+
+                    // If anyhit ray, don't need to continue
+                    if (conditions.values[9]) {
+                        break;
+                    }
+                }
+                else {
+                    RT_DPRINTF("miss\n");
+                }
+
+                // Go to next triangle
+                leaf_addr += 0x30;
+
+                mem->read(leaf_addr, sizeof(float4), &p0);
+                mem->read(leaf_addr + sizeof(float4), sizeof(float4), &p1);
+                mem->read(leaf_addr + 2*sizeof(float4), sizeof(float4), &p2);
+
+                // Marks an invalid triangle; leave while loop
+                if (*(int*)&p0.x ==  0x80000000) {
+                    break;
+                }
+
+                transactions.push_back(MemoryTransactionRecord(
+                    leaf_addr,
+                    48, 
+                    TransactionType::BVH_QUAD_LEAF)
+                );
             }
-            else {
-                results.valid = false;
-            }
+
             break;
         default:
             printf("gpgpusim: ERROR! Unrecognized leaf type.\n");
@@ -429,20 +471,20 @@ TreeSearchResults rt_process_leaf_node(unsigned leaf_type, memory_space *mem, vo
 bool rt_accept_criteria(unsigned leaf_type, TreeSearchResults result, TreeSearchResults& existing_result, TreeSearchConditions conditions) {
     switch (leaf_type) {
         case 0:
-            if (conditions.anyhit) {
+            if (conditions.values[9]) {
                 existing_result = result;
                 // Return false to terminate traversal
                 return false;
             }
-            else if (!existing_result.valid) {
+            else if (!existing_result.values[0]) {
                 // Update unconditionally if no existing results
                 existing_result = result;
                 return true;
             }
             else {
                 // Only update if closer than existing closest hit
-                float t_existing = existing_result.thit;
-                float t_new = result.thit;
+                float t_existing = *(float*)&existing_result.values[1];
+                float t_new = *(float*)&result.values[1];
                 if (t_new < t_existing) {
                     existing_result = result;
                 }
@@ -465,13 +507,13 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
     
     read_traverse_tree_args(pI, thread, conditions, TreeRootAddr, node_processing_configuration, leaf_processing_configuration, &results_payload_addr);
 
-    printf("[0x%x]: result buffer 0x%x\n", thread->get_uid(), results_payload_addr);
+    RT_DPRINTF("[0x%x]: result buffer 0x%x\n", thread->get_uid(), results_payload_addr);
 
     std::vector<MemoryTransactionRecord> transactions;
     std::vector<MemoryStoreTransactionRecord> store_transactions;
     std::list<StackEntry> stack;
     TreeSearchResults results_payload;
-    results_payload.valid = false;
+    results_payload.values[0] = 0;
 
     memory_space *mem = NULL;
     mem = thread->get_global_memory();
@@ -487,14 +529,16 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
     StackEntry current_node = StackEntry(TreeRootAddr, true, false);
     stack.push_back(current_node);
 
-    printf("[0x%x]: tree_traversal initialized with ", thread->get_uid());
-    printf("%7.3f %7.3f %7.3f : %7.3f %7.3f %7.3f\n", 
-        conditions.origin_tmin.x,
-        conditions.origin_tmin.y,
-        conditions.origin_tmin.z,
-        conditions.dir_tmax.x,
-        conditions.dir_tmax.y,
-        conditions.dir_tmax.z
+    RT_DPRINTF("[0x%x]: tree_traversal initialized with ", thread->get_uid());
+    RT_DPRINTF("%7.3f %7.3f %7.3f : %7.3f %7.3f %7.3f [%5.3f %5.3f]\n", 
+        *(float*)&conditions.values[0],
+        *(float*)&conditions.values[1],
+        *(float*)&conditions.values[2],
+        *(float*)&conditions.values[4],
+        *(float*)&conditions.values[5],
+        *(float*)&conditions.values[6],
+        *(float*)&conditions.values[3],
+        *(float*)&conditions.values[7]
     );
 
     // While-While loop
@@ -502,14 +546,14 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
         // Pop next node
         current_node = stack.back();
         stack.pop_back();
-        printf("[0x%x]: pop next node 0x%x from stack, %d nodes remaining\n", thread->get_uid(), current_node.addr, stack.size());
+        RT_DPRINTF("[0x%x]: pop next node 0x%x from stack, %d nodes remaining\n", thread->get_uid(), current_node.addr, stack.size());
 
         // Decode node
         bool isLeaf = rt_decode_node(node_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions);
 
         // Process inner node
         if (!isLeaf) {
-            printf("[0x%x]: traversing inner node 0x%x\n", thread->get_uid(), current_node.addr);
+            RT_DPRINTF("[0x%x]: traversing inner node 0x%x\n", thread->get_uid(), current_node.addr);
 
             // Represent inner node fetches as BVH_INTERNAL_NODE
             transactions.push_back(MemoryTransactionRecord(
@@ -522,19 +566,19 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
 
             // Push to stack
             if (next_nodes.size() > 0) {
-                printf("[0x%x]: inner node 0x%x hit, pushing %d nodes to stack, %d nodes total\n", thread->get_uid(), current_node.addr, next_nodes.size(), stack.size());
+                RT_DPRINTF("[0x%x]: inner node 0x%x hit, pushing %d nodes to stack, %d nodes total\n", thread->get_uid(), current_node.addr, next_nodes.size(), stack.size());
 
                 // BFS / DFS
                 stack.splice(stack.end(), next_nodes);
             }
             else {
-                printf("[0x%x]: inner node 0x%x miss\n", thread->get_uid(), current_node.addr);
+                RT_DPRINTF("[0x%x]: inner node 0x%x miss\n", thread->get_uid(), current_node.addr);
             }
         }
 
         // Process leaf node
         else {
-            printf("[0x%x]: traversing leaf node 0x%x\n", thread->get_uid(), current_node.addr);
+            RT_DPRINTF("[0x%x]: traversing leaf node 0x%x\n", thread->get_uid(), current_node.addr);
 
             // Represent leaf node fetches as BVH_INSTANCE_LEAF
             transactions.push_back(MemoryTransactionRecord(
@@ -543,25 +587,37 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
                 TransactionType::BVH_INSTANCE_LEAF)
             );
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
-            TreeSearchResults results = rt_process_leaf_node(leaf_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions);
+            TreeSearchResults results = rt_process_leaf_node(leaf_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions, transactions);
 
-            if (results.valid) {
-                printf("[0x%x]: hit tri %d, [%5.3f, %5.3f, %5.3f]\n", thread->get_uid(), results.tri_id, results.bary.x, results.bary.y, results.bary.z);
-            }
+            if (results.values[0]) {
+                RT_DPRINTF("[0x%x]: hit tri %d, bary [%5.3f, %5.3f, %5.3f], thit %5.3f\n", thread->get_uid(),
+                    results.values[5], 
+                    *(float*)&results.values[2], 
+                    *(float*)&results.values[3], 
+                    *(float*)&results.values[4], 
+                    *(float*)&results.values[1]
+                );
 
-            // Save results; early terminate
-            if (rt_accept_criteria(leaf_processing_configuration, results, results_payload, conditions)) {
-                printf("[0x%x]: leaf node 0x%x hit, continuing traversal\n", thread->get_uid(), current_node.addr);
-            }
-            else {
-                printf("[0x%x]: leaf node 0x%x hit, terminating traversal\n", thread->get_uid(), current_node.addr);
-                break;
+                // Save results; early terminate
+                if (rt_accept_criteria(leaf_processing_configuration, results, results_payload, conditions)) {
+                    RT_DPRINTF("[0x%x]: leaf node 0x%x hit, continuing traversal\n", thread->get_uid(), current_node.addr);
+                }
+                else {
+                    RT_DPRINTF("[0x%x]: leaf node 0x%x hit, terminating traversal\n", thread->get_uid(), current_node.addr);
+                    break;
+                }
             }
         }
     }
     // Write result
-    if (results_payload.valid) {
-        printf("[0x%x]: writing hit to payload (tri %d, [%5.3f, %5.3f, %5.3f])\n", thread->get_uid(), results_payload.tri_id, results_payload.bary.x, results_payload.bary.y, results_payload.bary.z);
+    if (results_payload.values[0] == 1) {
+        RT_DPRINTF("[0x%x]: writing hit to payload (tri %d, [%5.3f, %5.3f, %5.3f], %5.3f)\n", thread->get_uid(), 
+            results_payload.values[5], 
+            *(float*)&results_payload.values[2], 
+            *(float*)&results_payload.values[3], 
+            *(float*)&results_payload.values[4], 
+            *(float*)&results_payload.values[1]
+        );
         
         // Count number of hits
         ctx->func_sim->g_rt_num_hits++;
@@ -570,9 +626,10 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
     }
 
     else {
-        printf("[0x%x]: traversal done, miss\n", thread->get_uid());
+        RT_DPRINTF("[0x%x]: traversal done, miss\n", thread->get_uid());
     }
 
+    RT_DPRINTF("[0x%x]: %d memory transactions recorded\n", thread->get_uid(), transactions.size());
     thread->set_rt_transactions(transactions);
 }
 
@@ -1392,6 +1449,33 @@ bool VulkanRayTracing::mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray
 
     *thit = dot(v0v2, qvec) * idet;
     return true;
+}
+
+bool VulkanRayTracing::rtao_ray_triangle_test(float4 v00, float4 v11, float4 v22, Ray ray_properties, float* thit, float3* bary) {
+
+	float Oz = v00.w - ray_properties.get_origin().x * v00.x - ray_properties.get_origin().y * v00.y - ray_properties.get_origin().z * v00.z;
+	float invDz = 1.0f / (ray_properties.get_direction().x*v00.x + ray_properties.get_direction().y*v00.y + ray_properties.get_direction().z*v00.z);
+	float t = Oz * invDz;
+
+	if (t > ray_properties.get_tmin() && t < *thit) {
+		float Ox = v11.w + ray_properties.get_origin().x * v11.x + ray_properties.get_origin().y * v11.y + ray_properties.get_origin().z * v11.z;
+		float Dx = ray_properties.get_direction().x * v11.x + ray_properties.get_direction().y * v11.y + ray_properties.get_direction().z * v11.z;
+		float u = Ox + t * Dx;
+
+		if (u >= 0.0f && u <= 1.0f) {
+			float Oy = v22.w + ray_properties.get_origin().x * v22.x + ray_properties.get_origin().y * v22.y + ray_properties.get_origin().z * v22.z;
+			float Dy = ray_properties.get_direction().x * v22.x + ray_properties.get_direction().y * v22.y + ray_properties.get_direction().z * v22.z;
+			float v = Oy + t*Dy;
+
+			if (v >= 0.0f && u + v <= 1.0f) {
+				*thit = t;
+                *bary = {u, v, 1-u-v};
+                return true;
+			}
+		}
+	}
+
+    return false;
 }
 
 float3 VulkanRayTracing::Barycentric(float3 p, float3 a, float3 b, float3 c)
