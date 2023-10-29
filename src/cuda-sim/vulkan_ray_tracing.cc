@@ -232,6 +232,39 @@ bool ray_box_test(float3 low, float3 high, float3 idirection, float3 origin, flo
     return (min <= max);
 }
 
+typedef struct btree_node {
+    bool is_leaf;
+    uint32_t n_children;
+    int* keys;
+    int* child_indices;
+} btree_node;
+
+btree_node read_btree_node(memory_space *mem, void* node_addr) {
+    RT_DPRINTF("Process node 0x%x ", node_addr);
+    btree_node current_node;
+    mem->read(node_addr, sizeof(uint32_t), &current_node.is_leaf);
+    node_addr += sizeof(uint32_t);
+    mem->read(node_addr, sizeof(uint32_t), &current_node.n_children);
+    node_addr += sizeof(uint32_t);
+    RT_DPRINTF("(%d children) %d: ", current_node.n_children, current_node.is_leaf);
+
+    current_node.keys = (int *)calloc(current_node.n_children, sizeof(int));
+    current_node.child_indices = (int *)calloc(current_node.n_children + 1, sizeof(int));
+    
+    for (uint32_t i=0; i<current_node.n_children; i++) {
+        mem->read(node_addr + i * sizeof(uint32_t), sizeof(uint32_t), &current_node.keys[i]);
+        mem->read(node_addr + current_node.n_children * sizeof(uint32_t) + i * sizeof(uint32_t), sizeof(uint32_t), &current_node.child_indices[i]);
+    }
+    mem->read(node_addr + 2 * current_node.n_children * sizeof(uint32_t), sizeof(uint32_t), &current_node.child_indices[current_node.n_children]);
+
+    for (uint32_t i=0; i<current_node.n_children; i++) {
+        RT_DPRINTF("[%6d %6d] ", current_node.keys[i], current_node.child_indices[i]);
+    }
+    RT_DPRINTF("[%6d] ", current_node.child_indices[current_node.n_children]);
+    RT_DPRINTF("\n");
+    return current_node;
+}
+
 typedef struct StackEntry {
     uint8_t* addr;
     bool topLevel;
@@ -304,10 +337,30 @@ bool rt_decode_node(unsigned node_type, memory_space *mem, void* node_addr, addr
     switch (node_type) {
 
         // CUDA magic ray tracing
-        case 0: 
+        case 0: {
             addr_t tri_addr = conditions.values[8];
             int index = (int)node_addr - (int)tri_addr;
             return index >= 0;
+        }
+
+        // B-tree
+        case 1: {
+            btree_node node = read_btree_node(mem, node_addr);
+            if (node.is_leaf == 1) {
+                return true;
+            }
+            else {
+                uint32_t search_key = conditions.values[0];
+                for (uint32_t i=0; i<node.n_children; i++) {
+                    if (node.keys[i] == search_key) {
+                        RT_DPRINTF("Not leaf, but %d matches %d\n", node.keys[i], search_key);
+                        return true;
+                    }
+                }
+                return false;
+            }
+            break;
+        }
 
         default:
             printf("gpgpusim: ERROR! Unrecognized node type.\n");
@@ -315,12 +368,18 @@ bool rt_decode_node(unsigned node_type, memory_space *mem, void* node_addr, addr
     }
 }
 
-std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *mem, void* node_addr, addr_t root_node_addr, TreeSearchConditions conditions) {
+std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *mem, void* node_addr, addr_t root_node_addr, TreeSearchConditions conditions, std::vector<MemoryTransactionRecord> &transactions) {
     std::list<StackEntry> next_nodes;
     switch (node_type) {
 
         // CUDA magic ray tracing
-        case 0:
+        case 0: {
+
+            transactions.push_back(MemoryTransactionRecord(
+                node_addr,
+                64, 
+                TransactionType::BVH_INTERNAL_NODE)
+            );
 
             // Read node
             float4 n0xy, n1xy, n01z;
@@ -377,8 +436,62 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
             }
 
             break;
+        }
+        case 1: {
+            uint32_t search_key = conditions.values[0];
+            btree_node node = read_btree_node(mem, node_addr);
+
+            // Add transaction record for accessing keys
+            transactions.push_back(MemoryTransactionRecord(
+                node_addr,
+                sizeof(uint32_t) * (2 + node.n_children),
+                TransactionType::BVH_INTERNAL_NODE)
+            );
+
+            uint32_t i_child;
+            for (i_child = 0; i_child < node.n_children; i_child++) {
+                if (node.keys[i_child] == search_key) {
+                    // This should not happen
+                    printf("ERROR: Leaf node classified as inner node!\n");
+                    return;
+                }
+                else if (node.keys[i_child] > search_key) {
+                    transactions.push_back(MemoryTransactionRecord(
+                        node_addr + (2 + node.n_children + i_child) * sizeof(uint32_t),
+                        4,
+                        TransactionType::BVH_INSTANCE_LEAF)
+                    );
+                    RT_DPRINTF("Continuing traversal for key %d at 0x%x (%d)\n", 
+                        node.keys[i_child], 
+                        root_node_addr + node.child_indices[i_child] * sizeof(uint32_t), 
+                        node.child_indices[i_child]);
+
+                    next_nodes.push_front(StackEntry(
+                        root_node_addr + node.child_indices[i_child] * sizeof(uint32_t), 
+                        true, 0));
+                    break;
+                }
+            }
+
+            // search key is larger than all the children keys
+            if (i_child == node.n_children) {
+                transactions.push_back(MemoryTransactionRecord(
+                    node_addr + (2 + node.n_children + node.n_children) * sizeof(uint32_t),
+                    4,
+                    TransactionType::BVH_INSTANCE_LEAF)
+                );
+                RT_DPRINTF("Continuing traversal at 0x%x (%d)\n", 
+                    root_node_addr + node.child_indices[node.n_children] * sizeof(uint32_t), 
+                    node.child_indices[node.n_children]);
+
+                next_nodes.push_front(StackEntry(
+                    root_node_addr + node.child_indices[node.n_children] * sizeof(uint32_t), 
+                    true, 0));
+            }
+            break;
+        }
         default:
-            printf("gpgpusim: ERROR! Unrecognized node type.\n");
+            printf("gpgpusim: ERROR! Unrecognized node type %d.\n", node_type);
             abort();
     }
 
@@ -390,7 +503,13 @@ TreeSearchResults rt_process_leaf_node(unsigned leaf_type, memory_space *mem, vo
     switch (leaf_type) {
 
         // CUDA magic ray tracing (pre-processed geometry)
-        case 0:
+        case 0: {
+
+            transactions.push_back(MemoryTransactionRecord(
+                leaf_addr,
+                48, 
+                TransactionType::BVH_QUAD_LEAF)
+            );
 
             float tmin = *(float*)&conditions.values[3];
             float tmax = *(float*)&conditions.values[7];
@@ -458,10 +577,29 @@ TreeSearchResults rt_process_leaf_node(unsigned leaf_type, memory_space *mem, vo
                     TransactionType::BVH_QUAD_LEAF)
                 );
             }
-
             break;
+        }
+        case 1: {
+            uint32_t search_key = conditions.values[0];
+            results.values[0] = 0;
+            btree_node node = read_btree_node(mem, leaf_addr);
+
+            transactions.push_back(MemoryTransactionRecord(
+                leaf_addr,
+                sizeof(uint32_t) * (2 + node.n_children), 
+                TransactionType::BVH_QUAD_LEAF)
+            );
+
+            for (uint32_t i_child = 0; i_child < node.n_children; i_child++) {
+                if (node.keys[i_child] == search_key) {
+                    RT_DPRINTF("Key found!\n");
+                    results.values[0] = 1;
+                }
+            }
+            break;
+        }
         default:
-            printf("gpgpusim: ERROR! Unrecognized leaf type.\n");
+            printf("gpgpusim: ERROR! Unrecognized leaf type %d.\n", leaf_type);
             abort();
     }
 
@@ -470,7 +608,7 @@ TreeSearchResults rt_process_leaf_node(unsigned leaf_type, memory_space *mem, vo
 
 bool rt_accept_criteria(unsigned leaf_type, TreeSearchResults result, TreeSearchResults& existing_result, TreeSearchConditions conditions) {
     switch (leaf_type) {
-        case 0:
+        case 0: {
             if (conditions.values[9]) {
                 existing_result = result;
                 // Return false to terminate traversal
@@ -490,8 +628,17 @@ bool rt_accept_criteria(unsigned leaf_type, TreeSearchResults result, TreeSearch
                 }
                 return true;
             }
+            break;
+        }
+        case 1: {
+            if (result.values[0] == 1) {
+                existing_result = result;
+                return false;
+            }
+            break;
+        }
         default:
-            printf("gpgpusim: ERROR! Unrecognized leaf type.\n");
+            printf("gpgpusim: ERROR! Unrecognized leaf type %d.\n", leaf_type);
             abort();
     }
 }
@@ -521,25 +668,29 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
 
     ctx->func_sim->g_n_closesthit_rays++;
 
-    // Temporary hardcoded values
-    unsigned NodeSize = 64;
-    unsigned LeafSize = 64;
-
     // Initialize traversal stack
     StackEntry current_node = StackEntry(TreeRootAddr, true, false);
     stack.push_back(current_node);
 
-    RT_DPRINTF("[0x%x]: tree_traversal initialized with ", thread->get_uid());
-    RT_DPRINTF("%7.3f %7.3f %7.3f : %7.3f %7.3f %7.3f [%5.3f %5.3f]\n", 
-        *(float*)&conditions.values[0],
-        *(float*)&conditions.values[1],
-        *(float*)&conditions.values[2],
-        *(float*)&conditions.values[4],
-        *(float*)&conditions.values[5],
-        *(float*)&conditions.values[6],
-        *(float*)&conditions.values[3],
-        *(float*)&conditions.values[7]
-    );
+    if (node_processing_configuration == 0) {
+        RT_DPRINTF("[0x%x]: tree_traversal initialized with ray ", thread->get_uid());
+        RT_DPRINTF("orig %7.3f %7.3f %7.3f : dir %7.3f %7.3f %7.3f t [%5.3f %5.3f]\n", 
+            *(float*)&conditions.values[0],
+            *(float*)&conditions.values[1],
+            *(float*)&conditions.values[2],
+            *(float*)&conditions.values[4],
+            *(float*)&conditions.values[5],
+            *(float*)&conditions.values[6],
+            *(float*)&conditions.values[3],
+            *(float*)&conditions.values[7]
+        );
+    }
+    else if (node_processing_configuration == 1) {
+        RT_DPRINTF("[0x%x]: tree_traversal initialized with key %d \n", 
+            thread->get_uid(),
+            *(int *)&conditions.values[0]
+        );
+    }
 
     // While-While loop
     while (!stack.empty()) {
@@ -555,14 +706,8 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
         if (!isLeaf) {
             RT_DPRINTF("[0x%x]: traversing inner node 0x%x\n", thread->get_uid(), current_node.addr);
 
-            // Represent inner node fetches as BVH_INTERNAL_NODE
-            transactions.push_back(MemoryTransactionRecord(
-                current_node.addr,
-                NodeSize, 
-                TransactionType::BVH_INTERNAL_NODE)
-            );
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
-            std::list<StackEntry> next_nodes = rt_process_inner_node(node_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions);
+            std::list<StackEntry> next_nodes = rt_process_inner_node(node_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions, transactions);
 
             // Push to stack
             if (next_nodes.size() > 0) {
@@ -580,23 +725,17 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
         else {
             RT_DPRINTF("[0x%x]: traversing leaf node 0x%x\n", thread->get_uid(), current_node.addr);
 
-            // Represent leaf node fetches as BVH_INSTANCE_LEAF
-            transactions.push_back(MemoryTransactionRecord(
-                current_node.addr,
-                LeafSize, 
-                TransactionType::BVH_INSTANCE_LEAF)
-            );
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
             TreeSearchResults results = rt_process_leaf_node(leaf_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions, transactions);
 
             if (results.values[0]) {
-                RT_DPRINTF("[0x%x]: hit tri %d, bary [%5.3f, %5.3f, %5.3f], thit %5.3f\n", thread->get_uid(),
-                    results.values[5], 
-                    *(float*)&results.values[2], 
-                    *(float*)&results.values[3], 
-                    *(float*)&results.values[4], 
-                    *(float*)&results.values[1]
-                );
+                // RT_DPRINTF("[0x%x]: hit tri %d, bary [%5.3f, %5.3f, %5.3f], thit %5.3f\n", thread->get_uid(),
+                //     results.values[5], 
+                //     *(float*)&results.values[2], 
+                //     *(float*)&results.values[3], 
+                //     *(float*)&results.values[4], 
+                //     *(float*)&results.values[1]
+                // );
 
                 // Save results; early terminate
                 if (rt_accept_criteria(leaf_processing_configuration, results, results_payload, conditions)) {
@@ -611,23 +750,25 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
     }
     // Write result
     if (results_payload.values[0] == 1) {
-        RT_DPRINTF("[0x%x]: writing hit to payload (tri %d, [%5.3f, %5.3f, %5.3f], %5.3f)\n", thread->get_uid(), 
-            results_payload.values[5], 
-            *(float*)&results_payload.values[2], 
-            *(float*)&results_payload.values[3], 
-            *(float*)&results_payload.values[4], 
-            *(float*)&results_payload.values[1]
-        );
+        RT_DPRINTF("[0x%x]: writing hit to payload ", thread->get_uid());
+        // RT_DPRINTF("(tri %d, [%5.3f, %5.3f, %5.3f], %5.3f)", 
+        //     results_payload.values[5], 
+        //     *(float*)&results_payload.values[2], 
+        //     *(float*)&results_payload.values[3], 
+        //     *(float*)&results_payload.values[4], 
+        //     *(float*)&results_payload.values[1]
+        // );
+        RT_DPRINTF("\n");
         
         // Count number of hits
         ctx->func_sim->g_rt_num_hits++;
-
-        mem->write(results_payload_addr, sizeof(TreeSearchResults), &results_payload, NULL, NULL);
     }
 
     else {
         RT_DPRINTF("[0x%x]: traversal done, miss\n", thread->get_uid());
     }
+
+    mem->write(results_payload_addr, sizeof(TreeSearchResults), &results_payload, NULL, NULL);
 
     RT_DPRINTF("[0x%x]: %d memory transactions recorded\n", thread->get_uid(), transactions.size());
     thread->set_rt_transactions(transactions);
