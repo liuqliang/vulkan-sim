@@ -584,6 +584,28 @@ bool mshr_table::next_access_rt() {
   return result->israytrace();
 }
 
+void mshr_table::clear_rt_accesses() {
+  assert(access_ready());
+  std::list<new_addr_type> ldst_response_list;
+
+  while (!m_current_response.empty()) {
+    bool is_raytrace = next_access_rt();
+
+    if (is_raytrace) {
+      mem_fetch *mf = next_access();
+      delete mf;
+    }
+    // Move LDST responses out of the way
+    else {
+      ldst_response_list.push_back(m_current_response.front());
+      m_current_response.pop_front();
+    }
+  }
+
+  // Once empty, all LDST responses are in ldst_response_list
+  std::move(std::begin(ldst_response_list), std::end(ldst_response_list), std::back_inserter(m_current_response));
+}
+
 void mshr_table::display(FILE *fp) const {
   fprintf(fp, "MSHR contents\n");
   for (table::const_iterator e = m_data.begin(); e != m_data.end(); ++e) {

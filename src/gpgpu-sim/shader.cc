@@ -3285,12 +3285,10 @@ void rt_unit::writeback() {
     delete mf;
     // serviced_client = next_client;
   }
-  // Check if it's for the RT unit or the LDST unit
-  while (L1D->access_ready() && L1D->next_access_rt()) {
-    mem_fetch *mf = L1D->next_access();
-    // m_next_wb = mf->get_inst();
-    delete mf;
-    // serviced_client = next_client;
+
+  // TODO: Figure out if this needs to be changed to 1 writeback per cycle
+  if (L1D->access_ready()) {
+    L1D->clear_rt_accesses();
   }
 }
 
