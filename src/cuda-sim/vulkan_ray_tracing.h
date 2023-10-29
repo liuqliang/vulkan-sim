@@ -263,11 +263,14 @@ private:
     static void* launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
     static void* launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
     static std::vector<void*> child_addrs_from_driver;
+    static std::map<void*, void*> VulkanRayTracing::blas_addr_map;
+    static void* tlas_addr;
     static bool dumped;
     static bool _init_;
 public:
     // static RayDebugGPUData rayDebugGPUData[2000][2000];
     static warp_intersection_table*** intersection_table;
+    static warp_intersection_table*** anyhit_table;
     static IntersectionTableType intersectionTableType;
 
 private:
@@ -319,7 +322,7 @@ public:
     static void callMissShader(const ptx_instruction *pI, ptx_thread_info *thread);
     static void callClosestHitShader(const ptx_instruction *pI, ptx_thread_info *thread);
     static void callIntersectionShader(const ptx_instruction *pI, ptx_thread_info *thread, uint32_t shader_counter);
-    static void callAnyHitShader(const ptx_instruction *pI, ptx_thread_info *thread);
+    static void callAnyHitShader(const ptx_instruction *pI, ptx_thread_info *thread, uint32_t shader_counter);
     static void setDescriptor(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type);
     static void* getDescriptorAddress(uint32_t setID, uint32_t binding);
 
@@ -365,6 +368,9 @@ public:
                                        uint32_t row_pitch_B,
                                        uint32_t filter);
     static void pass_child_addr(void *address);
+    static void allocBLAS(void* rootAddr, uint64_t bufferSize, void* gpgpusimAddr);
+    static void allocTLAS(void* rootAddr, uint64_t bufferSize, void* gpgpusimAddr);
+    static void* allocBuffer(void* bufferAddr, uint64_t bufferSize);
     static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS);
     static void* gpgpusim_alloc(uint32_t size);
 };
