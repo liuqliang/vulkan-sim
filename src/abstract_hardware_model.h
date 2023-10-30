@@ -1508,7 +1508,7 @@ class warp_inst_t : public inst_t {
   void num_unique_mem_access(std::map<new_addr_type, unsigned> &addr_set);
   unsigned process_returned_mem_access(const mem_fetch *mf);
   bool process_returned_mem_access(const mem_fetch *mf, unsigned tid);
-  bool process_returned_mem_access(bool &mem_record_done, unsigned tid, new_addr_type addr, new_addr_type uncoalesced_base_addr);
+  bool process_returned_mem_access(bool &mem_record_done, unsigned tid, new_addr_type addr, unsigned mf_size, new_addr_type uncoalesced_base_addr);
   
   struct per_thread_info get_thread_info(unsigned tid) { return m_per_scalar_thread[tid]; }
   void set_thread_info(unsigned tid, struct per_thread_info thread_info) { m_per_scalar_thread[tid] = thread_info; }
