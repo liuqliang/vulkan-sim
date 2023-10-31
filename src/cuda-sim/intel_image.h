@@ -76,7 +76,7 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
     isl_tiling isl_tiling_mode;
     uint32_t row_pitch_B;
     
-    if (use_external_launcher)
+    if (GPGPU_Context()->func_sim->g_rt_external_launch)
     {
         texture_metadata *texture = (texture_metadata*) image;
         setID = texture->setID;
@@ -136,7 +136,7 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
 
             uint32_t offset = (tileID * (tileWidth * tileHeight) + blockID) * ASTC_block_size;
             
-            if (use_external_launcher)
+            if (GPGPU_Context()->func_sim->g_rt_external_launch)
             {
                 transaction.address = deviceAddress + offset;
                 transaction.size = 128 / 8;
@@ -170,7 +170,7 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             int tileY = y / tileHeight;
             int tileID = tileX + tileY * width / tileWidth;
 
-            if (use_external_launcher)
+            if (GPGPU_Context()->func_sim->g_rt_external_launch)
             {
                 transaction.address = deviceAddress + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 4;
                 transaction.size = 4;
@@ -202,7 +202,7 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             int tileY = y / tileHeight;
             int tileID = tileX + tileY * width / tileWidth;
 
-            if (use_external_launcher)
+            if (GPGPU_Context()->func_sim->g_rt_external_launch)
             {
                 transaction.address = deviceAddress + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 4;
                 transaction.size = 4;
@@ -243,7 +243,7 @@ Pixel get_interpolated_pixel(struct anv_image_view *image_view, struct anv_sampl
 
     const struct anv_image *image;
     
-    if (use_external_launcher)
+    if (GPGPU_Context()->func_sim->g_rt_external_launch)
     {
         texture_metadata *texture = (texture_metadata*) image_view;
         width = texture->width;
@@ -384,7 +384,7 @@ void store_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
     isl_tiling isl_tiling_mode; 
     uint32_t row_pitch_B;
 
-    if (use_external_launcher)
+    if (GPGPU_Context()->func_sim->g_rt_external_launch)
     {
         storage_image_metadata *metadata = (storage_image_metadata*) image;
         setID = metadata->setID;
@@ -458,7 +458,7 @@ void store_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
                     uint32_t offset = (y / ytile_height) * ytile_height * row_pitch_B;
                     offset += (x * 4 % ytile_span) + (x * 4 / ytile_span) * bytes_per_column + (y % ytile_height) * ytile_span;
 
-                    if (use_external_launcher)
+                    if (GPGPU_Context()->func_sim->g_rt_external_launch)
                     {
                         transaction.address = deviceAddress + offset;
                         transaction.size = 4;
@@ -520,7 +520,7 @@ void store_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
                     uint32_t offset = (y / ytile_height) * ytile_height * row_pitch_B;
                     offset += (x * 4 % ytile_span) + (x * 4 / ytile_span) * bytes_per_column + (y % ytile_height) * ytile_span;
 
-                    if (use_external_launcher)
+                    if (GPGPU_Context()->func_sim->g_rt_external_launch)
                     {
                         transaction.address = deviceAddress + offset;
                         transaction.size = 4;
@@ -542,7 +542,7 @@ void store_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
                 {
                     uint32_t offset = (y * width + x) * 4;
 
-                    if (use_external_launcher)
+                    if (GPGPU_Context()->func_sim->g_rt_external_launch)
                     {
                         transaction.address = deviceAddress + offset;
                         transaction.size = 4;
@@ -584,7 +584,7 @@ void store_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
                     uint32_t offset = (y / ytile_height) * ytile_height * row_pitch_B;
                     offset += (x * 16 % ytile_span) + (x * 16 / ytile_span) * bytes_per_column + (y % ytile_height) * ytile_span;
 
-                    if (use_external_launcher)
+                    if (GPGPU_Context()->func_sim->g_rt_external_launch)
                     {
                         transaction.address = deviceAddress + offset;
                         transaction.size = 4;

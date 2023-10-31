@@ -93,8 +93,6 @@
 
 
 
-extern bool use_external_launcher;
-
 typedef struct float4x4 {
   float m[4][4];
 
