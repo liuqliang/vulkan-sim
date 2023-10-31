@@ -59,7 +59,7 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
                                      const void *data,
                                      class ptx_thread_info *thd,
                                      const ptx_instruction *pI) {
-  if(!use_external_launcher) {
+  if(!GPGPU_Context()->func_sim->g_rt_external_launch) {
     void* vulkan_addr = find_vulkan_buffer(addr);
 
     if (vulkan_addr) {
@@ -162,7 +162,7 @@ void* memory_space_impl<BSIZE>::find_vulkan_buffer(mem_addr_t addr) const {
 template <unsigned BSIZE>
 void memory_space_impl<BSIZE>::read(mem_addr_t addr, size_t length,
                                     void *data) const {
-  if(!use_external_launcher) {
+  if(!GPGPU_Context()->func_sim->g_rt_external_launch) {
     void* vulkan_addr = find_vulkan_buffer(addr);
 
     if (vulkan_addr) {

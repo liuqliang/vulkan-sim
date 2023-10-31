@@ -185,6 +185,7 @@ class cuda_sim {
   std::set<std::string> g_constants;
   std::map<unsigned, function_info *> g_pc_to_finfo;
   int gpgpu_ptx_instruction_classification;
+  bool g_rt_external_launch;
   unsigned cdp_latency[5];
   unsigned g_assemble_code_next_pc;
   int g_debug_thread_uid;

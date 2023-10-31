@@ -656,6 +656,11 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
       "kernels now)",
       "0");
   option_parser_register(
+      opp, "-gpgpu_rt_external_launch", OPT_BOOL,
+      &(gpgpu_ctx->func_sim->g_rt_external_launch),
+      "set to use external launch to use regular memory, otherwise use Mesa allocated memory ",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_ptx_sim_mode", OPT_INT32,
       &(gpgpu_ctx->func_sim->g_ptx_sim_mode),
       "Select between Performance (default) or Functional simulation (1)", "0");

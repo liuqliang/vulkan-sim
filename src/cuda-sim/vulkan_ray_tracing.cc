@@ -117,7 +117,6 @@ void* VulkanRayTracing::tlas_addr;
 
 bool VulkanRayTracing::dumped = false;
 
-bool use_external_launcher = true;
 const bool dump_trace = false;
 
 bool VulkanRayTracing::_init_ = false;
@@ -446,7 +445,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     // Convert device address back to host address for func sim. This will break if the device address was modified then passed to traceRay. Should be fixable if I also record the size when I malloc then I can check the bounds of the device address.
     uint8_t* deviceAddress = nullptr;
     int64_t device_offset = (uint64_t)tlas_addr - (uint64_t)_topLevelAS;
-    if (use_external_launcher)
+    if (GPGPU_Context()->func_sim->g_rt_external_launch)
     {
         deviceAddress = (uint8_t*)_topLevelAS;
         bool addressFound = false;
@@ -1841,7 +1840,7 @@ void VulkanRayTracing::setDescriptorSetFromLauncher(void *address, void *deviceA
 void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
 {
 #if defined(MESA_USE_INTEL_DRIVER)
-    if (use_external_launcher)
+    if (GPGPU_Context()->func_sim->g_rt_external_launch)
     {
         return launcher_deviceDescriptorSets[setID][binding];
         // return launcher_descriptorSets[setID][binding];
@@ -1958,7 +1957,7 @@ void VulkanRayTracing::getTexture(struct DESCRIPTOR_STRUCT *desc,
 #if defined(MESA_USE_INTEL_DRIVER)
     Pixel pixel;
 
-    if (use_external_launcher)
+    if (GPGPU_Context()->func_sim->g_rt_external_launch)
     {
         pixel = get_interpolated_pixel((anv_image_view*) desc, (anv_sampler*) desc, x, y, transactions, launcher_offset); // cast back to metadata later
     }
@@ -2100,7 +2099,7 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
     Pixel pixel = Pixel(hitValue_X, hitValue_Y, hitValue_Z, hitValue_W);
 
     VkFormat vk_format;
-    if (use_external_launcher)
+    if (GPGPU_Context()->func_sim->g_rt_external_launch)
     {
         storage_image_metadata *metadata = (storage_image_metadata*) desc;
         vk_format = metadata->format;
@@ -2935,7 +2934,7 @@ void* VulkanRayTracing::gpgpusim_alloc(uint32_t size)
     }
     assert(devPtr);
 
-    if(!use_external_launcher) {
+    if(!GPGPU_Context()->func_sim->g_rt_external_launch) {
         void* bufferAddr = malloc(size);
         memory_space *mem = context->get_device()->get_gpgpu()->get_global_memory();
         mem->bind_vulkan_buffer(bufferAddr, size, devPtr);
