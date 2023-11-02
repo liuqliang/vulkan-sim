@@ -1609,6 +1609,7 @@ class shader_core_config : public core_config {
       &m_rt_intersection_latency[TransactionType::BVH_QUAD_LEAF],
       &m_rt_intersection_latency[TransactionType::BVH_QUAD_LEAF_HIT],
       &m_rt_intersection_latency[TransactionType::BVH_PROCEDURAL_LEAF]);
+    m_rt_intersection_latency[TransactionType::WRITE_TRAVERSAL_RESULT] = 0; // Nothing happens after writing the result
     m_rt_intersection_latency[TransactionType::Intersection_Table_Load] = 1;
     
     sscanf(m_rt_coherence_engine_config_str, "%u,%u,%u,%c,%u,%u,%u,%f", 

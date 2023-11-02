@@ -670,7 +670,6 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
     RT_DPRINTF("[0x%x]: result buffer 0x%x\n", thread->get_uid(), results_payload_addr);
 
     std::vector<MemoryTransactionRecord> transactions;
-    std::vector<MemoryStoreTransactionRecord> store_transactions;
     std::list<StackEntry> stack;
     TreeSearchResults results_payload;
     results_payload.values[0] = 0;
@@ -778,6 +777,13 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
         
         // Count number of hits
         ctx->func_sim->g_rt_num_hits++;
+
+        transactions.push_back(MemoryTransactionRecord(
+            results_payload_addr,
+            32, // 32 byte result
+            TransactionType::WRITE_TRAVERSAL_RESULT)
+        );
+        GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::WRITE_TRAVERSAL_RESULT)]++;
     }
 
     else {

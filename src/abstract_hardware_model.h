@@ -175,6 +175,7 @@ enum class TransactionType {
     BVH_QUAD_LEAF,
     BVH_QUAD_LEAF_HIT,
     BVH_PROCEDURAL_LEAF,
+    WRITE_TRAVERSAL_RESULT,
     Intersection_Table_Load,
     UNDEFINED,
 };
@@ -265,6 +266,7 @@ typedef struct MemoryTransactionRecord {
     TransactionType type;
 } MemoryTransactionRecord;
 
+// NOTE: These store transactions are currently only used for intersection table and anyhit table (not for writing ray tracing results)
 typedef struct MemoryStoreTransactionRecord {
     MemoryStoreTransactionRecord(void* address, uint32_t size, StoreTransactionType type)
     : address(address), size(size), type(type) {}

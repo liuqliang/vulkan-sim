@@ -3354,9 +3354,11 @@ mem_fetch* rt_unit::process_memory_stores() {
 
   RT_DPRINTF("Shader %d: store mem_access_t created for 0x%x\n", m_sid, access.get_addr());
   
+  assert(m_current_warps.find(warp_uid) != m_current_warps.end());
+  warp_inst_t requesting_warp = m_current_warps[warp_uid];
   // Create mf
   mem_fetch *mf = m_mf_allocator->alloc(
-    m_current_warps[warp_uid], access, m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle
+    requesting_warp, access, m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle
   ); 
   mf->set_raytrace();
 

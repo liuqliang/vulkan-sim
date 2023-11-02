@@ -881,6 +881,17 @@ unsigned warp_inst_t::dec_thread_latency(std::deque<std::pair<unsigned, new_addr
 
         m_pending_writes.insert((new_addr_type)next_buffer_addr);
       }
+
+      else if (m_per_scalar_thread[i].intersection_delay == 0 && m_per_scalar_thread[i].RT_mem_accesses.size() > 0) {
+        if (m_per_scalar_thread[i].RT_mem_accesses.front().type == TransactionType::WRITE_TRAVERSAL_RESULT) {
+          unsigned size = m_per_scalar_thread[i].RT_mem_accesses.front().size;
+          new_addr_type addr = m_per_scalar_thread[i].RT_mem_accesses.front().address;
+          store_queue.push_back(std::pair<unsigned, new_addr_type>(m_uid, addr));
+          m_pending_writes.insert(addr);
+          m_per_scalar_thread[i].RT_mem_accesses.pop_front();
+          RT_DPRINTF("Buffer store pushed for warp %d thread %d at 0x%x\n", m_uid, i, addr);
+        }
+      }
       
       for(auto & store_transaction : m_per_scalar_thread[i].RT_store_transactions) {
         store_queue.push_back(std::pair<unsigned, new_addr_type>(m_uid, (new_addr_type)(store_transaction.address)));
