@@ -1133,7 +1133,7 @@ bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned ti
   if (!m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
     RTMemoryTransactionRecord &mem_record = m_per_scalar_thread[tid].RT_mem_accesses.front();
     new_addr_type thread_addr = mem_record.address;
-    new_addr_type thread_base_addr = line_size_based_tag_func(thread_addr, 32);
+    new_addr_type thread_block_addr = line_size_based_tag_func(thread_addr, 32);
     
     if (thread_addr == uncoalesced_base_addr) {
       new_addr_type coalesced_base_addr = line_size_based_tag_func(uncoalesced_base_addr, 32);
@@ -1145,13 +1145,20 @@ bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned ti
       thread_found = true;
     }
 
-    else if (thread_base_addr == addr) {
-      // Base matches
-      std::string bitstring = mem_record.mem_chunks.to_string();
-      RT_DPRINTF("Thread %d received chunk %d (of <%s>)\n", tid, 0, bitstring.c_str());
-      mem_record.mem_chunks.reset(0);
+    // Match to any waiting chunks
+    else if (mem_record.mem_chunks.any()) {
+      for (unsigned chunk=0; chunk<4; chunk++) {
+        if (mem_record.mem_chunks.test(chunk)) {
+          if ((thread_block_addr + chunk*32) == addr) {
+            // Base matches
+            std::string bitstring = mem_record.mem_chunks.to_string();
+            RT_DPRINTF("Thread %d received chunk %d (of <%s>)\n", tid, 0, bitstring.c_str());
+            mem_record.mem_chunks.reset(chunk);
 
-      thread_found = true;
+            thread_found = true;
+          }
+        }
+      }
     }
 
     // If all the bits are clear, the entire data has returned, pop from list

@@ -3409,10 +3409,11 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
     // Save the warp id
     mem_access_q_warp_uid = inst.get_uid();
     
+    new_addr_type block_address = line_size_based_tag_func(next_addr, 32);
     // Create the memory chunks and push to mem_access_q
     for (unsigned i=1; i<((next_access.size+31)/32); i++) {
-      mem_access_q.push_back((new_addr_type)(next_access.address + (i * 32)));
-      RT_DPRINTF("0x%x, ", next_access.address + (i * 32));
+      mem_access_q.push_back((new_addr_type)(block_address + (i * 32)));
+      RT_DPRINTF("0x%x, ", block_address + (i * 32));
     }
     RT_DPRINTF("\n");
   }

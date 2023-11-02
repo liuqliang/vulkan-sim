@@ -383,6 +383,8 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                 64, 
                 TransactionType::BVH_INTERNAL_NODE)
             );
+            GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
+
 
             // Read node
             float4 n0xy, n1xy, n01z;
@@ -444,12 +446,22 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
             uint32_t search_key = conditions.values[0];
             btree_node node = read_btree_node(mem, node_addr);
 
-            // Add transaction record for accessing keys
+            // First transaction to figure out how many children this node has
             transactions.push_back(MemoryTransactionRecord(
                 node_addr,
-                sizeof(uint32_t) * (2 + node.n_children),
+                sizeof(uint32_t) * 2, // for decoding, read is_leaf and n_children
+                TransactionType::BVH_STRUCTURE)
+            );
+            GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
+
+            // Add transaction record for accessing keys and child indices
+            transactions.push_back(MemoryTransactionRecord(
+                node_addr + 2 * sizeof(uint32_t), // starts at base addr + 2
+                sizeof(uint32_t) * (node.n_children) * 2 + sizeof(uint32_t), // n keys + (n+1) child indices
                 TransactionType::BVH_INTERNAL_NODE)
             );
+
+            GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
 
             uint32_t i_child;
             for (i_child = 0; i_child < node.n_children; i_child++) {
@@ -459,11 +471,6 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                     return;
                 }
                 else if (node.keys[i_child] > search_key) {
-                    transactions.push_back(MemoryTransactionRecord(
-                        node_addr + (2 + node.n_children + i_child) * sizeof(uint32_t),
-                        4,
-                        TransactionType::BVH_INSTANCE_LEAF)
-                    );
                     RT_DPRINTF("Continuing traversal for key %d at 0x%x (%d)\n", 
                         node.keys[i_child], 
                         root_node_addr + node.child_indices[i_child] * sizeof(uint32_t), 
@@ -478,11 +485,6 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
 
             // search key is larger than all the children keys
             if (i_child == node.n_children) {
-                transactions.push_back(MemoryTransactionRecord(
-                    node_addr + (2 + node.n_children + node.n_children) * sizeof(uint32_t),
-                    4,
-                    TransactionType::BVH_INSTANCE_LEAF)
-                );
                 RT_DPRINTF("Continuing traversal at 0x%x (%d)\n", 
                     root_node_addr + node.child_indices[node.n_children] * sizeof(uint32_t), 
                     node.child_indices[node.n_children]);
@@ -589,9 +591,17 @@ TreeSearchResults rt_process_leaf_node(unsigned leaf_type, memory_space *mem, vo
 
             transactions.push_back(MemoryTransactionRecord(
                 leaf_addr,
-                sizeof(uint32_t) * (2 + node.n_children), 
+                sizeof(uint32_t) * 2, // read is_leaf and n_children
+                TransactionType::BVH_STRUCTURE)
+            );
+            GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
+
+            transactions.push_back(MemoryTransactionRecord(
+                leaf_addr + sizeof(uint32_t) * 2,
+                sizeof(uint32_t) * (node.n_children), // read leaf keys
                 TransactionType::BVH_QUAD_LEAF)
             );
+            GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF)]++;
 
             for (uint32_t i_child = 0; i_child < node.n_children; i_child++) {
                 if (node.keys[i_child] == search_key) {
@@ -669,7 +679,10 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
     mem = thread->get_global_memory();
     gpgpu_context *ctx = GPGPU_Context();
 
+    // Track each traversal as a closest hit ray
     ctx->func_sim->g_n_closesthit_rays++;
+
+    unsigned total_nodes_accessed = 0;
 
     // Initialize traversal stack
     StackEntry current_node = StackEntry(TreeRootAddr, true, false);
@@ -709,8 +722,8 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
         if (!isLeaf) {
             RT_DPRINTF("[0x%x]: traversing inner node 0x%x\n", thread->get_uid(), current_node.addr);
 
-            ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
             std::list<StackEntry> next_nodes = rt_process_inner_node(node_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions, transactions);
+            total_nodes_accessed++;
 
             // Push to stack
             if (next_nodes.size() > 0) {
@@ -728,8 +741,8 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
         else {
             RT_DPRINTF("[0x%x]: traversing leaf node 0x%x\n", thread->get_uid(), current_node.addr);
 
-            ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
             TreeSearchResults results = rt_process_leaf_node(leaf_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions, transactions);
+            total_nodes_accessed++;
 
             if (results.values[0]) {
                 // RT_DPRINTF("[0x%x]: hit tri %d, bary [%5.3f, %5.3f, %5.3f], thit %5.3f\n", thread->get_uid(),
@@ -775,6 +788,11 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
 
     RT_DPRINTF("[0x%x]: %d memory transactions recorded\n", thread->get_uid(), transactions.size());
     thread->set_rt_transactions(transactions);
+
+    if (total_nodes_accessed > GPGPU_Context()->func_sim->g_max_nodes_per_ray) {
+        GPGPU_Context()->func_sim->g_max_nodes_per_ray = total_nodes_accessed;
+    }
+    GPGPU_Context()->func_sim->g_tot_nodes_per_ray += total_nodes_accessed;
 }
 
 std::ofstream print_tree;
