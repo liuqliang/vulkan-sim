@@ -364,6 +364,16 @@ bool rt_decode_node(unsigned node_type, memory_space *mem, void* node_addr, addr
             }
             break;
         }
+        
+        // B+ tree
+        case 2: {
+            btree_node node = read_btree_node(mem, node_addr);
+            if (node.is_leaf == 1) {
+                return true;
+            }
+            return false;
+            break;
+        }
 
         default:
             printf("gpgpusim: ERROR! Unrecognized node type.\n");
@@ -442,7 +452,10 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
 
             break;
         }
-        case 1: {
+
+        // B-tree and B+ tree
+        case 1: 
+        case 2: {
             uint32_t search_key = conditions.values[0];
             btree_node node = read_btree_node(mem, node_addr);
 
@@ -466,9 +479,12 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
             uint32_t i_child;
             for (i_child = 0; i_child < node.n_children; i_child++) {
                 if (node.keys[i_child] == search_key) {
-                    // This should not happen
-                    printf("ERROR: Leaf node classified as inner node!\n");
-                    return;
+                    // This should not happen for B-tree (decode should classify this as leaf)
+                    if (node_type == 1) {
+                        printf("ERROR: Leaf node classified as inner node!\n");
+                        return;
+                    }
+                    // In B+ tree, node_key == search_key is treated the same as node_key < search_key (do not traverse)
                 }
                 else if (node.keys[i_child] > search_key) {
                     RT_DPRINTF("Continuing traversal for key %d at 0x%x (%d)\n", 
