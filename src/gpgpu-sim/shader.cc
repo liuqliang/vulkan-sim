@@ -810,6 +810,33 @@ void shader_core_stats::print(FILE *fout) const {
   }
   fprintf(fout, "\n");
 
+  // Func unit stats
+  fprintf(fout, "rt_func_active_cycles:");
+  for (unsigned i=0; i<m_config->num_shader(); i++) {
+    fprintf(fout, "\t[");
+    for (unsigned j=0; j<4; j++) {
+      fprintf(fout, " %d", rt_func_active_cycles[i*4+j]);
+    }
+    fprintf(fout, "]");
+  }
+  fprintf(fout, "\n");
+
+  fprintf(fout, "rt_func_q_cycles:");
+  for (unsigned i=0; i<m_config->num_shader(); i++) {
+    fprintf(fout, "\t[");
+    for (unsigned j=0; j<4; j++) {
+      fprintf(fout, " %d", rt_func_q_cycles[i*4+j]);
+    }
+    fprintf(fout, "]");
+  }
+  fprintf(fout, "\n");
+
+  fprintf(fout, "rt_max_func_q[decode] = %d\n", rt_max_func_q[0]);
+  fprintf(fout, "rt_max_func_q[ray-box] = %d\n", rt_max_func_q[1]);
+  fprintf(fout, "rt_max_func_q[ray-xform] = %d\n", rt_max_func_q[2]);
+  fprintf(fout, "rt_max_func_q[ray-tri] = %d\n", rt_max_func_q[3]);
+
+
   if (m_config->m_rt_coherence_engine) {
     for (unsigned i=0; i<m_config->num_shader(); i++) {
       fprintf(fout, "===========rt_coherence_engine[%d]===========\n", i);
@@ -1085,6 +1112,24 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
   for (unsigned i = 0; i < m_config->num_shader(); i++)
     gzprintf(visualizer_file, "%u ", rt_nthreads_intersection[i]);
   gzprintf(visualizer_file, "\n");
+
+  gzprintf(visualizer_file, "rt_ndecode:  ");
+  for (unsigned i = 0; i < m_config->num_shader(); i++)
+    gzprintf(visualizer_file, "%u ", rt_ndecode[i]);
+  gzprintf(visualizer_file, "\n");
+  gzprintf(visualizer_file, "rt_nrbox:  ");
+  for (unsigned i = 0; i < m_config->num_shader(); i++)
+    gzprintf(visualizer_file, "%u ", rt_nrbox[i]);
+  gzprintf(visualizer_file, "\n");
+  gzprintf(visualizer_file, "rt_nrxform:  ");
+  for (unsigned i = 0; i < m_config->num_shader(); i++)
+    gzprintf(visualizer_file, "%u ", rt_nrxform[i]);
+  gzprintf(visualizer_file, "\n");
+  gzprintf(visualizer_file, "rt_nrtri:  ");
+  for (unsigned i = 0; i < m_config->num_shader(); i++)
+    gzprintf(visualizer_file, "%u ", rt_nrtri[i]);
+  gzprintf(visualizer_file, "\n");
+
   gzprintf(visualizer_file, "rt_mem_requests: %u\n", rt_mem_requests);
   gzprintf(visualizer_file, "rt_mshr_size_total: %u\n", rt_mshr_size_total);
   rt_mem_requests = 0;
@@ -2848,6 +2893,23 @@ rt_unit::rt_unit(mem_fetch_interface *icnt,
 
   m_mem_rc = NO_RC_FAIL;
   m_name = "RT_CORE";
+
+  rt_func_unit_config inner_node_config = {TransactionType::BVH_INTERNAL_NODE, config->m_rt_init_cycles.at(TransactionType::BVH_INTERNAL_NODE)};
+  for (unsigned i=0; i<config->m_rt_n_units.at(TransactionType::BVH_INTERNAL_NODE); i++) {
+    m_func_units.push_back(new rt_func_unit(m_sid, inner_node_config));
+  }
+  rt_func_unit_config leaf_node_config = {TransactionType::BVH_QUAD_LEAF, config->m_rt_init_cycles.at(TransactionType::BVH_QUAD_LEAF)};
+  for (unsigned i=0; i<config->m_rt_n_units.at(TransactionType::BVH_QUAD_LEAF); i++) {
+    m_func_units.push_back(new rt_func_unit(m_sid, leaf_node_config));
+  }
+  rt_func_unit_config decode_config = {TransactionType::BVH_STRUCTURE, config->m_rt_init_cycles.at(TransactionType::BVH_STRUCTURE)};
+  for (unsigned i=0; i<config->m_rt_n_units.at(TransactionType::BVH_STRUCTURE); i++) {
+    m_func_units.push_back(new rt_func_unit(m_sid, decode_config));
+  }
+  rt_func_unit_config transform_config = {TransactionType::BVH_INSTANCE_LEAF, config->m_rt_init_cycles.at(TransactionType::BVH_INSTANCE_LEAF)};
+  for (unsigned i=0; i<config->m_rt_n_units.at(TransactionType::BVH_INSTANCE_LEAF); i++) {
+    m_func_units.push_back(new rt_func_unit(m_sid, transform_config));
+  }
   
 }
 
@@ -2877,6 +2939,47 @@ unsigned rt_unit::active_warps() {
     warp_ids.insert(warp_id);
   }
   return warp_ids.size();
+}
+
+void rt_unit::track_func_unit_stats(unsigned* func_unit_activity) {
+  if (m_func_q[(int)TransactionType::BVH_STRUCTURE].size() > m_stats->rt_max_func_q[0]) {
+    m_stats->rt_max_func_q[0] = m_func_q[(int)TransactionType::BVH_STRUCTURE].size();
+  }
+  if (m_func_q[(int)TransactionType::BVH_INTERNAL_NODE].size() > m_stats->rt_max_func_q[1]) {
+    m_stats->rt_max_func_q[1] = m_func_q[(int)TransactionType::BVH_INTERNAL_NODE].size();
+  }
+  if (m_func_q[(int)TransactionType::BVH_INSTANCE_LEAF].size() > m_stats->rt_max_func_q[2]) {
+    m_stats->rt_max_func_q[2] = m_func_q[(int)TransactionType::BVH_INSTANCE_LEAF].size();
+  }
+  if (m_func_q[(int)TransactionType::BVH_QUAD_LEAF].size() > m_stats->rt_max_func_q[3]) {
+    m_stats->rt_max_func_q[3] = m_func_q[(int)TransactionType::BVH_QUAD_LEAF].size();
+  }
+
+  if (!m_func_q[(int)TransactionType::BVH_STRUCTURE].empty()) {
+    m_stats->rt_func_q_cycles[m_sid * 4 + 0]++;
+  }
+  if (!m_func_q[(int)TransactionType::BVH_INTERNAL_NODE].empty()) {
+    m_stats->rt_func_q_cycles[m_sid * 4 + 1]++;
+  }
+  if (!m_func_q[(int)TransactionType::BVH_INSTANCE_LEAF].empty()) {
+    m_stats->rt_func_q_cycles[m_sid * 4 + 2]++;
+  }
+  if (!m_func_q[(int)TransactionType::BVH_QUAD_LEAF].empty()) {
+    m_stats->rt_func_q_cycles[m_sid * 4 + 3]++;
+  }
+
+  if (func_unit_activity[(int)TransactionType::BVH_STRUCTURE] > 0) {
+    m_stats->rt_func_active_cycles[m_sid * 4 + 0]++;
+  }
+  if (func_unit_activity[(int)TransactionType::BVH_INTERNAL_NODE] > 0) {
+    m_stats->rt_func_active_cycles[m_sid * 4 + 1]++;
+  }
+  if (func_unit_activity[(int)TransactionType::BVH_INSTANCE_LEAF] > 0) {
+    m_stats->rt_func_active_cycles[m_sid * 4 + 2]++;
+  }
+  if (func_unit_activity[(int)TransactionType::BVH_QUAD_LEAF] > 0) {
+    m_stats->rt_func_active_cycles[m_sid * 4 + 3]++;
+  }
 }
 
 void rt_unit::cycle() {
@@ -2926,10 +3029,17 @@ void rt_unit::cycle() {
   
   // Cycle intersection tests + get stats
   unsigned n_threads = 0;
+  unsigned func_unit_activity[(int)TransactionType::UNDEFINED] = {};
+  for (unsigned i=0; i<m_func_units.size(); i++) {
+    int func_type = m_func_units[i]->get_type();
+    m_func_units[i]->cycle(m_current_warps, m_func_q[func_type], mem_store_q);
+    n_threads += m_func_units[i]->count_in_progress();
+    func_unit_activity[func_type] += m_func_units[i]->count_in_progress();
+  }
+
   unsigned active_threads = 0;
   std::map<new_addr_type, unsigned> addr_set;
   for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
-    n_threads += (it->second).dec_thread_latency(mem_store_q);
     active_threads += (it->second).get_rt_active_threads();
     (it->second).num_unique_mem_access(addr_set);
   }
@@ -2938,6 +3048,7 @@ void rt_unit::cycle() {
   assert(n_threads <= (m_config->warp_size * m_config->m_rt_max_warps));
   m_stats->rt_total_intersection_stages[m_sid] += n_threads;
   
+  track_func_unit_stats(func_unit_activity);
   if (mem_store_q.size() > m_stats->rt_max_store_q) {
     m_stats->rt_max_store_q = mem_store_q.size();
   }
@@ -2954,6 +3065,11 @@ void rt_unit::cycle() {
   m_stats->rt_nthreads[m_sid] = active_threads;
   m_stats->rt_naccesses[m_sid] = addr_set.size();
   m_stats->rt_nthreads_intersection[m_sid] = n_threads;
+  m_stats->rt_ndecode[m_sid] = func_unit_activity[(int)TransactionType::BVH_STRUCTURE];
+  m_stats->rt_nrbox[m_sid] = func_unit_activity[(int)TransactionType::BVH_INTERNAL_NODE];
+  m_stats->rt_nrxform[m_sid] = func_unit_activity[(int)TransactionType::BVH_INSTANCE_LEAF];
+  m_stats->rt_nrtri[m_sid] = func_unit_activity[(int)TransactionType::BVH_QUAD_LEAF];
+
   unsigned max = 0;
   for (auto it=addr_set.begin(); it!=addr_set.end(); it++) {
     if (it->second > max) {
@@ -3023,6 +3139,7 @@ void rt_unit::cycle() {
       }
       else {
         process_memory_response(mf, pipe_reg);
+        process_intersection_threads();
       }
     }
   }
@@ -3085,7 +3202,7 @@ void rt_unit::cycle() {
   for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); it++) {
     warp_inst_t debug_inst = it->second;
     assert(it->first == debug_inst.get_uid());
-    RT_DPRINTF("Checking warp inst uid: %d\n", debug_inst.get_uid());
+    // RT_DPRINTF("Checking warp inst uid: %d\n", debug_inst.get_uid());
     // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
     if (it->second.rt_mem_accesses_empty() && it->second.rt_intersection_delay_done() && !it->second.has_pending_writes()) {
       RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid, it->second.warp_id(), it->first);
@@ -3137,7 +3254,7 @@ void rt_unit::cycle() {
     }
     else
     {
-      RT_DPRINTF("Cycle: %d, Warp inst uid: %d not done. rt_mem_accesses_empty: %d, rt_intersection_delay_done: %d, no pending_writes: %d\n", GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, debug_inst.get_uid(), it->second.rt_mem_accesses_empty(), it->second.rt_intersection_delay_done(), !it->second.has_pending_writes());
+      // RT_DPRINTF("Cycle: %d, Warp inst uid: %d not done. rt_mem_accesses_empty: %d, rt_intersection_delay_done: %d, no pending_writes: %d\n", GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, debug_inst.get_uid(), it->second.rt_mem_accesses_empty(), it->second.rt_intersection_delay_done(), !it->second.has_pending_writes());
     }
   }
   
@@ -3148,6 +3265,34 @@ void rt_unit::cycle() {
   
   assert(n_warps == m_current_warps.size());
   assert(cacheline_count <= 2);
+}
+
+void rt_unit::process_intersection_threads(warp_inst_t& inst) {
+  std::deque<std::pair<int, unsigned> > threads = inst.get_intersection_threads();
+  inst.clear_intersection_threads();
+
+  unsigned warp_uid = inst.get_uid();
+
+  for (auto t=threads.begin(); t<threads.end(); t++) {
+    RT_DPRINTF("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
+    m_func_q[t->first].push_back({warp_uid, t->second});
+  }
+
+  process_intersection_threads();
+}
+
+void rt_unit::process_intersection_threads() {
+  for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+    std::deque<std::pair<int, unsigned> > threads = (it->second).get_intersection_threads();
+    (it->second).clear_intersection_threads();
+
+    unsigned warp_uid = it->first;
+
+    for (auto t=threads.begin(); t<threads.end(); t++) {
+      RT_DPRINTF("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
+      m_func_q[t->first].push_back({warp_uid, t->second});
+    }
+  }
 }
 
 void rt_unit::process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg) {
@@ -3586,6 +3731,7 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
         }
       }
     }
+    process_intersection_threads(inst);
     
     if (!mf->is_write()) delete mf;
     

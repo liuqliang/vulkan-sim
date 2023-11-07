@@ -287,8 +287,16 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "0");
   option_parser_register(
       opp, "-gpgpu_rt_intersection_latency", OPT_CSTR, &m_rt_intersection_latency_str,
-      "latency of pipelined intersection tests (7 types)",
-      "0,0,0,0,0,0,0");
+      "latency of pipelined intersection tests <bvh, internal node, instance leaf, leaf desc, leaf> ",
+      "2,4,4,2,8");
+  option_parser_register(
+      opp, "-gpgpu_rt_n_func_units", OPT_CSTR, &m_rt_n_units_str,
+      "number of rt functional units <decode, ray-box, ray-xform, ray-tri> ",
+      "32,32,32,32");
+  option_parser_register(
+      opp, "-gpgpu_rt_init_cycles", OPT_CSTR, &m_rt_init_cycles_str,
+      "initiation cycles for rt func units <decode, ray-box, ray-xform, ray-tri> ",
+      "2,2,2,2");
   option_parser_register(
       opp, "-gpgpu_rt_intersection_table_type", OPT_UINT32, &m_rt_intersection_table_type,
       "type of intersection table",

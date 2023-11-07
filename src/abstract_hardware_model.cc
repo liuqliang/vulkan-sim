@@ -861,6 +861,55 @@ bool warp_inst_t::check_pending_writes(new_addr_type addr) {
   }
 }
 
+bool warp_inst_t::dec_thread_latency(unsigned tid) {
+  assert(m_per_scalar_thread[tid].intersection_delay > 0);
+  m_per_scalar_thread[tid].intersection_delay--;
+  if (m_per_scalar_thread[tid].intersection_delay == 0) {
+    return true;
+  }
+  return false;
+}
+
+std::deque<std::pair<unsigned, new_addr_type> > warp_inst_t::check_stores(unsigned tid) {
+  std::deque<std::pair<unsigned, new_addr_type> > store_queue;
+  assert(m_per_scalar_thread[tid].intersection_delay == 0);
+
+  if (m_per_scalar_thread[tid].ray_intersect) {
+        // Temporary size
+        unsigned size = RT_WRITE_BACK_SIZE;
+
+        // Get an address to write to
+        void* next_buffer_addr = GPGPUSim_Context(GPGPU_Context())->get_device()->get_gpgpu()->gpu_malloc(size);
+        store_queue.push_back(std::pair<unsigned, new_addr_type>(m_uid, (new_addr_type)next_buffer_addr));
+        m_per_scalar_thread[tid].ray_intersect = false;
+        RT_DPRINTF("Buffer store pushed for warp %d thread %d at 0x%x\n", m_uid, tid, next_buffer_addr);
+
+        m_pending_writes.insert((new_addr_type)next_buffer_addr);
+  }
+
+  else if (m_per_scalar_thread[tid].RT_mem_accesses.size() > 0) {
+    if (m_per_scalar_thread[tid].RT_mem_accesses.front().type == TransactionType::WRITE_TRAVERSAL_RESULT) {
+      unsigned size = m_per_scalar_thread[tid].RT_mem_accesses.front().size;
+      new_addr_type addr = m_per_scalar_thread[tid].RT_mem_accesses.front().address;
+      store_queue.push_back(std::pair<unsigned, new_addr_type>(m_uid, addr));
+      m_pending_writes.insert(addr);
+      m_per_scalar_thread[tid].RT_mem_accesses.pop_front();
+      RT_DPRINTF("Buffer store pushed for warp %d thread %d at 0x%x\n", m_uid, tid, addr);
+    }
+  }
+
+  for(auto & store_transaction : m_per_scalar_thread[tid].RT_store_transactions) {
+    store_queue.push_back(std::pair<unsigned, new_addr_type>(m_uid, (new_addr_type)(store_transaction.address)));
+    RT_DPRINTF("Buffer store pushed for warp %d thread %d at 0x%x\n", m_uid, tid, store_transaction.address);
+
+    assert(m_pending_writes.find((new_addr_type)store_transaction.address) == m_pending_writes.end());
+    m_pending_writes.insert((new_addr_type)store_transaction.address);
+  }
+  m_per_scalar_thread[tid].RT_store_transactions.clear();
+  
+  return store_queue;
+}
+
 unsigned warp_inst_t::dec_thread_latency(std::deque<std::pair<unsigned, new_addr_type> > &store_queue) { 
   // Track number of threads performing intersection tests
   unsigned n_threads = 0;
@@ -1141,7 +1190,7 @@ bool warp_inst_t::process_returned_mem_access(const mem_fetch *mf, unsigned tid)
 
 bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned tid, new_addr_type addr, unsigned mf_size, new_addr_type uncoalesced_base_addr) {
   bool thread_found = false;
-  if (!m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
+  if (m_per_scalar_thread[tid].intersection_delay == 0 && !m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
     RTMemoryTransactionRecord &mem_record = m_per_scalar_thread[tid].RT_mem_accesses.front();
     new_addr_type thread_addr = mem_record.address;
     new_addr_type thread_block_addr = line_size_based_tag_func(thread_addr, 32);
@@ -1177,6 +1226,19 @@ bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned ti
       // Set up delay of next intersection test
       unsigned n_delay_cycles = m_config->m_rt_intersection_latency.at(mem_record.type);
       m_per_scalar_thread[tid].intersection_delay += n_delay_cycles;
+      RT_DPRINTF("Adding intersection type %d [%d:%d]\n", (int)mem_record.type, m_uid, tid);
+
+      int functional_unit;
+      if (mem_record.type == TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR) {
+        functional_unit = (int)TransactionType::BVH_STRUCTURE;
+      }
+      else if (mem_record.type == TransactionType::BVH_QUAD_LEAF_HIT) {
+        functional_unit = (int)TransactionType::BVH_QUAD_LEAF;
+      }
+      else {
+        functional_unit = (int)mem_record.type;
+      }
+      m_intersection_threads.push_back(std::pair<int, unsigned>(functional_unit, tid));
       
       RT_DPRINTF("Thread %d collected all chunks for address 0x%x (size %d)\n", tid, mem_record.address, mem_record.size);
       RT_DPRINTF("Processing data of transaction type %d for %d cycles.\n", mem_record.type, n_delay_cycles);

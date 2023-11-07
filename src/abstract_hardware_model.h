@@ -168,14 +168,14 @@ enum _memory_op_t {
 };
 
 enum class TransactionType {
-    BVH_STRUCTURE,
-    BVH_INTERNAL_NODE,
-    BVH_INSTANCE_LEAF,
-    BVH_PRIMITIVE_LEAF_DESCRIPTOR,
-    BVH_QUAD_LEAF,
-    BVH_QUAD_LEAF_HIT,
-    BVH_PROCEDURAL_LEAF,
-    WRITE_TRAVERSAL_RESULT,
+    BVH_STRUCTURE,  // decode node
+    BVH_INTERNAL_NODE,  // ray-box
+    BVH_INSTANCE_LEAF,  // ray transform
+    BVH_PRIMITIVE_LEAF_DESCRIPTOR,  // decode node
+    BVH_QUAD_LEAF,  // ray-tri
+    BVH_QUAD_LEAF_HIT,  // ray-tri
+    BVH_PROCEDURAL_LEAF,  // intersection shader
+    WRITE_TRAVERSAL_RESULT,  // write
     Intersection_Table_Load,
     UNDEFINED,
 };
@@ -566,7 +566,11 @@ class core_config {
 
   bool adaptive_cache_config;
   std::map<TransactionType, unsigned> m_rt_intersection_latency;
+  std::map<TransactionType, unsigned> m_rt_n_units;
+  std::map<TransactionType, unsigned> m_rt_init_cycles;
   char *m_rt_intersection_latency_str;
+  char *m_rt_n_units_str;
+  char *m_rt_init_cycles_str;
 };
 
 // bounded stack that implements simt reconvergence using pdom mechanism from
@@ -1511,13 +1515,17 @@ class warp_inst_t : public inst_t {
   unsigned process_returned_mem_access(const mem_fetch *mf);
   bool process_returned_mem_access(const mem_fetch *mf, unsigned tid);
   bool process_returned_mem_access(bool &mem_record_done, unsigned tid, new_addr_type addr, unsigned mf_size, new_addr_type uncoalesced_base_addr);
+  std::deque<std::pair<int, unsigned> > get_intersection_threads() { return m_intersection_threads; }
+  void clear_intersection_threads() { m_intersection_threads.clear(); }
   
   struct per_thread_info get_thread_info(unsigned tid) { return m_per_scalar_thread[tid]; }
   void set_thread_info(unsigned tid, struct per_thread_info thread_info) { m_per_scalar_thread[tid] = thread_info; }
   void clear_thread_info(unsigned tid) { m_per_scalar_thread[tid].clear_mem_accesses(); }
   unsigned get_thread_latency(unsigned tid) const { return m_per_scalar_thread[tid].intersection_delay; }
   unsigned dec_thread_latency(std::deque<std::pair<unsigned, new_addr_type> > &store_queue);
+  bool dec_thread_latency(unsigned tid);
   void track_rt_cycles(bool active);
+  std::deque<std::pair<unsigned, new_addr_type> > check_stores(unsigned tid);
   bool check_pending_writes(new_addr_type addr);
   unsigned mem_list_length(unsigned tid) const { return m_per_scalar_thread[tid].RT_mem_accesses.size(); }
   unsigned * get_latency_dist(unsigned i);
@@ -1562,6 +1570,7 @@ class warp_inst_t : public inst_t {
   std::vector<per_thread_info> m_per_scalar_thread;
   bool m_mem_accesses_created;
   std::list<mem_access_t> m_accessq;
+  std::deque<std::pair<int, unsigned> > m_intersection_threads;
 
   unsigned long long m_start_cycle;
   
