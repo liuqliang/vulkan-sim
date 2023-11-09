@@ -1063,11 +1063,12 @@ class graphManager:
                 Legendname.append('W' + `c`)
             BarSequence = range(0,numRows)
 
-        if yAxis == 'RTWarpDist':
+        if yAxis == 'WarpDist':
             Legendname = []
-            Legendname.append('Empty')
-            Legendname.append('Shader')
-            Legendname.append('TraceRay')
+            for c in range(16):
+               Legendname.append('Func' + `c`)
+            Legendname.append('LDST')
+            Legendname.append('RT')
             BarSequence = range(0,numRows)
 
         dynamic_warp_resolution = 32

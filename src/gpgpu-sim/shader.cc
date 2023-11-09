@@ -799,17 +799,6 @@ void shader_core_stats::print(FILE *fout) const {
   }
   fprintf(fout, "\n");
 
-  fprintf(fout, "warp_dist_rt = ");
-  for (unsigned i=0; i<11; i++) {
-    fprintf(fout, "%d\t", rt_warp_dist[i]);
-  }
-  fprintf(fout, "\n");
-  fprintf(fout, "warp_dist_empty = ");
-  for (unsigned i=0; i<11; i++) {
-    fprintf(fout, "%d\t", empty_warp_dist[i]);
-  }
-  fprintf(fout, "\n");
-
   // Func unit stats
   fprintf(fout, "rt_func_active_cycles:");
   for (unsigned i=0; i<m_config->num_shader(); i++) {
@@ -969,10 +958,14 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
   }
   gzprintf(visualizer_file, "\n");
 
-  gzprintf(visualizer_file, "RTWarpDist:");
-  gzprintf(visualizer_file, " %d", n_empty_warps);
-  gzprintf(visualizer_file, " %d", n_shd_warps);
-  gzprintf(visualizer_file, " %d", n_rt_warps);
+  gzprintf(visualizer_file, "WarpDist:");
+  unsigned n_fu = m_config->gpgpu_num_sp_units + m_config->gpgpu_num_dp_units +
+      m_config->gpgpu_num_sfu_units + m_config->gpgpu_num_tensor_core_units +
+      m_config->gpgpu_num_int_units + m_config->m_specialized_unit_num +
+      1 + 1;
+  for (unsigned n=0; n<n_fu; n++) {
+    gzprintf(visualizer_file, " %d", n_fu_warps[n]);
+  }
   gzprintf(visualizer_file, "\n");
 
   gzprintf(visualizer_file, "ctas_completed: %d\n", ctas_completed);
@@ -2160,6 +2153,7 @@ void shader_core_ctx::execute() {
     unsigned multiplier = m_fu[n]->clock_multiplier();
     for (unsigned c = 0; c < multiplier; c++) m_fu[n]->cycle();
     m_fu[n]->active_lanes_in_pipeline();
+    m_stats->n_fu_warps[n] = m_fu[n]->get_active_insts_in_pipeline();
     unsigned issue_port = m_issue_port[n];
     register_set &issue_inst = m_pipeline_reg[issue_port];
     warp_inst_t **ready_reg = issue_inst.get_ready();
@@ -2178,24 +2172,6 @@ void shader_core_ctx::execute() {
       }
     }
   }
-
-  // Check all the warps in the shader
-  unsigned rt_active_warps = m_fu[m_num_function_units-1]->active_warps();
-  unsigned empty_warps = 0;
-  for (unsigned w = 0; w < m_config->max_warps_per_shader; w++) {
-    if (m_warp[w]->done_exit()) empty_warps++;
-  }
-  assert(rt_active_warps + empty_warps <= m_config->max_warps_per_shader);
-  unsigned other_warps = m_config->max_warps_per_shader - (rt_active_warps + empty_warps);
-  
-  m_stats->n_rt_warps = rt_active_warps;
-  m_stats->n_shd_warps = other_warps;
-  m_stats->n_empty_warps = empty_warps;
-
-  unsigned rt_ratio_bucket = rt_active_warps * 10 / (other_warps + rt_active_warps);
-  unsigned active_ratio_bucket = (rt_active_warps + other_warps) * 10 / m_config->max_warps_per_shader;
-  m_stats->rt_warp_dist[rt_ratio_bucket]++;
-  m_stats->empty_warp_dist[active_ratio_bucket]++;
 
   if (m_config->model == AWARE_RECONVERGENCE) {
     for (unsigned i = 0; i < m_warp_count; ++i) {
@@ -2478,6 +2454,7 @@ void ldst_unit::L1_latency_queue_cycle() {
                 m_scoreboard->releaseRegister(mf_next->get_inst().warp_id(),
                                               mf_next->get_inst().out[r]);
                 m_core->warp_inst_complete(mf_next->get_inst());
+                active_insts_in_pipeline--;
               }
             }
         }
@@ -2997,6 +2974,7 @@ void rt_unit::cycle() {
   // RT unit stats
   if (!pipe_reg.empty()) {
     n_warps++;
+    active_insts_in_pipeline++;
     RT_DPRINTF("Shader %d: A new warp has arrived! uid: %d, warp id: %d\n", m_sid, pipe_reg.get_uid(), pipe_reg.warp_id());
     // for (unsigned i=0; i<m_config->warp_size; i++) {
     //   RT_DPRINTF("\tThread %d (%d mem): ", i, pipe_reg.mem_list_length(i));
@@ -3213,6 +3191,7 @@ void rt_unit::cycle() {
         
         // Track number of warps in RT core
         n_warps--;
+        active_insts_in_pipeline--;
         assert(n_warps >= 0 && n_warps <= m_config->m_rt_max_warps);
         
         // Track completed warp uid
@@ -3906,6 +3885,7 @@ void ldst_unit::writeback() {
       }
       if (insn_completed) {
         m_core->warp_inst_complete(m_next_wb);
+        active_insts_in_pipeline--;
       }
       m_next_wb.clear();
       m_last_inst_gpu_sim_cycle = m_core->get_gpu()->gpu_sim_cycle;
@@ -4119,6 +4099,7 @@ void ldst_unit::cycle() {
           // new shared memory request
           move_warp(m_pipeline_reg[m_config->smem_latency - 1], m_dispatch_reg);
           m_dispatch_reg->clear();
+          active_insts_in_pipeline++;
         }
       } else {
         // if( pipe_reg.active_count() > 0 ) {
@@ -4145,9 +4126,11 @@ void ldst_unit::cycle() {
         if (!pending_requests) {
           m_core->warp_inst_complete(*m_dispatch_reg);
           m_scoreboard->releaseRegisters(m_dispatch_reg);
+          active_insts_in_pipeline--;
         }
         m_core->dec_inst_in_pipeline(warp_id);
         m_dispatch_reg->clear();
+        active_insts_in_pipeline++;
       }
     } else {
       // stores exit pipeline here

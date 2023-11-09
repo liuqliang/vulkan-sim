@@ -1071,6 +1071,7 @@ class simd_function_unit {
   }
   virtual void cycle() = 0;
   virtual void active_lanes_in_pipeline() = 0;
+  virtual unsigned get_active_insts_in_pipeline() = 0;
   virtual unsigned active_warps() { return 0; }
 
   // accessors
@@ -1128,6 +1129,8 @@ class pipelined_simd_unit : public simd_function_unit {
     }
   }
 
+  virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
+
  protected:
   unsigned m_pipeline_depth;
   warp_inst_t **m_pipeline_reg;
@@ -1155,6 +1158,7 @@ class sfu : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
+  virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
   virtual void issue(register_set &source_reg);
 };
 
@@ -1172,6 +1176,7 @@ class dp_unit : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
+  virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
   virtual void issue(register_set &source_reg);
 };
 
@@ -1189,6 +1194,7 @@ class tensor_core : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
+  virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
   virtual void issue(register_set &source_reg);
 };
 
@@ -1222,6 +1228,7 @@ class int_unit : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
+  virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
   virtual void issue(register_set &source_reg);
 };
 
@@ -1253,6 +1260,7 @@ class sp_unit : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
+  virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
   virtual void issue(register_set &source_reg);
 };
 
@@ -1268,6 +1276,7 @@ class specialized_unit : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
+  virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
   virtual void issue(register_set &source_reg);
 
  private:
@@ -1293,6 +1302,7 @@ class rt_unit : public pipelined_simd_unit {
                 
         virtual bool can_issue(const warp_inst_t &inst) const;
         virtual void active_lanes_in_pipeline();
+        virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
         virtual void issue(register_set &source_reg);
         virtual void cycle();
         void print(FILE *fout) const;
@@ -1411,6 +1421,7 @@ class ldst_unit : public pipelined_simd_unit {
 
   void release_virtual_entries(warp_inst_t &inst);
   virtual void active_lanes_in_pipeline();
+  virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
   virtual bool stallable() const { return true; }
   bool response_buffer_full() const;
   void print(FILE *fout) const;
@@ -1950,11 +1961,8 @@ struct shader_core_stats_pod {
   unsigned *rt_mem_store_q_cycles;
   unsigned *rt_func_q_cycles;
   unsigned *rt_func_active_cycles;
-  unsigned *rt_warp_dist;
-  unsigned *empty_warp_dist;
-  unsigned n_rt_warps;
-  unsigned n_shd_warps;
-  unsigned n_empty_warps;
+
+  unsigned *n_fu_warps;
 
   unsigned long long rt_latency_dist[warp_statuses][ray_statuses] = {};
   unsigned rt_latency_counter = 0;
@@ -2086,8 +2094,12 @@ class shader_core_stats : public shader_core_stats_pod {
     rt_nrbox = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_nrxform = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_nrtri = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    rt_warp_dist = (unsigned *)calloc(11, sizeof(unsigned));
-    empty_warp_dist = (unsigned *)calloc(11, sizeof(unsigned));
+
+    unsigned n_fu = m_config->gpgpu_num_sp_units + m_config->gpgpu_num_dp_units +
+      m_config->gpgpu_num_sfu_units + m_config->gpgpu_num_tensor_core_units +
+      m_config->gpgpu_num_int_units + m_config->m_specialized_unit_num +
+      1 + 1;
+    n_fu_warps = (unsigned *)calloc(n_fu, sizeof(unsigned));
 
     aware_st_size = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     aware_rt_size = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
