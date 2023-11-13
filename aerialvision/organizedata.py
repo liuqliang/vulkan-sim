@@ -149,42 +149,79 @@ def organizedata(fileVars):
     
         print("{} shaders found.".format(lexyacc.num_shader))
 
-        for i in range(lexyacc.num_shader):
-            fileVars['CFLOGglobal_{}PTX'.format(i)] = vc.variable('',2,0)
-        
-        fileVars['CFLOGglobalCUDA'] = vc.variable('',2,0)
-        
-        global_init = [False] * lexyacc.num_shader
-        for iter in fileVars['CFLOG']:
+        if lexyacc.num_shader == 0:
+            fileVars['CFLOGglobalPTX'] = vc.variable('',2,0)
+            fileVars['CFLOGglobalCUDA'] = vc.variable('',2,0)
+            
+            count = 0
 
-            print "Organizing data for %s" % iter
+            for iter in fileVars['CFLOG']:
 
-            fileVars[iter + 'PTX'] = fileVars['CFLOG'][iter]
-            fileVars[iter + 'PTX'].data = CFLOGOrganizePTX(fileVars['CFLOG'][iter].data, fileVars['CFLOG'][iter].maxPC)
-            if parseCFLOGCUDA == 1:
-                fileVars[iter + 'CUDA'] = vc.variable('',2,0)
-                fileVars[iter + 'CUDA'].data = CFLOGOrganizeCuda(fileVars[iter + 'PTX'].data, newMap)
+                print "Organizing data for %s" % iter
 
-            try:
-                shader = int(iter[-1])
-                if not global_init[shader]:
-                    if fileVars[iter + 'PTX'].maxPC > 0:
-                        fileVars['CFLOGglobal_{}PTX'.format(shader)] = fileVars[iter + 'PTX']
-                        global_init[shader] = True
+                fileVars[iter + 'PTX'] = fileVars['CFLOG'][iter]
+                fileVars[iter + 'PTX'].data = CFLOGOrganizePTX(fileVars['CFLOG'][iter].data, fileVars['CFLOG'][iter].maxPC)
+                if parseCFLOGCUDA == 1:
+                    fileVars[iter + 'CUDA'] = vc.variable('',2,0)
+                    fileVars[iter + 'CUDA'].data = CFLOGOrganizeCuda(fileVars[iter + 'PTX'].data, newMap)
+
+                try:
+                    if count == 0:
+                        fileVars['CFLOGglobalPTX'] = fileVars[iter + 'PTX']
                         if parseCFLOGCUDA == 1:
                             fileVars['CFLOGglobalCUDA'] = fileVars[iter + 'CUDA']
                     else:
-                        continue
-                else:
-                    for rows in range(0, len(fileVars[iter + 'PTX'].data)):
-                        for columns in range(0, len(fileVars[iter + 'PTX'].data[rows])):
-                            fileVars['CFLOGglobal_{}PTX'.format(shader)].data[rows][columns] += fileVars[iter + 'PTX'].data[rows][columns]
-                    if parseCFLOGCUDA == 1:
-                        for rows in range(0, len(fileVars[iter + 'CUDA'].data)):
-                            for columns in range(0, len(fileVars[iter + 'CUDA'].data[rows])): 
-                                fileVars['CFLOGglobalCUDA'].data[rows][columns] += fileVars[iter + 'CUDA'].data[rows][columns]
-            except:
-                print "Error in generating globalCFLog data"
+                        for rows in range(0, len(fileVars[iter + 'PTX'].data)):
+                            for columns in range(0, len(fileVars[iter + 'PTX'].data[rows])):
+                                fileVars['CFLOGglobalPTX'].data[rows][columns] += fileVars[iter + 'PTX'].data[rows][columns]
+                        if parseCFLOGCUDA == 1:
+                            for rows in range(0, len(fileVars[iter + 'CUDA'].data)):
+                                for columns in range(0, len(fileVars[iter + 'CUDA'].data[rows])): 
+                                    fileVars['CFLOGglobalCUDA'].data[rows][columns] += fileVars[iter + 'CUDA'].data[rows][columns]
+                except:
+                    print "Error in generating globalCFLog data"
+
+                count += 1
+
+
+
+        else:
+            for i in range(lexyacc.num_shader):
+                fileVars['CFLOGglobal_{}PTX'.format(i)] = vc.variable('',2,0)
+        
+            fileVars['CFLOGglobalCUDA'] = vc.variable('',2,0)
+            
+            global_init = [False] * lexyacc.num_shader
+            for iter in fileVars['CFLOG']:
+
+                print "Organizing data for %s" % iter
+
+                fileVars[iter + 'PTX'] = fileVars['CFLOG'][iter]
+                fileVars[iter + 'PTX'].data = CFLOGOrganizePTX(fileVars['CFLOG'][iter].data, fileVars['CFLOG'][iter].maxPC)
+                if parseCFLOGCUDA == 1:
+                    fileVars[iter + 'CUDA'] = vc.variable('',2,0)
+                    fileVars[iter + 'CUDA'].data = CFLOGOrganizeCuda(fileVars[iter + 'PTX'].data, newMap)
+
+                try:
+                    shader = int(iter[-1])
+                    if not global_init[shader]:
+                        if fileVars[iter + 'PTX'].maxPC > 0:
+                            fileVars['CFLOGglobal_{}PTX'.format(shader)] = fileVars[iter + 'PTX']
+                            global_init[shader] = True
+                            if parseCFLOGCUDA == 1:
+                                fileVars['CFLOGglobalCUDA'] = fileVars[iter + 'CUDA']
+                        else:
+                            continue
+                    else:
+                        for rows in range(0, len(fileVars[iter + 'PTX'].data)):
+                            for columns in range(0, len(fileVars[iter + 'PTX'].data[rows])):
+                                fileVars['CFLOGglobal_{}PTX'.format(shader)].data[rows][columns] += fileVars[iter + 'PTX'].data[rows][columns]
+                        if parseCFLOGCUDA == 1:
+                            for rows in range(0, len(fileVars[iter + 'CUDA'].data)):
+                                for columns in range(0, len(fileVars[iter + 'CUDA'].data[rows])): 
+                                    fileVars['CFLOGglobalCUDA'].data[rows][columns] += fileVars[iter + 'CUDA'].data[rows][columns]
+                except:
+                    print "Error in generating globalCFLog data"
 
         del fileVars['CFLOG']
 
