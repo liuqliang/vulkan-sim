@@ -1120,13 +1120,17 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     bool terminateOnFirstHit = rayFlags & SpvRayFlagsTerminateOnFirstHitKHRMask;
     bool skipClosestHitShader = rayFlags & SpvRayFlagsSkipClosestHitShaderKHRMask;
     bool skipAnyHitShader = rayFlags & SpvRayFlagsOpaqueKHRMask;
-    bool gprt = rayFlags & SpvRayFlagsSkipAABBsKHRMask;
+    bool rtnn = rayFlags & SpvRayFlagsSkipAABBsKHRMask;
+    bool raysphere = rayFlags & SpvRayFlagsSkipTrianglesKHRMask;
 
-    std::vector<unsigned> gprt_sphere_hit_indices;
+    std::vector<unsigned> rtnn_sphere_hit_indices;
     // Currently max at 8 hits per ray
-    unsigned gprt_max_hits = 8;
-    if (gprt) {
-        VSIM_DPRINTF("Using GPRT! \n");
+    unsigned rtnn_max_hits = 8;
+    if (rtnn) {
+        VSIM_DPRINTF("Using GPRT for rtnn \n");
+    }
+    else if (raysphere) {
+        VSIM_DPRINTF("Using GPRT for ray-sphere. \n");
     }
 
     if (debugTraversal)
@@ -1161,6 +1165,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 	// Set thit to max
     float min_thit = ray.dir_tmax.w;
     struct GEN_RT_BVH_QUAD_LEAF closest_leaf;
+    struct GEN_RT_BVH_PROCEDURAL_LEAF closest_proceduralleaf;
     struct GEN_RT_BVH_INSTANCE_LEAF closest_instanceLeaf;    
     float4x4 closest_worldToObject, closest_objectToWorld;
     Ray closest_objectRay;
@@ -1668,7 +1673,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             traversalFile << std::endl;
                         }
                     }
-                    else if (gprt) {
+                    else if (rtnn) {
                         // Get the sphere array (currently hard-coded to binding 7)
                         void* sphere_array_addr = VulkanRayTracing::getDescriptorAddress(0, 7);
                         uint32_t sphere_index = instanceLeaf.InstanceID;
@@ -1684,18 +1689,65 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         VSIM_DPRINTF("[%5d] Sphere %d: (%f, %f, %f), %f ->", thread->get_uid()-1, sphere_index, sphere.x, sphere.y, sphere.z, sphere.w);
 
                         // Process ray-sphere intersection
-                        bool hit = VulkanRayTracing::raySphereIntersection(sphere, objectRay);
+                        bool hit = VulkanRayTracing::pointSphereIntersection(sphere, objectRay);
                         VSIM_DPRINTF(" %d\n", hit);
 
                         if (hit) {
                             ctx->func_sim->g_rt_num_hits++;
-                            gprt_sphere_hit_indices.push_back(sphere_index);
+                            rtnn_sphere_hit_indices.push_back(sphere_index);
                         }
 
                         // Early termination when result buffer is full
-                        if (gprt_sphere_hit_indices.size() >= gprt_max_hits) {
+                        if (rtnn_sphere_hit_indices.size() >= rtnn_max_hits) {
                             VSIM_DPRINTF("[%5d] Result buffer full, terminating\n", thread->get_uid()-1);
                             stack.clear();
+                        }
+                    }
+                    else if (raysphere) {
+                        struct GEN_RT_BVH_PROCEDURAL_LEAF leaf;
+                        GEN_RT_BVH_PROCEDURAL_LEAF_unpack(&leaf, leaf_addr);
+                        transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
+                        ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PROCEDURAL_LEAF)]++;
+
+                        // Get the sphere array (currently hard-coded to binding 9)
+                        void* sphere_array_addr = VulkanRayTracing::getDescriptorAddress(0, 9);
+                        uint32_t sphere_index = instanceLeaf.InstanceID;
+
+                        // Read sphere
+                        // const vec4 sphere = Spheres[gl_InstanceCustomIndexEXT];
+                        // const vec3 center = sphere.xyz;
+                        // const float radius = sphere.w;
+                        float4 sphere;
+                        mem->read(sphere_array_addr + (sphere_index * sizeof(float4)), sizeof(float4), &sphere);
+                        transactions.push_back(MemoryTransactionRecord((uint8_t*)(sphere_array_addr + (sphere_index * sizeof(float4))), sizeof(float4), TransactionType::BVH_QUAD_LEAF));
+
+                        VSIM_DPRINTF("[%5d] Sphere %d: (%f, %f, %f), %f ->", thread->get_uid()-1, sphere_index, sphere.x, sphere.y, sphere.z, sphere.w);
+
+                        // Process ray-sphere intersection
+                        float thit;
+                        bool hit = VulkanRayTracing::raySphereIntersection(sphere, objectRay, &thit);
+                        float world_thit = thit / worldToObject_tMultiplier;
+                        VSIM_DPRINTF(" %d\n", hit);
+
+                        if(hit && Tmin <= world_thit && world_thit <= Tmax) {
+                            // Need geometryType, hitGroupIndex, world_min_thit, primitive_index, instance_index
+
+                            // WKND should always have skipAnyHitShader flag
+                            if (skipAnyHitShader && thit < min_thit) {
+                                min_thit = thit / worldToObject_tMultiplier;
+                            }
+                            min_thit_object = thit;
+                            closest_proceduralleaf = leaf;
+                            closest_instanceLeaf = instanceLeaf;
+                            closest_worldToObject = worldToObjectMatrix;
+                            closest_objectToWorld = objectToWorldMatrix;
+                            closest_objectRay = objectRay;
+
+                            thread->add_ray_intersect();
+                            if(terminateOnFirstHit)
+                            {
+                                stack.clear();
+                            }
                         }
                     }
                     else
@@ -1735,46 +1787,59 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
     if (min_thit < ray.dir_tmax.w)
     {
-        traversal_data.hit_geometry = true;
-        ctx->func_sim->g_rt_num_hits++;
-        traversal_data.closest_hit.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        traversal_data.closest_hit.geometry_index = closest_leaf.LeafDescriptor.GeometryIndex;
-        traversal_data.closest_hit.primitive_index = closest_leaf.PrimitiveIndex0;
-        traversal_data.closest_hit.instance_index = closest_instanceLeaf.InstanceID;
-        float3 intersection_point = ray.get_origin() + make_float3(ray.get_direction().x * min_thit, ray.get_direction().y * min_thit, ray.get_direction().z * min_thit);
-        float3 rayatinter = ray.at(min_thit);
-        // assert(intersection_point.x == ray.at(min_thit).x && intersection_point.y == ray.at(min_thit).y && intersection_point.z == ray.at(min_thit).z);
-        traversal_data.closest_hit.intersection_point = intersection_point;
-        traversal_data.closest_hit.worldToObjectMatrix = closest_worldToObject;
-        traversal_data.closest_hit.objectToWorldMatrix = closest_objectToWorld;
-        traversal_data.closest_hit.world_min_thit = min_thit;
+        if (raysphere) {
+            ctx->func_sim->g_rt_num_hits++;
+            uint32_t hit_group_index = closest_instanceLeaf.InstanceContributionToHitGroupIndex;
 
-        VSIM_DPRINTF("gpgpusim: Ray hit geomID %d primID %d\n", traversal_data.closest_hit.geometry_index, traversal_data.closest_hit.primitive_index);
-        VSIM_DPRINTF("gpgpusim: Ray [%d] awaiting %d anyhit shader calls\n", thread->get_uid(), traversal_data.n_all_hits);
-        assert(thread->RT_thread_data->all_hit_data.size() == traversal_data.n_all_hits);
-        float3 p[3];
-        for(int i = 0; i < 3; i++)
-        {
-            p[i].x = closest_leaf.QuadVertex[i].X;
-            p[i].y = closest_leaf.QuadVertex[i].Y;
-            p[i].z = closest_leaf.QuadVertex[i].Z;
+            traversal_data.hit_geometry = true;
+            traversal_data.closest_hit.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+            traversal_data.closest_hit.hitGroupIndex = hit_group_index;
+            traversal_data.closest_hit.world_min_thit = min_thit;
+            traversal_data.closest_hit.primitive_index = closest_proceduralleaf.PrimitiveIndex[0];
+            traversal_data.closest_hit.instance_index = closest_instanceLeaf.InstanceID;
         }
-        float3 object_intersection_point = closest_objectRay.get_origin() + make_float3(closest_objectRay.get_direction().x * min_thit_object, closest_objectRay.get_direction().y * min_thit_object, closest_objectRay.get_direction().z * min_thit_object);
-        //closest_objectRay.at(min_thit_object);
-        float3 barycentric = Barycentric(object_intersection_point, p[0], p[1], p[2]);
-        traversal_data.closest_hit.barycentric_coordinates = barycentric;
-        thread->RT_thread_data->set_hitAttribute(barycentric, pI, thread);
+        else {
+            traversal_data.hit_geometry = true;
+            ctx->func_sim->g_rt_num_hits++;
+            traversal_data.closest_hit.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+            traversal_data.closest_hit.geometry_index = closest_leaf.LeafDescriptor.GeometryIndex;
+            traversal_data.closest_hit.primitive_index = closest_leaf.PrimitiveIndex0;
+            traversal_data.closest_hit.instance_index = closest_instanceLeaf.InstanceID;
+            float3 intersection_point = ray.get_origin() + make_float3(ray.get_direction().x * min_thit, ray.get_direction().y * min_thit, ray.get_direction().z * min_thit);
+            float3 rayatinter = ray.at(min_thit);
+            // assert(intersection_point.x == ray.at(min_thit).x && intersection_point.y == ray.at(min_thit).y && intersection_point.z == ray.at(min_thit).z);
+            traversal_data.closest_hit.intersection_point = intersection_point;
+            traversal_data.closest_hit.worldToObjectMatrix = closest_worldToObject;
+            traversal_data.closest_hit.objectToWorldMatrix = closest_objectToWorld;
+            traversal_data.closest_hit.world_min_thit = min_thit;
 
-        // store_transactions.push_back(MemoryStoreTransactionRecord(&traversal_data, sizeof(traversal_data), StoreTransactionType::Traversal_Results));
-        if (debugTraversal)
-            traversalFile << "HIT" << std::endl;
+            VSIM_DPRINTF("gpgpusim: Ray hit geomID %d primID %d\n", traversal_data.closest_hit.geometry_index, traversal_data.closest_hit.primitive_index);
+            VSIM_DPRINTF("gpgpusim: Ray [%d] awaiting %d anyhit shader calls\n", thread->get_uid(), traversal_data.n_all_hits);
+            assert(thread->RT_thread_data->all_hit_data.size() == traversal_data.n_all_hits);
+            float3 p[3];
+            for(int i = 0; i < 3; i++)
+            {
+                p[i].x = closest_leaf.QuadVertex[i].X;
+                p[i].y = closest_leaf.QuadVertex[i].Y;
+                p[i].z = closest_leaf.QuadVertex[i].Z;
+            }
+            float3 object_intersection_point = closest_objectRay.get_origin() + make_float3(closest_objectRay.get_direction().x * min_thit_object, closest_objectRay.get_direction().y * min_thit_object, closest_objectRay.get_direction().z * min_thit_object);
+            //closest_objectRay.at(min_thit_object);
+            float3 barycentric = Barycentric(object_intersection_point, p[0], p[1], p[2]);
+            traversal_data.closest_hit.barycentric_coordinates = barycentric;
+            thread->RT_thread_data->set_hitAttribute(barycentric, pI, thread);
+
+            // store_transactions.push_back(MemoryStoreTransactionRecord(&traversal_data, sizeof(traversal_data), StoreTransactionType::Traversal_Results));
+            if (debugTraversal)
+                traversalFile << "HIT" << std::endl;
+        }
     }
     else if (hit_procedural)
     {
         VSIM_DPRINTF("gpgpusim: Ray hit procedural geometry; requires intersection shader.\n");
         traversal_data.hit_geometry = false;
     }
-    else if (gprt && gprt_sphere_hit_indices.size() > 0) {
+    else if (rtnn && rtnn_sphere_hit_indices.size() > 0) {
         VSIM_DPRINTF("[%5d]: writing hit to payload \n", thread->get_uid());
 
         // Get output image location (hard-coded to binding 1)
@@ -1785,7 +1850,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         uint32_t index = thread->get_uid() - 1;
 
         transactions.push_back(MemoryTransactionRecord(
-            image->pmem_gpgpusim + (gprt_max_hits * index * sizeof(uint32_t)),
+            image->pmem_gpgpusim + (rtnn_max_hits * index * sizeof(uint32_t)),
             32, // 32 byte result
             TransactionType::WRITE_TRAVERSAL_RESULT)
         );
@@ -1795,7 +1860,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         uint32_t height = image->vk.extent.height;
 
         unsigned counter = 0;
-        for (auto it=gprt_sphere_hit_indices.begin(); it!=gprt_sphere_hit_indices.end(); it++) {
+        for (auto it=rtnn_sphere_hit_indices.begin(); it!=rtnn_sphere_hit_indices.end(); it++) {
             uint32_t sphere_index = *it;
             VulkanRayTracing::write_image_file(width, height, (float)sphere_index, 0, 0, index, counter, vk_format);
             counter++;
@@ -1884,7 +1949,50 @@ bool VulkanRayTracing::mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray
     return true;
 }
 
-bool VulkanRayTracing::raySphereIntersection(float4 sphere, Ray ray_properties) {
+bool VulkanRayTracing::raySphereIntersection(float4 sphere, Ray ray_properties, float* thit) {
+    float3 origin = ray_properties.get_origin();
+    float3 direction = ray_properties.get_direction();
+    float tMin = ray_properties.get_tmin();
+    float tMax = ray_properties.get_tmax();
+    float3 sphere_origin = make_float3(sphere.x, sphere.y, sphere.z);
+    float radius = sphere.w;
+
+	// const vec3 oc = origin - center;
+	// const float a = dot(direction, direction);
+	// const float b = dot(oc, direction);
+	// const float c = dot(oc, oc) - radius * radius;
+	// const float discriminant = b * b - a * c;
+    // bool hit = (discriminant >= 0);
+
+    float3 oc = origin - sphere_origin;
+    float a = dot(direction, direction);
+    float b = dot(oc, direction);
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = b * b - a * c;
+    if (discriminant >= 0) {
+        // const float t1 = (-b - sqrt(discriminant)) / a;
+		// const float t2 = (-b + sqrt(discriminant)) / a;
+
+        float t1 = (-1 * b - sqrt(discriminant)) / a;
+        float t2 = (-1 * b + sqrt(discriminant)) / a;
+
+		// if ((tMin <= t1 && t1 < tMax) || (tMin <= t2 && t2 < tMax))
+		// {
+		// 	Sphere = sphere;
+		// 	reportIntersectionEXT((tMin <= t1 && t1 < tMax) ? t1 : t2, 0);
+		// }
+
+        if ((tMin <= t1 && t1 < tMax) || (tMin <= t2 && t2 < tMax)) {
+            *thit = (tMin <= t1 && t1 < tMax) ? t1 : t2;
+            return true;
+        }
+    }
+
+
+    return false;
+}
+
+bool VulkanRayTracing::pointSphereIntersection(float4 sphere, Ray ray_properties) {
     float3 origin = ray_properties.get_origin();
     float3 sphere_origin = make_float3(sphere.x, sphere.y, sphere.z);
     float radius = sphere.w;
