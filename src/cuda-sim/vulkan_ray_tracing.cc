@@ -1120,6 +1120,14 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     bool terminateOnFirstHit = rayFlags & SpvRayFlagsTerminateOnFirstHitKHRMask;
     bool skipClosestHitShader = rayFlags & SpvRayFlagsSkipClosestHitShaderKHRMask;
     bool skipAnyHitShader = rayFlags & SpvRayFlagsOpaqueKHRMask;
+    bool gprt = rayFlags & SpvRayFlagsSkipAABBsKHRMask;
+
+    std::vector<unsigned> gprt_sphere_hit_indices;
+    // Currently max at 8 hits per ray
+    unsigned gprt_max_hits = 8;
+    if (gprt) {
+        VSIM_DPRINTF("Using GPRT! \n");
+    }
 
     if (debugTraversal)
     {
@@ -1136,6 +1144,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     std::vector<MemoryStoreTransactionRecord> store_transactions;
 
     gpgpu_context *ctx = GPGPU_Context();
+    memory_space *mem = thread->get_global_memory();
     int key = ctx->func_sim->g_rt_traversal_key;
 
     if (terminateOnFirstHit) ctx->func_sim->g_n_anyhit_rays++;
@@ -1659,6 +1668,36 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             traversalFile << std::endl;
                         }
                     }
+                    else if (gprt) {
+                        // Get the sphere array (currently hard-coded to binding 7)
+                        void* sphere_array_addr = VulkanRayTracing::getDescriptorAddress(0, 7);
+                        uint32_t sphere_index = instanceLeaf.InstanceID;
+
+                        // Read sphere
+                        // const vec4 sphere = Spheres[gl_InstanceCustomIndexEXT];
+                        // const vec3 center = sphere.xyz;
+                        // const float radius = sphere.w;
+                        float4 sphere;
+                        mem->read(sphere_array_addr + (sphere_index * sizeof(float4)), sizeof(float4), &sphere);
+                        transactions.push_back(MemoryTransactionRecord((uint8_t*)(sphere_array_addr + (sphere_index * sizeof(float4))), sizeof(float4), TransactionType::BVH_QUAD_LEAF));
+
+                        VSIM_DPRINTF("[%5d] Sphere %d: (%f, %f, %f), %f ->", thread->get_uid()-1, sphere_index, sphere.x, sphere.y, sphere.z, sphere.w);
+
+                        // Process ray-sphere intersection
+                        bool hit = VulkanRayTracing::raySphereIntersection(sphere, objectRay);
+                        VSIM_DPRINTF(" %d\n", hit);
+
+                        if (hit) {
+                            ctx->func_sim->g_rt_num_hits++;
+                            gprt_sphere_hit_indices.push_back(sphere_index);
+                        }
+
+                        // Early termination when result buffer is full
+                        if (gprt_sphere_hit_indices.size() >= gprt_max_hits) {
+                            VSIM_DPRINTF("[%5d] Result buffer full, terminating\n", thread->get_uid()-1);
+                            stack.clear();
+                        }
+                    }
                     else
                     {
                         hit_procedural = true;
@@ -1735,6 +1774,36 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         VSIM_DPRINTF("gpgpusim: Ray hit procedural geometry; requires intersection shader.\n");
         traversal_data.hit_geometry = false;
     }
+    else if (gprt && gprt_sphere_hit_indices.size() > 0) {
+        VSIM_DPRINTF("[%5d]: writing hit to payload \n", thread->get_uid());
+
+        // Get output image location (hard-coded to binding 1)
+        struct DESCRIPTOR_STRUCT* image_desc = (struct DESCRIPTOR_STRUCT*)VulkanRayTracing::getDescriptorAddress(0, 1);
+        struct lvp_image *image = (struct lvp_image *)image_desc->info.image_view.image;
+        VkFormat vk_format = image->vk.format;
+
+        uint32_t index = thread->get_uid() - 1;
+
+        transactions.push_back(MemoryTransactionRecord(
+            image->pmem_gpgpusim + (gprt_max_hits * index * sizeof(uint32_t)),
+            32, // 32 byte result
+            TransactionType::WRITE_TRAVERSAL_RESULT)
+        );
+        GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::WRITE_TRAVERSAL_RESULT)]++;
+
+        uint32_t width = image->vk.extent.width;
+        uint32_t height = image->vk.extent.height;
+
+        unsigned counter = 0;
+        for (auto it=gprt_sphere_hit_indices.begin(); it!=gprt_sphere_hit_indices.end(); it++) {
+            uint32_t sphere_index = *it;
+            VulkanRayTracing::write_image_file(width, height, (float)sphere_index, 0, 0, index, counter, vk_format);
+            counter++;
+        }
+        
+        traversal_data.hit_geometry = true;
+        traversal_data.closest_hit.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    }
     else
     {
         VSIM_DPRINTF("gpgpusim: Ray [%d] missed.\n", thread->get_uid());
@@ -1743,7 +1812,6 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             traversalFile << "MISS" << std::endl;
     }
 
-    memory_space *mem = thread->get_global_memory();
     Traversal_data* device_traversal_data = (Traversal_data*) VulkanRayTracing::gpgpusim_alloc(sizeof(Traversal_data));
     mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);
     thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
@@ -1814,6 +1882,23 @@ bool VulkanRayTracing::mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray
 
     *thit = dot(v0v2, qvec) * idet;
     return true;
+}
+
+bool VulkanRayTracing::raySphereIntersection(float4 sphere, Ray ray_properties) {
+    float3 origin = ray_properties.get_origin();
+    float3 sphere_origin = make_float3(sphere.x, sphere.y, sphere.z);
+    float radius = sphere.w;
+
+    // const vec3 oc = origin - center;
+    // const float oc2 = dot(oc, oc);
+    // const float r2 = radius * radius;
+    // bool hit = (oc2 > 0 && oc2 < r2);
+
+    float3 oc = origin - sphere_origin;
+    float oc2 = dot(oc, oc);
+    float r2 = radius * radius;
+    bool hit = (oc2 > 0 && oc2 < r2);
+    return hit;
 }
 
 bool VulkanRayTracing::rtao_ray_triangle_test(float4 v00, float4 v11, float4 v22, Ray ray_properties, float* thit, float3* bary) {
@@ -2771,6 +2856,47 @@ void VulkanRayTracing::image_load(struct DESCRIPTOR_STRUCT *desc, uint32_t x, ui
 #endif
 }
 
+void VulkanRayTracing::write_image_file(uint32_t width, uint32_t height, float hitValue_X, float hitValue_Y, float hitValue_Z, uint32_t pixelX, uint32_t pixelY, VkFormat img_format) {
+    std::string img_name("SCENE");
+
+    if (outputImages.find(img_name) == outputImages.end()) {
+        std::time_t raw_time = std::time(0);
+        struct tm *time_info;
+        char time_buf[30];
+
+        time_info = localtime(&raw_time);
+
+        strftime(time_buf, sizeof(time_buf), "%d-%m-%Y-%H-%M-%S-", time_info);
+
+        std::string time_offset(time_buf);
+        std::string new_img_file_name = time_offset + img_name;
+
+        outputImages[img_name] = new_img_file_name + ".ppm";
+        printf("gpgpusim: saving image %s to file %s\n", img_name.c_str(), outputImages[img_name].c_str());
+
+        img_bin = fopen(outputImages[img_name].c_str(), "w");
+        fprintf(img_bin, "P3\n%d %d\n255\n", width, height);
+        for (int i = 0; i < width * height; i++) {
+            fprintf(img_bin, "%3d %3d %3d\n", 0, 0, 0);
+        }
+    }
+
+    uint32_t header_offset = 
+        strlen("P3\n \n255\n") + std::to_string(width).length() + std::to_string(height).length();
+    uint32_t value_offset = (pixelX + pixelY * width) * (3*3 + 3);
+    fseeko(img_bin, header_offset + value_offset, SEEK_SET);
+
+    // Use VK_FORMAT_R8G8B8A8_UINT to trigger RTNN workload special case
+    if (img_format == VK_FORMAT_R8G8B8A8_UINT) {
+        fprintf(img_bin, "%7d %1d %1d\n", 
+                (int)(hitValue_X), (int)(hitValue_Y), (int)(hitValue_Z));
+        // printf("gpgpusim: [%d %d] -> [%d %d %d]\n", pixelX, pixelY, (int)(hitValue_X), (int)(hitValue_Y), (int)(hitValue_Z));
+    } else {
+        fprintf(img_bin, "%3.0f %3.0f %3.0f\n", 
+            hitValue_X * 255, hitValue_Y * 255, hitValue_Z * 255);
+    }
+}
+
 void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_LaunchIDEXT_X, uint32_t gl_LaunchIDEXT_Y, uint32_t gl_LaunchIDEXT_Z, uint32_t gl_LaunchIDEXT_W, 
               float hitValue_X, float hitValue_Y, float hitValue_Z, float hitValue_W, const ptx_instruction *pI, ptx_thread_info *thread)
 {
@@ -2845,44 +2971,21 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
     struct lvp_image *image = (struct lvp_image *)desc->info.image_view.image;
     VkFormat vk_format = image->vk.format;
     assert(image != NULL);
-    VSIM_DPRINTF("gpgpusim: image_store to %s at %p\n", image->vk.base.object_name, image->pmem_gpgpusim);
+    VSIM_DPRINTF("gpgpusim: image_store to %s at %p, type %d\n", image->vk.base.object_name, image->pmem_gpgpusim, vk_format);
 
     Pixel pixel = Pixel(hitValue_X, hitValue_Y, hitValue_Z, hitValue_W);
 
     uint32_t width = image->vk.extent.width;
     uint32_t height = image->vk.extent.height;
 
+    uint32_t pixelX = gl_LaunchIDEXT_X;
+    uint32_t pixelY = gl_LaunchIDEXT_Y;
+
     if (writeImageBinary) {
         // TODO: fix the bottom, is NULL
         // assert(image->vk.base.object_name);
         // std::string img_name(image->vk.base.object_name);
-        std::string img_name("SCENE");
-
-        if (outputImages.find(img_name) == outputImages.end()) {
-            std::time_t raw_time = std::time(0);
-            struct tm *time_info;
-            char time_buf[30];
-
-            time_info = localtime(&raw_time);
-
-            strftime(time_buf, sizeof(time_buf), "%d-%m-%Y-%H-%M-%S-", time_info);
-
-            std::string time_offset(time_buf);
-            std::string new_img_file_name = time_offset + img_name;
-
-            outputImages[img_name] = new_img_file_name + ".ppm";
-            printf("gpgpusim: saving image %s to file %s\n", img_name.c_str(), outputImages[img_name].c_str());
-
-            img_bin = fopen(outputImages[img_name].c_str(), "w");
-            fprintf(img_bin, "P3\n%d %d\n255\n", width, height);
-        }
-
-        uint32_t header_offset = 
-            strlen("P3\n \n255\n") + std::to_string(width).length() + std::to_string(height).length();
-        uint32_t value_offset = (gl_LaunchIDEXT_X + gl_LaunchIDEXT_Y * width) * (3*3 + 3);
-        fseeko(img_bin, header_offset + value_offset, SEEK_SET);
-        fprintf(img_bin, "%3.0f %3.0f %3.0f\n", 
-                hitValue_X * 255, hitValue_Y * 255, hitValue_Z * 255);
+        VulkanRayTracing::write_image_file(width, height, hitValue_X, hitValue_Y, hitValue_Z, pixelX, pixelY, vk_format);
     }
 
     // Setup transaction record for timing model
@@ -2890,8 +2993,6 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
     transaction.type = ImageTransactionType::IMAGE_STORE;
 
     VkImageTiling tiling = image->vk.tiling;
-    uint32_t pixelX = gl_LaunchIDEXT_X;
-    uint32_t pixelY = gl_LaunchIDEXT_Y;
 
     // Size of image_store content depends on data type
     switch (vk_format) {
@@ -2900,6 +3001,10 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
             break; 
 
         case VK_FORMAT_B8G8R8A8_UNORM:
+            transaction.size = 4;
+            break;
+
+        case VK_FORMAT_R8G8B8A8_UINT:
             transaction.size = 4;
             break;
 
