@@ -3097,7 +3097,7 @@ void rt_unit::cycle() {
       cacheline_count++;
                             
       // Update cache
-      if (!m_config->bypassL0Complet) {
+      if (!m_config->bypassL0Complet && !m_config->m_rt_perfect_mem) {
         if (m_config->m_rt_use_l1d) {
           L1D->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
                           m_core->get_gpu()->gpu_tot_sim_cycle);
@@ -3304,6 +3304,11 @@ void rt_unit::process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg) {
       else {
         response_mf = m_L0_complet->probe_mshr(mf->get_addr());
       }
+
+      if (m_config->m_rt_perfect_mem) {
+        response_mf.push_back(mf);
+      }
+
       unsigned requester_thread_found = 0;
       for (auto it=response_mf.begin(); it!=response_mf.end(); ++it) {
         mem_fetch* response = *it;
@@ -3577,44 +3582,8 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
   }
 
   else if (m_config->m_rt_perfect_mem) {
-    new_addr_type addr = mf->get_addr();
-    new_addr_type uncoalesced_base_addr = mf->get_uncoalesced_base_addr();
-
-    // Every access is considered a cache hit
-    m_stats->rt_total_cacheline_fetched[m_sid]++;
-    cacheline_count++;
-
-    // Handle write ACKs
-    if (mf->get_is_write()) {
-      m_stats->rt_writes++;
-      inst.check_pending_writes(uncoalesced_base_addr);
-    }
-    else if (m_config->m_rt_coherence_engine) {
-      std::map<unsigned, warp_inst_t *> m_warp_pointers;
-      for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); it++) {
-        m_warp_pointers[it->first] = &it->second;
-      }
-      m_ray_coherence_engine->process_response(mf, m_warp_pointers, &inst);
-      if (!inst.empty()) m_current_warps[inst.get_uid()] = inst;
-      inst.clear();
-    }
-    else {
-      unsigned found = 0;
-      found += inst.process_returned_mem_access(mf);
-      
-      if (m_config->m_rt_coalesce_warps) {
-        for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
-          if (found > 0) {
-            (it->second).process_returned_mem_access(mf);
-          }
-          else {
-            (it->second).process_returned_mem_access(mf);
-          }
-        }
-      }
-    }
-    
-    delete mf;
+    RT_DPRINTF("Shader %d: Push mf back to response fifo for 0x%x\n", m_sid, mf->get_uncoalesced_addr());
+    m_response_fifo.push_back(mf);
     return;
   }
     
