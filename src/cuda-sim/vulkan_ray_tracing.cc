@@ -1166,6 +1166,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     float min_thit = ray.dir_tmax.w;
     struct GEN_RT_BVH_QUAD_LEAF closest_leaf;
     struct GEN_RT_BVH_PROCEDURAL_LEAF closest_proceduralleaf;
+    float4 closest_sphere;
     struct GEN_RT_BVH_INSTANCE_LEAF closest_instanceLeaf;    
     float4x4 closest_worldToObject, closest_objectToWorld;
     Ray closest_objectRay;
@@ -1706,7 +1707,6 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     else if (raysphere) {
                         struct GEN_RT_BVH_PROCEDURAL_LEAF leaf;
                         GEN_RT_BVH_PROCEDURAL_LEAF_unpack(&leaf, leaf_addr);
-                        transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
                         ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PROCEDURAL_LEAF)]++;
 
                         // Get the sphere array (currently hard-coded to binding 9)
@@ -1719,7 +1719,6 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         // const float radius = sphere.w;
                         float4 sphere;
                         mem->read(sphere_array_addr + (sphere_index * sizeof(float4)), sizeof(float4), &sphere);
-                        transactions.push_back(MemoryTransactionRecord((uint8_t*)(sphere_array_addr + (sphere_index * sizeof(float4))), sizeof(float4), TransactionType::BVH_QUAD_LEAF));
 
                         VSIM_DPRINTF("[%5d] Sphere %d: (%f, %f, %f), %f ->", thread->get_uid()-1, sphere_index, sphere.x, sphere.y, sphere.z, sphere.w);
 
@@ -1730,6 +1729,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         VSIM_DPRINTF(" %d\n", hit);
 
                         if(hit && Tmin <= world_thit && world_thit <= Tmax) {
+                            transactions.push_back(MemoryTransactionRecord((void*)((uint32_t)sphere_array_addr + (sphere_index * sizeof(float4))), sizeof(float4), TransactionType::BVH_QUAD_LEAF_HIT));
                             // Need geometryType, hitGroupIndex, world_min_thit, primitive_index, instance_index
 
                             // WKND should always have skipAnyHitShader flag
@@ -1742,12 +1742,16 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             closest_worldToObject = worldToObjectMatrix;
                             closest_objectToWorld = objectToWorldMatrix;
                             closest_objectRay = objectRay;
+                            closest_sphere = sphere;
 
                             thread->add_ray_intersect();
                             if(terminateOnFirstHit)
                             {
                                 stack.clear();
                             }
+                        }
+                        else {
+                            transactions.push_back(MemoryTransactionRecord((void*)((uint32_t)sphere_array_addr + (sphere_index * sizeof(float4))), sizeof(float4), TransactionType::BVH_QUAD_LEAF));
                         }
                     }
                     else
@@ -1797,6 +1801,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             traversal_data.closest_hit.world_min_thit = min_thit;
             traversal_data.closest_hit.primitive_index = closest_proceduralleaf.PrimitiveIndex[0];
             traversal_data.closest_hit.instance_index = closest_instanceLeaf.InstanceID;
+
+            thread->RT_thread_data->set_sphereAttribute(closest_sphere, pI, thread);
         }
         else {
             traversal_data.hit_geometry = true;
