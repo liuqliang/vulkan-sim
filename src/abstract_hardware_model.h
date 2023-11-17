@@ -1528,6 +1528,7 @@ class warp_inst_t : public inst_t {
   std::deque<std::pair<unsigned, new_addr_type> > check_stores(unsigned tid);
   bool check_pending_writes(new_addr_type addr);
   unsigned mem_list_length(unsigned tid) const { return m_per_scalar_thread[tid].RT_mem_accesses.size(); }
+  RTMemoryTransactionRecord show_next_access(unsigned tid) const;
   unsigned * get_latency_dist(unsigned i);
   
   void set_start_cycle(unsigned long long cycle) { m_start_cycle = cycle; }

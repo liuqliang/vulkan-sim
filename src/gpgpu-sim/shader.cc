@@ -4598,6 +4598,12 @@ void rt_unit::print(FILE *fout) const {
       fprintf(fout, "%5d", inst.mem_list_length(i));
     }
     fprintf(fout, "]\n");
+    fprintf(fout, "Waiting for: [");
+    for (unsigned i=0; i<m_config->warp_size; i++) {
+      RTMemoryTransactionRecord record = inst.show_next_access(i);
+      fprintf(fout, "(%p, %3d, %1d)\t", record.address, record.size, record.status);
+    }
+    fprintf(fout, "]\n");
   }
   
   // Current Memory Accesses

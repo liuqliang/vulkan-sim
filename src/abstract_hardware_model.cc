@@ -1262,6 +1262,15 @@ bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned ti
   return thread_found;
 }
 
+RTMemoryTransactionRecord warp_inst_t::show_next_access(unsigned tid) const {
+  if (!m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
+    return m_per_scalar_thread[tid].RT_mem_accesses.front();
+  }
+  else {
+    return RTMemoryTransactionRecord(0, 0, TransactionType::UNDEFINED);
+  }
+}
+
 kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
                              class function_info *entry) {
   m_kernel_entry = entry;
