@@ -645,7 +645,12 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                             mem->read(x_addr + child_node * sizeof(float), sizeof(float), &x);
                             mem->read(y_addr + child_node * sizeof(float), sizeof(float), &y);
                             mem->read(mass_addr + child_node * sizeof(float), sizeof(float), &mass);
-                            // Don't need to track this memory access because it will be tracked as a leaf node
+                            // TODO: (FIX) currently pretending the data structure is better and x, y, mass is stored together as an array of struct instead of struct of arrays
+                            transactions.push_back(MemoryTransactionRecord(
+                                mass_addr + child_node * sizeof(float3),
+                                sizeof(float3), 
+                                TransactionType::BVH_INSTANCE_LEAF) // borrow BVH instance leaf because this transaction is neither internal nor leaf
+                            );
 
                             // Calculations
                             float pos_x = *(float*)&conditions.values[0];
@@ -1099,6 +1104,10 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
     else {
         RT_DPRINTF("[0x%x]: traversal done, miss\n", thread->get_uid());
     }
+
+    // if (node_processing_configuration == 3) {
+    //     printf("[0x%x]: (%7.3f, %7.3f)\n", thread->get_uid(), *(float*)&results_payload.values[1], *(float*)&results_payload.values[2]);
+    // }
 
     mem->write(results_payload_addr, sizeof(TreeSearchResults), &results_payload, NULL, NULL);
 
