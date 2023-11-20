@@ -435,6 +435,20 @@ bool rt_decode_node(unsigned node_type, memory_space *mem, StackEntry node, addr
             break;
         }
 
+        // 3D N body
+        case 4: {
+            // TODO: Fix this
+            if (node.leaf) {
+                RT_DPRINTF("Leaf node\n")
+                return true;
+            }
+            else {
+                RT_DPRINTF("Inner node\n")
+                return false;
+            }
+            break;
+        }
+
         default:
             printf("gpgpusim: ERROR! Unrecognized node type.\n");
             abort();
@@ -683,6 +697,121 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
             break;
         }
 
+        // 3D N body
+        case 4: {
+            unsigned n_children = 8;
+            unsigned n = conditions.values[8];
+
+            // Special case for root node
+            if (node_addr == root_node_addr) {
+                transactions.push_back(MemoryTransactionRecord(
+                    node_addr,
+                    sizeof(int) * n_children,
+                    TransactionType::BVH_INTERNAL_NODE)
+                );
+                GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
+
+                float depth = *(float*)&conditions.values[7];
+
+                for (unsigned i_child = 0; i_child < n_children; i_child++) {
+                    int child_node;
+                    mem->read(node_addr + i_child * sizeof(int), sizeof(int), &child_node);
+                    RT_DPRINTF("Read child %i: %d\n", i_child, child_node);
+
+                    if (child_node >= 0) {
+                        int index = child_node * n_children;
+                        addr_t child_addr = root_node_addr + index * sizeof(int);
+
+                        // All inner nodes
+                        RT_DPRINTF("Pushing child %d 0x%x (index %d) top node depth %f\n", i_child, child_addr, index, depth);
+                        next_nodes.push_front(StackEntry(child_addr, true, false, depth));
+                    }
+                    else {
+                        RT_DPRINTF("Child %d invalid.\n", i_child);
+                    }
+                }
+            }
+
+            else {
+                transactions.push_back(MemoryTransactionRecord(
+                    node_addr,
+                    sizeof(int) * n_children,
+                    TransactionType::BVH_INTERNAL_NODE)
+                );
+
+                GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
+                
+                // Unconditionally push children (for now)
+                for (unsigned i_child = 0; i_child < n_children; i_child++) {
+                    int child_node;
+                    mem->read(node_addr + i_child * sizeof(int), sizeof(int), &child_node);
+                    RT_DPRINTF("Read child %i: %d\n", i_child, child_node);
+
+                    if (child_node >= 0) {
+                        if (child_node < n) {
+                            addr_t child_addr = node_addr + i_child * sizeof(int);
+                            int index = (child_addr - root_node_addr) / sizeof(int);
+                            RT_DPRINTF("Pushing child %d 0x%x (index %d) is leaf\n", i_child, child_addr, index);
+                            next_nodes.push_front(StackEntry(child_addr, true, true));
+                        }
+                        else {
+                            // Prune distant nodes
+                            const float eps2 = 0.025;
+                            float node_depth = node.depth * 0.125;
+
+                            // Read x, y, z position data and mass data addresses
+                            addr_t x_addr = conditions.values[3];
+                            addr_t y_addr = conditions.values[4];
+                            addr_t z_addr = conditions.values[5];
+                            addr_t mass_addr = conditions.values[6];
+
+                            // Read x, y, z position data and mass data
+                            float x, y, z, mass;
+                            mem->read(x_addr + child_node * sizeof(float), sizeof(float), &x);
+                            mem->read(y_addr + child_node * sizeof(float), sizeof(float), &y);
+                            mem->read(z_addr + child_node * sizeof(float), sizeof(float), &z);
+                            mem->read(mass_addr + child_node * sizeof(float), sizeof(float), &mass);
+                            // TODO: (FIX) currently pretending the data structure is better and x, y, mass is stored together as an array of struct instead of struct of arrays
+                            transactions.push_back(MemoryTransactionRecord(
+                                mass_addr + child_node * sizeof(float4),
+                                sizeof(float4), 
+                                TransactionType::BVH_INSTANCE_LEAF) // borrow BVH instance leaf because this transaction is neither internal nor leaf
+                            );
+
+                            // Calculations
+                            float pos_x = *(float*)&conditions.values[0];
+                            float pos_y = *(float*)&conditions.values[1];
+                            float pos_z = *(float*)&conditions.values[2];
+
+                            float dx = x - pos_x;
+                            float dy = y - pos_y;
+                            float dz = z - pos_z;
+                            float dist = dx*dx + dy*dy + dz*dz + eps2;
+                            RT_DPRINTF("Node depth %f, dist %f\n", node_depth, dist);
+
+                            // Treat as leaf if distance is small enough
+                            if (node_depth <= dist) {
+                                addr_t child_addr = node_addr + i_child * sizeof(int);
+                                int index = (child_addr - root_node_addr) / sizeof(int);
+                                RT_DPRINTF("Pushing child %d 0x%x (index %d) distant leaf\n", i_child, child_addr, index);
+                                next_nodes.push_front(StackEntry(child_addr, true, true));
+                            }
+                            else {
+                                addr_t child_addr = root_node_addr + child_node * n_children * sizeof(int);
+                                RT_DPRINTF("Pushing child %d 0x%x (index %d) not leaf\n", i_child, child_addr, child_node);
+                                next_nodes.push_front(StackEntry(child_addr, true, false, node_depth));
+                            }
+                        }
+                    }
+                    else {
+                        RT_DPRINTF("Child %d invalid.\n", i_child);
+                    }
+                }
+            }
+
+            break;
+        }
+
         default:
             printf("gpgpusim: ERROR! Unrecognized node type %d.\n", node_type);
             abort();
@@ -859,6 +988,70 @@ TreeSearchResults rt_process_leaf_node(unsigned leaf_type, memory_space *mem, vo
             break;
         }
 
+        case 4: {
+            const float eps2 = 0.025;
+
+            // Read x, y position data and mass data addresses
+            addr_t x_addr = conditions.values[3];
+            addr_t y_addr = conditions.values[4];
+            addr_t z_addr = conditions.values[5];
+            addr_t mass_addr = conditions.values[6];
+
+            // Read child node
+            int child_node;
+            mem->read(leaf_addr, sizeof(int), &child_node);
+            RT_DPRINTF("Read leaf node: 0x%x -> (%d)\n", leaf_addr, child_node);
+            transactions.push_back(MemoryTransactionRecord(
+                leaf_addr,
+                sizeof(int), 
+                TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR)
+            );
+            GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR)]++;
+
+            // Read x, y position data and mass data
+            float x, y, z, mass;
+            mem->read(x_addr + child_node * sizeof(float), sizeof(float), &x);
+            mem->read(y_addr + child_node * sizeof(float), sizeof(float), &y);
+            mem->read(z_addr + child_node * sizeof(float), sizeof(float), &z);
+            mem->read(mass_addr + child_node * sizeof(float), sizeof(float), &mass);
+            RT_DPRINTF("Leaf data: x=%7.3f, y=%7.3f, z=%7.3f, mass=%7.3f\n", x, y, z, mass);
+            
+            // TODO: (FIX) currently pretending the data structure is better and x, y, mass is stored together as an array of struct instead of struct of arrays
+            transactions.push_back(MemoryTransactionRecord(
+                mass_addr + child_node * sizeof(float4),
+                sizeof(float4), 
+                TransactionType::BVH_QUAD_LEAF)
+            );
+            GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF)]++;
+
+            // Calculations
+            float pos_x = *(float*)&conditions.values[0];
+            float pos_y = *(float*)&conditions.values[1];
+            float pos_z = *(float*)&conditions.values[2];
+
+            float dx = x - pos_x;
+            float dy = y - pos_y;
+            float dz = z - pos_z;
+            float dist = 1 / sqrt(dx*dx + dy*dy + dz*dz + eps2);
+            RT_DPRINTF("dx=%7.3f, dy=%7.3f, dz=%7.3f, dist=%7.3f\n", dx, dy, dz, dist);
+
+            float accel_f = mass * dist * dist * dist;
+            RT_DPRINTF("accel_f=%7.3f\n", accel_f);
+
+            // Save results
+            float accel_x = accel_f * dx;
+            float accel_y = accel_f * dy;
+            float accel_z = accel_f * dz;
+            RT_DPRINTF("accel_x=%7.3f, accel_y=%7.3f, accel_z=%7.3f\n", accel_x, accel_y, accel_z);
+
+            results.values[0] = 1; // Mark as valid
+            results.values[1] = *(uint32_t*)&accel_x;
+            results.values[2] = *(uint32_t*)&accel_y;
+            results.values[3] = *(uint32_t*)&accel_z;
+
+            break;
+        }
+
         default:
             printf("gpgpusim: ERROR! Unrecognized leaf type %d.\n", leaf_type);
             abort();
@@ -921,6 +1114,43 @@ bool rt_accept_criteria(unsigned leaf_type, TreeSearchResults result, TreeSearch
                     float new_accel_x = *(float*)&result.values[1];
                     float new_accel_y = *(float*)&result.values[2];
                     RT_DPRINTF("accel_x=%7.3f, accel_y=%7.3f\n", new_accel_x, new_accel_y);
+
+                    existing_result = result;
+                }
+            }
+
+            // No early termination
+            return true;
+            break;
+        }
+        case 4: {
+            // Always accept valid results
+            if (result.values[0] == 1) {
+                if (existing_result.values[0]) {
+                    float current_accel_x = *(float*)&existing_result.values[1];
+                    float current_accel_y = *(float*)&existing_result.values[2];
+                    float current_accel_z = *(float*)&existing_result.values[3];
+                    RT_DPRINTF("Update existing: current_accel_x=%7.3f, current_accel_y=%7.3f, current_accel_z=%7.3f\n", current_accel_x, current_accel_y, current_accel_z);
+
+                    float new_accel_x = *(float*)&result.values[1];
+                    float new_accel_y = *(float*)&result.values[2];
+                    float new_accel_z = *(float*)&result.values[3];
+
+                    float accel_x = current_accel_x + new_accel_x;
+                    float accel_y = current_accel_y + new_accel_y;
+                    float accel_z = current_accel_z + new_accel_z;
+                    RT_DPRINTF("accel_x=%7.3f, accel_y=%7.3f, accel_z=%7.3f\n", accel_x, accel_y, accel_y);
+
+                    existing_result.values[1] = *(uint32_t*)&accel_x;
+                    existing_result.values[2] = *(uint32_t*)&accel_y;
+                    existing_result.values[3] = *(uint32_t*)&accel_z;
+                }
+                else {
+                    RT_DPRINTF("Create new results\n");
+                    float new_accel_x = *(float*)&result.values[1];
+                    float new_accel_y = *(float*)&result.values[2];
+                    float new_accel_z = *(float*)&result.values[3];
+                    RT_DPRINTF("accel_x=%7.3f, accel_y=%7.3f, accel_z=%7.3f\n", new_accel_x, new_accel_y, new_accel_z);
 
                     existing_result = result;
                 }
@@ -1004,11 +1234,15 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
         case 0:
         case 1:
         case 2: {
-            use_dfs = true;
+            use_dfs = true; // B tree doesn't matter
             break;
         }
         case 3: {
-            use_dfs = false;
+            use_dfs = true;
+            break;
+        }
+        case 4: {
+            use_dfs = true;
             break;
         }
         default: {
