@@ -35,6 +35,7 @@
 #include <fstream>
 #include <cmath>
 #include <random>
+#include <assert.h>
 #define BOOST_FILESYSTEM_VERSION 3
 #define BOOST_FILESYSTEM_NO_DEPRECATED 
 #include <boost/filesystem.hpp>
@@ -1358,7 +1359,7 @@ void rt_ray_box_intersect(const ptx_instruction *pI, ptx_thread_info *thread) {
 
     // Read input arguments
     int arg = 0;
-    assert(0, "rt_ray_box_intersect not implemented yet\n");
+    assert(0 && "rt_ray_box_intersect not implemented yet\n");
 
 }
 
@@ -1366,7 +1367,7 @@ void rt_ray_triangle_intersect(const ptx_instruction *pI, ptx_thread_info *threa
 
     // Read input arguments
     int arg = 0;
-    assert(0, "rt_ray_triangle_intersect not implemented yet\n");
+    assert(0 && "rt_ray_triangle_intersect not implemented yet\n");
 
 }
 
