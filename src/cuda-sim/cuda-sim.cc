@@ -882,6 +882,10 @@ void ptx_instruction::set_opcode_and_latency() {
         op = ALU_OP;
       } else if (m_is_raytrace) {
         op = RT_CORE_OP;
+      } else if (m_raytrace_op == RAY_BOX) {
+        op = SPECIALIZED_UNIT_1_OP;
+      } else if (m_raytrace_op == RAY_TRI) {
+        op = SPECIALIZED_UNIT_2_OP;
       } else
         op = CALL_OPS;
       break;

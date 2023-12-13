@@ -1571,6 +1571,8 @@ ptx_instruction::ptx_instruction(
       m_is_printf = true;
     }
     if (fname.find("__TreeUnitSearch") != std::string::npos) m_is_raytrace = true;
+    if (fname.find("__RayBoxIntersect") != std::string::npos) m_raytrace_op = RAY_BOX;
+    if (fname.find("__RayTriangleIntersect") != std::string::npos) m_raytrace_op = RAY_TRI;
     if (fname == "cudaStreamCreateWithFlags") m_is_cdp = 1;
     if (fname == "cudaGetParameterBufferV2") m_is_cdp = 2;
     if (fname == "cudaLaunchDeviceV2") m_is_cdp = 4;

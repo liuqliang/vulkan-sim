@@ -95,6 +95,13 @@ enum FuncCache {
 
 enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 
+enum raytrace_op_type {
+  RAY_NONE = 0,
+  RAY_BOX,
+  RAY_TRI,
+  TOTAL_RAYTRACE_OP
+};
+
 #ifdef __cplusplus
 
 #include <stdio.h>
@@ -1341,6 +1348,7 @@ class warp_inst_t : public inst_t {
     m_cache_hit = false;
     m_is_printf = false;
     m_is_raytrace = false;
+    m_raytrace_op = RAY_NONE;
     m_is_cdp = 0;
     should_do_atomic = true;
     m_has_pred = false;
@@ -1639,6 +1647,8 @@ class warp_inst_t : public inst_t {
  public:
   int m_is_cdp;
   bool m_is_raytrace;
+
+  raytrace_op_type m_raytrace_op;
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);

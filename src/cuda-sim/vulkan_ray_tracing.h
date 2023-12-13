@@ -254,6 +254,8 @@ typedef struct child_node
    }
 
 void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread);
+void rt_ray_box_intersect(const ptx_instruction *pI, ptx_thread_info *thread);
+void rt_ray_triangle_intersect(const ptx_instruction *pI, ptx_thread_info *thread);
 
 class VulkanRayTracing
 {

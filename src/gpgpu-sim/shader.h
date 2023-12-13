@@ -1347,7 +1347,7 @@ class specialized_unit : public pipelined_simd_unit {
  public:
   specialized_unit(register_set *result_port, const shader_core_config *config,
                    shader_core_ctx *core, unsigned supported_op,
-                   char *unit_name, unsigned latency, unsigned issue_reg_id);
+                   char *unit_name, unsigned latency, unsigned issue_reg_id, shader_core_stats *stats);
   virtual bool can_issue(const warp_inst_t &inst) const {
     if (inst.op != m_supported_op) {
       return false;
@@ -1357,7 +1357,11 @@ class specialized_unit : public pipelined_simd_unit {
   virtual void active_lanes_in_pipeline();
   virtual unsigned get_active_insts_in_pipeline() { return active_insts_in_pipeline; }
   virtual void issue(register_set &source_reg);
+  virtual void cycle();
   bool is_issue_partitioned() { return true; }
+
+ protected:
+  shader_core_stats *m_stats;
 
  private:
   unsigned m_supported_op;
@@ -2010,6 +2014,8 @@ struct shader_core_stats_pod {
   unsigned gpgpu_n_const_insn;
   unsigned gpgpu_n_param_insn;
   unsigned gpgpu_n_rt_insn;
+  unsigned *gpgpu_n_specialized;
+  unsigned *gpgpu_n_specialized_util;
   unsigned gpgpu_n_rt_access_insn;
   unsigned gpgpu_n_shmem_bkconflict;
   unsigned gpgpu_n_cache_bkconflict;
@@ -2219,6 +2225,9 @@ class shader_core_stats : public shader_core_stats_pod {
     rt_nrbox = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_nrxform = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_nrtri = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+
+    gpgpu_n_specialized = (unsigned *)calloc(TOTAL_RAYTRACE_OP, sizeof(unsigned));
+    gpgpu_n_specialized_util = (unsigned *)calloc(TOTAL_RAYTRACE_OP, sizeof(unsigned));
 
     unsigned n_fu = m_config->gpgpu_num_sp_units + m_config->gpgpu_num_dp_units +
       m_config->gpgpu_num_sfu_units + m_config->gpgpu_num_tensor_core_units +

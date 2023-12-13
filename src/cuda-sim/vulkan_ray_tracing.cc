@@ -1354,6 +1354,23 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
     GPGPU_Context()->func_sim->g_tot_nodes_per_ray += total_nodes_accessed;
 }
 
+void rt_ray_box_intersect(const ptx_instruction *pI, ptx_thread_info *thread) {
+
+    // Read input arguments
+    int arg = 0;
+    assert(0, "rt_ray_box_intersect not implemented yet\n");
+
+}
+
+void rt_ray_triangle_intersect(const ptx_instruction *pI, ptx_thread_info *thread) {
+
+    // Read input arguments
+    int arg = 0;
+    assert(0, "rt_ray_triangle_intersect not implemented yet\n");
+
+}
+
+
 std::ofstream print_tree;
 void traverse_tree(volatile uint8_t* address, bool isTopLevel = true, bool isLeaf = false, bool isRoot = true)
 {

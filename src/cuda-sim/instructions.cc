@@ -2222,7 +2222,27 @@ void call_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     rt_traverse_tree(pI, thread);
     return;
   }
-  
+
+  else if (fname.find("__RayBoxIntersect") != std::string::npos) {
+    unsigned n_return = target_func->has_return();
+    assert(n_return == 0);
+    unsigned n_args = target_func->num_args();
+    assert(n_args == 8);
+
+    rt_ray_box_intersect(pI, thread);
+    return;
+  }
+
+  else if (fname.find("__RayTriangleIntersect") != std::string::npos) {
+    unsigned n_return = target_func->has_return();
+    assert(n_return == 0);
+    unsigned n_args = target_func->num_args();
+    assert(n_args == 9);
+
+    rt_ray_triangle_intersect(pI, thread);
+    return;
+  }
+
 #if (CUDART_VERSION >= 5000)
   // Jin: handle device runtime apis for CDP
   else if (fname == "cudaGetParameterBufferV2") {
