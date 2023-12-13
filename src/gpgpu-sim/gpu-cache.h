@@ -1035,7 +1035,7 @@ class mshr_table {
   /// Returns next ready access
   mem_fetch *next_access();
   // Checks if next access it for ray tracing
-  bool next_access_rt();
+  bool clear_next_rt_access();
   void clear_rt_accesses();
   void display(FILE *fp) const;
   // Returns true if there is a pending read after write
@@ -1309,7 +1309,6 @@ class baseline_cache : public cache_t {
   /// Pop next ready access (does not include accesses that "HIT")
   mem_fetch *next_access() { return m_mshrs.next_access(); }
   /// Checks if next ready access is for the RT unit
-  bool next_access_rt() { return m_mshrs.next_access_rt(); }
   void clear_rt_accesses() { m_mshrs.clear_rt_accesses(); }
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }

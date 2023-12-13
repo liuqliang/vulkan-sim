@@ -3231,7 +3231,7 @@ void rt_unit::cycle() {
         }
       }
       assert(found);
-      delete mf;
+      if (mf->israytrace()) delete mf;
     }
 
     else {      
@@ -3240,14 +3240,16 @@ void rt_unit::cycle() {
       cacheline_count++;
                             
       // Update cache
-      if (!m_config->bypassL0Complet && !m_config->m_rt_perfect_mem) {
-        if (m_config->m_rt_use_l1d) {
-          L1D->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
-                          m_core->get_gpu()->gpu_tot_sim_cycle);
-        }
-        else {
-          m_L0_complet->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
+      if (mf->israytrace()) {
+        if (!m_config->bypassL0Complet && !m_config->m_rt_perfect_mem) {
+          if (m_config->m_rt_use_l1d) {
+            L1D->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
                             m_core->get_gpu()->gpu_tot_sim_cycle);
+          }
+          else {
+            m_L0_complet->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
+                              m_core->get_gpu()->gpu_tot_sim_cycle);
+          }
         }
       }
       
@@ -3455,10 +3457,12 @@ void rt_unit::process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg) {
       unsigned requester_thread_found = 0;
       for (auto it=response_mf.begin(); it!=response_mf.end(); ++it) {
         mem_fetch* response = *it;
-        // Check all the warps
-        for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); it++) {
-          if (it->second.warp_id() == response->get_wid()) {
-            requester_thread_found += it->second.process_returned_mem_access(mf);
+        if (response->israytrace()) {
+          // Check all the warps
+          for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); it++) {
+            if (it->second.warp_id() == response->get_wid()) {
+              requester_thread_found += it->second.process_returned_mem_access(mf);
+            }
           }
         }
       }
@@ -4055,14 +4059,11 @@ void ldst_unit::writeback() {
       case 4:
         if (m_L1D && m_L1D->access_ready()) {
           // Check if it's for RT unit or for LDST unit
-          if (!m_L1D->next_access_rt()) {
-            mem_fetch *mf = m_L1D->next_access();
-            if (!mf->israytrace()) {
-              m_next_wb = mf->get_inst();
-              delete mf;
-              serviced_client = next_client;
-            }
-          }
+          mem_fetch *mf = m_L1D->next_access();
+          assert(!mf->israytrace());
+          m_next_wb = mf->get_inst();
+          delete mf;
+          serviced_client = next_client;
         }
         break;
       default:
@@ -5500,11 +5501,62 @@ bool shader_core_ctx::ldst_unit_response_buffer_full() const {
 }
 
 void shader_core_ctx::accept_ldst_unit_response(mem_fetch *mf) {
-  // Go to rt_unit
-  if (mf->israytrace()) m_rt_unit->fill(mf);
-  
-  // Go to ldst_unit
-  else m_ldst_unit->fill(mf);
+  // Probe mshr
+  std::list<mem_fetch*> responses = m_ldst_unit->get_l1d()->probe_mshr(mf->get_addr());
+  std::list<mem_fetch*> rt_responses;
+
+  bool ldst = false;
+  // If mshr entry is empty. This probably should never happen. 
+  if (responses.empty()) {
+    // Go to rt_unit
+    if (mf->israytrace()) m_rt_unit->fill(mf);
+    
+    // Go to ldst_unit
+    else m_ldst_unit->fill(mf);
+  }
+
+  // Otherwise, figure out how to handle the responses
+  else {
+    for (auto it=responses.begin(); it!=responses.end(); ++it) {
+        mem_fetch* mf_response = *it;
+        if (mf_response->israytrace()) {
+          rt_responses.push_back(mf_response);
+        }
+        else {
+          ldst = true;
+        }
+    }
+
+    // If there are no raytrace responses, go to ldst_unit
+    if (rt_responses.empty()) {
+      m_ldst_unit->fill(mf);
+    }
+    else if (ldst) {
+      // This is the problematic case...
+      m_rt_unit->fill(mf);
+      // m_ldst_unit->fill(mf);
+      if (!mf->israytrace()) m_ldst_unit->fill(mf);
+    }
+    else {
+      // If there are only raytrace responses, go to rt_unit
+      m_rt_unit->fill(mf);
+    }
+
+  }
+
+
+  // else {
+  //   for (auto it=responses.begin(); it!=responses.end(); ++it) {
+  //       mem_fetch* mf_response = *it;
+  //       if (mf_response->israytrace()) {
+  //         m_rt_unit->fill(mf_response);
+  //       }
+  //       else {
+  //         m_ldst_unit->fill(mf_response);
+  //       }
+  //   }
+  // }
+
 }
 
 void shader_core_ctx::store_ack(class mem_fetch *mf) {

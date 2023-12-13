@@ -607,12 +607,31 @@ mem_fetch *mshr_table::next_access() {
   return result;
 }
 
-bool mshr_table::next_access_rt() {
+bool mshr_table::clear_next_rt_access() {
   assert(access_ready());
   new_addr_type block_addr = m_current_response.front();
   assert(!m_data[block_addr].m_list.empty());
-  mem_fetch *result = m_data[block_addr].m_list.front();
-  return result->israytrace();
+
+  std::list<mem_fetch *> ldst_list;
+
+  while (!m_data[block_addr].m_list.empty()) {
+    mem_fetch *mf = m_data[block_addr].m_list.front();
+    if (mf->israytrace()) {
+      delete mf;
+    } else {
+      ldst_list.push_back(mf);
+    }
+    m_data[block_addr].m_list.pop_front();
+  }
+
+  if (ldst_list.empty()) {
+    m_data.erase(block_addr);
+    return true;
+  }
+  else {
+    m_data[block_addr].m_list = ldst_list;
+    return false;
+  }
 }
 
 void mshr_table::clear_rt_accesses() {
@@ -620,17 +639,13 @@ void mshr_table::clear_rt_accesses() {
   std::list<new_addr_type> ldst_response_list;
 
   while (!m_current_response.empty()) {
-    bool is_raytrace = next_access_rt();
+    bool cleared = clear_next_rt_access();
 
-    if (is_raytrace) {
-      mem_fetch *mf = next_access();
-      delete mf;
-    }
-    // Move LDST responses out of the way
-    else {
+    // Still has LDST requests
+    if (!cleared) {
       ldst_response_list.push_back(m_current_response.front());
-      m_current_response.pop_front();
     }
+    m_current_response.pop_front();
   }
 
   // Once empty, all LDST responses are in ldst_response_list
@@ -1155,14 +1170,22 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
     assert(mf->get_original_mf());
     extra_mf_fields_lookup::iterator e =
         m_extra_mf_fields.find(mf->get_original_mf());
-    assert(e != m_extra_mf_fields.end());
-    e->second.pending_read--;
+    // assert(e != m_extra_mf_fields.end()); // This assertion is no longer valid because the mf can be from the mshr
+    
+    if (e != m_extra_mf_fields.end()) {
+      e->second.pending_read--;
 
-    if (e->second.pending_read > 0) {
-      // wait for the other requests to come back
-      delete mf;
-      return;
-    } else {
+      if (e->second.pending_read > 0) {
+        // wait for the other requests to come back
+        delete mf;
+        return;
+      } else {
+        mem_fetch *temp = mf;
+        mf = mf->get_original_mf();
+        delete temp;
+      }
+    }
+    else {
       mem_fetch *temp = mf;
       mf = mf->get_original_mf();
       delete temp;
@@ -1170,7 +1193,13 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   }
 
   extra_mf_fields_lookup::iterator e = m_extra_mf_fields.find(mf);
-  assert(e != m_extra_mf_fields.end());
+  // assert(e != m_extra_mf_fields.end());
+
+  // Assume that extra_mf_fields do not exist only if the memory address has already been processed or will be processed by another mf
+  if (e == m_extra_mf_fields.end()) {
+    return;
+  }
+
   assert(e->second.m_valid);
   mf->set_data_size(e->second.m_data_size);
   mf->set_addr(e->second.m_addr);
