@@ -97,6 +97,9 @@ namespace fs = boost::filesystem;
 // #include "lvp_image.h"
 #endif
 
+#define RCP_ERROR 0.0003662109375
+// #define INJECT_RCP_ERROR
+
 // #include "anv_include.h"
 
 VkRayTracingPipelineCreateInfoKHR* VulkanRayTracing::pCreateInfos = NULL;
@@ -211,6 +214,15 @@ float3 calculate_idir(float3 direction) {
     // idir.x = fabsf(direction.x) > ooeps ? 1.0f / direction.x : copysignf(ooeps, direction.x);
     // idir.y = fabsf(direction.y) > ooeps ? 1.0f / direction.y : copysignf(ooeps, direction.y);
     // idir.z = fabsf(direction.z) > ooeps ? 1.0f / direction.z : copysignf(ooeps, direction.z);
+
+    // Inject error
+    // random number between -error and error
+#ifdef INJECT_RCP_ERROR
+    float injection = (float)rand() / RAND_MAX * RCP_ERROR * 2 - RCP_ERROR + 1;
+    assert(injection >= (1 - RCP_ERROR) && injection <= (1 + RCP_ERROR));
+    idir = idir * injection;
+#endif
+
     return idir;
 }
 
@@ -251,6 +263,8 @@ btree_node read_btree_node(memory_space *mem, void* node_addr) {
     mem->read(node_addr, sizeof(uint32_t), &current_node.n_children);
     node_addr += sizeof(uint32_t);
     RT_DPRINTF("(%d children) %d: ", current_node.n_children, current_node.is_leaf);
+
+    assert(current_node.n_children <= 9);
 
     current_node.keys = (int *)calloc(current_node.n_children, sizeof(int));
     current_node.child_indices = (int *)calloc(current_node.n_children + 1, sizeof(int));
@@ -2434,6 +2448,12 @@ bool VulkanRayTracing::mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray
     float det = dot(v0v1, pvec);
 
     float idet = 1 / det;
+
+#ifdef INJECT_RCP_ERROR
+    float injection = (float)rand() / RAND_MAX * RCP_ERROR * 2 - RCP_ERROR + 1;
+    assert(injection >= (1 - RCP_ERROR) && injection <= (1 + RCP_ERROR));
+    idet = idet * injection;
+#endif
 
     float3 tvec = ray_properties.get_origin() - p0;
     float u = dot(tvec, pvec) * idet;
