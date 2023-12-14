@@ -121,6 +121,24 @@ typedef struct Vulkan_RT_thread_data {
         memory_space *mem = thread->get_global_memory();
         mem->write(address, sizeof(float3), &barycentric, thread, pI);
     }
+    
+    void set_sphereAttribute(float4 sphere, const ptx_instruction *pI, ptx_thread_info *thread) {
+        variable_decleration_entry* hitAttribute = get_hitAttribute();
+        float* address;
+        if(hitAttribute == NULL) {
+            address = (float*)add_variable_decleration_entry(nir_var_ray_hit_attrib, "attribs", 16);
+        }
+        else {
+            assert (hitAttribute->type == nir_var_ray_hit_attrib);
+            assert (hitAttribute->address != NULL);
+            // hitAttribute->name = name;
+            address = (float*)(hitAttribute->address);
+        }
+
+        memory_space *mem = thread->get_global_memory();
+        mem->write(address, sizeof(float4), &sphere, thread, pI);
+    }
+    
 } Vulkan_RT_thread_data;
 
 #endif /* VULKAN_RT_THREAD_DATA_H */

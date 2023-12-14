@@ -309,6 +309,8 @@ public:
     static void load_descriptor(const ptx_instruction *pI, ptx_thread_info *thread);
 
     static bool rtao_ray_triangle_test(float4 v00, float4 v11, float4 v22, Ray ray_properties, float* thit, float3* bary);
+    static bool raySphereIntersection(float4 sphere, Ray ray_properties, float* thit);
+    static bool pointSphereIntersection(float4 sphere, Ray ray_properties);
     static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
     static float3 Barycentric(float3 p, float3 a, float3 b, float3 c);
     
@@ -336,6 +338,7 @@ public:
     static void setDescriptor(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type);
     static void* getDescriptorAddress(uint32_t setID, uint32_t binding);
 
+    static void write_image_file(uint32_t width, uint32_t height, float hitValue_X, float hitValue_Y, float hitValue_Z, uint32_t pixelX, uint32_t pixelY, VkFormat img_format);
     static void image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_LaunchIDEXT_X, uint32_t gl_LaunchIDEXT_Y, uint32_t gl_LaunchIDEXT_Z, uint32_t gl_LaunchsIDEXT_W, 
               float hitValue_X, float hitValue_Y, float hitValue_Z, float hitValue_W, const ptx_instruction *pI, ptx_thread_info *thread);
     static void getTexture(struct DESCRIPTOR_STRUCT *desc, float x, float y, float lod, float &c0, float &c1, float &c2, float &c3, std::vector<ImageMemoryTransactionRecord>& transactions, uint64_t launcher_offset = 0);
