@@ -1411,7 +1411,6 @@ class rt_unit : public pipelined_simd_unit {
       mem_fetch* process_memory_access_queue(warp_inst_t &inst);
       void schedule_next_warp(warp_inst_t &inst);
       void memory_cycle(warp_inst_t &inst);
-      void track_func_unit_stats(unsigned* func_unit_activity);
                           
       virtual void process_cache_access(
             baseline_cache *cache, warp_inst_t &inst, mem_fetch *mf);
@@ -1441,7 +1440,7 @@ class rt_unit : public pipelined_simd_unit {
       Scoreboard *m_scoreboard;
 
       std::vector<rt_func_unit *> m_func_units;
-      std::map<int, std::deque<warp_thread_id> > m_func_q;
+      std::deque<warp_thread_id> m_func_q;
 
       std::deque<std::pair<unsigned, new_addr_type> > mem_store_q;
       
@@ -1715,35 +1714,56 @@ class shader_core_config : public core_config {
       std::sort(shmem_opt_list.begin(), shmem_opt_list.end());
     }
 
-    // Initialize RT unit latency delays
-    sscanf(m_rt_intersection_latency_str, "%u,%u,%u,%u,%u,%u,%u", 
-      &m_rt_intersection_latency[TransactionType::BVH_STRUCTURE],
-      &m_rt_intersection_latency[TransactionType::BVH_INTERNAL_NODE],
-      &m_rt_intersection_latency[TransactionType::BVH_INSTANCE_LEAF],
-      &m_rt_intersection_latency[TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR],
-      &m_rt_intersection_latency[TransactionType::BVH_QUAD_LEAF]);
-    m_rt_intersection_latency[TransactionType::BVH_PROCEDURAL_LEAF] = 0; // Handled in intersection shader
-    m_rt_intersection_latency[TransactionType::WRITE_TRAVERSAL_RESULT] = 0; // Nothing happens after writing the result
-    m_rt_intersection_latency[TransactionType::Intersection_Table_Load] = 1;
-    m_rt_intersection_latency[TransactionType::BVH_QUAD_LEAF_HIT] = m_rt_intersection_latency[TransactionType::BVH_QUAD_LEAF];
-    
-    sscanf(m_rt_n_units_str, "%u,%u,%u,%u", 
-      &m_rt_n_units[TransactionType::BVH_STRUCTURE],
-      &m_rt_n_units[TransactionType::BVH_INTERNAL_NODE],
-      &m_rt_n_units[TransactionType::BVH_INSTANCE_LEAF],
-      &m_rt_n_units[TransactionType::BVH_QUAD_LEAF]);
 
-    sscanf(m_rt_init_cycles_str, "%u,%u,%u,%u", 
-      &m_rt_init_cycles[TransactionType::BVH_STRUCTURE],
-      &m_rt_init_cycles[TransactionType::BVH_INTERNAL_NODE],
-      &m_rt_init_cycles[TransactionType::BVH_INSTANCE_LEAF],
-      &m_rt_init_cycles[TransactionType::BVH_QUAD_LEAF]);
+    // Get the RT func unit configuration
+    std::stringstream latency_ss(m_rt_intersection_latency_str);
+
+    unsigned parsed_count = 0;
+    for (unsigned i; latency_ss >> i;) {
+      m_rt_func_unit_config.latency[parsed_count] = i;
+      parsed_count++;
+      if (latency_ss.peek() == ',') {
+        latency_ss.ignore();
+      }
+      if (parsed_count == static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE)) {
+        break;
+      }
+    }
+
+    std::stringstream n_unit_ss(m_rt_n_units_str);
+    parsed_count = 0;
+    for (unsigned i; n_unit_ss >> i;) {
+      m_rt_func_unit_config.n_units[parsed_count] = i;
+      parsed_count++;
+      if (n_unit_ss.peek() == ',') {
+        n_unit_ss.ignore();
+      }
+      if (parsed_count == static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE)) {
+        break;
+      }
+    }
+
+    std::stringstream init_ss(m_rt_init_cycles_str);
+    parsed_count = 0;
+    for (unsigned i; init_ss >> i;) {
+      m_rt_func_unit_config.initiation_cycles[parsed_count] = i;
+      parsed_count++;
+      if (init_ss.peek() == ',') {
+        init_ss.ignore();
+      }
+      if (parsed_count == static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE)) {
+        break;
+      }
+    }
 
     printf("RT UNIT configured with: \n");
-    printf("\t%d decode units (%d cycles)\n", m_rt_n_units[TransactionType::BVH_STRUCTURE], m_rt_init_cycles[TransactionType::BVH_STRUCTURE]);
-    printf("\t%d ray-box units (%d cycles)\n", m_rt_n_units[TransactionType::BVH_INTERNAL_NODE], m_rt_init_cycles[TransactionType::BVH_INTERNAL_NODE]);
-    printf("\t%d ray-xform units (%d cycles)\n", m_rt_n_units[TransactionType::BVH_INSTANCE_LEAF], m_rt_init_cycles[TransactionType::BVH_INSTANCE_LEAF]);
-    printf("\t%d ray-tri units (%d cycles)\n", m_rt_n_units[TransactionType::BVH_QUAD_LEAF], m_rt_init_cycles[TransactionType::BVH_QUAD_LEAF]);
+    printf("\t<latency, n_units, init_cycles>\n");
+    for (unsigned i=0; i<static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE); i++) {
+      printf("\t%3u, %3u, %3u\n", 
+        m_rt_func_unit_config.latency[i],
+        m_rt_func_unit_config.n_units[i],
+        m_rt_func_unit_config.initiation_cycles[i]);
+    }
 
     sscanf(m_rt_coherence_engine_config_str, "%u,%u,%u,%c,%u,%u,%u,%f", 
       &m_rt_coherence_engine_config.max_cycles,
@@ -1995,10 +2015,6 @@ struct shader_core_stats_pod {
   unsigned *rt_nthreads;
   unsigned *rt_naccesses;
   unsigned *rt_nthreads_intersection;
-  unsigned *rt_ndecode;
-  unsigned *rt_nrbox;
-  unsigned *rt_nrxform;
-  unsigned *rt_nrtri;
   unsigned *rt_max_coalesce;
   unsigned *rt_mshr_size;
   unsigned rt_mshr_size_total;
@@ -2066,7 +2082,7 @@ struct shader_core_stats_pod {
   unsigned long long rt_total_cycles_sum = 0;
   unsigned long long rt_writes;
   unsigned rt_max_store_q;
-  unsigned rt_max_func_q[4] = {};
+  unsigned rt_max_func_q;
   unsigned *rt_mem_store_q_cycles;
   unsigned *rt_func_q_cycles;
   unsigned *rt_func_active_cycles;
@@ -2085,6 +2101,7 @@ struct shader_core_stats_pod {
   }
 
   coherence_stats **rt_coherence_stats;
+  func_unit_stats **rt_func_unit_stats;
 
   int gpgpu_n_mem_l2_writeback;
   int gpgpu_n_mem_l1_write_allocate;
@@ -2210,8 +2227,8 @@ class shader_core_stats : public shader_core_stats_pod {
     m_n_diverge = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     
     rt_mem_store_q_cycles = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    rt_func_active_cycles = (unsigned *)calloc(config->num_shader() * 4, sizeof(unsigned));
-    rt_func_q_cycles = (unsigned *)calloc(config->num_shader() * 4, sizeof(unsigned));
+    rt_func_active_cycles = (unsigned *)calloc(config->num_shader() * config->m_rt_func_units, sizeof(unsigned));
+    rt_func_q_cycles = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_total_cycles = (unsigned long long *)calloc(config->num_shader(), sizeof(unsigned long long));
     rt_total_cacheline_fetched = (unsigned long long *)calloc(config->num_shader(), sizeof(unsigned long long));
     rt_total_intersection_stages = (unsigned long long *)calloc(config->num_shader(), sizeof(unsigned long long));
@@ -2221,10 +2238,6 @@ class shader_core_stats : public shader_core_stats_pod {
     rt_max_coalesce = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_mshr_size = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_nthreads_intersection = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    rt_ndecode = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    rt_nrbox = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    rt_nrxform = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    rt_nrtri = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
 
     gpgpu_n_specialized = (unsigned *)calloc(TOTAL_RAYTRACE_OP, sizeof(unsigned));
     gpgpu_n_specialized_util = (unsigned *)calloc(TOTAL_RAYTRACE_OP, sizeof(unsigned));
@@ -2249,6 +2262,11 @@ class shader_core_stats : public shader_core_stats_pod {
       rt_coherence_stats[i] = new coherence_stats();
     }
     
+    rt_func_unit_stats = (func_unit_stats **)calloc(config->num_shader(), sizeof(func_unit_stats *));
+    for (unsigned i=0; i<config->num_shader(); i++) {
+      rt_func_unit_stats[i] = new func_unit_stats(config->m_rt_func_units);
+    }
+
     shader_cycle_distro =
         (unsigned *)calloc(config->warp_size + 3, sizeof(unsigned));
     last_shader_cycle_distro =

@@ -1167,6 +1167,110 @@ bool rt_accept_criteria(unsigned leaf_type, TreeSearchResults result, TreeSearch
     }
 }
 
+void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_processing_configuration, ptx_thread_info *thread)
+{
+    bool func_type = GPGPU_Context()->func_sim->g_rt_func_type;
+
+    printf("Setting op sequence for %s\n", func_type ? "individual RTAx units" : "fixed-function RTA");
+
+    // RTAx
+    if (func_type) {
+        switch (node_processing_configuration) {
+            // Normal ray tracing
+            case 0: {
+                std::queue<RTFuncInsnType> ray_box_ops;
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                ray_box_ops.push(RTFuncInsnType::RT_RCP);
+                ray_box_ops.push(RTFuncInsnType::RT_RCP);
+                ray_box_ops.push(RTFuncInsnType::RT_RCP);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MAXMIN);
+                ray_box_ops.push(RTFuncInsnType::RT_MINMAX);
+                ray_box_ops.push(RTFuncInsnType::RT_MAXMIN);
+                ray_box_ops.push(RTFuncInsnType::RT_MINMAX);
+                ray_box_ops.push(RTFuncInsnType::RT_MAXMIN);
+                ray_box_ops.push(RTFuncInsnType::RT_MINMAX);
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_CMP);
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_OR);
+                thread->set_rt_op_sequence(ray_box_ops, TransactionType::BVH_INTERNAL_NODE);
+
+                std::queue<RTFuncInsnType> ray_tri_ops;
+                ray_tri_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                ray_tri_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                ray_tri_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                ray_tri_ops.push(RTFuncInsnType::RT_CROSS);
+                ray_tri_ops.push(RTFuncInsnType::RT_CROSS);
+                ray_tri_ops.push(RTFuncInsnType::RT_DOT);
+                ray_tri_ops.push(RTFuncInsnType::RT_DOT);
+                ray_tri_ops.push(RTFuncInsnType::RT_DOT);
+                ray_tri_ops.push(RTFuncInsnType::RT_RCP);
+                ray_tri_ops.push(RTFuncInsnType::RT_MUL);
+                ray_tri_ops.push(RTFuncInsnType::RT_MUL);
+                ray_tri_ops.push(RTFuncInsnType::RT_DOT);
+                ray_tri_ops.push(RTFuncInsnType::RT_VEC_CMP);
+                ray_tri_ops.push(RTFuncInsnType::RT_VEC_CMP);
+                ray_tri_ops.push(RTFuncInsnType::RT_MUL);
+                ray_tri_ops.push(RTFuncInsnType::RT_VEC_OR);
+                ray_tri_ops.push(RTFuncInsnType::RT_VEC_OR);
+                thread->set_rt_op_sequence(ray_tri_ops, TransactionType::BVH_QUAD_LEAF);
+                thread->set_rt_op_sequence(ray_tri_ops, TransactionType::BVH_QUAD_LEAF_HIT);
+
+                std::queue<RTFuncInsnType> ray_xform_ops;
+                ray_xform_ops.push(RTFuncInsnType::RT_RAY_XFORM_FUNC_OP);
+                thread->set_rt_op_sequence(ray_xform_ops, TransactionType::BVH_INSTANCE_LEAF);
+
+                std::queue<RTFuncInsnType> ray_decode_ops;
+                ray_decode_ops.push(RTFuncInsnType::RT_DECODE);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_STRUCTURE);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR);
+                break;
+            }
+            default: {
+                printf("gpgpusim: ERROR! Unrecognized node type %d.\n", node_processing_configuration);
+                abort();
+            }
+        }
+    }
+
+    // RTA fixed-function
+    else {
+        switch (node_processing_configuration) {
+            case 0: {
+                std::queue<RTFuncInsnType> ray_box_ops;
+                ray_box_ops.push(RTFuncInsnType::RT_RAY_BOX_FUNC_OP);
+                thread->set_rt_op_sequence(ray_box_ops, TransactionType::BVH_INTERNAL_NODE);
+
+                std::queue<RTFuncInsnType> ray_tri_ops;
+                ray_tri_ops.push(RTFuncInsnType::RT_RAY_TRI_FUNC_OP);
+                thread->set_rt_op_sequence(ray_tri_ops, TransactionType::BVH_QUAD_LEAF);
+                thread->set_rt_op_sequence(ray_tri_ops, TransactionType::BVH_QUAD_LEAF_HIT);
+
+                std::queue<RTFuncInsnType> ray_xform_ops;
+                ray_xform_ops.push(RTFuncInsnType::RT_RAY_XFORM_FUNC_OP);
+                thread->set_rt_op_sequence(ray_xform_ops, TransactionType::BVH_INSTANCE_LEAF);
+
+                std::queue<RTFuncInsnType> ray_decode_ops;
+                ray_decode_ops.push(RTFuncInsnType::RT_DECODE);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_STRUCTURE);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR);
+
+                break;
+            }
+            default: {
+                printf("gpgpusim: ERROR! Unrecognized node type %d.\n", node_processing_configuration);
+                abort();
+            }
+        }
+    }
+    return;
+}
+
 // General purpose tree traversal
 void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
 {
@@ -1353,6 +1457,8 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
         GPGPU_Context()->func_sim->g_max_nodes_per_ray = total_nodes_accessed;
     }
     GPGPU_Context()->func_sim->g_tot_nodes_per_ray += total_nodes_accessed;
+
+    set_op_sequence(node_processing_configuration, leaf_processing_configuration, thread);
 }
 
 void rt_ray_box_intersect(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -2291,6 +2397,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     for (auto t : transactions) {
         RT_DPRINTF("\ttransaction %d, address %p, size %d\n", t.type, t.address, t.size);
     }
+
+    set_op_sequence(0, 0, thread);
 }
 
 void VulkanRayTracing::endTraceRay(const ptx_instruction *pI, ptx_thread_info *thread)

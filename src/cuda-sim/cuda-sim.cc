@@ -2148,6 +2148,13 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       inst.set_rt_mem_transactions(lane_id, RT_transactions);
       inst.set_rt_mem_store_transactions(lane_id, RT_store_transactions);
       inst.set_rt_ray_properties(lane_id, m_ray);
+
+      // Set op sequences
+      for (auto it=RT_op_sequences.begin(); it!=RT_op_sequences.end(); ++it) {
+        if (it->second.size() > 0) {
+          inst.set_rt_op_sequence(lane_id, it->second, it->first);
+        }
+      }
       
       // Set memory space
       insn_space.set_type(global_space);

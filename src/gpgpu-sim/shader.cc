@@ -841,12 +841,14 @@ void shader_core_stats::print(FILE *fout) const {
   }
   fprintf(fout, "\n");
 
+  fprintf(fout, "rt_max_func_q = %d\n", rt_max_func_q);
+
   // Func unit stats
   fprintf(fout, "rt_func_active_cycles:");
   for (unsigned i=0; i<m_config->num_shader(); i++) {
     fprintf(fout, "\t[");
-    for (unsigned j=0; j<4; j++) {
-      fprintf(fout, " %d", rt_func_active_cycles[i*4+j]);
+    for (unsigned j=0; j<m_config->m_rt_func_units; j++) {
+      fprintf(fout, " %d", rt_func_active_cycles[i*m_config->m_rt_func_units+j]);
     }
     fprintf(fout, "]");
   }
@@ -854,19 +856,16 @@ void shader_core_stats::print(FILE *fout) const {
 
   fprintf(fout, "rt_func_q_cycles:");
   for (unsigned i=0; i<m_config->num_shader(); i++) {
-    fprintf(fout, "\t[");
-    for (unsigned j=0; j<4; j++) {
-      fprintf(fout, " %d", rt_func_q_cycles[i*4+j]);
-    }
-    fprintf(fout, "]");
+    fprintf(fout, " %d", rt_func_q_cycles[i]);
   }
   fprintf(fout, "\n");
 
-  fprintf(fout, "rt_max_func_q[decode] = %d\n", rt_max_func_q[0]);
-  fprintf(fout, "rt_max_func_q[ray-box] = %d\n", rt_max_func_q[1]);
-  fprintf(fout, "rt_max_func_q[ray-xform] = %d\n", rt_max_func_q[2]);
-  fprintf(fout, "rt_max_func_q[ray-tri] = %d\n", rt_max_func_q[3]);
-
+  // Func Unit Stats
+  for (unsigned i=0; i<m_config->num_shader(); i++) {
+    fprintf(fout, "===========rt_func_unit[%d]===========\n", i);
+    rt_func_unit_stats[i]->print(fout);
+    fprintf(fout, "---------------------------------------------\n");
+  }
 
   if (m_config->m_rt_coherence_engine) {
     for (unsigned i=0; i<m_config->num_shader(); i++) {
@@ -1146,23 +1145,6 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
   gzprintf(visualizer_file, "rt_nthreads_intersection:  ");
   for (unsigned i = 0; i < m_config->num_shader(); i++)
     gzprintf(visualizer_file, "%u ", rt_nthreads_intersection[i]);
-  gzprintf(visualizer_file, "\n");
-
-  gzprintf(visualizer_file, "rt_ndecode:  ");
-  for (unsigned i = 0; i < m_config->num_shader(); i++)
-    gzprintf(visualizer_file, "%u ", rt_ndecode[i]);
-  gzprintf(visualizer_file, "\n");
-  gzprintf(visualizer_file, "rt_nrbox:  ");
-  for (unsigned i = 0; i < m_config->num_shader(); i++)
-    gzprintf(visualizer_file, "%u ", rt_nrbox[i]);
-  gzprintf(visualizer_file, "\n");
-  gzprintf(visualizer_file, "rt_nrxform:  ");
-  for (unsigned i = 0; i < m_config->num_shader(); i++)
-    gzprintf(visualizer_file, "%u ", rt_nrxform[i]);
-  gzprintf(visualizer_file, "\n");
-  gzprintf(visualizer_file, "rt_nrtri:  ");
-  for (unsigned i = 0; i < m_config->num_shader(); i++)
-    gzprintf(visualizer_file, "%u ", rt_nrtri[i]);
   gzprintf(visualizer_file, "\n");
 
   gzprintf(visualizer_file, "rt_mem_requests: %u\n", rt_mem_requests);
@@ -3014,21 +2996,9 @@ rt_unit::rt_unit(mem_fetch_interface *icnt,
   m_mem_rc = NO_RC_FAIL;
   m_name = "RT_CORE";
 
-  rt_func_unit_config inner_node_config = {TransactionType::BVH_INTERNAL_NODE, config->m_rt_init_cycles.at(TransactionType::BVH_INTERNAL_NODE)};
-  for (unsigned i=0; i<config->m_rt_n_units.at(TransactionType::BVH_INTERNAL_NODE); i++) {
-    m_func_units.push_back(new rt_func_unit(m_sid, inner_node_config));
-  }
-  rt_func_unit_config leaf_node_config = {TransactionType::BVH_QUAD_LEAF, config->m_rt_init_cycles.at(TransactionType::BVH_QUAD_LEAF)};
-  for (unsigned i=0; i<config->m_rt_n_units.at(TransactionType::BVH_QUAD_LEAF); i++) {
-    m_func_units.push_back(new rt_func_unit(m_sid, leaf_node_config));
-  }
-  rt_func_unit_config decode_config = {TransactionType::BVH_STRUCTURE, config->m_rt_init_cycles.at(TransactionType::BVH_STRUCTURE)};
-  for (unsigned i=0; i<config->m_rt_n_units.at(TransactionType::BVH_STRUCTURE); i++) {
-    m_func_units.push_back(new rt_func_unit(m_sid, decode_config));
-  }
-  rt_func_unit_config transform_config = {TransactionType::BVH_INSTANCE_LEAF, config->m_rt_init_cycles.at(TransactionType::BVH_INSTANCE_LEAF)};
-  for (unsigned i=0; i<config->m_rt_n_units.at(TransactionType::BVH_INSTANCE_LEAF); i++) {
-    m_func_units.push_back(new rt_func_unit(m_sid, transform_config));
+  // Create N functional units
+  for (unsigned i=0; i<config->m_rt_func_units; i++) {
+    m_func_units.push_back(new rt_func_unit(m_sid, config->m_rt_func_unit_config, m_stats->rt_func_unit_stats[sid], i));
   }
   
 }
@@ -3059,47 +3029,6 @@ unsigned rt_unit::active_warps() {
     warp_ids.insert(warp_id);
   }
   return warp_ids.size();
-}
-
-void rt_unit::track_func_unit_stats(unsigned* func_unit_activity) {
-  if (m_func_q[(int)TransactionType::BVH_STRUCTURE].size() > m_stats->rt_max_func_q[0]) {
-    m_stats->rt_max_func_q[0] = m_func_q[(int)TransactionType::BVH_STRUCTURE].size();
-  }
-  if (m_func_q[(int)TransactionType::BVH_INTERNAL_NODE].size() > m_stats->rt_max_func_q[1]) {
-    m_stats->rt_max_func_q[1] = m_func_q[(int)TransactionType::BVH_INTERNAL_NODE].size();
-  }
-  if (m_func_q[(int)TransactionType::BVH_INSTANCE_LEAF].size() > m_stats->rt_max_func_q[2]) {
-    m_stats->rt_max_func_q[2] = m_func_q[(int)TransactionType::BVH_INSTANCE_LEAF].size();
-  }
-  if (m_func_q[(int)TransactionType::BVH_QUAD_LEAF].size() > m_stats->rt_max_func_q[3]) {
-    m_stats->rt_max_func_q[3] = m_func_q[(int)TransactionType::BVH_QUAD_LEAF].size();
-  }
-
-  if (!m_func_q[(int)TransactionType::BVH_STRUCTURE].empty()) {
-    m_stats->rt_func_q_cycles[m_sid * 4 + 0]++;
-  }
-  if (!m_func_q[(int)TransactionType::BVH_INTERNAL_NODE].empty()) {
-    m_stats->rt_func_q_cycles[m_sid * 4 + 1]++;
-  }
-  if (!m_func_q[(int)TransactionType::BVH_INSTANCE_LEAF].empty()) {
-    m_stats->rt_func_q_cycles[m_sid * 4 + 2]++;
-  }
-  if (!m_func_q[(int)TransactionType::BVH_QUAD_LEAF].empty()) {
-    m_stats->rt_func_q_cycles[m_sid * 4 + 3]++;
-  }
-
-  if (func_unit_activity[(int)TransactionType::BVH_STRUCTURE] > 0) {
-    m_stats->rt_func_active_cycles[m_sid * 4 + 0]++;
-  }
-  if (func_unit_activity[(int)TransactionType::BVH_INTERNAL_NODE] > 0) {
-    m_stats->rt_func_active_cycles[m_sid * 4 + 1]++;
-  }
-  if (func_unit_activity[(int)TransactionType::BVH_INSTANCE_LEAF] > 0) {
-    m_stats->rt_func_active_cycles[m_sid * 4 + 2]++;
-  }
-  if (func_unit_activity[(int)TransactionType::BVH_QUAD_LEAF] > 0) {
-    m_stats->rt_func_active_cycles[m_sid * 4 + 3]++;
-  }
 }
 
 void rt_unit::cycle() {
@@ -3150,12 +3079,20 @@ void rt_unit::cycle() {
   
   // Cycle intersection tests + get stats
   unsigned n_threads = 0;
-  unsigned func_unit_activity[(int)TransactionType::UNDEFINED] = {};
   for (unsigned i=0; i<m_func_units.size(); i++) {
-    int func_type = m_func_units[i]->get_type();
-    m_func_units[i]->cycle(m_current_warps, m_func_q[func_type], mem_store_q);
-    n_threads += m_func_units[i]->count_in_progress();
-    func_unit_activity[func_type] += m_func_units[i]->count_in_progress();
+    m_func_units[i]->cycle(m_current_warps, m_func_q, mem_store_q);
+    unsigned in_progress_threads = m_func_units[i]->count_in_progress();
+    if (in_progress_threads > 0) {
+      m_stats->rt_func_active_cycles[m_sid * m_config->m_rt_func_units + i]++;
+    }
+    n_threads += in_progress_threads;
+  }
+
+  if (m_func_q.size() > 0) {
+    m_stats->rt_func_q_cycles[m_sid]++;
+    if (m_func_q.size() > m_stats->rt_max_func_q) {
+      m_stats->rt_max_func_q = m_func_q.size();
+    }
   }
 
   unsigned active_threads = 0;
@@ -3169,7 +3106,6 @@ void rt_unit::cycle() {
   assert(n_threads <= (m_config->warp_size * m_config->m_rt_max_warps));
   m_stats->rt_total_intersection_stages[m_sid] += n_threads;
   
-  track_func_unit_stats(func_unit_activity);
   if (mem_store_q.size() > m_stats->rt_max_store_q) {
     m_stats->rt_max_store_q = mem_store_q.size();
   }
@@ -3186,10 +3122,6 @@ void rt_unit::cycle() {
   m_stats->rt_nthreads[m_sid] = active_threads;
   m_stats->rt_naccesses[m_sid] = addr_set.size();
   m_stats->rt_nthreads_intersection[m_sid] = n_threads;
-  m_stats->rt_ndecode[m_sid] = func_unit_activity[(int)TransactionType::BVH_STRUCTURE];
-  m_stats->rt_nrbox[m_sid] = func_unit_activity[(int)TransactionType::BVH_INTERNAL_NODE];
-  m_stats->rt_nrxform[m_sid] = func_unit_activity[(int)TransactionType::BVH_INSTANCE_LEAF];
-  m_stats->rt_nrtri[m_sid] = func_unit_activity[(int)TransactionType::BVH_QUAD_LEAF];
 
   unsigned max = 0;
   for (auto it=addr_set.begin(); it!=addr_set.end(); it++) {
@@ -3398,8 +3330,8 @@ void rt_unit::process_intersection_threads(warp_inst_t& inst) {
   unsigned warp_uid = inst.get_uid();
 
   for (auto t=threads.begin(); t<threads.end(); t++) {
-    RT_DPRINTF("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
-    m_func_q[t->first].push_back({warp_uid, t->second});
+    printf("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
+    m_func_q.push_back({warp_uid, t->second});
   }
 
   process_intersection_threads();
@@ -3413,8 +3345,8 @@ void rt_unit::process_intersection_threads() {
     unsigned warp_uid = it->first;
 
     for (auto t=threads.begin(); t<threads.end(); t++) {
-      RT_DPRINTF("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
-      m_func_q[t->first].push_back({warp_uid, t->second});
+      printf("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
+      m_func_q.push_back({warp_uid, t->second});
     }
   }
 }

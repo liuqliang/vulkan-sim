@@ -223,6 +223,31 @@ enum class StoreTransactionType {
     Traversal_Results,
 };
 
+enum RTFuncInsnType {
+    RT_DECODE = 0,
+    RT_VEC_SUB,
+    RT_RCP,
+    RT_MUL,
+    RT_MAXMIN,
+    RT_MINMAX,
+    RT_VEC_CMP,
+    RT_VEC_OR,
+    RT_CROSS,
+    RT_DOT,
+    RT_SQRT,
+    RT_RAY_BOX_FUNC_OP,
+    RT_RAY_TRI_FUNC_OP,
+    RT_RAY_XFORM_FUNC_OP,
+    RT_MAX_INSN_TYPE
+};
+
+
+typedef struct rt_func_unit_config {
+    unsigned n_units[static_cast<int>(RT_MAX_INSN_TYPE)];
+    unsigned initiation_cycles[static_cast<int>(RT_MAX_INSN_TYPE)];
+    unsigned latency[static_cast<int>(RT_MAX_INSN_TYPE)];
+} rt_func_unit_config;
+
 struct ray_coherence_config {
   unsigned max_cycles;
   unsigned min_rays;
@@ -605,12 +630,13 @@ class core_config {
   bool gmem_skip_L1D;  // on = global memory access always skip the L1 cache
 
   bool adaptive_cache_config;
-  std::map<TransactionType, unsigned> m_rt_intersection_latency;
-  std::map<TransactionType, unsigned> m_rt_n_units;
-  std::map<TransactionType, unsigned> m_rt_init_cycles;
+  unsigned m_rt_func_units;
   char *m_rt_intersection_latency_str;
   char *m_rt_n_units_str;
   char *m_rt_init_cycles_str;
+
+  rt_func_unit_config m_rt_func_unit_config;
+
 };
 
 // bounded stack that implements simt reconvergence using pdom mechanism from
@@ -1543,9 +1569,11 @@ class warp_inst_t : public inst_t {
     // RT variables    
     std::deque<RTMemoryTransactionRecord> RT_mem_accesses;
     std::vector<MemoryStoreTransactionRecord> RT_store_transactions;
+    std::map<int, std::queue<RTFuncInsnType> > RT_op_seq;
     bool ray_intersect = false;
     Ray ray_properties;
-    unsigned intersection_delay;
+    std::queue<RTFuncInsnType> intersection_ops;
+    TransactionType current_intersection_type;
     unsigned long long end_cycle;
     unsigned status_num_cycles[warp_statuses][ray_statuses] = {};
     unsigned m_uid;
@@ -1557,9 +1585,11 @@ class warp_inst_t : public inst_t {
   // RT functions
   void set_rt_mem_transactions(unsigned int tid, std::vector<MemoryTransactionRecord> transactions);
   void set_rt_mem_store_transactions(unsigned int tid, std::vector<MemoryStoreTransactionRecord>& transactions);
+  void set_rt_op_sequence(unsigned int tid, std::queue<RTFuncInsnType> op_seq, int node_type);
   void set_rt_ray_properties(unsigned int tid, Ray ray);
   bool get_rt_ray_intersect(unsigned int tid) const { return m_per_scalar_thread[tid].ray_intersect; }
   Ray get_rt_ray_properties(unsigned int tid) const { return m_per_scalar_thread[tid].ray_properties; }
+  TransactionType get_current_transaction_type(unsigned int tid) const { return m_per_scalar_thread[tid].current_intersection_type; }
   bool rt_mem_accesses_empty();
   bool rt_intersection_delay_done();
   bool has_pending_writes() { return !m_pending_writes.empty(); }
@@ -1585,9 +1615,10 @@ class warp_inst_t : public inst_t {
   struct per_thread_info get_thread_info(unsigned tid) { return m_per_scalar_thread[tid]; }
   void set_thread_info(unsigned tid, struct per_thread_info thread_info) { m_per_scalar_thread[tid] = thread_info; }
   void clear_thread_info(unsigned tid) { m_per_scalar_thread[tid].clear_mem_accesses(); }
-  unsigned get_thread_latency(unsigned tid) const { return m_per_scalar_thread[tid].intersection_delay; }
+  unsigned get_thread_latency(unsigned tid) const { return m_per_scalar_thread[tid].intersection_ops.size(); }
   unsigned dec_thread_latency(std::deque<std::pair<unsigned, new_addr_type> > &store_queue);
   bool dec_thread_latency(unsigned tid);
+  RTFuncInsnType get_next_op(unsigned tid);
   void track_rt_cycles(bool active);
   std::deque<std::pair<unsigned, new_addr_type> > check_stores(unsigned tid);
   bool check_pending_writes(new_addr_type addr);

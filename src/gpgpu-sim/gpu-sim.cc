@@ -374,16 +374,20 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "try to coalesce memory requests between warps ",
       "0");
   option_parser_register(
+      opp, "-gpgpu_rt_func_units", OPT_UINT32, &m_rt_func_units,
+      "number of RTA functional units ",
+      "4");
+  option_parser_register(
       opp, "-gpgpu_rt_intersection_latency", OPT_CSTR, &m_rt_intersection_latency_str,
-      "latency of pipelined intersection tests <bvh, internal node, instance leaf, leaf desc, leaf> ",
+      "latency of pipelined intersection tests by op type ",
       "2,4,4,2,8");
   option_parser_register(
       opp, "-gpgpu_rt_n_func_units", OPT_CSTR, &m_rt_n_units_str,
-      "number of rt functional units <decode, ray-box, ray-xform, ray-tri> ",
+      "number of rt functional units by op type ",
       "32,32,32,32");
   option_parser_register(
       opp, "-gpgpu_rt_init_cycles", OPT_CSTR, &m_rt_init_cycles_str,
-      "initiation cycles for rt func units <decode, ray-box, ray-xform, ray-tri> ",
+      "initiation cycles for rt func units by op type ",
       "2,2,2,2");
   option_parser_register(
       opp, "-gpgpu_rt_intersection_table_type", OPT_UINT32, &m_rt_intersection_table_type,
@@ -773,6 +777,10 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
       opp, "-gpgpu_rt_traversal_key", OPT_INT32,
       &(gpgpu_ctx->func_sim->g_rt_traversal_key),
       "Choose the traversal order preference", "0");
+  option_parser_register(
+      opp, "-gpgpu_rt_func_type", OPT_BOOL,
+      &(gpgpu_ctx->func_sim->g_rt_func_type),
+      "Choose between RTA and RTAx", "0");
   option_parser_register(opp, "-gpgpu_clock_domains", OPT_CSTR,
                          &gpgpu_clock_domains,
                          "Clock Domain Frequencies in MhZ {<Core Clock>:<ICNT "

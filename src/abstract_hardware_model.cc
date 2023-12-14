@@ -55,7 +55,7 @@ warp_inst_t::per_thread_info::per_thread_info() {
   for (unsigned i = 0; i < MAX_ACCESSES_PER_INSN_PER_THREAD; i++)
     memreqaddr[i] = 0;
     
-    intersection_delay = 0;
+    intersection_ops = std::queue<RTFuncInsnType>();
     end_cycle = 0;
 }
 warp_inst_t::per_thread_info::~per_thread_info() {
@@ -853,7 +853,7 @@ void warp_inst_t::print_rt_accesses() {
 void warp_inst_t::print_intersection_delay() {
   RT_DPRINTF("Intersection Delays: [");
   for (unsigned i=0; i<m_config->warp_size; i++) {
-    RT_DPRINTF("%d\t", m_per_scalar_thread[i].intersection_delay);
+    RT_DPRINTF("%d\t", m_per_scalar_thread[i].intersection_ops.size());
   }
   RT_DPRINTF("\n");
 }
@@ -869,17 +869,30 @@ bool warp_inst_t::check_pending_writes(new_addr_type addr) {
 }
 
 bool warp_inst_t::dec_thread_latency(unsigned tid) {
-  assert(m_per_scalar_thread[tid].intersection_delay > 0);
-  m_per_scalar_thread[tid].intersection_delay--;
-  if (m_per_scalar_thread[tid].intersection_delay == 0) {
+  assert(m_per_scalar_thread[tid].intersection_ops.size() > 0);
+  m_per_scalar_thread[tid].intersection_ops.pop();
+  if (m_per_scalar_thread[tid].intersection_ops.size() == 0) {
+
+    // If the RT_mem_accesses is now empty, then the last memory request has returned and the thread is almost done
+    if (m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
+      unsigned long long current_cycle =  GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle +
+                                          GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+      m_per_scalar_thread[tid].end_cycle = current_cycle;
+    }
+
     return true;
   }
   return false;
 }
 
+RTFuncInsnType warp_inst_t::get_next_op(unsigned tid) {
+  assert(m_per_scalar_thread[tid].intersection_ops.size() > 0);
+  return m_per_scalar_thread[tid].intersection_ops.front();
+}
+
 std::deque<std::pair<unsigned, new_addr_type> > warp_inst_t::check_stores(unsigned tid) {
   std::deque<std::pair<unsigned, new_addr_type> > store_queue;
-  assert(m_per_scalar_thread[tid].intersection_delay == 0);
+  assert(m_per_scalar_thread[tid].intersection_ops.size() == 0);
 
   if (m_per_scalar_thread[tid].ray_intersect) {
         // Temporary size
@@ -901,6 +914,14 @@ std::deque<std::pair<unsigned, new_addr_type> > warp_inst_t::check_stores(unsign
       store_queue.push_back(std::pair<unsigned, new_addr_type>(m_uid, addr));
       m_pending_writes.insert(addr);
       m_per_scalar_thread[tid].RT_mem_accesses.pop_front();
+
+      // If the RT_mem_accesses is now empty, then the last memory request has returned and the thread is almost done
+      if (m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
+        unsigned long long current_cycle =  GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle +
+                                            GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+        m_per_scalar_thread[tid].end_cycle = current_cycle; // FIXME: This doesn't wait for the write to complete
+      }
+
       RT_DPRINTF("Buffer store pushed for warp %d thread %d at 0x%x\n", m_uid, tid, addr);
     }
   }
@@ -922,10 +943,10 @@ unsigned warp_inst_t::dec_thread_latency(std::deque<std::pair<unsigned, new_addr
   unsigned n_threads = 0;
   
   for (unsigned i=0; i<m_config->warp_size; i++) {
-    if (m_per_scalar_thread[i].intersection_delay > 0) {
-      m_per_scalar_thread[i].intersection_delay--; 
+    if (m_per_scalar_thread[i].intersection_ops.size() > 0) {
+      m_per_scalar_thread[i].intersection_ops.pop(); 
       n_threads++;
-      if (m_per_scalar_thread[i].intersection_delay == 0 && m_per_scalar_thread[i].ray_intersect) {
+      if (m_per_scalar_thread[i].intersection_ops.size() == 0 && m_per_scalar_thread[i].ray_intersect) {
         // Temporary size
         unsigned size = RT_WRITE_BACK_SIZE;
 
@@ -938,13 +959,21 @@ unsigned warp_inst_t::dec_thread_latency(std::deque<std::pair<unsigned, new_addr
         m_pending_writes.insert((new_addr_type)next_buffer_addr);
       }
 
-      else if (m_per_scalar_thread[i].intersection_delay == 0 && m_per_scalar_thread[i].RT_mem_accesses.size() > 0) {
+      else if (m_per_scalar_thread[i].intersection_ops.size() == 0 && m_per_scalar_thread[i].RT_mem_accesses.size() > 0) {
         if (m_per_scalar_thread[i].RT_mem_accesses.front().type == TransactionType::WRITE_TRAVERSAL_RESULT) {
           unsigned size = m_per_scalar_thread[i].RT_mem_accesses.front().size;
           new_addr_type addr = m_per_scalar_thread[i].RT_mem_accesses.front().address;
           store_queue.push_back(std::pair<unsigned, new_addr_type>(m_uid, addr));
           m_pending_writes.insert(addr);
           m_per_scalar_thread[i].RT_mem_accesses.pop_front();
+
+          // If the RT_mem_accesses is now empty, then the last memory request has returned and the thread is almost done
+          if (m_per_scalar_thread[i].RT_mem_accesses.empty()) {
+            unsigned long long current_cycle =  GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle +
+                                                GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+            m_per_scalar_thread[i].end_cycle = current_cycle; // FIXME: This doesn't wait for the write to complete
+          }
+
           RT_DPRINTF("Buffer store pushed for warp %d thread %d at 0x%x\n", m_uid, i, addr);
         }
       }
@@ -972,7 +1001,7 @@ void warp_inst_t::track_rt_cycles(bool active) {
     // Only check active threads
     if (thread_active(i)) {
       // Easiest check is intersection tests
-      if (m_per_scalar_thread[i].intersection_delay != 0) {
+      if (m_per_scalar_thread[i].intersection_ops.size() != 0) {
         m_per_scalar_thread[i].status_num_cycles[warp_status][executing_op]++;
       }
       // Check that the thread is not done and not performing intersection tests. 
@@ -1016,6 +1045,11 @@ void warp_inst_t::set_rt_mem_transactions(unsigned int tid, std::vector<MemoryTr
   }
 }
 
+void warp_inst_t::set_rt_op_sequence(unsigned int tid, std::queue<RTFuncInsnType> op_seq, int node_type) {
+  assert(m_per_scalar_thread_valid);
+  m_per_scalar_thread[tid].RT_op_seq[node_type] = op_seq;
+}
+
 void warp_inst_t::set_rt_mem_store_transactions(unsigned int tid, std::vector<MemoryStoreTransactionRecord>& transactions) {
   m_per_scalar_thread[tid].RT_store_transactions = transactions;
 }
@@ -1031,7 +1065,7 @@ bool warp_inst_t::is_stalled() {
       RTMemoryTransactionRecord mem_record = m_per_scalar_thread[i].RT_mem_accesses.front();
       
       // If there is an unprocessed record, not stalled
-      if (mem_record.status == RT_MEM_UNMARKED && m_per_scalar_thread[i].intersection_delay == 0) return false;
+      if (mem_record.status == RT_MEM_UNMARKED && m_per_scalar_thread[i].intersection_ops.size() == 0) return false;
     }
   }
   
@@ -1065,7 +1099,7 @@ void warp_inst_t::num_unique_mem_access(std::map<new_addr_type, unsigned> &addr_
 bool warp_inst_t::rt_intersection_delay_done() { 
   bool done = true;
   for (unsigned i = 0; i < m_config->warp_size; i++) {
-    done &= (m_per_scalar_thread[i].intersection_delay == 0);
+    done &= (m_per_scalar_thread[i].intersection_ops.size() == 0);
   }
   return done;
 }
@@ -1106,7 +1140,7 @@ void warp_inst_t::update_next_rt_accesses() {
       RTMemoryTransactionRecord next_access = m_per_scalar_thread[i].RT_mem_accesses.front();
       
       // If "unmarked", this has not been added to queue yet (also make sure intersection is complete)
-      if (next_access.status == RTMemStatus::RT_MEM_UNMARKED && m_per_scalar_thread[i].intersection_delay == 0) {
+      if (next_access.status == RTMemStatus::RT_MEM_UNMARKED && m_per_scalar_thread[i].intersection_ops.size() == 0) {
         std::pair<new_addr_type, unsigned> address_size_pair (next_access.address, next_access.size);
         // Add to queue if the same address doesn't already exist
         if (m_next_rt_accesses_set.find(address_size_pair) == m_next_rt_accesses_set.end()) {
@@ -1197,7 +1231,7 @@ bool warp_inst_t::process_returned_mem_access(const mem_fetch *mf, unsigned tid)
 
 bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned tid, new_addr_type addr, unsigned mf_size, new_addr_type uncoalesced_base_addr) {
   bool thread_found = false;
-  if (m_per_scalar_thread[tid].intersection_delay == 0 && !m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
+  if (m_per_scalar_thread[tid].intersection_ops.size() == 0 && !m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
     RTMemoryTransactionRecord &mem_record = m_per_scalar_thread[tid].RT_mem_accesses.front();
     new_addr_type thread_addr = mem_record.address;
     new_addr_type thread_block_addr = line_size_based_tag_func(thread_addr, 32);
@@ -1231,8 +1265,8 @@ bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned ti
     // If all the bits are clear, the entire data has returned, pop from list
     if (mem_record.mem_chunks.none()) {
       // Set up delay of next intersection test
-      unsigned n_delay_cycles = m_config->m_rt_intersection_latency.at(mem_record.type);
-      m_per_scalar_thread[tid].intersection_delay += n_delay_cycles;
+      m_per_scalar_thread[tid].intersection_ops = m_per_scalar_thread[tid].RT_op_seq[(int)mem_record.type];
+      m_per_scalar_thread[tid].current_intersection_type = mem_record.type;
       RT_DPRINTF("Adding intersection type %d [%d:%d]\n", (int)mem_record.type, m_uid, tid);
 
       int functional_unit;
@@ -1248,8 +1282,16 @@ bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned ti
       m_intersection_threads.push_back(std::pair<int, unsigned>(functional_unit, tid));
       
       RT_DPRINTF("Thread %d collected all chunks for address 0x%x (size %d)\n", tid, mem_record.address, mem_record.size);
-      RT_DPRINTF("Processing data of transaction type %d for %d cycles.\n", mem_record.type, n_delay_cycles);
+      RT_DPRINTF("Processing data of transaction type %d for %d ops.\n", mem_record.type, m_per_scalar_thread[tid].intersection_ops.size());
       m_per_scalar_thread[tid].RT_mem_accesses.pop_front();
+
+      // If the RT_mem_accesses is now empty, then the last memory request has returned and the thread is almost done
+      if (m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
+        unsigned long long current_cycle =  GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle +
+                                            GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+        m_per_scalar_thread[tid].end_cycle = current_cycle; // Should be overwritten by operation latency later
+      }
+
       mem_record_done = true;
 
       // Mark triangle hit to store to memory
@@ -1257,13 +1299,6 @@ bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned ti
         m_per_scalar_thread[tid].ray_intersect = true;
         RT_DPRINTF("Buffer store detected for warp %d thread %d\n", m_uid, tid);
       }
-    }
-    
-    // If the RT_mem_accesses is now empty, then the last memory request has returned and the thread is almost done
-    if (m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
-      unsigned long long current_cycle =  GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle +
-                                          GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
-      m_per_scalar_thread[tid].end_cycle = current_cycle + m_per_scalar_thread[tid].intersection_delay;
     }
   }
   return thread_found;
