@@ -378,6 +378,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "number of RTA functional units ",
       "4");
   option_parser_register(
+      opp, "-gpgpu_rt_interconnect", OPT_CSTR, &m_rt_interconnect_str,
+      "RT func units interconnect configurations ",
+      "1,1");
+  option_parser_register(
       opp, "-gpgpu_rt_intersection_latency", OPT_CSTR, &m_rt_intersection_latency_str,
       "latency of pipelined intersection tests by op type ",
       "2,4,4,2,8");

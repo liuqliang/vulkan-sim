@@ -1756,6 +1756,11 @@ class shader_core_config : public core_config {
       }
     }
 
+    sscanf(m_rt_interconnect_str, "%u,%u",
+      &m_rt_func_unit_config.interconnect_init_cycles,
+      &m_rt_func_unit_config.interconnect_latency
+    );
+
     printf("RT UNIT configured with: \n");
     printf("\t<latency, n_units, init_cycles>\n");
     for (unsigned i=0; i<static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE); i++) {
@@ -1764,6 +1769,10 @@ class shader_core_config : public core_config {
         m_rt_func_unit_config.n_units[i],
         m_rt_func_unit_config.initiation_cycles[i]);
     }
+    printf("Interconnect:\n");
+    printf("\t%3u, %3u, %3u\n", 
+      m_rt_func_unit_config.interconnect_init_cycles,
+      m_rt_func_unit_config.interconnect_latency);
 
     sscanf(m_rt_coherence_engine_config_str, "%u,%u,%u,%c,%u,%u,%u,%f", 
       &m_rt_coherence_engine_config.max_cycles,

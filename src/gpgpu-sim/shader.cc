@@ -3330,7 +3330,7 @@ void rt_unit::process_intersection_threads(warp_inst_t& inst) {
   unsigned warp_uid = inst.get_uid();
 
   for (auto t=threads.begin(); t<threads.end(); t++) {
-    printf("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
+    // printf("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
     m_func_q.push_back({warp_uid, t->second});
   }
 
@@ -3345,7 +3345,7 @@ void rt_unit::process_intersection_threads() {
     unsigned warp_uid = it->first;
 
     for (auto t=threads.begin(); t<threads.end(); t++) {
-      printf("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
+      // printf("Queuing for %d [%d:%d]\n", t->first, warp_uid, t->second);
       m_func_q.push_back({warp_uid, t->second});
     }
   }

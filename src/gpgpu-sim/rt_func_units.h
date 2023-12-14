@@ -21,11 +21,16 @@ class func_unit_stats {
     func_unit_stats(unsigned n_units) {
         m_n_units = n_units;
         total_intersections = (unsigned *)calloc(n_units, sizeof(unsigned));
+        output_stalled_cycles = (unsigned *)calloc(n_units, sizeof(unsigned));
+        output_queue_size = (unsigned *)calloc(n_units, sizeof(unsigned));
 
         intersection_cycles = (unsigned long long *)calloc(static_cast<int>(TransactionType::UNDEFINED), sizeof(unsigned long long));
         intersection_count = (unsigned *)calloc(static_cast<int>(TransactionType::UNDEFINED), sizeof(unsigned));
 
         per_op_stats = (op_unit_stats **)calloc(n_units, sizeof(op_unit_stats *));
+        interconnect_stats = (op_unit_stats *)calloc(n_units, sizeof(op_unit_stats));
+
+        failed_arbitrations = 0;
     }
     ~func_unit_stats();
 
@@ -40,12 +45,17 @@ class func_unit_stats {
     unsigned m_n_op_units;
     unsigned* total_intersections;
 
+    unsigned failed_arbitrations;
+    unsigned* output_stalled_cycles;
+    unsigned* output_queue_size;
+
     // Per function stats
     unsigned long long* intersection_cycles;
     unsigned* intersection_count; 
 
     // Per op unit stats
     op_unit_stats** per_op_stats;
+    op_unit_stats* interconnect_stats;
 };
 
 class rt_op_unit {
@@ -63,6 +73,7 @@ class rt_op_unit {
             m_output_queue.pop();
             return next_thread;
         }
+        void reset_output_queue(std::queue<warp_thread_id> new_queue) { m_output_queue = new_queue; }
         std::string get_unit_name() { return m_unit_name; }
 
     private:
@@ -97,7 +108,11 @@ class rt_func_unit {
         func_unit_stats* m_stats;
         op_unit_stats* m_op_stats;
         std::vector<rt_op_unit*> m_op_units;
+        rt_op_unit* m_interconnect_unit;
         unsigned m_active_threads;
+
+        std::bitset<static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE)> m_op_unit_arb;
+        unsigned m_last_op;
 
         std::map<unsigned, unsigned long long> latency_tracker;
 

@@ -46,15 +46,14 @@ void rt_op_unit::cycle() {
                 warp_thread_id next_thread = m_input_queue.front();
                 m_current_execution.push_back(std::pair<warp_thread_id, unsigned>(next_thread, m_latency));
                 m_input_queue.pop();
-                printf("Adding [%d:%d] to %s.\n", next_thread.warp_uid, next_thread.tid, m_unit_name.c_str());
-
-                if (m_input_queue.size() > 0) {
-                    m_stats->input_stalled_cycles++;
-                }
+                // printf("Adding [%d:%d] to %s.\n", next_thread.warp_uid, next_thread.tid, m_unit_name.c_str());
+                m_waiting_cycles[i] = m_init_cycles - 1; // -1 for current cycle
             }
         }
     }
-
+    if (m_input_queue.size() > 0) {
+        m_stats->input_stalled_cycles++;
+    }
     if (m_current_execution.size() > 0) {
         m_stats->total_active_cycles++;
     }
@@ -68,7 +67,7 @@ void rt_op_unit::cycle() {
         else {
             m_output_queue.push(it->first);
             it = m_current_execution.erase(it);
-            printf("[%d:%d] finished in %s.\n", it->first.warp_uid, it->first.tid, m_unit_name.c_str());
+            // printf("[%d:%d] finished in %s.\n", it->first.warp_uid, it->first.tid, m_unit_name.c_str());
             m_stats->total_ops++;
         }
     }
@@ -82,6 +81,7 @@ rt_func_unit::rt_func_unit(unsigned sid, rt_func_unit_config config, func_unit_s
     m_stats = stats;
 
     m_op_stats = m_stats->init_per_op(m_unit_id, static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE));
+    m_last_op = 0;
 
     // Iterate through each op type
     printf("Creating RT op units...\n");
@@ -95,6 +95,8 @@ rt_func_unit::rt_func_unit(unsigned sid, rt_func_unit_config config, func_unit_s
         m_op_units.push_back(new_unit);
         op_unit_id++;
     }
+
+    m_interconnect_unit = new rt_op_unit(m_sid, op_unit_id, m_config.interconnect_latency, m_config.interconnect_init_cycles, RTFuncInsnType::RT_MAX_INSN_TYPE, "interconnect", m_op_units.size(), m_stats->interconnect_stats);
 }
 
 void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp_thread_id>& awaiting_threads, std::deque<std::pair<unsigned, new_addr_type> > &store_queue) {
@@ -117,11 +119,12 @@ void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp
         RT_DPRINTF("Adding [%d:%d] to %s.\n", next_thread.warp_uid, next_thread.tid, m_op_units[static_cast<unsigned>(next_op)]->get_unit_name().c_str());
     }
 
-    // Cycle each op unit
-    for (auto it=m_op_units.begin(); it!=m_op_units.end(); it++) {
-        (*it)->cycle();
-        if ((*it)->has_output()) {
-            warp_thread_id next_thread = (*it)->get_output();
+    // Use round robin for now
+    for (unsigned i=0; i<m_op_units.size(); i++) {
+        unsigned op_unit_id = (m_last_op + i) % m_op_units.size();
+        m_op_units[op_unit_id]->cycle();
+        if (m_op_units[op_unit_id]->has_output()) {
+            warp_thread_id next_thread = m_op_units[op_unit_id]->get_output();
             bool done = warps[next_thread.warp_uid].dec_thread_latency(next_thread.tid);
 
             if (done) {
@@ -143,26 +146,61 @@ void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp
                 m_stats->intersection_cycles[static_cast<unsigned>(intersection_type)] += latency;
                 m_stats->intersection_count[static_cast<unsigned>(intersection_type)]++;
 
-                printf("[%d:%d] finished\n", next_thread.warp_uid, next_thread.tid);
+                // printf("[%d:%d] finished\n", next_thread.warp_uid, next_thread.tid);
             }
             else {
-                RTFuncInsnType next_op = warps[next_thread.warp_uid].get_next_op(next_thread.tid);
-                m_op_units[static_cast<unsigned>(next_op)]->add_input(next_thread);
-                printf("Adding [%d:%d] to %s.\n", next_thread.warp_uid, next_thread.tid, m_op_units[static_cast<unsigned>(next_op)]->get_unit_name().c_str());
+                // Unconditionally add to interconnect unit
+                m_interconnect_unit->add_input(next_thread);
             }
         }
     }
+    m_last_op = (m_last_op + 1) % m_op_units.size();
+
+    // Cycle each op unit
+    m_op_unit_arb.reset();
+    std::queue<warp_thread_id> interconnect_queue;
+    while (m_interconnect_unit->has_output()) {
+        warp_thread_id next_thread = m_interconnect_unit->get_output();
+
+        // Check arbitration
+        RTFuncInsnType next_op = warps[next_thread.warp_uid].get_next_op(next_thread.tid);
+        if (m_op_unit_arb.test(static_cast<unsigned>(next_op))) {
+            // Failed arbitration
+            m_stats->failed_arbitrations++;
+            interconnect_queue.push(next_thread);
+        }
+        else {
+            m_op_unit_arb.set(static_cast<unsigned>(next_op));
+            m_op_units[static_cast<unsigned>(next_op)]->add_input(next_thread);
+            // printf("Adding [%d:%d] to %s.\n", next_thread.warp_uid, next_thread.tid, m_op_units[static_cast<unsigned>(next_op)]->get_unit_name().c_str());
+        }
+    }
+
+    if (interconnect_queue.size() > 0) {
+        m_stats->output_stalled_cycles[m_unit_id]++;
+        m_stats->output_queue_size[m_unit_id] += interconnect_queue.size();
+        m_interconnect_unit->reset_output_queue(interconnect_queue);
+    }
+
+    // Cycle interconnect unit (for tracking latency)
+    m_interconnect_unit->cycle();
 }
 
 void func_unit_stats::print(FILE *fout) {
     unsigned intersections = 0;
+    unsigned interconnect = 0;
+    unsigned interconnect_stalled_cycles = 0;
     fprintf(fout, "Per func unit intersections: ");
     for (unsigned i=0; i<m_n_units; i++) {
         fprintf(fout, "%d ", total_intersections[i]);
         intersections += total_intersections[i];
+        interconnect += output_queue_size[i];
+        interconnect_stalled_cycles += output_stalled_cycles[i];
     }
     fprintf(fout, "\n");
     fprintf(fout, "total_intersections = %d\n", intersections);
+    fprintf(fout, "failed_arbitrations = %d\n", failed_arbitrations);
+    fprintf(fout, "avg_stalled_output_queue_size = %f\n", (float)interconnect / interconnect_stalled_cycles);
 
     for (unsigned t=0; t<static_cast<unsigned>(TransactionType::UNDEFINED); t++) {
         float avg_latency = (float)intersection_cycles[t] / (float)intersection_count[t];
@@ -170,6 +208,10 @@ void func_unit_stats::print(FILE *fout) {
             fprintf(fout, "avg_latency[%d] = %f\n", t, avg_latency);
         }
     }
+
+    fprintf(fout, "Interconnect stats:\n");
+    fprintf(fout, "total_active_cycles = %llu\n", interconnect_stats->total_active_cycles);
+    fprintf(fout, "pipeline_stalled_cycles = %llu\n", interconnect_stats->pipeline_stalled_cycles);
 
     for (unsigned i=0; i<m_n_op_units; i++) {
         fprintf(fout, "total_active_cycles[%s] = ", RTFuncInsnTypeNames[i].c_str());
