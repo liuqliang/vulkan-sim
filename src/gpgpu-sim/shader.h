@@ -1441,6 +1441,7 @@ class rt_unit : public pipelined_simd_unit {
 
       std::vector<rt_func_unit *> m_func_units;
       std::deque<warp_thread_id> m_func_q;
+      unsigned last_func_unit;
 
       std::deque<std::pair<unsigned, new_addr_type> > mem_store_q;
       
@@ -1761,6 +1762,8 @@ class shader_core_config : public core_config {
       &m_rt_func_unit_config.interconnect_latency
     );
 
+    m_rt_func_unit_config.func_bw = m_rt_func_bw;
+
     printf("RT UNIT configured with: \n");
     printf("\t<latency, n_units, init_cycles>\n");
     for (unsigned i=0; i<static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE); i++) {
@@ -1769,6 +1772,7 @@ class shader_core_config : public core_config {
         m_rt_func_unit_config.n_units[i],
         m_rt_func_unit_config.initiation_cycles[i]);
     }
+    printf("%d operations per cycle\n", m_rt_func_unit_config.func_bw);
     printf("Interconnect:\n");
     printf("\t%3u, %3u, %3u\n", 
       m_rt_func_unit_config.interconnect_init_cycles,
@@ -2026,6 +2030,8 @@ struct shader_core_stats_pod {
   unsigned *rt_nthreads_intersection;
   unsigned *rt_max_coalesce;
   unsigned *rt_mshr_size;
+  unsigned *rt_func_unit_ops;
+  unsigned *rt_func_unit_queue;
   unsigned rt_mshr_size_total;
   unsigned rt_mem_requests;
   
@@ -2247,6 +2253,8 @@ class shader_core_stats : public shader_core_stats_pod {
     rt_max_coalesce = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_mshr_size = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_nthreads_intersection = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    rt_func_unit_ops = (unsigned *)calloc(config->num_shader() * (static_cast<int>(RT_MAX_INSN_TYPE) + 2), sizeof(unsigned));
+    rt_func_unit_queue = (unsigned *)calloc(config->num_shader() * (static_cast<int>(RT_MAX_INSN_TYPE) + 2), sizeof(unsigned));
 
     gpgpu_n_specialized = (unsigned *)calloc(TOTAL_RAYTRACE_OP, sizeof(unsigned));
     gpgpu_n_specialized_util = (unsigned *)calloc(TOTAL_RAYTRACE_OP, sizeof(unsigned));

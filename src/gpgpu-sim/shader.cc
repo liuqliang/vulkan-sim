@@ -1147,6 +1147,20 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
     gzprintf(visualizer_file, "%u ", rt_nthreads_intersection[i]);
   gzprintf(visualizer_file, "\n");
 
+  int max_ops = static_cast<int>(RT_MAX_INSN_TYPE) + 2;
+  for (unsigned i=0; i<max_ops; i++) {
+    gzprintf(visualizer_file, "rt_func_unit_ops_%02d:  ", i);
+    for (unsigned j = 0; j < m_config->num_shader(); j++)
+      gzprintf(visualizer_file, "%u ", rt_func_unit_ops[j * max_ops + i]);
+    gzprintf(visualizer_file, "\n");
+  }
+  for (unsigned i=0; i<max_ops; i++) {
+    gzprintf(visualizer_file, "rt_func_unit_queue_%02d:  ", i);
+    for (unsigned j = 0; j < m_config->num_shader(); j++)
+      gzprintf(visualizer_file, "%u ", rt_func_unit_queue[j * max_ops + i]);
+    gzprintf(visualizer_file, "\n");
+  }
+
   gzprintf(visualizer_file, "rt_mem_requests: %u\n", rt_mem_requests);
   gzprintf(visualizer_file, "rt_mshr_size_total: %u\n", rt_mshr_size_total);
   rt_mem_requests = 0;
@@ -2997,10 +3011,11 @@ rt_unit::rt_unit(mem_fetch_interface *icnt,
   m_name = "RT_CORE";
 
   // Create N functional units
+  
   for (unsigned i=0; i<config->m_rt_func_units; i++) {
     m_func_units.push_back(new rt_func_unit(m_sid, config->m_rt_func_unit_config, m_stats->rt_func_unit_stats[sid], i));
   }
-  
+  last_func_unit = 0;
 }
 
 
@@ -3080,13 +3095,15 @@ void rt_unit::cycle() {
   // Cycle intersection tests + get stats
   unsigned n_threads = 0;
   for (unsigned i=0; i<m_func_units.size(); i++) {
-    m_func_units[i]->cycle(m_current_warps, m_func_q, mem_store_q);
-    unsigned in_progress_threads = m_func_units[i]->count_in_progress();
+    unsigned unit_id = (last_func_unit + i) % m_func_units.size();
+    m_func_units[unit_id]->cycle(m_current_warps, m_func_q, mem_store_q);
+    unsigned in_progress_threads = m_func_units[unit_id]->count_in_progress();
     if (in_progress_threads > 0) {
-      m_stats->rt_func_active_cycles[m_sid * m_config->m_rt_func_units + i]++;
+      m_stats->rt_func_active_cycles[m_sid * m_config->m_rt_func_units + unit_id]++;
     }
     n_threads += in_progress_threads;
   }
+  last_func_unit = (last_func_unit + 1) % m_func_units.size();
 
   if (m_func_q.size() > 0) {
     m_stats->rt_func_q_cycles[m_sid]++;
@@ -3122,6 +3139,15 @@ void rt_unit::cycle() {
   m_stats->rt_nthreads[m_sid] = active_threads;
   m_stats->rt_naccesses[m_sid] = addr_set.size();
   m_stats->rt_nthreads_intersection[m_sid] = n_threads;
+
+  // Just track one unit for now
+  int total_ops = static_cast<int>(RT_MAX_INSN_TYPE) + 2;
+  op_unit_aerialvision per_unit_stats[total_ops] = {};
+  m_func_units[0]->get_aerialvision_stats(per_unit_stats);
+  for (unsigned i=0; i<total_ops; i++) {
+    m_stats->rt_func_unit_ops[m_sid * total_ops + i] = per_unit_stats[i].current_op_count;
+    m_stats->rt_func_unit_queue[m_sid * total_ops + i] = per_unit_stats[i].input_queue_size;
+  }
 
   unsigned max = 0;
   for (auto it=addr_set.begin(); it!=addr_set.end(); it++) {

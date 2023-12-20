@@ -248,6 +248,7 @@ typedef struct rt_func_unit_config {
     unsigned latency[static_cast<int>(RT_MAX_INSN_TYPE)];
     unsigned interconnect_latency;
     unsigned interconnect_init_cycles;
+    unsigned func_bw;
 } rt_func_unit_config;
 
 struct ray_coherence_config {
@@ -633,6 +634,7 @@ class core_config {
 
   bool adaptive_cache_config;
   unsigned m_rt_func_units;
+  unsigned m_rt_func_bw;
   char *m_rt_intersection_latency_str;
   char *m_rt_n_units_str;
   char *m_rt_init_cycles_str;

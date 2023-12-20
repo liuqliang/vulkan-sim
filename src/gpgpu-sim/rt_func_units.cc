@@ -29,6 +29,8 @@ rt_op_unit::rt_op_unit(unsigned sid, unsigned unit_id, unsigned latency, unsigne
     m_op = op;
     m_waiting_cycles = (unsigned *)calloc(n_units, sizeof(unsigned));
     m_stats = stats;
+    m_aerialvision_stats.current_op_count = 0;
+    m_aerialvision_stats.input_queue_size = 0;
 
     printf("[%d:%d] Created %d %s unit with latency %d and init_cycles %d\n", m_sid, m_unit_id, m_n_units, m_unit_name.c_str(), m_latency, m_init_cycles);
 }
@@ -71,6 +73,13 @@ void rt_op_unit::cycle() {
             m_stats->total_ops++;
         }
     }
+
+    // Track this cycle for everything in the pipeline
+    m_stats->total_op_cycles += m_current_execution.size() + m_input_queue.size();
+
+    // Update AerialVision stats
+    m_aerialvision_stats.current_op_count = m_current_execution.size();
+    m_aerialvision_stats.input_queue_size = m_input_queue.size();
 }
 
 rt_func_unit::rt_func_unit(unsigned sid, rt_func_unit_config config, func_unit_stats* stats, unsigned unit_id) {
@@ -101,22 +110,23 @@ rt_func_unit::rt_func_unit(unsigned sid, rt_func_unit_config config, func_unit_s
 
 void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp_thread_id>& awaiting_threads, std::deque<std::pair<unsigned, new_addr_type> > &store_queue) {
 
-    // Process one thread (for now)
-    if (awaiting_threads.size() > 0) {
-        warp_thread_id next_thread = awaiting_threads.front();
+    for (unsigned i=0; i<m_config.func_bw; i++) {
+        if (awaiting_threads.size() > 0) {
+            warp_thread_id next_thread = awaiting_threads.front();
 
-        // Make an uid (tid is 32 max, which is 5 bits)
-        unsigned next_thread_uid = next_thread.warp_uid << 5 | next_thread.tid;
-        unsigned long long current_cycle = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
-        latency_tracker[next_thread_uid] = current_cycle;
+            // Make an uid (tid is 32 max, which is 5 bits)
+            unsigned next_thread_uid = next_thread.warp_uid << 5 | next_thread.tid;
+            unsigned long long current_cycle = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+            latency_tracker[next_thread_uid] = current_cycle;
 
-        m_active_threads++;
-        awaiting_threads.pop_front();
+            m_active_threads++;
+            awaiting_threads.pop_front();
 
-        RTFuncInsnType next_op = warps[next_thread.warp_uid].get_next_op(next_thread.tid);
-        m_op_units[static_cast<unsigned>(next_op)]->add_input(next_thread);
+            RTFuncInsnType next_op = warps[next_thread.warp_uid].get_next_op(next_thread.tid);
+            m_op_units[static_cast<unsigned>(next_op)]->add_input(next_thread);
 
-        RT_DPRINTF("Adding [%d:%d] to %s.\n", next_thread.warp_uid, next_thread.tid, m_op_units[static_cast<unsigned>(next_op)]->get_unit_name().c_str());
+            RT_DPRINTF("Adding [%d:%d] to %s.\n", next_thread.warp_uid, next_thread.tid, m_op_units[static_cast<unsigned>(next_op)]->get_unit_name().c_str());
+        }
     }
 
     // Use round robin for now
@@ -149,8 +159,14 @@ void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp
                 // printf("[%d:%d] finished\n", next_thread.warp_uid, next_thread.tid);
             }
             else {
-                // Unconditionally add to interconnect unit
-                m_interconnect_unit->add_input(next_thread);
+                // Check if interconnect is needed (skip if next op matches current op)
+                RTFuncInsnType next_op = warps[next_thread.warp_uid].get_next_op(next_thread.tid);
+                if (static_cast<unsigned>(next_op) == op_unit_id) {
+                    m_op_units[op_unit_id]->add_input(next_thread);
+                }
+                else {
+                    m_interconnect_unit->add_input(next_thread);
+                }
             }
         }
     }
@@ -184,6 +200,20 @@ void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp
 
     // Cycle interconnect unit (for tracking latency)
     m_interconnect_unit->cycle();
+}
+
+void rt_func_unit::get_aerialvision_stats(op_unit_aerialvision* aerialvision_stats) {
+    op_unit_aerialvision interconnect_stats = m_interconnect_unit->get_aerialvision_stats();
+    op_unit_aerialvision total_stats = interconnect_stats;
+
+    for (unsigned i=0; i<m_op_units.size(); i++) {
+        aerialvision_stats[i] = m_op_units[i]->get_aerialvision_stats();
+        total_stats.current_op_count += aerialvision_stats[i].current_op_count;
+        total_stats.input_queue_size += aerialvision_stats[i].input_queue_size;
+    }
+
+    aerialvision_stats[m_op_units.size()] = interconnect_stats;
+    aerialvision_stats[m_op_units.size()+1] = total_stats;
 }
 
 void func_unit_stats::print(FILE *fout) {
@@ -227,6 +257,11 @@ void func_unit_stats::print(FILE *fout) {
         fprintf(fout, "input_stalled_cycles[%s] = ", RTFuncInsnTypeNames[i].c_str());
         for (unsigned j=0; j<m_n_units; j++) {
             fprintf(fout, "%llu ", per_op_stats[j][i].input_stalled_cycles);
+        }
+        fprintf(fout, "\n");
+        fprintf(fout, "avg_op_latency[%s] = ", RTFuncInsnTypeNames[i].c_str());
+        for (unsigned j=0; j<m_n_units; j++) {
+            fprintf(fout, "%f ", per_op_stats[j][i].total_op_cycles / (float)per_op_stats[j][i].total_ops);
         }
         fprintf(fout, "\n");
     }

@@ -13,8 +13,13 @@ typedef struct op_unit_stats {
     unsigned long long total_active_cycles = 0;
     unsigned long long pipeline_stalled_cycles = 0;
     unsigned long long input_stalled_cycles = 0;
+    unsigned long long total_op_cycles = 0;
 } op_unit_stats;
 
+typedef struct op_unit_aerialvision {
+    unsigned current_op_count = 0;
+    unsigned input_queue_size = 0;
+} op_unit_aerialvision;
 
 class func_unit_stats {
   public:
@@ -75,6 +80,7 @@ class rt_op_unit {
         }
         void reset_output_queue(std::queue<warp_thread_id> new_queue) { m_output_queue = new_queue; }
         std::string get_unit_name() { return m_unit_name; }
+        op_unit_aerialvision get_aerialvision_stats() { return m_aerialvision_stats; }
 
     private:
         unsigned m_latency;
@@ -83,6 +89,7 @@ class rt_op_unit {
         unsigned* m_waiting_cycles;
         unsigned m_n_units;
         op_unit_stats* m_stats;
+        op_unit_aerialvision m_aerialvision_stats;
 
         unsigned m_sid;
         unsigned m_unit_id;
@@ -102,6 +109,7 @@ class rt_func_unit {
 
         void cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp_thread_id>& awaiting_threads, std::deque<std::pair<unsigned, new_addr_type> > &store_queue);
         unsigned count_in_progress() { return m_active_threads; }
+        void get_aerialvision_stats(op_unit_aerialvision* stats);
 
     private:
         rt_func_unit_config m_config;

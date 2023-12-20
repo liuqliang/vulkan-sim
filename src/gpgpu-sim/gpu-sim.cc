@@ -378,6 +378,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "number of RTA functional units ",
       "4");
   option_parser_register(
+      opp, "-gpgpu_rt_func_bw", OPT_UINT32, &m_rt_func_bw,
+      "number of operations per cycle per RTA functional units ",
+      "1");
+  option_parser_register(
       opp, "-gpgpu_rt_interconnect", OPT_CSTR, &m_rt_interconnect_str,
       "RT func units interconnect configurations ",
       "1,1");
