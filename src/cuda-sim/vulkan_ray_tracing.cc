@@ -1270,9 +1270,24 @@ void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_proce
                 break;
             }
 
-            // N body FIXME:
-            case 3:
-            case 4: {
+            // N body 2D
+            case 3: {
+                std::queue<RTFuncInsnType> ray_decode_ops;
+                ray_decode_ops.push(RTFuncInsnType::RT_DECODE);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_STRUCTURE);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR);
+                // Internal node is used to fetch children nodes; computation for pruning is performed per "instance leaf" (i.e. child of the node)
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_INTERNAL_NODE);
+
+                std::queue<RTFuncInsnType> nbody_box_ops;
+                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                nbody_box_ops.push(RTFuncInsnType::RT_VEC_CMP);
+                thread->set_rt_op_sequence(nbody_box_ops, TransactionType::BVH_INSTANCE_LEAF);
+
                 std::queue<RTFuncInsnType> nbody_ops;
                 nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
@@ -1285,9 +1300,59 @@ void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_proce
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
 
                 thread->set_rt_op_sequence(nbody_ops, TransactionType::BVH_QUAD_LEAF);
+                thread->set_rt_op_sequence(nbody_ops, TransactionType::BVH_QUAD_LEAF_HIT);
+                break;
+            }
+            // N body 3D
+            case 4: {
+                std::queue<RTFuncInsnType> ray_decode_ops;
+                ray_decode_ops.push(RTFuncInsnType::RT_DECODE);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_STRUCTURE);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR);
+                // Internal node is used to fetch children nodes; computation for pruning is performed per "instance leaf" (i.e. child of the node)
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_INTERNAL_NODE);
+
+                std::queue<RTFuncInsnType> nbody_box_ops;
+                // <dx, dy, dz> = <x1, y1, z1> - <x0, y0, z0>
+                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                // dx2 = dx * dx, dy2 = dy * dy, dz2 = dz * dz
+                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
+                // dist = dx2 + dy2 + dz2 + eps2
+                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                // check if dist < node_depth
+                nbody_box_ops.push(RTFuncInsnType::RT_VEC_CMP);
+                thread->set_rt_op_sequence(nbody_box_ops, TransactionType::BVH_INSTANCE_LEAF);
+
+                std::queue<RTFuncInsnType> nbody_ops;
+                // <dx, dy, dz> = <x1, y1, z1> - <x0, y0, z0>
+                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                // dx2 = dx * dx, dy2 = dy * dy, dz2 = dz * dz
+                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                // dist = dx2 + dy2 + dz2 + eps2
+                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                // dist = 1 / sqrt(dist)
+                nbody_ops.push(RTFuncInsnType::RT_SQRT);
+                // accel_f = mass * dist * dist * dist
+                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                // accel_x = accel_f * dx, accel_y = accel_f * dy, accel_z = accel_f * dz
+                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_ops.push(RTFuncInsnType::RT_MUL);
+
+                thread->set_rt_op_sequence(nbody_ops, TransactionType::BVH_QUAD_LEAF);
+                thread->set_rt_op_sequence(nbody_ops, TransactionType::BVH_QUAD_LEAF_HIT);
                 break;
             }
 
