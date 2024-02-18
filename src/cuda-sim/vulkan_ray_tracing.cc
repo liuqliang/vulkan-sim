@@ -612,7 +612,7 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                 transactions.push_back(MemoryTransactionRecord(
                     node_addr,
                     sizeof(int) * n_children,
-                    TransactionType::BVH_INTERNAL_NODE)
+                    TransactionType::BVH_STRUCTURE) // Use BVH_STRUCTURE since this is just a decoding operation
                 );
                 GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
 
@@ -641,7 +641,7 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                 transactions.push_back(MemoryTransactionRecord(
                     node_addr,
                     sizeof(int) * n_children,
-                    TransactionType::BVH_INTERNAL_NODE)
+                    TransactionType::BVH_STRUCTURE) // Use BVH_STRUCTURE since this is just a decoding operation
                 );
 
                 GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
@@ -653,21 +653,29 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                     RT_DPRINTF("Read child %i: %d\n", i_child, child_node);
 
                     if (child_node >= 0) {
+
+                        // Read x, y position data and mass data addresses
+                        addr_t x_addr = conditions.values[2];
+                        addr_t y_addr = conditions.values[3];
+                        addr_t mass_addr = conditions.values[4];
+
                         if (child_node < n) {
                             addr_t child_addr = node_addr + i_child * sizeof(int);
                             int index = (child_addr - root_node_addr) / sizeof(int);
                             RT_DPRINTF("Pushing child %d 0x%x (index %d) is leaf\n", i_child, child_addr, index);
                             next_nodes.push_front(StackEntry(child_addr, true, true));
+
+                            // Assume "dist" part of the calculation is done here and ray-tri only handles force computation
+                            transactions.push_back(MemoryTransactionRecord(
+                                mass_addr + child_node * sizeof(float3),
+                                sizeof(float3), 
+                                TransactionType::BVH_INSTANCE_LEAF) // borrow BVH instance leaf because this transaction is neither internal nor leaf
+                            );
                         }
                         else {
                             // Prune distant nodes
                             const float eps2 = 0.025;
                             float node_depth = node.depth * 0.25;
-
-                            // Read x, y position data and mass data addresses
-                            addr_t x_addr = conditions.values[2];
-                            addr_t y_addr = conditions.values[3];
-                            addr_t mass_addr = conditions.values[4];
 
                             // Read x, y position data and mass data
                             float x, y, mass;
@@ -722,7 +730,7 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                 transactions.push_back(MemoryTransactionRecord(
                     node_addr,
                     sizeof(int) * n_children,
-                    TransactionType::BVH_INTERNAL_NODE)
+                    TransactionType::BVH_STRUCTURE) // Use BVH_STRUCTURE since this is just a decoding operation
                 );
                 GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
 
@@ -751,7 +759,7 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                 transactions.push_back(MemoryTransactionRecord(
                     node_addr,
                     sizeof(int) * n_children,
-                    TransactionType::BVH_INTERNAL_NODE)
+                    TransactionType::BVH_STRUCTURE) // Use BVH_STRUCTURE since this is just a decoding operation
                 );
 
                 GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
@@ -763,22 +771,30 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                     RT_DPRINTF("Read child %i: %d\n", i_child, child_node);
 
                     if (child_node >= 0) {
+
+                        // Read x, y, z position data and mass data addresses
+                        addr_t x_addr = conditions.values[3];
+                        addr_t y_addr = conditions.values[4];
+                        addr_t z_addr = conditions.values[5];
+                        addr_t mass_addr = conditions.values[6];
+
                         if (child_node < n) {
                             addr_t child_addr = node_addr + i_child * sizeof(int);
                             int index = (child_addr - root_node_addr) / sizeof(int);
                             RT_DPRINTF("Pushing child %d 0x%x (index %d) is leaf\n", i_child, child_addr, index);
                             next_nodes.push_front(StackEntry(child_addr, true, true));
+
+                            // Assume "dist" part of the calculation is done here and ray-tri only handles force computation
+                            transactions.push_back(MemoryTransactionRecord(
+                                mass_addr + child_node * sizeof(float4),
+                                sizeof(float4), 
+                                TransactionType::BVH_INSTANCE_LEAF) // borrow BVH instance leaf because this transaction is neither internal nor leaf
+                            );
                         }
                         else {
                             // Prune distant nodes
                             const float eps2 = 0.025;
                             float node_depth = node.depth * 0.125;
-
-                            // Read x, y, z position data and mass data addresses
-                            addr_t x_addr = conditions.values[3];
-                            addr_t y_addr = conditions.values[4];
-                            addr_t z_addr = conditions.values[5];
-                            addr_t mass_addr = conditions.values[6];
 
                             // Read x, y, z position data and mass data
                             float x, y, z, mass;
@@ -1242,6 +1258,7 @@ void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_proce
                 ray_decode_ops.push(RTFuncInsnType::RT_DECODE);
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_STRUCTURE);
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PROCEDURAL_LEAF);
                 break;
             }
 
@@ -1276,30 +1293,27 @@ void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_proce
                 ray_decode_ops.push(RTFuncInsnType::RT_DECODE);
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_STRUCTURE);
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR);
-                // Internal node is used to fetch children nodes; computation for pruning is performed per "instance leaf" (i.e. child of the node)
-                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_INTERNAL_NODE);
 
+                // DIST calculation
                 std::queue<RTFuncInsnType> nbody_box_ops;
                 nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                nbody_box_ops.push(RTFuncInsnType::RT_DOT);
                 nbody_box_ops.push(RTFuncInsnType::RT_VEC_CMP);
+                thread->set_rt_op_sequence(nbody_box_ops, TransactionType::BVH_INTERNAL_NODE);
                 thread->set_rt_op_sequence(nbody_box_ops, TransactionType::BVH_INSTANCE_LEAF);
 
+
+                // FORCE calculation
                 std::queue<RTFuncInsnType> nbody_ops;
-                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                // dist = sqrt(dist)
                 nbody_ops.push(RTFuncInsnType::RT_SQRT);
+                // dist = dist * dist
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
+                // accel_f = mass * dist
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                // accel_x = accel_f * dx, accel_y = accel_f * dy, accel_z = accel_f * dz
+                nbody_ops.push(RTFuncInsnType::RT_RAY_XFORM_FUNC_OP);
 
                 thread->set_rt_op_sequence(nbody_ops, TransactionType::BVH_QUAD_LEAF);
                 thread->set_rt_op_sequence(nbody_ops, TransactionType::BVH_QUAD_LEAF_HIT);
@@ -1312,49 +1326,34 @@ void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_proce
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_STRUCTURE);
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR);
                 // Internal node is used to fetch children nodes; computation for pruning is performed per "instance leaf" (i.e. child of the node)
-                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_INTERNAL_NODE);
 
                 std::queue<RTFuncInsnType> nbody_box_ops;
                 // <dx, dy, dz> = <x1, y1, z1> - <x0, y0, z0>
                 nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                // dx2 = dx * dx, dy2 = dy * dy, dz2 = dz * dz
-                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_box_ops.push(RTFuncInsnType::RT_MUL);
-                // dist = dx2 + dy2 + dz2 + eps2
-                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                nbody_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                // 	float dist = dx*dx + dy*dy + dz*dz + eps2;
+                nbody_box_ops.push(RTFuncInsnType::RT_DOT);
                 // check if dist < node_depth
                 nbody_box_ops.push(RTFuncInsnType::RT_VEC_CMP);
+                
+                thread->set_rt_op_sequence(nbody_box_ops, TransactionType::BVH_INTERNAL_NODE);
                 thread->set_rt_op_sequence(nbody_box_ops, TransactionType::BVH_INSTANCE_LEAF);
 
                 std::queue<RTFuncInsnType> nbody_ops;
-                // <dx, dy, dz> = <x1, y1, z1> - <x0, y0, z0>
-                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                // dx2 = dx * dx, dy2 = dy * dy, dz2 = dz * dz
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
-                // dist = dx2 + dy2 + dz2 + eps2
-                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                nbody_ops.push(RTFuncInsnType::RT_VEC_SUB);
-                // dist = 1 / sqrt(dist)
+                // dist = sqrt(dist)
                 nbody_ops.push(RTFuncInsnType::RT_SQRT);
-                // accel_f = mass * dist * dist * dist
+                // dist = dist * dist
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
+                // accel_f = mass * dist
                 nbody_ops.push(RTFuncInsnType::RT_MUL);
                 // accel_x = accel_f * dx, accel_y = accel_f * dy, accel_z = accel_f * dz
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
-                nbody_ops.push(RTFuncInsnType::RT_MUL);
+                nbody_ops.push(RTFuncInsnType::RT_RAY_XFORM_FUNC_OP);
 
                 thread->set_rt_op_sequence(nbody_ops, TransactionType::BVH_QUAD_LEAF);
                 thread->set_rt_op_sequence(nbody_ops, TransactionType::BVH_QUAD_LEAF_HIT);
                 break;
             }
+
 
             // RTNN
             case 5: {
@@ -1376,8 +1375,32 @@ void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_proce
                 ray_decode_ops.push(RTFuncInsnType::RT_DECODE);
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_STRUCTURE);
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PROCEDURAL_LEAF);
+
+                std::queue<RTFuncInsnType> ray_box_ops;
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                ray_box_ops.push(RTFuncInsnType::RT_RCP);
+                ray_box_ops.push(RTFuncInsnType::RT_RCP);
+                ray_box_ops.push(RTFuncInsnType::RT_RCP);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MAXMIN);
+                ray_box_ops.push(RTFuncInsnType::RT_MINMAX);
+                ray_box_ops.push(RTFuncInsnType::RT_MAXMIN);
+                ray_box_ops.push(RTFuncInsnType::RT_MINMAX);
+                ray_box_ops.push(RTFuncInsnType::RT_MAXMIN);
+                ray_box_ops.push(RTFuncInsnType::RT_MINMAX);
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_CMP);
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_OR);
+                thread->set_rt_op_sequence(ray_box_ops, TransactionType::BVH_INTERNAL_NODE);
                 break;
             }
+
 
             // Ray sphere
             case 6: {
@@ -1412,9 +1435,32 @@ void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_proce
                 ray_decode_ops.push(RTFuncInsnType::RT_DECODE);
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_STRUCTURE);
                 thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR);
+                thread->set_rt_op_sequence(ray_decode_ops, TransactionType::BVH_PROCEDURAL_LEAF);
 
+                std::queue<RTFuncInsnType> ray_box_ops;
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_SUB);
+                ray_box_ops.push(RTFuncInsnType::RT_RCP);
+                ray_box_ops.push(RTFuncInsnType::RT_RCP);
+                ray_box_ops.push(RTFuncInsnType::RT_RCP);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MUL);
+                ray_box_ops.push(RTFuncInsnType::RT_MAXMIN);
+                ray_box_ops.push(RTFuncInsnType::RT_MINMAX);
+                ray_box_ops.push(RTFuncInsnType::RT_MAXMIN);
+                ray_box_ops.push(RTFuncInsnType::RT_MINMAX);
+                ray_box_ops.push(RTFuncInsnType::RT_MAXMIN);
+                ray_box_ops.push(RTFuncInsnType::RT_MINMAX);
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_CMP);
+                ray_box_ops.push(RTFuncInsnType::RT_VEC_OR);
+                thread->set_rt_op_sequence(ray_box_ops, TransactionType::BVH_INTERNAL_NODE);
                 break;
             }
+
 
             default: {
                 printf("gpgpusim: ERROR! Unrecognized node type %d.\n", node_processing_configuration);
@@ -1426,7 +1472,12 @@ void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_proce
     // RTA fixed-function
     else {
         switch (node_processing_configuration) {
-            case 0: {
+            case 0: // Regular ray tracing
+            case 1: // RTA+
+            case 2: // RTA+
+            case 3: // RTA+
+            case 4: // RTA+
+            {
                 std::queue<RTFuncInsnType> ray_box_ops;
                 ray_box_ops.push(RTFuncInsnType::RT_RAY_BOX_FUNC_OP);
                 thread->set_rt_op_sequence(ray_box_ops, TransactionType::BVH_INTERNAL_NODE);
