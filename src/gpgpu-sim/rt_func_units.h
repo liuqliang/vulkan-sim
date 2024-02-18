@@ -32,6 +32,8 @@ class func_unit_stats {
         intersection_cycles = (unsigned long long *)calloc(static_cast<int>(TransactionType::UNDEFINED), sizeof(unsigned long long));
         intersection_count = (unsigned *)calloc(static_cast<int>(TransactionType::UNDEFINED), sizeof(unsigned));
 
+        detailed_intersection_cycles = (unsigned long long **)calloc(static_cast<int>(TransactionType::UNDEFINED), sizeof(unsigned long long *));
+
         per_op_stats = (op_unit_stats **)calloc(n_units, sizeof(op_unit_stats *));
         interconnect_stats = (op_unit_stats *)calloc(n_units, sizeof(op_unit_stats));
 
@@ -43,6 +45,10 @@ class func_unit_stats {
     op_unit_stats* init_per_op(unsigned unit_id, unsigned n_op_units) {
         m_n_op_units = n_op_units;
         per_op_stats[unit_id] = (op_unit_stats *)calloc(n_op_units, sizeof(op_unit_stats));
+
+        for (int i = 0; i < static_cast<int>(TransactionType::UNDEFINED); i++) {
+            detailed_intersection_cycles[i] = (unsigned long long *)calloc(n_op_units+1, sizeof(unsigned long long));
+        }
         return per_op_stats[unit_id];
     }
 
@@ -56,6 +62,7 @@ class func_unit_stats {
 
     // Per function stats
     unsigned long long* intersection_cycles;
+    unsigned long long** detailed_intersection_cycles;
     unsigned* intersection_count; 
 
     // Per op unit stats
@@ -110,6 +117,7 @@ class rt_func_unit {
         void cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp_thread_id>& awaiting_threads, std::deque<std::pair<unsigned, new_addr_type> > &store_queue);
         unsigned count_in_progress() { return m_active_threads; }
         void get_aerialvision_stats(op_unit_aerialvision* stats);
+        void reset_op_unit_arb();
 
     private:
         rt_func_unit_config m_config;
@@ -119,10 +127,12 @@ class rt_func_unit {
         rt_op_unit* m_interconnect_unit;
         unsigned m_active_threads;
 
-        std::bitset<static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE)> m_op_unit_arb;
+        // std::bitset<static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE)> m_op_unit_arb;
+        std::map<unsigned, unsigned> m_op_unit_arb;
         unsigned m_last_op;
 
         std::map<unsigned, unsigned long long> latency_tracker;
+        std::map<unsigned, unsigned long long> detailed_latency_tracker;
 
         unsigned m_sid;
         unsigned m_unit_id;

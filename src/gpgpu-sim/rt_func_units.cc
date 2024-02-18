@@ -103,9 +103,17 @@ rt_func_unit::rt_func_unit(unsigned sid, rt_func_unit_config config, func_unit_s
         rt_op_unit* new_unit = new rt_op_unit(m_sid, op_unit_id, latency, init_cycles, static_cast<RTFuncInsnType>(i), RTFuncInsnTypeNames[i], n_units, &m_op_stats[i]);
         m_op_units.push_back(new_unit);
         op_unit_id++;
+
+        m_op_unit_arb[i] = m_config.n_units[i];
     }
 
-    m_interconnect_unit = new rt_op_unit(m_sid, op_unit_id, m_config.interconnect_latency, m_config.interconnect_init_cycles, RTFuncInsnType::RT_MAX_INSN_TYPE, "interconnect", m_op_units.size(), m_stats->interconnect_stats);
+    m_interconnect_unit = new rt_op_unit(m_sid, op_unit_id, m_config.interconnect_latency, m_config.interconnect_init_cycles, RTFuncInsnType::RT_MAX_INSN_TYPE, "interconnect", m_op_units.size(), &m_stats->interconnect_stats[m_unit_id]);
+}
+
+void rt_func_unit::reset_op_unit_arb() {
+    for (unsigned i=0; i<static_cast<unsigned>(RTFuncInsnType::RT_MAX_INSN_TYPE); i++) {
+        m_op_unit_arb[i] = m_config.n_units[i];
+    }
 }
 
 void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp_thread_id>& awaiting_threads, std::deque<std::pair<unsigned, new_addr_type> > &store_queue) {
@@ -118,6 +126,7 @@ void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp
             unsigned next_thread_uid = next_thread.warp_uid << 5 | next_thread.tid;
             unsigned long long current_cycle = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
             latency_tracker[next_thread_uid] = current_cycle;
+            detailed_latency_tracker[next_thread_uid] = current_cycle;
 
             m_active_threads++;
             awaiting_threads.pop_front();
@@ -133,39 +142,55 @@ void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp
     for (unsigned i=0; i<m_op_units.size(); i++) {
         unsigned op_unit_id = (m_last_op + i) % m_op_units.size();
         m_op_units[op_unit_id]->cycle();
-        if (m_op_units[op_unit_id]->has_output()) {
-            warp_thread_id next_thread = m_op_units[op_unit_id]->get_output();
-            bool done = warps[next_thread.warp_uid].dec_thread_latency(next_thread.tid);
 
-            if (done) {
-                // Get stores
-                std::deque<std::pair<unsigned, new_addr_type> > st_queue = warps[next_thread.warp_uid].check_stores(next_thread.tid);
-                std::copy(st_queue.begin(), st_queue.end(), std::back_inserter(store_queue));
+        // Process m_n_units outputs
+        unsigned n_units = m_config.n_units[op_unit_id];
+        for (unsigned j=0; j<n_units; j++) {
+            if (m_op_units[op_unit_id]->has_output()) {
+                warp_thread_id next_thread = m_op_units[op_unit_id]->get_output();
+                bool done = warps[next_thread.warp_uid].dec_thread_latency(next_thread.tid);
 
-                // Remove from func_unit
-                m_active_threads--;
-                m_stats->total_intersections[m_unit_id]++;
-
-                // Remove from latency tracker
                 unsigned next_thread_uid = next_thread.warp_uid << 5 | next_thread.tid;
                 unsigned long long current_cycle = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
-                unsigned long long latency = current_cycle - latency_tracker[next_thread_uid];
-                latency_tracker.erase(next_thread_uid);
-
                 TransactionType intersection_type = warps[next_thread.warp_uid].get_current_transaction_type(next_thread.tid);
-                m_stats->intersection_cycles[static_cast<unsigned>(intersection_type)] += latency;
-                m_stats->intersection_count[static_cast<unsigned>(intersection_type)]++;
 
-                // printf("[%d:%d] finished\n", next_thread.warp_uid, next_thread.tid);
-            }
-            else {
-                // Check if interconnect is needed (skip if next op matches current op)
-                RTFuncInsnType next_op = warps[next_thread.warp_uid].get_next_op(next_thread.tid);
-                if (static_cast<unsigned>(next_op) == op_unit_id) {
-                    m_op_units[op_unit_id]->add_input(next_thread);
+                if (done) {
+                    // Get stores
+                    std::deque<std::pair<unsigned, new_addr_type> > st_queue = warps[next_thread.warp_uid].check_stores(next_thread.tid);
+                    std::copy(st_queue.begin(), st_queue.end(), std::back_inserter(store_queue));
+
+                    // Remove from func_unit
+                    m_active_threads--;
+                    m_stats->total_intersections[m_unit_id]++;
+
+                    // Remove from latency tracker
+                    unsigned long long latency = current_cycle - latency_tracker[next_thread_uid];
+                    latency_tracker.erase(next_thread_uid);
+
+                    m_stats->intersection_cycles[static_cast<unsigned>(intersection_type)] += latency;
+                    m_stats->intersection_count[static_cast<unsigned>(intersection_type)]++;
+
+                    unsigned long long detailed_latency = current_cycle - detailed_latency_tracker[next_thread_uid];
+                    detailed_latency_tracker.erase(next_thread_uid);
+
+                    m_stats->detailed_intersection_cycles[static_cast<unsigned>(intersection_type)][op_unit_id] += detailed_latency;
+
+                    // printf("[%d:%d] finished\n", next_thread.warp_uid, next_thread.tid);
                 }
                 else {
-                    m_interconnect_unit->add_input(next_thread);
+                    // Add back to latency tracker
+                    unsigned long long latency = current_cycle - detailed_latency_tracker[next_thread_uid];
+                    m_stats->detailed_intersection_cycles[static_cast<unsigned>(intersection_type)][op_unit_id] += latency;
+                    detailed_latency_tracker[next_thread_uid] = current_cycle;
+
+                    // Check if interconnect is needed (skip if next op matches current op)
+                    RTFuncInsnType next_op = warps[next_thread.warp_uid].get_next_op(next_thread.tid);
+                    if (static_cast<unsigned>(next_op) == op_unit_id) {
+                        m_op_units[op_unit_id]->add_input(next_thread);
+                    }
+                    else {
+                        m_interconnect_unit->add_input(next_thread);
+                    }
                 }
             }
         }
@@ -173,22 +198,30 @@ void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp
     m_last_op = (m_last_op + 1) % m_op_units.size();
 
     // Cycle each op unit
-    m_op_unit_arb.reset();
+    reset_op_unit_arb();
     std::queue<warp_thread_id> interconnect_queue;
     while (m_interconnect_unit->has_output()) {
         warp_thread_id next_thread = m_interconnect_unit->get_output();
 
         // Check arbitration
         RTFuncInsnType next_op = warps[next_thread.warp_uid].get_next_op(next_thread.tid);
-        if (m_op_unit_arb.test(static_cast<unsigned>(next_op))) {
+        if (m_op_unit_arb[static_cast<unsigned>(next_op)] < 1) {
             // Failed arbitration
             m_stats->failed_arbitrations++;
             interconnect_queue.push(next_thread);
         }
         else {
-            m_op_unit_arb.set(static_cast<unsigned>(next_op));
+            m_op_unit_arb[static_cast<unsigned>(next_op)]--;
             m_op_units[static_cast<unsigned>(next_op)]->add_input(next_thread);
             // printf("Adding [%d:%d] to %s.\n", next_thread.warp_uid, next_thread.tid, m_op_units[static_cast<unsigned>(next_op)]->get_unit_name().c_str());
+
+            unsigned next_thread_uid = next_thread.warp_uid << 5 | next_thread.tid;
+            unsigned long long current_cycle = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+            unsigned long long latency = current_cycle - detailed_latency_tracker[next_thread_uid];
+            TransactionType intersection_type = warps[next_thread.warp_uid].get_current_transaction_type(next_thread.tid);
+
+            m_stats->detailed_intersection_cycles[static_cast<unsigned>(intersection_type)][m_op_units.size()] += latency;
+            detailed_latency_tracker[next_thread_uid] = current_cycle;
         }
     }
 
@@ -232,16 +265,50 @@ void func_unit_stats::print(FILE *fout) {
     fprintf(fout, "failed_arbitrations = %d\n", failed_arbitrations);
     fprintf(fout, "avg_stalled_output_queue_size = %f\n", (float)interconnect / interconnect_stalled_cycles);
 
+    std::vector<unsigned> transaction_types;
     for (unsigned t=0; t<static_cast<unsigned>(TransactionType::UNDEFINED); t++) {
         float avg_latency = (float)intersection_cycles[t] / (float)intersection_count[t];
         if (!std::isnan(avg_latency)) {
             fprintf(fout, "avg_latency[%d] = %f\n", t, avg_latency);
+            transaction_types.push_back(t);
         }
     }
 
+    for (auto t : transaction_types) {
+        fprintf(fout, "detailed_avg_latency[%d] = ", t);
+        for (unsigned i=0; i<m_n_op_units+1; i++) {
+            float avg_latency = (float)detailed_intersection_cycles[t][i] / (float)intersection_count[t];
+            if (!std::isnan(avg_latency)) {
+                fprintf(fout, "%f ", avg_latency);
+            }
+            else {
+                fprintf(fout, "0 ");
+            }
+        }
+        fprintf(fout, "\n");
+    }
+
     fprintf(fout, "Interconnect stats:\n");
-    fprintf(fout, "total_active_cycles = %llu\n", interconnect_stats->total_active_cycles);
-    fprintf(fout, "pipeline_stalled_cycles = %llu\n", interconnect_stats->pipeline_stalled_cycles);
+    fprintf(fout, "total_active_cycles = ");
+    for (unsigned i=0; i<m_n_units; i++) {
+        fprintf(fout, "%llu ", interconnect_stats[i].total_active_cycles);
+    }
+    fprintf(fout, "\n");
+    fprintf(fout, "pipeline_stalled_cycles = ");
+    for (unsigned i=0; i<m_n_units; i++) {
+        fprintf(fout, "%llu ", interconnect_stats[i].pipeline_stalled_cycles);
+    }
+    fprintf(fout, "\n");
+    fprintf(fout, "input_stalled_cycles = ");
+    for (unsigned i=0; i<m_n_units; i++) {
+        fprintf(fout, "%llu ", interconnect_stats[i].input_stalled_cycles);
+    }
+    fprintf(fout, "\n");
+    fprintf(fout, "avg_op_latency = ");
+    for (unsigned i=0; i<m_n_units; i++) {
+        fprintf(fout, "%f ", interconnect_stats[i].total_op_cycles / (float)interconnect_stats[i].total_ops);
+    }
+    fprintf(fout, "\n");
 
     for (unsigned i=0; i<m_n_op_units; i++) {
         fprintf(fout, "total_active_cycles[%s] = ", RTFuncInsnTypeNames[i].c_str());
