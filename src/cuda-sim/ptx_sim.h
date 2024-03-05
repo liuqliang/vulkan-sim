@@ -492,6 +492,8 @@ class ptx_thread_info {
   void set_txl_transactions(ImageMemoryTransactionRecord transactions);
   void add_ray_intersect() { m_num_ray_intersections += 1; }
   void add_ray_properties(Ray ray) { m_ray = ray; }
+  void set_tree_search_start() { m_tree_search_status = 1; }
+  void set_tree_search_done() { m_tree_search_status = 2; }
 
  public:
   addr_t m_last_effective_address;
@@ -510,6 +512,7 @@ class ptx_thread_info {
   std::vector<MemoryTransactionRecord> RT_transactions;
   std::vector<MemoryStoreTransactionRecord> RT_store_transactions;
   std::map<int, std::queue<RTFuncInsnType> > RT_op_sequences;
+  int m_tree_search_status;
 
  private:
   bool m_functionalSimulationMode;

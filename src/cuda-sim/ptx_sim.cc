@@ -189,6 +189,7 @@ ptx_thread_info::ptx_thread_info(kernel_info_t &kernel) : m_kernel(kernel) {
   m_last_set_operand_value = ptx_reg_t();
   
   RT_thread_data = new Vulkan_RT_thread_data;
+  m_tree_search_status = 0;
 }
 
 const ptx_version &ptx_thread_info::get_ptx_version() const {

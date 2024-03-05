@@ -2220,6 +2220,19 @@ void call_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     assert(n_args == 5);
 
     rt_traverse_tree(pI, thread);
+    // printf("Setting tree search status = 1\n");
+    thread->set_tree_search_start();
+    return;
+  }
+
+  else if (fname.find("__TreeUnitCompleteSearch") != std::string::npos) {
+    unsigned n_return = target_func->has_return();
+    assert(n_return == 0);
+    unsigned n_args = target_func->num_args();
+    assert(n_args == 0);
+    thread->set_tree_search_done();
+    // printf("Setting tree search status = 2\n");
+
     return;
   }
 

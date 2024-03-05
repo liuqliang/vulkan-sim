@@ -89,6 +89,26 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
     }
   }
 
+  // Check for call_op
+  if (inst->is_call()) {
+    // printf("Warp %d (%d): Reserving register for call_op\n", inst->warp_id(), inst->get_uid());
+
+    // Get tree search status
+    int tree_search_status = inst->get_tree_search_status();
+
+    if (tree_search_status == 0) {
+      // printf("Tree search status is 0\n");
+    }
+    else if (tree_search_status == 1) {
+      // Reserve a special register for call_op
+      // printf("Reserve a special register 999\n");
+      reserveRegister(inst->warp_id(), 999);
+    }
+    else if (tree_search_status == 2) {
+      // printf("Tree search status is 2\n");
+    }
+  }
+
   // Keep track of long operations
   if (inst->is_load() && (inst->space.get_type() == global_space ||
                           inst->space.get_type() == local_space ||
@@ -116,7 +136,28 @@ void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
       longopregs[inst->warp_id()].erase(inst->out[r]);
     }
   }
+
+  // Check for call_op
+  if (inst->is_call()) {
+    // printf("Warp %d (%d): Releasing for call_op\n", inst->warp_id(), inst->get_uid());
+
+    // Get tree search status
+    int tree_search_status = inst->get_tree_search_status();
+
+    if (tree_search_status == 0) {
+      // printf("Tree search status is 0\n");
+    }
+    else if (tree_search_status == 1) {
+      // Release a special register for call_op
+      // printf("Release a special register 999\n");
+      releaseRegister(inst->warp_id(), 999);
+    }
+    else if (tree_search_status == 2) {
+      // printf("Tree search status is 2\n");
+    }
+  }
 }
+
 
 /**
  * Checks to see if registers used by an instruction are reserved in the
@@ -146,6 +187,21 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
     if (reg_table[wid].find(*it2) != reg_table[wid].end()) {
       return true;
     }
+
+  // Check for call_op
+  if (inst->is_call()) {
+    // printf("Warp %d: Checking collision for call_op\n", wid);
+
+    // Get tree search status
+    int tree_search_status = inst->get_tree_search_status();
+
+    // Check for collision
+    if (reg_table[wid].find(999) != reg_table[wid].end()) {
+      // printf("Collision with special register 999\n");
+      return true;
+    }
+    // printf("No collision with special register 999\n");
+  }
   return false;
 }
 

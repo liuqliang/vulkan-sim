@@ -1219,6 +1219,7 @@ class inst_t {
       arch_reg.dst[i] = -1;
     }
     isize = 0;
+    m_tree_search_status = 3;
   }
   bool valid() const { return m_decoded; }
   virtual void print_insn(FILE *fp) const {
@@ -1258,6 +1259,10 @@ class inst_t {
   bool is_idiv() const { return ((sp_op == INT_DIV_OP));}   
   bool is_sfu() const {return ((sp_op == FP_SQRT_OP) || (sp_op == FP_LG_OP)  || (sp_op == FP_SIN_OP)  || (sp_op == FP_EXP_OP) || (sp_op == TENSOR__OP));}
   bool is_alu() const {return (sp_op == INT__OP);}
+  bool is_call() const {return (op == CALL_OPS || op == RT_CORE_OP);}
+
+  void set_tree_search_status(int status) { m_tree_search_status = status; }
+  int get_tree_search_status() const { return m_tree_search_status; }
 
   unsigned get_num_operands() const { return num_operands; }
   unsigned get_num_regs() const { return num_regs; }
@@ -1269,6 +1274,8 @@ class inst_t {
   address_type pc;  // program counter address of instruction
   unsigned isize;   // size of instruction in bytes
   op_type op;       // opcode (uarch visible)
+
+  int m_tree_search_status;
 
   barrier_type bar_type;
   reduction_type red_type;

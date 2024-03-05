@@ -2143,6 +2143,11 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       inst.data_size = insn_data_size;
     }
 
+    if (pI->get_opcode() == CALL_OP) {
+      // printf("Warp %d (%d): Setting tree search status to %d\n", inst.warp_id(), inst.get_uid(), m_tree_search_status);
+      inst.set_tree_search_status(m_tree_search_status);
+    }
+
     if (pI->get_opcode() == TRACE_RAY_OP || pI->m_is_raytrace) { 
       // Copy list of accesses to warp instruction
       inst.set_rt_mem_transactions(lane_id, RT_transactions);
