@@ -1147,6 +1147,19 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
     gzprintf(visualizer_file, "%u ", rt_nthreads_intersection[i]);
   gzprintf(visualizer_file, "\n");
 
+  gzprintf(visualizer_file, "rt_nrbox:  ");
+  for (unsigned i = 0; i < m_config->num_shader(); i++)
+    gzprintf(visualizer_file, "%u ", rt_nrbox[i]);
+  gzprintf(visualizer_file, "\n");
+  gzprintf(visualizer_file, "rt_nrtri:  ");
+  for (unsigned i = 0; i < m_config->num_shader(); i++)
+    gzprintf(visualizer_file, "%u ", rt_nrtri[i]);
+  gzprintf(visualizer_file, "\n");
+  gzprintf(visualizer_file, "rt_nrxform:  ");
+  for (unsigned i = 0; i < m_config->num_shader(); i++)
+    gzprintf(visualizer_file, "%u ", rt_nrxform[i]);
+  gzprintf(visualizer_file, "\n");
+
   int max_ops = static_cast<int>(RT_MAX_INSN_TYPE) + 2;
   for (unsigned i=0; i<max_ops; i++) {
     gzprintf(visualizer_file, "rt_func_unit_ops_%02d:  ", i);
@@ -3147,6 +3160,24 @@ void rt_unit::cycle() {
   for (unsigned i=0; i<total_ops; i++) {
     m_stats->rt_func_unit_ops[m_sid * total_ops + i] = per_unit_stats[i].current_op_count;
     m_stats->rt_func_unit_queue[m_sid * total_ops + i] = per_unit_stats[i].input_queue_size;
+  }
+
+  // Check concurrent TTA operations
+  if (GPGPU_Context()->func_sim->g_rt_func_type == 0) {
+    // Iterate through all the functional units
+    unsigned n_box = 0;
+    unsigned n_tri = 0;
+    unsigned n_xform = 0;
+    for (unsigned i=0; i<m_func_units.size(); i++) {
+      n_box += m_func_units[i]->count_op(RTFuncInsnType::RT_RAY_BOX_FUNC_OP);
+      n_tri += m_func_units[i]->count_op(RTFuncInsnType::RT_RAY_TRI_FUNC_OP);
+      n_xform += m_func_units[i]->count_op(RTFuncInsnType::RT_RAY_XFORM_FUNC_OP);
+    }
+
+    // Track in AerialVision stats
+    m_stats->rt_nrbox[m_sid] = n_box;
+    m_stats->rt_nrtri[m_sid] = n_tri;
+    m_stats->rt_nrxform[m_sid] = n_xform;
   }
 
   unsigned max = 0;

@@ -87,7 +87,10 @@ class rt_op_unit {
         }
         void reset_output_queue(std::queue<warp_thread_id> new_queue) { m_output_queue = new_queue; }
         std::string get_unit_name() { return m_unit_name; }
+        RTFuncInsnType get_op() { return m_op; }
         op_unit_aerialvision get_aerialvision_stats() { return m_aerialvision_stats; }
+
+        unsigned get_current_count() { return m_current_execution.size() + m_input_queue.size() + m_output_queue.size(); }
 
     private:
         unsigned m_latency;
@@ -118,6 +121,8 @@ class rt_func_unit {
         unsigned count_in_progress() { return m_active_threads; }
         void get_aerialvision_stats(op_unit_aerialvision* stats);
         void reset_op_unit_arb();
+
+        unsigned count_op(RTFuncInsnType op);
 
     private:
         rt_func_unit_config m_config;

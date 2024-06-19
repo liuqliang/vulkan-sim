@@ -235,6 +235,16 @@ void rt_func_unit::cycle(std::map<unsigned, warp_inst_t>& warps, std::deque<warp
     m_interconnect_unit->cycle();
 }
 
+unsigned rt_func_unit::count_op(RTFuncInsnType op) {
+    unsigned count = 0;
+    for (unsigned i=0; i<m_op_units.size(); i++) {
+        if (m_op_units[i]->get_op() == op) {
+            count += m_op_units[i]->get_current_count();
+        }
+    }
+    return count;
+}
+
 void rt_func_unit::get_aerialvision_stats(op_unit_aerialvision* aerialvision_stats) {
     op_unit_aerialvision interconnect_stats = m_interconnect_unit->get_aerialvision_stats();
     op_unit_aerialvision total_stats = interconnect_stats;

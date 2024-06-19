@@ -2032,6 +2032,9 @@ struct shader_core_stats_pod {
   unsigned *rt_mshr_size;
   unsigned *rt_func_unit_ops;
   unsigned *rt_func_unit_queue;
+  unsigned *rt_nrbox;
+  unsigned *rt_nrtri;
+  unsigned *rt_nrxform;
   unsigned rt_mshr_size_total;
   unsigned rt_mem_requests;
   
@@ -2255,6 +2258,9 @@ class shader_core_stats : public shader_core_stats_pod {
     rt_nthreads_intersection = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     rt_func_unit_ops = (unsigned *)calloc(config->num_shader() * (static_cast<int>(RT_MAX_INSN_TYPE) + 2), sizeof(unsigned));
     rt_func_unit_queue = (unsigned *)calloc(config->num_shader() * (static_cast<int>(RT_MAX_INSN_TYPE) + 2), sizeof(unsigned));
+    rt_nrbox = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    rt_nrtri = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    rt_nrxform = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
 
     gpgpu_n_specialized = (unsigned *)calloc(TOTAL_RAYTRACE_OP, sizeof(unsigned));
     gpgpu_n_specialized_util = (unsigned *)calloc(TOTAL_RAYTRACE_OP, sizeof(unsigned));
