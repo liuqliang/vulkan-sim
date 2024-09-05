@@ -1597,7 +1597,6 @@ class warp_inst_t : public inst_t {
   // RT functions
   void set_rt_mem_transactions(unsigned int tid, std::vector<MemoryTransactionRecord> transactions);
   void set_rt_mem_store_transactions(unsigned int tid, std::vector<MemoryStoreTransactionRecord>& transactions);
-  void set_rt_op_sequence(unsigned int tid, std::queue<RTFuncInsnType> op_seq, int node_type);
   void set_rt_ray_properties(unsigned int tid, Ray ray);
   bool get_rt_ray_intersect(unsigned int tid) const { return m_per_scalar_thread[tid].ray_intersect; }
   Ray get_rt_ray_properties(unsigned int tid) const { return m_per_scalar_thread[tid].ray_properties; }

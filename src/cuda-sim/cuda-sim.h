@@ -170,6 +170,7 @@ class cuda_sim {
   std::vector<std::pair<unsigned, unsigned> > g_traceray_instructions;
   int g_rt_traversal_key;
   bool g_rt_func_type;
+  std::map<int, std::queue<RTFuncInsnType> > g_rt_op_seq;
 
   char *cdp_latency_str;
   int g_ptx_kernel_count;  // used for classification stat collection purposes

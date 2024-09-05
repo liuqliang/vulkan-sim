@@ -1045,11 +1045,6 @@ void warp_inst_t::set_rt_mem_transactions(unsigned int tid, std::vector<MemoryTr
   }
 }
 
-void warp_inst_t::set_rt_op_sequence(unsigned int tid, std::queue<RTFuncInsnType> op_seq, int node_type) {
-  assert(m_per_scalar_thread_valid);
-  m_per_scalar_thread[tid].RT_op_seq[node_type] = op_seq;
-}
-
 void warp_inst_t::set_rt_mem_store_transactions(unsigned int tid, std::vector<MemoryStoreTransactionRecord>& transactions) {
   m_per_scalar_thread[tid].RT_store_transactions = transactions;
 }
@@ -1265,7 +1260,13 @@ bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned ti
     // If all the bits are clear, the entire data has returned, pop from list
     if (mem_record.mem_chunks.none()) {
       // Set up delay of next intersection test
-      m_per_scalar_thread[tid].intersection_ops = m_per_scalar_thread[tid].RT_op_seq[(int)mem_record.type];
+      // m_per_scalar_thread[tid].intersection_ops = m_per_scalar_thread[tid].RT_op_seq[(int)mem_record.type];
+      m_per_scalar_thread[tid].intersection_ops = GPGPU_Context()->func_sim->g_rt_op_seq[(int)mem_record.type];
+      if (m_per_scalar_thread[tid].intersection_ops.size() == 0) {
+        printf("ERROR: No intersection ops for type %d\n", (int)mem_record.type);
+        fflush(stdout);
+        assert(false);
+      }
       m_per_scalar_thread[tid].current_intersection_type = mem_record.type;
       RT_DPRINTF("Adding intersection type %d [%d:%d]\n", (int)mem_record.type, m_uid, tid);
 
