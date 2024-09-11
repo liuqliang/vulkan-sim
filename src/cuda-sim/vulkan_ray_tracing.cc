@@ -437,7 +437,8 @@ bool rt_decode_node(unsigned node_type, memory_space *mem, StackEntry node, addr
         }
 
         // N body
-        case 3: {
+        case 3: 
+        case 7: {
             // TODO: Fix this
             if (node.leaf) {
                 RT_DPRINTF("Leaf node\n")
@@ -612,7 +613,7 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                 transactions.push_back(MemoryTransactionRecord(
                     node_addr,
                     sizeof(int) * n_children,
-                    TransactionType::BVH_STRUCTURE) // Use BVH_STRUCTURE since this is just a decoding operation
+                    TransactionType::BVH_INTERNAL_NODE) 
                 );
                 GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
 
@@ -638,14 +639,6 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
             }
 
             else {
-                transactions.push_back(MemoryTransactionRecord(
-                    node_addr,
-                    sizeof(int) * n_children,
-                    TransactionType::BVH_STRUCTURE) // Use BVH_STRUCTURE since this is just a decoding operation
-                );
-
-                GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
-                
                 // Unconditionally push children (for now)
                 for (unsigned i_child = 0; i_child < n_children; i_child++) {
                     int child_node;
@@ -653,43 +646,28 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                     RT_DPRINTF("Read child %i: %d\n", i_child, child_node);
 
                     if (child_node >= 0) {
-
-                        // Read x, y position data and mass data addresses
-                        addr_t x_addr = conditions.values[2];
-                        addr_t y_addr = conditions.values[3];
-                        addr_t mass_addr = conditions.values[4];
-
                         if (child_node < n) {
                             addr_t child_addr = node_addr + i_child * sizeof(int);
                             int index = (child_addr - root_node_addr) / sizeof(int);
                             RT_DPRINTF("Pushing child %d 0x%x (index %d) is leaf\n", i_child, child_addr, index);
                             next_nodes.push_front(StackEntry(child_addr, true, true));
-
-                            // Assume "dist" part of the calculation is done here and ray-tri only handles force computation
-                            transactions.push_back(MemoryTransactionRecord(
-                                mass_addr + child_node * sizeof(float3),
-                                sizeof(float3), 
-                                TransactionType::BVH_INSTANCE_LEAF) // borrow BVH instance leaf because this transaction is neither internal nor leaf
-                            );
                         }
                         else {
                             // Prune distant nodes
                             const float eps2 = 0.025;
                             float node_depth = node.depth * 0.25;
 
+                            // Read x, y position data and mass data addresses
+                            addr_t x_addr = conditions.values[2];
+                            addr_t y_addr = conditions.values[3];
+                            addr_t mass_addr = conditions.values[4];
+
                             // Read x, y position data and mass data
                             float x, y, mass;
                             mem->read(x_addr + child_node * sizeof(float), sizeof(float), &x);
                             mem->read(y_addr + child_node * sizeof(float), sizeof(float), &y);
                             mem->read(mass_addr + child_node * sizeof(float), sizeof(float), &mass);
-                            // TODO: (FIX) currently pretending the data structure is better and x, y, mass is stored together as an array of struct instead of struct of arrays
-                            transactions.push_back(MemoryTransactionRecord(
-                                mass_addr + child_node * sizeof(float3),
-                                sizeof(float3), 
-                                TransactionType::BVH_INSTANCE_LEAF) // borrow BVH instance leaf because this transaction is neither internal nor leaf
-                            );
 
-                            // Calculations
                             float pos_x = *(float*)&conditions.values[0];
                             float pos_y = *(float*)&conditions.values[1];
 
@@ -756,14 +734,6 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
             }
 
             else {
-                transactions.push_back(MemoryTransactionRecord(
-                    node_addr,
-                    sizeof(int) * n_children,
-                    TransactionType::BVH_STRUCTURE) // Use BVH_STRUCTURE since this is just a decoding operation
-                );
-
-                GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
-                
                 // Unconditionally push children (for now)
                 for (unsigned i_child = 0; i_child < n_children; i_child++) {
                     int child_node;
@@ -840,6 +810,113 @@ std::list<StackEntry> rt_process_inner_node(unsigned node_type, memory_space *me
                 }
             }
 
+            break;
+        }
+
+        // 2D N-Body on TTA
+        case 7: {
+            unsigned n_children = 4;
+            unsigned n = conditions.values[6];
+
+            // Special case for root node
+            if (node_addr == root_node_addr) {
+                transactions.push_back(MemoryTransactionRecord(
+                    node_addr,
+                    sizeof(int) * n_children,
+                    TransactionType::BVH_INTERNAL_NODE)
+                );
+                GPGPU_Context()->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
+
+                float depth = *(float*)&conditions.values[5];
+
+                for (unsigned i_child = 0; i_child < n_children; i_child++) {
+                    int child_node;
+                    mem->read(node_addr + i_child * sizeof(int), sizeof(int), &child_node);
+                    RT_DPRINTF("Read child %i: %d\n", i_child, child_node);
+
+                    if (child_node >= 0) {
+                        int index = child_node * n_children;
+                        addr_t child_addr = root_node_addr + index * sizeof(int);
+
+                        // All inner nodes
+                        RT_DPRINTF("Pushing child %d 0x%x (index %d) top node depth %f\n", i_child, child_addr, index, depth);
+                        next_nodes.push_front(StackEntry(child_addr, true, false, depth));
+                    }
+                    else {
+                        RT_DPRINTF("Child %d invalid.\n", i_child);
+                    }
+                }
+            }
+
+            else {
+
+                // Unconditionally push children (for now)
+                for (unsigned i_child = 0; i_child < n_children; i_child++) {
+                    int child_node;
+                    mem->read(node_addr + i_child * sizeof(int), sizeof(int), &child_node);
+                    RT_DPRINTF("Read child %i: %d\n", i_child, child_node);
+
+                    if (child_node >= 0) {
+                        // Read x, y position data and mass data addresses
+                        addr_t x_addr = conditions.values[2];
+                        addr_t y_addr = conditions.values[3];
+                        addr_t mass_addr = conditions.values[4];
+
+                        if (child_node < n) {
+                            addr_t child_addr = node_addr + i_child * sizeof(int);
+                            int index = (child_addr - root_node_addr) / sizeof(int);
+                            RT_DPRINTF("Pushing child %d 0x%x (index %d) is leaf\n", i_child, child_addr, index);
+                            next_nodes.push_front(StackEntry(child_addr, true, true));
+                            transactions.push_back(MemoryTransactionRecord(
+                                mass_addr + child_node * sizeof(float3),
+                                sizeof(float3),
+                                TransactionType::BVH_INSTANCE_LEAF) // borrow BVH instance leaf because this transaction is neither internal nor leaf
+                            );
+                        }
+                        else {
+                            // Prune distant nodes
+                            const float eps2 = 0.025;
+                            float node_depth = node.depth * 0.25;
+
+                            // Read x, y position data and mass data
+                            float x, y, mass;
+                            mem->read(x_addr + child_node * sizeof(float), sizeof(float), &x);
+                            mem->read(y_addr + child_node * sizeof(float), sizeof(float), &y);
+                            mem->read(mass_addr + child_node * sizeof(float), sizeof(float), &mass);
+
+                            // Calculations
+                            float pos_x = *(float*)&conditions.values[0];
+                            float pos_y = *(float*)&conditions.values[1];
+
+                            float dx = x - pos_x;
+                            float dy = y - pos_y;
+                            float dist = dx*dx + dy*dy + eps2;
+                            RT_DPRINTF("Node depth %f, dist %f\n", node_depth, dist);
+
+                            // Treat as leaf if distance is small enough
+                            if (node_depth <= dist) {
+                                addr_t child_addr = node_addr + i_child * sizeof(int);
+                                int index = (child_addr - root_node_addr) / sizeof(int);
+                                RT_DPRINTF("Pushing child %d 0x%x (index %d) distant leaf\n", i_child, child_addr, index);
+                                next_nodes.push_front(StackEntry(child_addr, true, true));
+                                transactions.push_back(MemoryTransactionRecord(
+                                    mass_addr + child_node * sizeof(float3),
+                                    sizeof(float3),
+                                    TransactionType::BVH_INSTANCE_LEAF) // borrow BVH instance leaf because this transaction is neither internal nor leaf
+                                );
+                            }
+                            else {
+                                addr_t child_addr = root_node_addr + child_node * n_children * sizeof(int);
+                                RT_DPRINTF("Pushing child %d 0x%x (index %d) not leaf\n", i_child, child_addr, child_node);
+                                next_nodes.push_front(StackEntry(child_addr, true, false, node_depth));
+                            }
+                        }
+                    }
+                    else {
+                        RT_DPRINTF("Child %d invalid.\n", i_child);
+                    }
+                }
+            }
             break;
         }
 
@@ -1122,7 +1199,8 @@ bool rt_accept_criteria(unsigned leaf_type, TreeSearchResults result, TreeSearch
             }
             break;
         }
-        case 3: {
+        case 3: 
+        case 7: {
             // Always accept valid results
             if (result.values[0] == 1) {
                 if (existing_result.values[0]) {
@@ -1206,7 +1284,7 @@ void set_op_sequence(unsigned node_processing_configuration, unsigned leaf_proce
 
     if (rt_op_sequences.size() == 0) {
 
-        printf("DEBUGGING MESSAGE: Setting RTAx op sequences\n");
+        printf("DEBUGGING MESSAGE: Setting TTA+ op sequences\n");
 
         // RTAx
         if (func_type) {
@@ -1608,7 +1686,8 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
             use_dfs = true; // B tree doesn't matter
             break;
         }
-        case 3: {
+        case 3: 
+        case 7: {
             use_dfs = true;
             break;
         }
@@ -1660,25 +1739,39 @@ void rt_traverse_tree(const ptx_instruction *pI, ptx_thread_info *thread)
         else {
             RT_DPRINTF("[0x%x]: traversing leaf node 0x%x\n", thread->get_uid(), current_node.addr);
 
-            TreeSearchResults results = rt_process_leaf_node(leaf_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions, transactions);
-            total_nodes_accessed++;
-
-            if (results.values[0]) {
-                // RT_DPRINTF("[0x%x]: hit tri %d, bary [%5.3f, %5.3f, %5.3f], thit %5.3f\n", thread->get_uid(),
-                //     results.values[5], 
-                //     *(float*)&results.values[2], 
-                //     *(float*)&results.values[3], 
-                //     *(float*)&results.values[4], 
-                //     *(float*)&results.values[1]
-                // );
-
-                // Save results; early terminate
-                if (rt_accept_criteria(leaf_processing_configuration, results, results_payload, conditions)) {
-                    RT_DPRINTF("[0x%x]: leaf node 0x%x hit, continuing traversal\n", thread->get_uid(), current_node.addr);
+            // Requires an intersection shader
+            if (leaf_processing_configuration == 5) {
+                // Track how many times the intersection shader is called
+                if (results_payload.values[0] == 1) {
+                    results_payload.values[1] += 1;
                 }
                 else {
-                    RT_DPRINTF("[0x%x]: leaf node 0x%x hit, terminating traversal\n", thread->get_uid(), current_node.addr);
-                    break;
+                    results_payload.values[0] = 1;
+                    results_payload.values[1] = 1;
+                }
+            }
+
+            else {
+                TreeSearchResults results = rt_process_leaf_node(leaf_processing_configuration, mem, current_node.addr, TreeRootAddr, conditions, transactions);
+                total_nodes_accessed++;
+
+                if (results.values[0]) {
+                    // RT_DPRINTF("[0x%x]: hit tri %d, bary [%5.3f, %5.3f, %5.3f], thit %5.3f\n", thread->get_uid(),
+                    //     results.values[5], 
+                    //     *(float*)&results.values[2], 
+                    //     *(float*)&results.values[3], 
+                    //     *(float*)&results.values[4], 
+                    //     *(float*)&results.values[1]
+                    // );
+
+                    // Save results; early terminate
+                    if (rt_accept_criteria(leaf_processing_configuration, results, results_payload, conditions)) {
+                        RT_DPRINTF("[0x%x]: leaf node 0x%x hit, continuing traversal\n", thread->get_uid(), current_node.addr);
+                    }
+                    else {
+                        RT_DPRINTF("[0x%x]: leaf node 0x%x hit, terminating traversal\n", thread->get_uid(), current_node.addr);
+                        break;
+                    }
                 }
             }
         }

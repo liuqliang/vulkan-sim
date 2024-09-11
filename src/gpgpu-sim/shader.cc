@@ -5517,7 +5517,7 @@ void shader_core_ctx::accept_ldst_unit_response(mem_fetch *mf) {
     }
 
     // If there are no raytrace responses, go to ldst_unit
-    if (rt_responses.empty()) {
+    if (rt_responses.empty() && !mf->israytrace()) {
       m_ldst_unit->fill(mf);
     }
     else if (ldst) {
