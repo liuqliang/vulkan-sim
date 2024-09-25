@@ -924,22 +924,38 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 traversalFile << "quad node " << (void *)leaf_addr << ", primitiveID " << leaf.PrimitiveIndex0 << " is the closest hit. world_thit " << thit / worldToObject_tMultiplier;
                             }
 
+                            // min_thit allows for early termination; only update if not running AnyHit shader
                             if (skipAnyHitShader && world_thit < min_thit) {
                                 min_thit = thit / worldToObject_tMultiplier;
-                            }
-                            min_thit_object = thit;
-                            closest_leaf = leaf;
-                            closest_instanceLeaf = instanceLeaf;
-                            closest_worldToObject = worldToObjectMatrix;
-                            closest_objectToWorld = objectToWorldMatrix;
-                            closest_objectRay = objectRay;
-                            min_thit_object = thit;
-                            thread->add_ray_intersect();
-                            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
-                            ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF_HIT)]++;
-                            total_nodes_accessed++;
 
+                                min_thit_object = thit;
+                                closest_leaf = leaf;
+                                closest_instanceLeaf = instanceLeaf;
+                                closest_worldToObject = worldToObjectMatrix;
+                                closest_objectToWorld = objectToWorldMatrix;
+                                closest_objectRay = objectRay;
+                                thread->add_ray_intersect();
+                                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
+                                ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF_HIT)]++;
+                                total_nodes_accessed++;
+                            }
+                            
+
+                            // If running AnyHit shader, every hit needs to be tracked
                             if (!skipAnyHitShader) {
+
+                                // Track as closest hit; will be updated in AnyHit shader if this is not the closest hit
+                                min_thit_object = thit;
+                                closest_leaf = leaf;
+                                closest_instanceLeaf = instanceLeaf;
+                                closest_worldToObject = worldToObjectMatrix;
+                                closest_objectToWorld = objectToWorldMatrix;
+                                closest_objectRay = objectRay;
+                                thread->add_ray_intersect();
+                                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
+                                ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF_HIT)]++;
+                                total_nodes_accessed++;
+
                                 VSIM_DPRINTF("gpgpusim: Adding triangle intersection to anyhit shader table\n");
                                 warp_intersection_table* table = anyhit_table[thread->get_ctaid().x][thread->get_ctaid().y];
                                 
