@@ -1,8 +1,172 @@
+#  Introduction   
+Welcome to Vulkan-Sim, a cycle level GPU simulator for Vulkan ray tracing workloads. Vulkan-Sim models a modern GPU architecture with a baseline RT unit architecture of our own based on past literature such as Intersection Prediction for Accelerated GPU Ray Tracing by Liu et al. from MICRO 2021.
+
+This document will walk you through Vulkan-Sim installation.
+
+If you use Vulkan-Sim in your research, please cite:  
+> Mohammadreza Saed, Yuan Hsi Chou, Lufei Liu, Tyler Nowicki, Tor M. Aamodt, Vulkan-Sim: A GPU Architecture Simulator for Ray Tracing, In proceedings of the ACM/IEEE International Symposium on Microarchitecture (MICRO 2022), Chicago, Illinois, October 1–5, 2022.
+
+Vulkan-Sim version 2.0.0 and above is also compatible with LumiBench. If you use LumiBench in your research, please cite:  
+> Lufei Liu, Mohammadreza Saed, Yuan Hsi Chou, Davit Grigoryan, Tyler Nowicki, Tor M. Aamodt, LumiBench: A Benchmark Suite for Hardware Ray Tracing, In proceedings of the IEEE International Symposium on Workload Characterization (IISWC), Ghent, Belgium, October 1–3, 2023.
+
+This particular branch includes modifications made to support generalized tree traversals. If you use this version, please cite:
+> Dongho Ha, Lufei Liu, Yuan Hsi Chou, Seokjin Go, Won Woo Ro, Hung-Wei Tseng, Tor M. Aamodt, Generalizing Ray Tracing Accelerators for Tree Traversals on GPUs, In proceedings of the ACM/IEEE International Symposium on Microarchitecture (MICRO 2024), Austin, Texas, November 2–6, 2024.
+
+#  Required Software/Packages 
+- Ubuntu 20.04
+- Embree3 (embree-3.12 or later, download from https://www.embree.org/)
+- CUDA 10/11
+- gcc-9
+- g++-9
+
+Please install the following required packages for Vulkan-Sim.
+``` bash
+sudo apt install -y build-essential git ninja-build meson libboost-all-dev xutils-dev bison zlib1g-dev flex libglu1-mesa-dev libxi-dev libxmu-dev libdrm-dev llvm libelf-dev libwayland-dev wayland-protocols libwayland-egl-backend-dev libxcb-glx0-dev libxcb-shm0-dev libx11-xcb-dev libxcb-dri2-0-dev libxcb-dri3-dev libxcb-present-dev libxshmfence-dev libxxf86vm-dev libxrandr-dev libglm-dev
+```
+
+
+#  Vulkan-Sim Directory Setup
+1. Please create a folder to contain all components of Vulkan-Sim.
+```
+mkdir vulkan-sim-root/
+cd vulkan-sim-root/
+```
+2. Clone the following repos in the folder you just created. Ensure that the cloned Mesa version matches the Vulkan-Sim version. For example, Vulkan-Sim version 2.0.0 is only supported with mesa-vulkan-sim v2.0.0 release. 
+``` bash
+git clone https://github.com/ubc-aamodt-group/vulkan-sim
+git clone https://github.com/ubc-aamodt-group/mesa-vulkan-sim
+```
+3. The resulting folder structure should look like this.
+```
+vulkan-sim-root/-|- vulkan-sim/
+                 |- mesa-vulkan-sim/
+                 |- embree-3.13.4.x86_64.linux/ (Embree3 can be installed anywhere, change mesa/src/intel/vulkan meson.build to match)
+```
+
+
+#  Vulkan-Sim Installation Instructions 
+Commands here assume you have navigated to `vulkan-sim-root/`. Make sure CUDA Toolkit and embree3 are installed.
+
+1. Install the Vulkan SDK from the LunarG website.The commands for the latest version from their website are copied here.
+``` bash
+wget -qO - http://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-focal.list http://packages.lunarg.com/vulkan/lunarg-vulkan-focal.list
+sudo apt update
+sudo apt install vulkan-sdk
+```
+
+2. Set environment variables
+``` bash
+# Change this to your CUDA install path
+export CUDA_INSTALL_PATH=/usr/local/cuda-11.7
+# Source this from your Embree path
+source embree-3.13.4.x86_64.linux/embree-vars.sh
+```
+
+3. Build Vulkan-Sim + Mesa. Please ignore the error in the first `ninja -C build/ install`, this is normal.
+``` bash
+cd vulkan-sim/
+source setup_environment
+
+cd ../mesa-vulkan-sim/
+meson --prefix="${PWD}/lib" build -Dvulkan-drivers=swrast -Dgallium-drivers=swrast -Dplatforms=x11 -D b_lundef=false -D buildtype=debug
+# This compilation produces files necessary to Vulkan-Sim but is expected to fail.
+ninja -C build/ install 
+
+export VK_ICD_FILENAMES=${PWD}/lib/share/vulkan/icd.d/lvp_icd.x86_64.json
+cd ../vulkan-sim/
+make -j
+
+cd ../mesa-vulkan-sim/
+# This compilation is expected to succeed.
+ninja -C build/ install
+```
+
+# Running RayTracingInVulkan (LumiBench) with Vulkan-Sim
+1. Download RayTracingInVulkan from our repo to a local folder
+``` bash
+git clone https://github.com/ubc-aamodt-group/RayTracingInVulkan.git
+```
+2. Compile RayTracingInVulkan
+``` bash
+cd RayTracingInVulkan/
+sudo apt-get -y install cmake curl unzip tar libxi-dev libxinerama-dev libxcursor-dev xorg-dev
+./vcpkg_linux.sh
+./build_linux.sh
+```
+3. Copy GPGPU-Sim configurations to the binary directory
+``` bash
+# Change <vulkan-sim-root> to your own path!
+cp <vulkan-sim-root>/vulkan-sim/configs/tested-cfgs/SM75_RTX2060/* build/linux/bin/.
+```
+4. Run RayTracingInVulkan
+``` bash
+cd build/linux/bin/
+# ./RayTracer --scene <scene number> --height <height> --width <width> --samples <spp>
+./RayTracer --scene 18 --width 128 --height 128 --samples 2
+```
+
+Please refer to the README in RayTracingInVulkan for more information. 
+
+Note that Vulkan-Sim version 2.0.0 no longer supports the trace runner. 
+
+#  Troubleshooting   
+- If meson indicates missing libraries when compiling mesa, please follow the instructions and install the corresponding packages. E.g: If missing library `elf`, then install the package with `sudo apt install libelf-dev`
+- If mesa has problems linking to `embree` or `libcudart`, while in the mesa folder please check the file `src/intel/vulkan/meson.build` and make sure `embree_lib_dir`, `embree_header_dir`, and `#gpgpusim_lib_dir` have correct paths. If there is still an error, try using absolute paths.
+- If there are errors linking to `libboost` even after installing `libboost-all-dev` through your package manager, you might need to download the library from https://www.boost.org/ and manually link to it in the `Makefile`.
+- If there are errors linking to `libcudart`, double check the `GPGPUSIM_PATH` in the `Makefile`.
+If the Vulkan application isnt invoking Vulkan-Sim, make sure the path of `$VK_ICD_FILENAMES` is correct when exporting. 
+```
+export VK_ICD_FILENAMES=<vulkan-sim-root>/mesa-vulkan-sim/lib/share/vulkan/icd.d/lvp_icd.x86_64.json
+```
+
+## TTA Configurations
+
+- `-gpgpu_rt_func_type` toggles between the TTA and TTA+ architectures as described in the paper. 
+(`0` for TTA, `1` for TTA+)
+- `-gpgpu_rt_func_units` defines the total sets of hardware intersection units per SM. For example, 
+a set can be configured to include 2 RAY-BOX and 1 RAY-TRI units. 
+- `-gpgpu_rt_n_func_units` defines the number of functional hardware intersection units per set. 
+The order is defined by the `RTFuncInsnType` enumeration.
+- `-gpgpu_rt_intersection_latency` and `-gpgpu_rt_init_cycles` define the execution latency (pipeline
+ stages) and initiation latency for each functional hardware intersection unit respectively in the
+ same ordering. 
+- `-gpgpu_rt_interconnect` configures the interconnect for TTA+. 
+
+To simulate TTA/TTA+ for a CUDA application, please set `-gpgpu_rt_external_launch 1` and adjust `--gpgpu_max_simulated_rt_kernels` to the total number of CUDA kernels accordingly. 
+
+### Simulating a CUDA tree traversal:
+TTA/TTA+ can be launched from a CUDA application by calling the `__TreeUnitSearch(...)` function, 
+followed by the `__TreeUnitCompleteSearch()` function. Please include the dummy function definitions 
+in the CUDA application, which will be overridden by your implementation of `rt_traverse_tree(...)` 
+in Vulkan-Sim. 
+```cpp
+typedef struct TreeSearchConditions {
+	    uint32_t values[12];
+} TreeSearchConditions;
+
+// Search results (HitPayload - 32 bytes)
+typedef struct TreeSearchResults {
+	    uint32_t values[8];
+} TreeSearchResults;
+
+__device__ __noinline__ void __TreeUnitSearch(
+	TreeSearchConditions conditions,
+	void* rootNode,
+	TreeSearchResults* results,
+	unsigned node_config,
+	unsigned tri_config
+) {}
+
+__device__ __noinline__ void __TreeUnitCompleteSearch() {}
+```
+
+# Original GPGPU-Sim README
 Welcome to GPGPU-Sim, a cycle-level simulator modeling contemporary graphics
 processing units (GPUs) running GPU computing workloads written in CUDA or
 OpenCL. Also included in GPGPU-Sim is a performance visualization tool called
-AerialVision and a configurable and extensible power model called AccelWattch.
-GPGPU-Sim and AccelWattch have been rigorously validated with performance and
+AerialVision and a configurable and extensible energy model called GPUWattch.
+GPGPU-Sim and GPUWattch have been rigorously validated with performance and
 power measurements of real hardware GPUs.
 
 This version of GPGPU-Sim has been tested with a subset of CUDA version 4.2,
@@ -11,11 +175,6 @@ This version of GPGPU-Sim has been tested with a subset of CUDA version 4.2,
 Please see the copyright notice in the file COPYRIGHT distributed with this
 release in the same directory as this file.
 
-GPGPU-Sim 4.0 is compatible with Accel-Sim simulation framework. With the support 
-of Accel-Sim, GPGPU-Sim 4.0 can run NVIDIA SASS traces (trace-based simulation) 
-generated by NVIDIA's dynamic binary instrumentation tool (NVBit). For more information 
-about Accel-Sim, see [https://accel-sim.github.io/](https://accel-sim.github.io/)
-
 If you use GPGPU-Sim 4.0 in your research, please cite:
 
 Mahmoud Khairy, Zhesheng Shen, Tor M. Aamodt, Timothy G Rogers.
@@ -23,13 +182,14 @@ Accel-Sim: An Extensible Simulation Framework for Validated GPU Modeling.
 In proceedings of the 47th IEEE/ACM International Symposium on Computer Architecture (ISCA),
 May 29 - June 3, 2020.
 
-If you use CuDNN or PyTorch support (execution-driven simulation), checkpointing or our new debugging tool for functional 
+If you use CuDNN or PyTorch support, checkpointing or our new debugging tool for functional 
 simulation errors in GPGPU-Sim for your research, please cite:
 
 Jonathan Lew, Deval Shah, Suchita Pati, Shaylin Cattell, Mengchi Zhang, Amruth Sandhupatla, 
 Christopher Ng, Negar Goli, Matthew D. Sinclair, Timothy G. Rogers, Tor M. Aamodt
 Analyzing Machine Learning Workloads Using a Detailed GPU Simulator, arXiv:1811.08933,
 https://arxiv.org/abs/1811.08933
+
 
 If you use the Tensor Core model in GPGPU-Sim or GPGPU-Sim's CUTLASS Library 
 for your research please cite:
