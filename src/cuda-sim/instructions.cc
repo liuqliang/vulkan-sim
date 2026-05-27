@@ -7352,6 +7352,19 @@ unsigned rtcore_active_thread_mask(const ptx_instruction *pI) {
   return 0xffffffffu;
 }
 
+bool rtcore_lane_is_active_in_mask(unsigned active_thread_mask,
+                                   unsigned lane_slot_index) {
+  const unsigned lane_thread_mask =
+      rtcore_lane_thread_mask(lane_slot_index);
+  return (active_thread_mask & lane_thread_mask) != 0;
+}
+
+bool rtcore_lane_is_active_in_instruction(const ptx_instruction *pI,
+                                          unsigned lane_slot_index) {
+  return rtcore_lane_is_active_in_mask(rtcore_active_thread_mask(pI),
+                                       lane_slot_index);
+}
+
 unsigned rtcore_count_active_lanes(unsigned active_mask) {
   unsigned count = 0;
   for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
@@ -7581,6 +7594,38 @@ bool rtcore_symbolic_submit_has_capacity(
 
 void rtcore_reject_symbolic_submit(const ptx_instruction *pI) {
   inst_not_implemented(pI);
+}
+
+bool rtcore_symbolic_submit_lane_is_active(
+    const ptx_instruction *pI, unsigned lane_slot_index,
+    unsigned long long context_ptr, unsigned long long handoff_window_base) {
+  const unsigned active_lane_mask = rtcore_active_thread_mask(pI);
+  const unsigned lane_thread_mask =
+      rtcore_lane_thread_mask(lane_slot_index);
+  const bool lane_active =
+      rtcore_lane_is_active_in_mask(active_lane_mask, lane_slot_index);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT active-mask-check (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, active_lane_mask=0x%08x, "
+         "lane_thread_mask=0x%08x, active=%u\n",
+         pI->source_file(), pI->source_line(), context_ptr,
+         handoff_window_base, lane_slot_index, active_lane_mask,
+         lane_thread_mask, lane_active ? 1 : 0);
+  fflush(stdout);
+
+  if (!lane_active) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=INACTIVE_LANE_SUBMIT, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "active_lane_mask=0x%08x, lane_thread_mask=0x%08x, consumed=0\n",
+           pI->source_file(), pI->source_line(), context_ptr,
+           handoff_window_base, lane_slot_index, active_lane_mask,
+           lane_thread_mask);
+    fflush(stdout);
+  }
+
+  return lane_active;
 }
 
 bool rtcore_synthetic_handoff_window_is_live(
@@ -8107,6 +8152,13 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
            lane_slot_index);
     fflush(stdout);
     inst_not_implemented(pI);
+    return;
+  }
+
+  if (!rtcore_symbolic_submit_lane_is_active(
+          pI, lane_slot_index, context_ptr_data.u64,
+          handoff_window_base_data.u64)) {
+    rtcore_reject_symbolic_submit(pI);
     return;
   }
 
