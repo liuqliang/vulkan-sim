@@ -7212,25 +7212,120 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                    thread);
 }
 
+namespace {
+
+const unsigned long long RTCORE_CONTEXT_ALIGNMENT = 64;
+const unsigned long long RTCORE_HANDOFF_WINDOW_ALIGNMENT = 128;
+const unsigned RTCORE_RETURN_FOR_MISS = 0x03;
+const unsigned RTCORE_COMPLETION_FLAG_TRACE_DONE = 1u << 3;
+const unsigned RTCORE_COMPLETION_VALID = 1u << 31;
+
+struct rtcore_synthetic_handoff_header {
+  unsigned long long context_ptr;
+  unsigned w0;
+  unsigned w1;
+  unsigned w2;
+  unsigned w3;
+};
+
+static std::map<unsigned long long, rtcore_synthetic_handoff_header>
+    g_rtcore_synthetic_handoff_windows;
+
+unsigned rtcore_compact_result(unsigned reason, unsigned flags,
+                               unsigned completion_seq_low,
+                               unsigned resume_seq_low,
+                               unsigned window_tag_low) {
+  return RTCORE_COMPLETION_VALID | (reason & 0xf) | ((flags & 0xff) << 4) |
+         ((completion_seq_low & 0xff) << 12) |
+         ((resume_seq_low & 0xff) << 20) |
+         ((window_tag_low & 0x7) << 28);
+}
+
+bool rtcore_submit_operands_are_valid(unsigned long long context_ptr,
+                                      unsigned long long handoff_window_base) {
+  return context_ptr != 0 && handoff_window_base != 0 &&
+         (context_ptr % RTCORE_CONTEXT_ALIGNMENT) == 0 &&
+         (handoff_window_base % RTCORE_HANDOFF_WINDOW_ALIGNMENT) == 0;
+}
+
+void rtcore_publish_synthetic_miss(const ptx_instruction *pI,
+                                   ptx_thread_info *thread,
+                                   const operand_info &result,
+                                   unsigned long long context_ptr,
+                                   unsigned long long handoff_window_base) {
+  const unsigned completion_seq_low = 1;
+  const unsigned resume_seq_low = 0;
+  const unsigned window_tag_low = 1;
+  const unsigned result_word =
+      rtcore_compact_result(RTCORE_RETURN_FOR_MISS,
+                            RTCORE_COMPLETION_FLAG_TRACE_DONE,
+                            completion_seq_low, resume_seq_low,
+                            window_tag_low);
+
+  rtcore_synthetic_handoff_header header;
+  header.context_ptr = context_ptr;
+  header.w0 = result_word;
+  header.w1 = 1u | (RTCORE_RETURN_FOR_MISS << 8) |
+              (RTCORE_COMPLETION_FLAG_TRACE_DONE << 16);
+  header.w2 = completion_seq_low | (resume_seq_low << 16);
+  header.w3 = window_tag_low;
+  g_rtcore_synthetic_handoff_windows[handoff_window_base] = header;
+
+  ptx_reg_t result_data;
+  result_data.u32 = result_word;
+  thread->set_operand_value(result, result_data, U32_TYPE, thread, pI);
+
+  Traversal_data traversal_data;
+  memset(&traversal_data, 0, sizeof(traversal_data));
+  traversal_data.hit_geometry = false;
+  traversal_data.current_shader_counter = -1;
+  traversal_data.current_shader_type = -1;
+  traversal_data.missIndex = 0;
+
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data *device_traversal_data =
+      (Traversal_data *)VulkanRayTracing::gpgpusim_alloc(sizeof(Traversal_data));
+  mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data,
+             thread, pI);
+  thread->RT_thread_data->all_hit_data.clear();
+  thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT synthetic-complete (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "result=0x%08x, w0=0x%08x, w1=0x%08x, w2=0x%08x, w3=0x%08x\n",
+         pI->source_file(), pI->source_line(), context_ptr,
+         handoff_window_base, result_word, header.w0, header.w1, header.w2,
+         header.w3);
+  fflush(stdout);
+}
+
+}  // namespace
+
 void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   assert(pI->get_num_operands() == 3);
   const operand_info &result = pI->operand_lookup(0);
   const operand_info &context_ptr = pI->operand_lookup(1);
   const operand_info &handoff_window_base = pI->operand_lookup(2);
-  (void)result;
 
   ptx_reg_t context_ptr_data =
       thread->get_operand_value(context_ptr, context_ptr, B64_TYPE, thread, 1);
   ptx_reg_t handoff_window_base_data = thread->get_operand_value(
       handoff_window_base, handoff_window_base, B64_TYPE, thread, 1);
 
-  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
-         "context_ptr=0x%llx, handoff_window_base=0x%llx\n",
-         pI->source_file(), pI->source_line(),
-         (unsigned long long)context_ptr_data.u64,
-         (unsigned long long)handoff_window_base_data.u64);
-  fflush(stdout);
-  inst_not_implemented(pI);
+  if (!rtcore_submit_operands_are_valid(context_ptr_data.u64,
+                                        handoff_window_base_data.u64)) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "context_ptr=0x%llx, handoff_window_base=0x%llx\n",
+           pI->source_file(), pI->source_line(),
+           (unsigned long long)context_ptr_data.u64,
+           (unsigned long long)handoff_window_base_data.u64);
+    fflush(stdout);
+    inst_not_implemented(pI);
+    return;
+  }
+
+  rtcore_publish_synthetic_miss(pI, thread, result, context_ptr_data.u64,
+                                handoff_window_base_data.u64);
 }
 
 void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
