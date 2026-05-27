@@ -7232,6 +7232,18 @@ const unsigned RTCORE_MAX_RESIDENT_WARPS_PER_EXECUTION_PARTITION = 16;
 const unsigned RTCORE_RT_TOKENS_PER_EXECUTION_PARTITION = 128;
 const unsigned RTCORE_TRAVERSAL_STACK_ENTRIES_PER_ACTIVE_LANE = 16;
 const unsigned RTCORE_WINDOW_STATE_COMPLETE = 3;
+const unsigned long long RTCORE_SHARED_HANDOFF_WINDOW_BASE = 0x20000000ull;
+const unsigned long long RTCORE_SHARED_HANDOFF_WINDOW_BYTES = 0x10000000ull;
+const unsigned long long RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BASE =
+    0x30000000ull;
+const unsigned long long RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BYTES =
+    0x10000000ull;
+
+enum rtcore_handoff_window_class {
+  RTCORE_HANDOFF_WINDOW_CLASS_SHARED_WORKGROUP,
+  RTCORE_HANDOFF_WINDOW_CLASS_LOCAL_PRIVATE,
+  RTCORE_HANDOFF_WINDOW_CLASS_UNSUPPORTED
+};
 
 struct rtcore_symbolic_resource_profile {
   unsigned shared_memory_bytes_available_per_execution_partition;
@@ -7357,6 +7369,75 @@ unsigned rtcore_resource_env_u32(const char *name, unsigned fallback) {
     return fallback;
   }
   return static_cast<unsigned>(parsed);
+}
+
+bool rtcore_address_in_range(unsigned long long address,
+                             unsigned long long base,
+                             unsigned long long bytes) {
+  return address >= base && address < (base + bytes);
+}
+
+rtcore_handoff_window_class rtcore_classify_handoff_window(
+    unsigned long long handoff_window_base) {
+  if (rtcore_address_in_range(handoff_window_base,
+                              RTCORE_SHARED_HANDOFF_WINDOW_BASE,
+                              RTCORE_SHARED_HANDOFF_WINDOW_BYTES)) {
+    return RTCORE_HANDOFF_WINDOW_CLASS_SHARED_WORKGROUP;
+  }
+  if (rtcore_address_in_range(handoff_window_base,
+                              RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BASE,
+                              RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BYTES)) {
+    return RTCORE_HANDOFF_WINDOW_CLASS_LOCAL_PRIVATE;
+  }
+  return RTCORE_HANDOFF_WINDOW_CLASS_UNSUPPORTED;
+}
+
+const char *rtcore_handoff_window_class_name(
+    rtcore_handoff_window_class window_class) {
+  switch (window_class) {
+    case RTCORE_HANDOFF_WINDOW_CLASS_SHARED_WORKGROUP:
+      return "shared_workgroup";
+    case RTCORE_HANDOFF_WINDOW_CLASS_LOCAL_PRIVATE:
+      return "local_private";
+    default:
+      return "unsupported";
+  }
+}
+
+bool rtcore_submit_handoff_window_class_is_valid(
+    const ptx_instruction *pI, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned lane_slot_index) {
+  const rtcore_handoff_window_class window_class =
+      rtcore_classify_handoff_window(handoff_window_base);
+  const bool shared_workgroup =
+      window_class == RTCORE_HANDOFF_WINDOW_CLASS_SHARED_WORKGROUP;
+  const bool accepted = shared_workgroup;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT handoff-window-class (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, window_class=%s, shared_workgroup=%u, "
+         "accepted=%u\n",
+         pI->source_file(), pI->source_line(), context_ptr,
+         handoff_window_base, lane_slot_index,
+         rtcore_handoff_window_class_name(window_class),
+         shared_workgroup ? 1 : 0, accepted ? 1 : 0);
+  fflush(stdout);
+
+  if (!accepted) {
+    const char *reason =
+        window_class == RTCORE_HANDOFF_WINDOW_CLASS_LOCAL_PRIVATE
+            ? "LOCAL_PRIVATE_HOT_WINDOW"
+            : "UNSUPPORTED_WINDOW_CLASS";
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u, window_class=%s, consumed=0\n",
+           pI->source_file(), pI->source_line(), reason, context_ptr,
+           handoff_window_base, lane_slot_index,
+           rtcore_handoff_window_class_name(window_class));
+    fflush(stdout);
+  }
+
+  return accepted;
 }
 
 rtcore_symbolic_resource_profile rtcore_get_symbolic_resource_profile() {
@@ -7985,6 +8066,13 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
            lane_slot_index);
     fflush(stdout);
     inst_not_implemented(pI);
+    return;
+  }
+
+  if (!rtcore_submit_handoff_window_class_is_valid(
+          pI, context_ptr_data.u64, handoff_window_base_data.u64,
+          lane_slot_index)) {
+    rtcore_reject_symbolic_submit(pI);
     return;
   }
 
