@@ -7268,6 +7268,10 @@ struct rtcore_synthetic_handoff_header {
   unsigned owner_hw_sid;
   unsigned thread_mask;
   unsigned window_state;
+  unsigned window_generation;
+  unsigned completion_seq;
+  unsigned resume_seq;
+  unsigned window_tag;
   unsigned w0;
   unsigned w1;
   unsigned w2;
@@ -7316,6 +7320,8 @@ struct rtcore_synthetic_handoff_key {
 
 static std::map<rtcore_synthetic_handoff_key, rtcore_synthetic_handoff_header>
     g_rtcore_synthetic_handoff_windows;
+static std::map<rtcore_synthetic_handoff_key, unsigned>
+    g_rtcore_synthetic_window_generations;
 bool g_rtcore_symbolic_resource_profile_logged = false;
 
 unsigned rtcore_lane_slot_index(ptx_thread_info *thread) {
@@ -7357,6 +7363,30 @@ unsigned rtcore_count_active_lanes(unsigned active_mask) {
 }
 
 unsigned rtcore_min_u32(unsigned a, unsigned b) { return a < b ? a : b; }
+
+unsigned rtcore_peek_next_synthetic_window_generation(
+    const rtcore_synthetic_handoff_key &key) {
+  std::map<rtcore_synthetic_handoff_key, unsigned>::const_iterator
+      window_generation = g_rtcore_synthetic_window_generations.find(key);
+  if (window_generation == g_rtcore_synthetic_window_generations.end()) {
+    return 1;
+  }
+  return window_generation->second + 1;
+}
+
+void rtcore_commit_synthetic_window_generation(
+    const rtcore_synthetic_handoff_key &key, unsigned window_generation) {
+  g_rtcore_synthetic_window_generations[key] = window_generation;
+}
+
+unsigned rtcore_synthetic_completion_seq_for_generation(
+    unsigned generation) {
+  return generation & 0xffffu;
+}
+
+unsigned rtcore_synthetic_window_tag_for_generation(unsigned generation) {
+  return generation & 0xffu;
+}
 
 unsigned rtcore_resource_env_u32(const char *name, unsigned fallback) {
   const char *value = getenv(name);
@@ -7651,6 +7681,7 @@ void rtcore_publish_synthetic_handoff_window(
     fflush(stdout);
   }
   assert(inserted);
+  rtcore_commit_synthetic_window_generation(key, header.window_generation);
   const unsigned lane_slot_byte_offset =
       rtcore_handoff_lane_slot_byte_offset(key.lane_slot_index);
   const unsigned long long lane_slot_base =
@@ -7661,13 +7692,15 @@ void rtcore_publish_synthetic_handoff_window(
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, lane_slot_byte_offset=%u, "
          "lane_slot_base=0x%llx, owner_hw_tid=%u, owner_hw_wid=%u, "
-         "owner_hw_sid=%u, thread_mask=0x%08x, w0=0x%08x, w1=0x%08x, "
-         "w2=0x%08x, w3=0x%08x\n",
+         "owner_hw_sid=%u, thread_mask=0x%08x, window_generation=%u, "
+         "completion_seq=%u, resume_seq=%u, window_tag=%u, w0=0x%08x, "
+         "w1=0x%08x, w2=0x%08x, w3=0x%08x\n",
          pI->source_file(), pI->source_line(), header.context_ptr,
          key.handoff_window_base, key.lane_slot_index, lane_slot_byte_offset,
          lane_slot_base, header.owner_hw_tid, header.owner_hw_wid,
-         header.owner_hw_sid, header.thread_mask, header.w0, header.w1,
-         header.w2, header.w3);
+         header.owner_hw_sid, header.thread_mask, header.window_generation,
+         header.completion_seq, header.resume_seq, header.window_tag,
+         header.w0, header.w1, header.w2, header.w3);
   fflush(stdout);
 }
 
@@ -7964,13 +7997,17 @@ void rtcore_publish_traversal_completion(
     const ptx_instruction *pI, ptx_thread_info *thread,
     const operand_info &result, unsigned long long context_ptr,
     unsigned long long handoff_window_base) {
-  const unsigned completion_seq_low = 1;
-  const unsigned resume_seq_low = 0;
-  const unsigned window_tag_low = 1;
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
   const rtcore_synthetic_handoff_key key =
       rtcore_make_synthetic_handoff_key(handoff_window_base, lane_slot_index,
                                         thread);
+  const unsigned window_generation =
+      rtcore_peek_next_synthetic_window_generation(key);
+  const unsigned completion_seq_low =
+      rtcore_synthetic_completion_seq_for_generation(window_generation);
+  const unsigned resume_seq_low = 0;
+  const unsigned window_tag =
+      rtcore_synthetic_window_tag_for_generation(window_generation);
 
   memory_space *mem = thread->get_global_memory();
   Traversal_data traversal_data;
@@ -8003,20 +8040,24 @@ void rtcore_publish_traversal_completion(
       hit_geometry ? RTCORE_RETURN_FOR_CLOSEST_HIT : RTCORE_RETURN_FOR_MISS;
   const unsigned result_word = rtcore_compact_result(
       reason, RTCORE_COMPLETION_FLAG_TRACE_DONE, completion_seq_low,
-      resume_seq_low, window_tag_low);
+      resume_seq_low, window_tag);
 
   rtcore_synthetic_handoff_header header;
   memset(&header, 0, sizeof(header));
   header.context_ptr = context_ptr;
+  header.window_generation = window_generation;
+  header.completion_seq = completion_seq_low;
+  header.resume_seq = resume_seq_low;
+  header.window_tag = window_tag;
   header.w0 = result_word;
   header.w1 = 1u | (reason << 8) |
               (RTCORE_COMPLETION_FLAG_TRACE_DONE << 16);
   header.w2 = completion_seq_low | (resume_seq_low << 16);
-  header.w3 = window_tag_low;
+  header.w3 = window_tag;
   rtcore_populate_synthetic_owner_tuple(&header, key, pI, thread);
   rtcore_publish_synthetic_dependent_groups(
       pI, traversal_data, reason, completion_seq_low, resume_seq_low,
-      window_tag_low, &header);
+      window_tag, &header);
   rtcore_publish_synthetic_handoff_window(pI, key, header);
 
   ptx_reg_t result_data;
