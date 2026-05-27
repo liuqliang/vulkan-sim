@@ -7229,6 +7229,7 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
          pI->source_file(), pI->source_line(),
          (unsigned long long)context_ptr_data.u64,
          (unsigned long long)handoff_window_base_data.u64);
+  fflush(stdout);
   inst_not_implemented(pI);
 }
 
@@ -7247,6 +7248,7 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
          pI->source_file(), pI->source_line(),
          (unsigned long long)context_ptr_data.u64,
          (unsigned long long)handoff_window_base_data.u64);
+  fflush(stdout);
   inst_not_implemented(pI);
 }
 
