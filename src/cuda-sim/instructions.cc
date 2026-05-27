@@ -7220,6 +7220,7 @@ const unsigned RTCORE_RETURN_FOR_CLOSEST_HIT = 0x02;
 const unsigned RTCORE_RETURN_FOR_MISS = 0x03;
 const unsigned RTCORE_COMPLETION_FLAG_TRACE_DONE = 1u << 3;
 const unsigned RTCORE_COMPLETION_VALID = 1u << 31;
+const unsigned RTCORE_WINDOW_GROUP_VALID = RTCORE_COMPLETION_VALID;
 
 struct rtcore_synthetic_handoff_header {
   unsigned long long context_ptr;
@@ -7227,6 +7228,26 @@ struct rtcore_synthetic_handoff_header {
   unsigned w1;
   unsigned w2;
   unsigned w3;
+  unsigned w4;
+  unsigned w5;
+  unsigned w6;
+  unsigned w7;
+  unsigned w8;
+  unsigned w9;
+  unsigned w10;
+  unsigned w11;
+  unsigned w12;
+  unsigned w13;
+  unsigned w14;
+  unsigned w15;
+  unsigned w16;
+  unsigned w17;
+  unsigned w18;
+  unsigned w19;
+  unsigned w20;
+  unsigned w21;
+  unsigned w22;
+  unsigned w23;
 };
 
 static std::map<unsigned long long, rtcore_synthetic_handoff_header>
@@ -7267,6 +7288,80 @@ unsigned rtcore_compact_result(unsigned reason, unsigned flags,
          ((window_tag_low & 0x7) << 28);
 }
 
+unsigned rtcore_float_to_u32(float value) {
+  unsigned word = 0;
+  memcpy(&word, &value, sizeof(word));
+  return word;
+}
+
+const char *rtcore_return_reason_name(unsigned reason);
+
+void rtcore_publish_synthetic_dependent_groups(
+    const ptx_instruction *pI, const Traversal_data &traversal_data,
+    unsigned reason, unsigned completion_seq_low, unsigned resume_seq_low,
+    unsigned window_tag_low, rtcore_synthetic_handoff_header *header) {
+  const bool closest_hit = reason == RTCORE_RETURN_FOR_CLOSEST_HIT;
+  const unsigned dispatch_selector =
+      closest_hit ? (unsigned)traversal_data.closest_hit.hitGroupIndex
+                  : traversal_data.missIndex;
+
+  header->w4 = rtcore_compact_result(
+      reason, RTCORE_COMPLETION_FLAG_TRACE_DONE, completion_seq_low,
+      resume_seq_low, window_tag_low);
+  header->w5 = dispatch_selector;
+  header->w6 =
+      closest_hit ? (unsigned)traversal_data.closest_hit.geometryType : 0;
+  header->w7 = 0;
+
+  if (closest_hit && traversal_data.hit_geometry) {
+    header->w8 = rtcore_compact_result(
+        reason, RTCORE_COMPLETION_FLAG_TRACE_DONE, completion_seq_low,
+        resume_seq_low, window_tag_low);
+    header->w9 = (unsigned)traversal_data.closest_hit.geometryType;
+    header->w10 = (unsigned)traversal_data.closest_hit.hitGroupIndex;
+    header->w11 = traversal_data.closest_hit.primitive_index;
+    header->w12 = traversal_data.closest_hit.instance_index;
+    header->w13 =
+        rtcore_float_to_u32(traversal_data.closest_hit.world_min_thit);
+    header->w14 =
+        rtcore_float_to_u32(traversal_data.closest_hit.barycentric_coordinates.x);
+    header->w15 =
+        rtcore_float_to_u32(traversal_data.closest_hit.barycentric_coordinates.y);
+  } else {
+    header->w8 = 0;
+    header->w9 = 0;
+    header->w10 = 0;
+    header->w11 = 0;
+    header->w12 = 0;
+    header->w13 = 0;
+    header->w14 = 0;
+    header->w15 = 0;
+  }
+
+  header->w16 = 0;
+  header->w17 = 0;
+  header->w18 = 0;
+  header->w19 = 0;
+  header->w20 = 0;
+  header->w21 = 0;
+  header->w22 = 0;
+  header->w23 = 0;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT handoff-dependent-groups (%s:%u), "
+         "reason=%s, dispatch={w4=0x%08x,w5=0x%08x,w6=0x%08x,w7=0x%08x}, "
+         "hit={w8=0x%08x,w9=0x%08x,w10=0x%08x,w11=0x%08x,"
+         "w12=0x%08x,w13=0x%08x,w14=0x%08x,w15=0x%08x}, "
+         "resume={w16=0x%08x,w17=0x%08x,w18=0x%08x,w19=0x%08x,"
+         "w20=0x%08x,w21=0x%08x,w22=0x%08x,w23=0x%08x}\n",
+         pI->source_file(), pI->source_line(),
+         rtcore_return_reason_name(reason), header->w4, header->w5,
+         header->w6, header->w7, header->w8, header->w9, header->w10,
+         header->w11, header->w12, header->w13, header->w14, header->w15,
+         header->w16, header->w17, header->w18, header->w19, header->w20,
+         header->w21, header->w22, header->w23);
+  fflush(stdout);
+}
+
 bool rtcore_submit_operands_are_valid(unsigned long long context_ptr,
                                       unsigned long long handoff_window_base) {
   return context_ptr != 0 && handoff_window_base != 0 &&
@@ -7283,6 +7378,87 @@ const char *rtcore_return_reason_name(unsigned reason) {
     default:
       return "unknown";
   }
+}
+
+bool rtcore_software_lazy_load_synthetic_groups(
+    const ptx_instruction *pI, const rtcore_synthetic_handoff_header &window,
+    unsigned reason, unsigned completion_seq_low, unsigned resume_seq_low,
+    unsigned window_tag_low) {
+  const bool known_reason =
+      reason == RTCORE_RETURN_FOR_CLOSEST_HIT ||
+      reason == RTCORE_RETURN_FOR_MISS;
+  const bool dispatch_required =
+      known_reason;
+  const bool dispatch_valid =
+      !dispatch_required || (window.w4 & RTCORE_WINDOW_GROUP_VALID) != 0;
+  const bool dispatch_reason_matches =
+      !dispatch_required || ((window.w4 & 0xf) == reason);
+  const bool dispatch_seq_matches =
+      !dispatch_required ||
+      (((window.w4 >> 12) & 0xff) == (completion_seq_low & 0xff) &&
+       (((window.w4 >> 20) & 0xff) == (resume_seq_low & 0xff)));
+  const bool dispatch_tag_matches =
+      !dispatch_required || (((window.w4 >> 28) & 0x7) == (window_tag_low & 0x7));
+  const bool dispatch_reserved_matches =
+      !dispatch_required || window.w7 == 0;
+  const bool dispatch_aux_matches =
+      reason != RTCORE_RETURN_FOR_MISS || window.w6 == 0;
+
+  const bool hit_required = reason == RTCORE_RETURN_FOR_CLOSEST_HIT;
+  const bool hit_valid =
+      !hit_required || (window.w8 & RTCORE_WINDOW_GROUP_VALID) != 0;
+  const bool hit_reason_matches =
+      !hit_required || ((window.w8 & 0xf) == reason);
+  const bool hit_seq_matches =
+      !hit_required ||
+      (((window.w8 >> 12) & 0xff) == (completion_seq_low & 0xff) &&
+       (((window.w8 >> 20) & 0xff) == (resume_seq_low & 0xff)));
+  const bool hit_tag_matches =
+      !hit_required || (((window.w8 >> 28) & 0x7) == (window_tag_low & 0x7));
+  const bool hit_group_zero_when_unused =
+      hit_required || (window.w8 == 0 && window.w9 == 0 && window.w10 == 0 &&
+                       window.w11 == 0 && window.w12 == 0 && window.w13 == 0 &&
+                       window.w14 == 0 && window.w15 == 0);
+
+  const bool resume_required = false;
+  const bool resume_valid = !resume_required;
+  const bool resume_seq_matches = !resume_required;
+  const bool resume_tag_matches = !resume_required;
+  const bool resume_reserved =
+      window.w16 == 0 && window.w17 == 0 && window.w18 == 0 &&
+      window.w19 == 0 && window.w20 == 0 && window.w21 == 0 &&
+      window.w22 == 0 && window.w23 == 0;
+
+  const bool accepted =
+      known_reason && dispatch_valid && dispatch_reason_matches &&
+      dispatch_seq_matches && dispatch_tag_matches &&
+      dispatch_reserved_matches && dispatch_aux_matches && hit_valid &&
+      hit_reason_matches && hit_seq_matches && hit_tag_matches &&
+      hit_group_zero_when_unused && resume_valid && resume_seq_matches &&
+      resume_tag_matches && resume_reserved;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT software-lazy-load (%s:%u), "
+         "reason=%s, dispatch_required=%u, dispatch_valid=%u, "
+         "dispatch_reason_match=%u, dispatch_seq_match=%u, "
+         "dispatch_tag_match=%u, dispatch_reserved_match=%u, "
+         "dispatch_aux_match=%u, hit_required=%u, hit_valid=%u, "
+         "hit_reason_match=%u, hit_seq_match=%u, hit_tag_match=%u, "
+         "hit_unused_zero=%u, resume_required=%u, resume_valid=%u, "
+         "resume_seq_match=%u, resume_tag_match=%u, resume_reserved=%u, "
+         "accepted=%u\n",
+         pI->source_file(), pI->source_line(),
+         rtcore_return_reason_name(reason), dispatch_required ? 1 : 0,
+         dispatch_valid ? 1 : 0, dispatch_reason_matches ? 1 : 0,
+         dispatch_seq_matches ? 1 : 0, dispatch_tag_matches ? 1 : 0,
+         dispatch_reserved_matches ? 1 : 0, dispatch_aux_matches ? 1 : 0,
+         hit_required ? 1 : 0, hit_valid ? 1 : 0,
+         hit_reason_matches ? 1 : 0, hit_seq_matches ? 1 : 0,
+         hit_tag_matches ? 1 : 0, hit_group_zero_when_unused ? 1 : 0,
+         resume_required ? 1 : 0, resume_valid ? 1 : 0,
+         resume_seq_matches ? 1 : 0, resume_tag_matches ? 1 : 0,
+         resume_reserved ? 1 : 0, accepted ? 1 : 0);
+  fflush(stdout);
+  return accepted;
 }
 
 bool rtcore_software_acquire_synthetic_completion(
@@ -7328,24 +7504,31 @@ bool rtcore_software_acquire_synthetic_completion(
   const unsigned window_tag = tracked_window ? (window->w3 & 0x7) : 0;
   const bool window_tag_matches =
       tracked_window && result_window_tag_low == window_tag;
+  const bool dependent_groups_match =
+      tracked_window &&
+      rtcore_software_lazy_load_synthetic_groups(
+          pI, *window, result_reason, result_completion_seq_low,
+          result_resume_seq_low, result_window_tag_low);
 
   const bool accepted =
       tracked_window && matching_context && result_matches_w0 &&
       completion_valid && reason_matches && flags_matches &&
-      completion_seq_matches && resume_seq_matches && window_tag_matches;
+      completion_seq_matches && resume_seq_matches && window_tag_matches &&
+      dependent_groups_match;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT software-acquire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "result=0x%08x, tracked=%u, matching_context=%u, "
          "w0_match=%u, valid=%u, reason_match=%u, flags_match=%u, "
          "completion_seq_match=%u, resume_seq_match=%u, tag_match=%u, "
-         "accepted=%u, reason=%s\n",
+         "dependent_groups_match=%u, accepted=%u, reason=%s\n",
          pI->source_file(), pI->source_line(), context_ptr,
          handoff_window_base, result_word, tracked_window ? 1 : 0,
          matching_context ? 1 : 0, result_matches_w0 ? 1 : 0,
          completion_valid ? 1 : 0, reason_matches ? 1 : 0,
          flags_matches ? 1 : 0, completion_seq_matches ? 1 : 0,
          resume_seq_matches ? 1 : 0, window_tag_matches ? 1 : 0,
+         dependent_groups_match ? 1 : 0,
          accepted ? 1 : 0, rtcore_return_reason_name(result_reason));
   fflush(stdout);
   return accepted;
@@ -7360,17 +7543,18 @@ void rtcore_publish_traversal_completion(
   const unsigned window_tag_low = 1;
 
   memory_space *mem = thread->get_global_memory();
+  Traversal_data traversal_data;
+  memset(&traversal_data, 0, sizeof(traversal_data));
   const bool has_traversal_data =
       !thread->RT_thread_data->traversal_data.empty();
   bool hit_geometry = false;
   if (has_traversal_data) {
-    Traversal_data *traversal_data =
+    Traversal_data *device_traversal_data =
         thread->RT_thread_data->traversal_data.back();
-    mem->read(&(traversal_data->hit_geometry),
-              sizeof(traversal_data->hit_geometry), &hit_geometry);
+    mem->read((mem_addr_t)device_traversal_data, sizeof(traversal_data),
+              &traversal_data);
+    hit_geometry = traversal_data.hit_geometry;
   } else {
-    Traversal_data traversal_data;
-    memset(&traversal_data, 0, sizeof(traversal_data));
     traversal_data.hit_geometry = false;
     traversal_data.current_shader_counter = -1;
     traversal_data.current_shader_type = -1;
@@ -7379,8 +7563,8 @@ void rtcore_publish_traversal_completion(
     Traversal_data *device_traversal_data =
         (Traversal_data *)VulkanRayTracing::gpgpusim_alloc(
             sizeof(Traversal_data));
-    mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data,
-               thread, pI);
+    mem->write((mem_addr_t)device_traversal_data, sizeof(Traversal_data),
+               &traversal_data, thread, pI);
     thread->RT_thread_data->all_hit_data.clear();
     thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
   }
@@ -7392,12 +7576,16 @@ void rtcore_publish_traversal_completion(
       resume_seq_low, window_tag_low);
 
   rtcore_synthetic_handoff_header header;
+  memset(&header, 0, sizeof(header));
   header.context_ptr = context_ptr;
   header.w0 = result_word;
   header.w1 = 1u | (reason << 8) |
               (RTCORE_COMPLETION_FLAG_TRACE_DONE << 16);
   header.w2 = completion_seq_low | (resume_seq_low << 16);
   header.w3 = window_tag_low;
+  rtcore_publish_synthetic_dependent_groups(
+      pI, traversal_data, reason, completion_seq_low, resume_seq_low,
+      window_tag_low, &header);
   rtcore_publish_synthetic_handoff_window(pI, handoff_window_base, header);
 
   ptx_reg_t result_data;
