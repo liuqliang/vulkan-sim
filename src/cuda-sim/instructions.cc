@@ -7318,10 +7318,52 @@ struct rtcore_synthetic_handoff_key {
   }
 };
 
+struct rtcore_symbolic_rt_token_key {
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned owner_hw_sid;
+  unsigned owner_hw_wid;
+  unsigned owner_hw_tid;
+  unsigned lane_slot_index;
+
+  bool operator<(const rtcore_symbolic_rt_token_key &other) const {
+    if (context_ptr != other.context_ptr) {
+      return context_ptr < other.context_ptr;
+    }
+    if (handoff_window_base != other.handoff_window_base) {
+      return handoff_window_base < other.handoff_window_base;
+    }
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    if (owner_hw_wid != other.owner_hw_wid) {
+      return owner_hw_wid < other.owner_hw_wid;
+    }
+    if (owner_hw_tid != other.owner_hw_tid) {
+      return owner_hw_tid < other.owner_hw_tid;
+    }
+    return lane_slot_index < other.lane_slot_index;
+  }
+};
+
+struct rtcore_symbolic_rt_token_record {
+  unsigned token_id;
+  unsigned window_generation;
+  unsigned completion_seq;
+  unsigned resume_seq;
+  unsigned window_tag;
+  unsigned result_word;
+  bool completed;
+};
+
 static std::map<rtcore_synthetic_handoff_key, rtcore_synthetic_handoff_header>
     g_rtcore_synthetic_handoff_windows;
 static std::map<rtcore_synthetic_handoff_key, unsigned>
     g_rtcore_synthetic_window_generations;
+static std::map<rtcore_symbolic_rt_token_key,
+                rtcore_symbolic_rt_token_record>
+    g_rtcore_symbolic_rt_tokens;
+unsigned g_rtcore_next_symbolic_rt_token_id = 1;
 bool g_rtcore_symbolic_resource_profile_logged = false;
 
 unsigned rtcore_lane_slot_index(ptx_thread_info *thread) {
@@ -7672,6 +7714,188 @@ rtcore_synthetic_handoff_key rtcore_make_synthetic_handoff_key(
   key.owner_hw_wid = thread->get_hw_wid();
   key.lane_slot_index = lane_slot_index;
   return key;
+}
+
+rtcore_symbolic_rt_token_key rtcore_make_symbolic_rt_token_key(
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index, ptx_thread_info *thread) {
+  rtcore_symbolic_rt_token_key key;
+  key.context_ptr = context_ptr;
+  key.handoff_window_base = handoff_window_base;
+  key.owner_hw_sid = thread->get_hw_sid();
+  key.owner_hw_wid = thread->get_hw_wid();
+  key.owner_hw_tid = thread->get_hw_tid();
+  key.lane_slot_index = lane_slot_index;
+  return key;
+}
+
+bool rtcore_symbolic_rt_token_is_live(
+    const rtcore_symbolic_rt_token_key &key) {
+  return g_rtcore_symbolic_rt_tokens.find(key) !=
+         g_rtcore_symbolic_rt_tokens.end();
+}
+
+bool rtcore_symbolic_submit_token_available(
+    const ptx_instruction *pI, const rtcore_symbolic_rt_token_key &key) {
+  const bool live_token = rtcore_symbolic_rt_token_is_live(key);
+  const bool token_available = !live_token;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT token-check (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
+         "owner_hw_sid=%u, live_token=%u, token_available=%u\n",
+         pI->source_file(), pI->source_line(), key.context_ptr,
+         key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+         key.owner_hw_wid, key.owner_hw_sid, live_token ? 1 : 0,
+         token_available ? 1 : 0);
+  fflush(stdout);
+
+  if (live_token) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=LIVE_TOKEN_REUSE, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "owner_hw_tid=%u, owner_hw_wid=%u, owner_hw_sid=%u, consumed=0\n",
+           pI->source_file(), pI->source_line(), key.context_ptr,
+           key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+           key.owner_hw_wid, key.owner_hw_sid);
+    fflush(stdout);
+  }
+
+  return token_available;
+}
+
+bool rtcore_acquire_symbolic_rt_token(
+    const ptx_instruction *pI, const rtcore_symbolic_rt_token_key &key,
+    unsigned window_generation, unsigned completion_seq, unsigned resume_seq,
+    unsigned window_tag, unsigned result_word) {
+  rtcore_symbolic_rt_token_record record;
+  record.token_id = g_rtcore_next_symbolic_rt_token_id++;
+  record.window_generation = window_generation;
+  record.completion_seq = completion_seq;
+  record.resume_seq = resume_seq;
+  record.window_tag = window_tag;
+  record.result_word = result_word;
+  record.completed = false;
+
+  const bool inserted =
+      g_rtcore_symbolic_rt_tokens.insert(std::make_pair(key, record)).second;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT token-acquire (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
+         "owner_hw_sid=%u, token_id=%u, window_generation=%u, "
+         "completion_seq=%u, resume_seq=%u, window_tag=%u, result=0x%08x, "
+         "acquired=%u, live_tokens=%zu\n",
+         pI->source_file(), pI->source_line(), key.context_ptr,
+         key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+         key.owner_hw_wid, key.owner_hw_sid, record.token_id,
+         record.window_generation, record.completion_seq, record.resume_seq,
+         record.window_tag, record.result_word, inserted ? 1 : 0,
+         g_rtcore_symbolic_rt_tokens.size());
+  fflush(stdout);
+
+  if (!inserted) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=LIVE_TOKEN_REUSE_AT_ACQUIRE, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, consumed=0\n",
+           pI->source_file(), pI->source_line(), key.context_ptr,
+           key.handoff_window_base, key.lane_slot_index);
+    fflush(stdout);
+  }
+
+  return inserted;
+}
+
+bool rtcore_complete_symbolic_rt_token(
+    const ptx_instruction *pI, const rtcore_symbolic_rt_token_key &key,
+    unsigned result_word, unsigned completion_seq, unsigned resume_seq,
+    unsigned window_tag) {
+  std::map<rtcore_symbolic_rt_token_key,
+           rtcore_symbolic_rt_token_record>::iterator token =
+      g_rtcore_symbolic_rt_tokens.find(key);
+  const bool live_token = token != g_rtcore_symbolic_rt_tokens.end();
+  const bool result_matches = live_token && token->second.result_word == result_word;
+  const bool completion_seq_matches =
+      live_token && token->second.completion_seq == completion_seq;
+  const bool resume_seq_matches =
+      live_token && token->second.resume_seq == resume_seq;
+  const bool window_tag_matches =
+      live_token && token->second.window_tag == window_tag;
+  const bool completed = live_token && result_matches &&
+                         completion_seq_matches && resume_seq_matches &&
+                         window_tag_matches;
+
+  if (completed) {
+    token->second.completed = true;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT token-complete (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
+         "owner_hw_sid=%u, live_token=%u, result_match=%u, "
+         "completion_seq_match=%u, resume_seq_match=%u, "
+         "window_tag_match=%u, completed=%u\n",
+         pI->source_file(), pI->source_line(), key.context_ptr,
+         key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+         key.owner_hw_wid, key.owner_hw_sid, live_token ? 1 : 0,
+         result_matches ? 1 : 0, completion_seq_matches ? 1 : 0,
+         resume_seq_matches ? 1 : 0, window_tag_matches ? 1 : 0,
+         completed ? 1 : 0);
+  fflush(stdout);
+
+  return completed;
+}
+
+bool rtcore_symbolic_rt_token_can_retire(
+    const ptx_instruction *pI, const rtcore_symbolic_rt_token_key &key) {
+  std::map<rtcore_symbolic_rt_token_key,
+           rtcore_symbolic_rt_token_record>::const_iterator token =
+      g_rtcore_symbolic_rt_tokens.find(key);
+  const bool live_token = token != g_rtcore_symbolic_rt_tokens.end();
+  const bool completed = live_token && token->second.completed;
+  const bool accepted = live_token && completed;
+
+  printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT token-check (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
+         "owner_hw_sid=%u, live_token=%u, completed=%u, accepted=%u\n",
+         pI->source_file(), pI->source_line(), key.context_ptr,
+         key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+         key.owner_hw_wid, key.owner_hw_sid, live_token ? 1 : 0,
+         completed ? 1 : 0, accepted ? 1 : 0);
+  fflush(stdout);
+
+  if (!live_token) {
+    printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
+           "reason=TOKEN_NOT_LIVE, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "owner_hw_tid=%u, owner_hw_wid=%u, owner_hw_sid=%u\n",
+           pI->source_file(), pI->source_line(), key.context_ptr,
+           key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+           key.owner_hw_wid, key.owner_hw_sid);
+    fflush(stdout);
+  } else if (!completed) {
+    printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
+           "reason=RETIRE_BEFORE_COMPLETION, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, "
+           "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
+           "owner_hw_sid=%u\n",
+           pI->source_file(), pI->source_line(), key.context_ptr,
+           key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+           key.owner_hw_wid, key.owner_hw_sid);
+    fflush(stdout);
+  }
+
+  return accepted;
+}
+
+bool rtcore_release_symbolic_rt_token(
+    const rtcore_symbolic_rt_token_key &key) {
+  return g_rtcore_symbolic_rt_tokens.erase(key) == 1;
+}
+
+size_t rtcore_symbolic_rt_token_count() {
+  return g_rtcore_symbolic_rt_tokens.size();
 }
 
 void rtcore_populate_synthetic_owner_tuple(
@@ -8085,6 +8309,9 @@ void rtcore_publish_traversal_completion(
   const rtcore_synthetic_handoff_key key =
       rtcore_make_synthetic_handoff_key(handoff_window_base, lane_slot_index,
                                         thread);
+  const rtcore_symbolic_rt_token_key token_key =
+      rtcore_make_symbolic_rt_token_key(context_ptr, handoff_window_base,
+                                        lane_slot_index, thread);
   const unsigned window_generation =
       rtcore_peek_next_synthetic_window_generation(key);
   const unsigned completion_seq_low =
@@ -8147,6 +8374,12 @@ void rtcore_publish_traversal_completion(
     inst_not_implemented(pI);
     return;
   }
+  if (!rtcore_acquire_symbolic_rt_token(
+          pI, token_key, window_generation, completion_seq_low,
+          resume_seq_low, window_tag, result_word)) {
+    inst_not_implemented(pI);
+    return;
+  }
   rtcore_publish_synthetic_handoff_window(pI, key, header);
 
   ptx_reg_t result_data;
@@ -8156,6 +8389,13 @@ void rtcore_publish_traversal_completion(
   if (!rtcore_software_acquire_synthetic_completion(
           pI, context_ptr, handoff_window_base, lane_slot_index, result_word,
           thread)) {
+    inst_not_implemented(pI);
+    return;
+  }
+
+  if (!rtcore_complete_symbolic_rt_token(
+          pI, token_key, result_word, completion_seq_low, resume_seq_low,
+          window_tag)) {
     inst_not_implemented(pI);
     return;
   }
@@ -8232,6 +8472,15 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
+  const rtcore_symbolic_rt_token_key token_key =
+      rtcore_make_symbolic_rt_token_key(context_ptr_data.u64,
+                                        handoff_window_base_data.u64,
+                                        lane_slot_index, thread);
+  if (!rtcore_symbolic_submit_token_available(pI, token_key)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+
   rtcore_publish_traversal_completion(pI, thread, result,
                                       context_ptr_data.u64,
                                       handoff_window_base_data.u64);
@@ -8252,6 +8501,10 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
   const rtcore_synthetic_handoff_key key = rtcore_make_synthetic_handoff_key(
       handoff_window_base_data.u64, lane_slot_index, thread);
+  const rtcore_symbolic_rt_token_key token_key =
+      rtcore_make_symbolic_rt_token_key(context_ptr_data.u64,
+                                        handoff_window_base_data.u64,
+                                        lane_slot_index, thread);
   const rtcore_synthetic_handoff_header *window =
       operands_are_valid
           ? rtcore_acquire_synthetic_handoff_window(
@@ -8264,18 +8517,23 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
       tracked_window &&
       rtcore_synthetic_owner_tuple_matches(*window, key, context_ptr_data.u64,
                                            pI, thread);
+  const bool token_can_retire =
+      operands_are_valid && tracked_window && matching_context &&
+      owner_tuple_matches &&
+      rtcore_symbolic_rt_token_can_retire(pI, token_key);
 
   if (!operands_are_valid || !tracked_window || !matching_context ||
-      !owner_tuple_matches) {
+      !owner_tuple_matches || !token_can_retire) {
     printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
            "context_ptr=0x%llx, handoff_window_base=0x%llx, "
            "lane_slot_index=%u, valid=%u, tracked=%u, matching_context=%u, "
-           "owner_tuple_match=%u\n",
+           "owner_tuple_match=%u, token_can_retire=%u\n",
            pI->source_file(), pI->source_line(),
            (unsigned long long)context_ptr_data.u64,
            (unsigned long long)handoff_window_base_data.u64,
            lane_slot_index, operands_are_valid ? 1 : 0, tracked_window ? 1 : 0,
-           matching_context ? 1 : 0, owner_tuple_matches ? 1 : 0);
+           matching_context ? 1 : 0, owner_tuple_matches ? 1 : 0,
+           token_can_retire ? 1 : 0);
     fflush(stdout);
     inst_not_implemented(pI);
     return;
@@ -8284,15 +8542,17 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   // Functional execution reaches here once per active lane; real window release
   // is deferred until a warp-level allocator exists.
   const bool released_window = rtcore_release_synthetic_handoff_window(key);
+  const bool released_token = rtcore_release_symbolic_rt_token(token_key);
   printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT synthetic-retire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, owner_tuple_match=%u, released=%u, "
-         "remaining_windows=%zu\n",
+         "released_token=%u, remaining_windows=%zu, remaining_tokens=%zu\n",
          pI->source_file(), pI->source_line(),
          (unsigned long long)context_ptr_data.u64,
          (unsigned long long)handoff_window_base_data.u64, lane_slot_index,
          owner_tuple_matches ? 1 : 0, released_window ? 1 : 0,
-         rtcore_synthetic_handoff_window_count());
+         released_token ? 1 : 0, rtcore_synthetic_handoff_window_count(),
+         rtcore_symbolic_rt_token_count());
   fflush(stdout);
 }
 
