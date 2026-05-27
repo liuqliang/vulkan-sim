@@ -7212,6 +7212,16 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                    thread);
 }
 
+void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  (void)thread;
+  inst_not_implemented(pI);
+}
+
+void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  (void)thread;
+  inst_not_implemented(pI);
+}
+
 void end_trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   VulkanRayTracing::endTraceRay(pI, thread);
 }

@@ -573,7 +573,8 @@ void ptx_instruction::set_fp_or_int_archop() {
   if ((m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
-      (m_opcode == CALL_OP) || (m_opcode == TRACE_RAY_OP) || (m_opcode == CALL_MISS_SHADER_OP) ||
+      (m_opcode == CALL_OP) || (m_opcode == TRACE_RAY_OP) || (m_opcode == RT_SUBMIT_OP) ||
+      (m_opcode == RT_RETIRE_CONTEXT_OP) || (m_opcode == CALL_MISS_SHADER_OP) ||
       (m_opcode == CALL_CLOSEST_HIT_SHADER_OP) || (m_opcode == LD_RAY_LAUNCH_ID_OP) ||
       (m_opcode == LD_RAY_LAUNCH_SIZE_OP) || (m_opcode == LD_VK_DESC_OP) ||
       (m_opcode == IMG_DEREF_ST_OP) || (m_opcode == RT_ALLOC_MEM_OP) ||
@@ -616,7 +617,8 @@ void ptx_instruction::set_mul_div_or_other_archop() {
   if ((m_opcode != MEMBAR_OP) && (m_opcode != SSY_OP) && (m_opcode != BRA_OP) &&
       (m_opcode != BAR_OP) && (m_opcode != EXIT_OP) && (m_opcode != NOP_OP) &&
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
-      (m_opcode != CALL_OP) && (m_opcode != TRACE_RAY_OP) && (m_opcode != CALL_MISS_SHADER_OP) &&
+      (m_opcode != CALL_OP) && (m_opcode != TRACE_RAY_OP) && (m_opcode != RT_SUBMIT_OP) &&
+      (m_opcode != RT_RETIRE_CONTEXT_OP) && (m_opcode != CALL_MISS_SHADER_OP) &&
       (m_opcode != CALL_CLOSEST_HIT_SHADER_OP) && (m_opcode != LD_RAY_LAUNCH_ID_OP) &&
       (m_opcode != LD_RAY_LAUNCH_SIZE_OP) && (m_opcode != LD_VK_DESC_OP) &&
       (m_opcode != IMG_DEREF_ST_OP) && (m_opcode != RT_ALLOC_MEM_OP) &&
@@ -783,6 +785,8 @@ void ptx_instruction::set_opcode_and_latency() {
   initiation_interval = latency = 1;
   switch (m_opcode) {
     case TRACE_RAY_OP:
+    case RT_SUBMIT_OP:
+    case RT_RETIRE_CONTEXT_OP:
       op = RT_CORE_OP;
       break;
     case MOV_OP:
@@ -1300,6 +1304,12 @@ void ptx_instruction::set_input_output_registers() {
   switch(m_opcode) {
     case TRACE_RAY_OP:
       operand_classification = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2};
+      break;
+    case RT_SUBMIT_OP:
+      operand_classification = {2, 1, 1};
+      break;
+    case RT_RETIRE_CONTEXT_OP:
+      operand_classification = {1, 1};
       break;
     case LD_RAY_LAUNCH_SIZE_OP:
       operand_classification = {1, 1, 1};
@@ -2078,13 +2088,21 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       inst.data_size = insn_data_size;
     }
 
-    if (pI->get_opcode() == TRACE_RAY_OP) { 
+    if (pI->get_opcode() == TRACE_RAY_OP) {
       // Copy list of accesses to warp instruction
       inst.set_rt_mem_transactions(lane_id, RT_transactions);
       inst.set_rt_mem_store_transactions(lane_id, RT_store_transactions);
       inst.set_rt_ray_properties(lane_id, m_ray);
       
       // Set memory space
+      insn_space.set_type(global_space);
+      inst.space = insn_space;
+      insn_data_size = 16;
+      inst.data_size = insn_data_size;
+    }
+
+    if (pI->get_opcode() == RT_SUBMIT_OP ||
+        pI->get_opcode() == RT_RETIRE_CONTEXT_OP) {
       insn_space.set_type(global_space);
       inst.space = insn_space;
       insn_data_size = 16;
@@ -2174,6 +2192,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
     // "Return values"
     if (!skip) {
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP || inst_opcode == TRACE_RAY_OP ||
+              inst_opcode == RT_SUBMIT_OP || inst_opcode == RT_RETIRE_CONTEXT_OP ||
               inst_opcode == TXL_OP || inst_opcode == IMG_DEREF_LD_OP || inst_opcode == IMG_DEREF_ST_OP))) {
         inst.space = insn_space;
         inst.set_addr(lane_id, insn_memaddr);
