@@ -7213,12 +7213,40 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  (void)thread;
+  assert(pI->get_num_operands() == 3);
+  const operand_info &result = pI->operand_lookup(0);
+  const operand_info &context_ptr = pI->operand_lookup(1);
+  const operand_info &handoff_window_base = pI->operand_lookup(2);
+  (void)result;
+
+  ptx_reg_t context_ptr_data =
+      thread->get_operand_value(context_ptr, context_ptr, B64_TYPE, thread, 1);
+  ptx_reg_t handoff_window_base_data = thread->get_operand_value(
+      handoff_window_base, handoff_window_base, B64_TYPE, thread, 1);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx\n",
+         pI->source_file(), pI->source_line(),
+         (unsigned long long)context_ptr_data.u64,
+         (unsigned long long)handoff_window_base_data.u64);
   inst_not_implemented(pI);
 }
 
 void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  (void)thread;
+  assert(pI->get_num_operands() == 2);
+  const operand_info &context_ptr = pI->operand_lookup(0);
+  const operand_info &handoff_window_base = pI->operand_lookup(1);
+
+  ptx_reg_t context_ptr_data =
+      thread->get_operand_value(context_ptr, context_ptr, B64_TYPE, thread, 1);
+  ptx_reg_t handoff_window_base_data = thread->get_operand_value(
+      handoff_window_base, handoff_window_base, B64_TYPE, thread, 1);
+
+  printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx\n",
+         pI->source_file(), pI->source_line(),
+         (unsigned long long)context_ptr_data.u64,
+         (unsigned long long)handoff_window_base_data.u64);
   inst_not_implemented(pI);
 }
 
