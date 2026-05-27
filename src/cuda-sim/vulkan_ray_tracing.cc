@@ -2059,6 +2059,17 @@ void VulkanRayTracing::getTexture(struct DESCRIPTOR_STRUCT *desc,
 
 #if defined(MESA_USE_LVPIPE_DRIVER)
 FILE *img_bin = nullptr;
+
+static unsigned rtcore_clamp_ppm_channel(float value)
+{
+    if (!std::isfinite(value) || value <= 0.0f) {
+        return 0;
+    }
+    if (value >= 1.0f) {
+        return 255;
+    }
+    return static_cast<unsigned>(std::lround(value * 255.0f));
+}
 #endif
 
 void VulkanRayTracing::image_load(struct DESCRIPTOR_STRUCT *desc, uint32_t x, uint32_t y, float &c0, float &c1, float &c2, float &c3)
@@ -2202,8 +2213,10 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
             strlen("P3\n \n255\n") + std::to_string(width).length() + std::to_string(height).length();
         uint32_t value_offset = (gl_LaunchIDEXT_X + gl_LaunchIDEXT_Y * width) * (3*3 + 3);
         fseeko(img_bin, header_offset + value_offset, SEEK_SET);
-        fprintf(img_bin, "%3.0f %3.0f %3.0f\n", 
-                hitValue_X * 255, hitValue_Y * 255, hitValue_Z * 255);
+        fprintf(img_bin, "%3u %3u %3u\n",
+                rtcore_clamp_ppm_channel(hitValue_X),
+                rtcore_clamp_ppm_channel(hitValue_Y),
+                rtcore_clamp_ppm_channel(hitValue_Z));
     }
 
     // Setup transaction record for timing model
