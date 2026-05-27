@@ -7232,6 +7232,31 @@ struct rtcore_synthetic_handoff_header {
 static std::map<unsigned long long, rtcore_synthetic_handoff_header>
     g_rtcore_synthetic_handoff_windows;
 
+void rtcore_publish_synthetic_handoff_window(
+    const ptx_instruction *pI, unsigned long long handoff_window_base,
+    const rtcore_synthetic_handoff_header &header) {
+  g_rtcore_synthetic_handoff_windows[handoff_window_base] = header;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT handoff-window-published (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "w0=0x%08x, w1=0x%08x, w2=0x%08x, w3=0x%08x\n",
+         pI->source_file(), pI->source_line(), header.context_ptr,
+         handoff_window_base, header.w0, header.w1, header.w2, header.w3);
+  fflush(stdout);
+}
+
+const rtcore_synthetic_handoff_header *rtcore_acquire_synthetic_handoff_window(
+    const std::map<unsigned long long, rtcore_synthetic_handoff_header>
+        &windows,
+    unsigned long long handoff_window_base) {
+  std::map<unsigned long long, rtcore_synthetic_handoff_header>::const_iterator
+      window = windows.find(handoff_window_base);
+  if (window == windows.end()) {
+    return NULL;
+  }
+  return &window->second;
+}
+
 unsigned rtcore_compact_result(unsigned reason, unsigned flags,
                                unsigned completion_seq_low,
                                unsigned resume_seq_low,
@@ -7307,7 +7332,7 @@ void rtcore_publish_traversal_completion(
               (RTCORE_COMPLETION_FLAG_TRACE_DONE << 16);
   header.w2 = completion_seq_low | (resume_seq_low << 16);
   header.w3 = window_tag_low;
-  g_rtcore_synthetic_handoff_windows[handoff_window_base] = header;
+  rtcore_publish_synthetic_handoff_window(pI, handoff_window_base, header);
 
   ptx_reg_t result_data;
   result_data.u32 = result_word;
@@ -7366,15 +7391,15 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
 
   const bool operands_are_valid = rtcore_submit_operands_are_valid(
       context_ptr_data.u64, handoff_window_base_data.u64);
-  std::map<unsigned long long, rtcore_synthetic_handoff_header>::const_iterator
-      window = operands_are_valid
-                   ? g_rtcore_synthetic_handoff_windows.find(
-                         handoff_window_base_data.u64)
-                   : g_rtcore_synthetic_handoff_windows.end();
-  const bool tracked_window =
-      window != g_rtcore_synthetic_handoff_windows.end();
+  const rtcore_synthetic_handoff_header *window =
+      operands_are_valid
+          ? rtcore_acquire_synthetic_handoff_window(
+                g_rtcore_synthetic_handoff_windows,
+                handoff_window_base_data.u64)
+          : NULL;
+  const bool tracked_window = window != NULL;
   const bool matching_context =
-      tracked_window && window->second.context_ptr == context_ptr_data.u64;
+      tracked_window && window->context_ptr == context_ptr_data.u64;
 
   if (!operands_are_valid || !tracked_window || !matching_context) {
     printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
