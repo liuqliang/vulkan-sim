@@ -37,6 +37,53 @@ import subprocess
 
 inputfile = sys.argv[1]
 
+RT_HARD_OPS = ["rt_submit", "rt_retire_context"]
+
+
+def ptx_mov_opcode(ptx_type):
+    if ptx_type is None:
+        return None
+    if ptx_type in [".pred"]:
+        return None
+    return "mov" + ptx_type
+
+
+def write_zero_assignment(output, operand, symbol_table):
+    ptx_type = symbol_table.get(operand)
+    opcode = ptx_mov_opcode(ptx_type)
+    if opcode is None:
+        return
+    if ptx_type in [".f32"]:
+        zero = "0f00000000"
+    elif ptx_type in [".f64"]:
+        zero = "0d0000000000000000"
+    else:
+        zero = "0"
+    output.write(opcode + " " + operand + ", " + zero + ";\n")
+
+
+def write_self_assignment(output, operand, symbol_table):
+    ptx_type = symbol_table.get(operand)
+    opcode = ptx_mov_opcode(ptx_type)
+    if opcode is None:
+        return
+    output.write(opcode + " " + operand + ", " + operand + ";\n")
+
+
+def write_rt_hard_op_placeholder(output, op_name, operands, symbol_table):
+    if op_name not in RT_HARD_OPS:
+        return False
+
+    output.write("// ptxinfo placeholder for " + op_name + "\n")
+    if op_name == "rt_submit" and len(operands) > 0:
+        write_zero_assignment(output, operands[0], symbol_table)
+        for operand in operands[1:]:
+            write_self_assignment(output, operand, symbol_table)
+    else:
+        for operand in operands:
+            write_self_assignment(output, operand, symbol_table)
+    return True
+
 proc = subprocess.Popen(["ptxas " + inputfile], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
 stdout, stderr = proc.communicate()
 #print("program output:")
@@ -112,9 +159,10 @@ for l in f.readlines():
         #print("// " + l)
         segs = l.split("//")[0].replace(",", "").replace(";", "").split()
         #print(segs)
-        if(segs[0] == unknown_op_name[idx]):
+        op_name = segs[0]
+        if(op_name == unknown_op_name[idx]):
             #print("unknown op matches")
-            segs.remove(segs[0])
+            segs.remove(op_name)
             operands = []
             for item in segs:
                 #print(item)
@@ -123,6 +171,9 @@ for l in f.readlines():
             #print(operands)
             num_operands = len(operands)
             #print(num_operands)
+
+            if write_rt_hard_op_placeholder(tempoutput, op_name, operands, symbol_table):
+                continue
 
             for i in reversed(range(num_operands-1)):
                 #print(operands[i+1] + " is type " + symbol_table[operands[i+1]])
