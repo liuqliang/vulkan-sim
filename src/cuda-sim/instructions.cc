@@ -7749,6 +7749,45 @@ void rtcore_publish_synthetic_handoff_window(
   fflush(stdout);
 }
 
+bool rtcore_synthetic_result_lane_binding_matches(
+    const ptx_instruction *pI, const rtcore_synthetic_handoff_key &key,
+    const rtcore_synthetic_handoff_header &header,
+    unsigned long long context_ptr, unsigned result_word) {
+  const bool context_matches = header.context_ptr == context_ptr;
+  const bool window_base_matches =
+      header.handoff_window_base == key.handoff_window_base;
+  const bool lane_slot_matches =
+      header.lane_slot_index == key.lane_slot_index;
+  const bool lane_slot_base_matches =
+      header.lane_slot_base == rtcore_handoff_lane_slot_base(
+                                   key.handoff_window_base,
+                                   key.lane_slot_index);
+  const bool result_matches_header = header.w0 == result_word;
+  const bool active_lane =
+      rtcore_lane_is_active_in_instruction(pI, key.lane_slot_index);
+  const bool accepted =
+      context_matches && window_base_matches && lane_slot_matches &&
+      lane_slot_base_matches && result_matches_header && active_lane;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT result-lane-binding (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, lane_slot_base=0x%llx, result=0x%08x, "
+         "context_match=%u, window_base_match=%u, lane_slot_match=%u, "
+         "lane_slot_base_match=%u, result_match=%u, active_lane=%u, "
+         "accepted=%u\n",
+         pI->source_file(), pI->source_line(), context_ptr,
+         key.handoff_window_base, key.lane_slot_index,
+         rtcore_handoff_lane_slot_base(key.handoff_window_base,
+                                       key.lane_slot_index),
+         result_word, context_matches ? 1 : 0,
+         window_base_matches ? 1 : 0, lane_slot_matches ? 1 : 0,
+         lane_slot_base_matches ? 1 : 0, result_matches_header ? 1 : 0,
+         active_lane ? 1 : 0, accepted ? 1 : 0);
+  fflush(stdout);
+
+  return accepted;
+}
+
 const rtcore_synthetic_handoff_header *rtcore_acquire_synthetic_handoff_window(
     const std::map<rtcore_synthetic_handoff_key, rtcore_synthetic_handoff_header>
         &windows,
@@ -8103,6 +8142,11 @@ void rtcore_publish_traversal_completion(
   rtcore_publish_synthetic_dependent_groups(
       pI, traversal_data, reason, completion_seq_low, resume_seq_low,
       window_tag, &header);
+  if (!rtcore_synthetic_result_lane_binding_matches(
+          pI, key, header, context_ptr, result_word)) {
+    inst_not_implemented(pI);
+    return;
+  }
   rtcore_publish_synthetic_handoff_window(pI, key, header);
 
   ptx_reg_t result_data;
