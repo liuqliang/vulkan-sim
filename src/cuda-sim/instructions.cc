@@ -7221,6 +7221,7 @@ const unsigned RTCORE_RETURN_FOR_MISS = 0x03;
 const unsigned RTCORE_COMPLETION_FLAG_TRACE_DONE = 1u << 3;
 const unsigned RTCORE_COMPLETION_VALID = 1u << 31;
 const unsigned RTCORE_WINDOW_GROUP_VALID = RTCORE_COMPLETION_VALID;
+const unsigned RTCORE_MAX_LANES_PER_WARP = 32;
 
 struct rtcore_synthetic_handoff_header {
   unsigned long long context_ptr;
@@ -7250,28 +7251,55 @@ struct rtcore_synthetic_handoff_header {
   unsigned w23;
 };
 
-static std::map<unsigned long long, rtcore_synthetic_handoff_header>
+struct rtcore_synthetic_handoff_key {
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+
+  bool operator<(const rtcore_synthetic_handoff_key &other) const {
+    if (handoff_window_base != other.handoff_window_base) {
+      return handoff_window_base < other.handoff_window_base;
+    }
+    return lane_slot_index < other.lane_slot_index;
+  }
+};
+
+static std::map<rtcore_synthetic_handoff_key, rtcore_synthetic_handoff_header>
     g_rtcore_synthetic_handoff_windows;
 
+unsigned rtcore_lane_slot_index(ptx_thread_info *thread) {
+  return thread->get_hw_tid() % RTCORE_MAX_LANES_PER_WARP;
+}
+
+rtcore_synthetic_handoff_key rtcore_make_synthetic_handoff_key(
+    unsigned long long handoff_window_base, unsigned lane_slot_index) {
+  rtcore_synthetic_handoff_key key;
+  key.handoff_window_base = handoff_window_base;
+  key.lane_slot_index = lane_slot_index;
+  return key;
+}
+
 void rtcore_publish_synthetic_handoff_window(
-    const ptx_instruction *pI, unsigned long long handoff_window_base,
+    const ptx_instruction *pI, const rtcore_synthetic_handoff_key &key,
     const rtcore_synthetic_handoff_header &header) {
-  g_rtcore_synthetic_handoff_windows[handoff_window_base] = header;
+  g_rtcore_synthetic_handoff_windows[key] = header;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT handoff-window-published (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-         "w0=0x%08x, w1=0x%08x, w2=0x%08x, w3=0x%08x\n",
+         "lane_slot_index=%u, w0=0x%08x, w1=0x%08x, "
+         "w2=0x%08x, w3=0x%08x\n",
          pI->source_file(), pI->source_line(), header.context_ptr,
-         handoff_window_base, header.w0, header.w1, header.w2, header.w3);
+         key.handoff_window_base, key.lane_slot_index, header.w0, header.w1,
+         header.w2, header.w3);
   fflush(stdout);
 }
 
 const rtcore_synthetic_handoff_header *rtcore_acquire_synthetic_handoff_window(
-    const std::map<unsigned long long, rtcore_synthetic_handoff_header>
+    const std::map<rtcore_synthetic_handoff_key, rtcore_synthetic_handoff_header>
         &windows,
-    unsigned long long handoff_window_base) {
-  std::map<unsigned long long, rtcore_synthetic_handoff_header>::const_iterator
-      window = windows.find(handoff_window_base);
+    const rtcore_synthetic_handoff_key &key) {
+  std::map<rtcore_synthetic_handoff_key,
+           rtcore_synthetic_handoff_header>::const_iterator window =
+      windows.find(key);
   if (window == windows.end()) {
     return NULL;
   }
@@ -7383,7 +7411,7 @@ const char *rtcore_return_reason_name(unsigned reason) {
 bool rtcore_software_lazy_load_synthetic_groups(
     const ptx_instruction *pI, const rtcore_synthetic_handoff_header &window,
     unsigned reason, unsigned completion_seq_low, unsigned resume_seq_low,
-    unsigned window_tag_low) {
+    unsigned window_tag_low, unsigned lane_slot_index) {
   const bool known_reason =
       reason == RTCORE_RETURN_FOR_CLOSEST_HIT ||
       reason == RTCORE_RETURN_FOR_MISS;
@@ -7438,7 +7466,8 @@ bool rtcore_software_lazy_load_synthetic_groups(
       resume_tag_matches && resume_reserved;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT software-lazy-load (%s:%u), "
-         "reason=%s, dispatch_required=%u, dispatch_valid=%u, "
+         "lane_slot_index=%u, reason=%s, dispatch_required=%u, "
+         "dispatch_valid=%u, "
          "dispatch_reason_match=%u, dispatch_seq_match=%u, "
          "dispatch_tag_match=%u, dispatch_reserved_match=%u, "
          "dispatch_aux_match=%u, hit_required=%u, hit_valid=%u, "
@@ -7446,7 +7475,7 @@ bool rtcore_software_lazy_load_synthetic_groups(
          "hit_unused_zero=%u, resume_required=%u, resume_valid=%u, "
          "resume_seq_match=%u, resume_tag_match=%u, resume_reserved=%u, "
          "accepted=%u\n",
-         pI->source_file(), pI->source_line(),
+         pI->source_file(), pI->source_line(), lane_slot_index,
          rtcore_return_reason_name(reason), dispatch_required ? 1 : 0,
          dispatch_valid ? 1 : 0, dispatch_reason_matches ? 1 : 0,
          dispatch_seq_matches ? 1 : 0, dispatch_tag_matches ? 1 : 0,
@@ -7463,10 +7492,13 @@ bool rtcore_software_lazy_load_synthetic_groups(
 
 bool rtcore_software_acquire_synthetic_completion(
     const ptx_instruction *pI, unsigned long long context_ptr,
-    unsigned long long handoff_window_base, unsigned result_word) {
+    unsigned long long handoff_window_base, unsigned lane_slot_index,
+    unsigned result_word) {
+  const rtcore_synthetic_handoff_key key =
+      rtcore_make_synthetic_handoff_key(handoff_window_base, lane_slot_index);
   const rtcore_synthetic_handoff_header *window =
       rtcore_acquire_synthetic_handoff_window(
-          g_rtcore_synthetic_handoff_windows, handoff_window_base);
+          g_rtcore_synthetic_handoff_windows, key);
   const bool tracked_window = window != NULL;
   const bool matching_context =
       tracked_window && window->context_ptr == context_ptr;
@@ -7508,7 +7540,7 @@ bool rtcore_software_acquire_synthetic_completion(
       tracked_window &&
       rtcore_software_lazy_load_synthetic_groups(
           pI, *window, result_reason, result_completion_seq_low,
-          result_resume_seq_low, result_window_tag_low);
+          result_resume_seq_low, result_window_tag_low, lane_slot_index);
 
   const bool accepted =
       tracked_window && matching_context && result_matches_w0 &&
@@ -7518,12 +7550,13 @@ bool rtcore_software_acquire_synthetic_completion(
 
   printf("GPGPU-Sim PTX: RT_SUBMIT software-acquire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-         "result=0x%08x, tracked=%u, matching_context=%u, "
+         "lane_slot_index=%u, result=0x%08x, tracked=%u, matching_context=%u, "
          "w0_match=%u, valid=%u, reason_match=%u, flags_match=%u, "
          "completion_seq_match=%u, resume_seq_match=%u, tag_match=%u, "
          "dependent_groups_match=%u, accepted=%u, reason=%s\n",
          pI->source_file(), pI->source_line(), context_ptr,
-         handoff_window_base, result_word, tracked_window ? 1 : 0,
+         handoff_window_base, lane_slot_index, result_word,
+         tracked_window ? 1 : 0,
          matching_context ? 1 : 0, result_matches_w0 ? 1 : 0,
          completion_valid ? 1 : 0, reason_matches ? 1 : 0,
          flags_matches ? 1 : 0, completion_seq_matches ? 1 : 0,
@@ -7541,6 +7574,9 @@ void rtcore_publish_traversal_completion(
   const unsigned completion_seq_low = 1;
   const unsigned resume_seq_low = 0;
   const unsigned window_tag_low = 1;
+  const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
+  const rtcore_synthetic_handoff_key key =
+      rtcore_make_synthetic_handoff_key(handoff_window_base, lane_slot_index);
 
   memory_space *mem = thread->get_global_memory();
   Traversal_data traversal_data;
@@ -7586,24 +7622,24 @@ void rtcore_publish_traversal_completion(
   rtcore_publish_synthetic_dependent_groups(
       pI, traversal_data, reason, completion_seq_low, resume_seq_low,
       window_tag_low, &header);
-  rtcore_publish_synthetic_handoff_window(pI, handoff_window_base, header);
+  rtcore_publish_synthetic_handoff_window(pI, key, header);
 
   ptx_reg_t result_data;
   result_data.u32 = result_word;
   thread->set_operand_value(result, result_data, U32_TYPE, thread, pI);
 
   if (!rtcore_software_acquire_synthetic_completion(
-          pI, context_ptr, handoff_window_base, result_word)) {
+          pI, context_ptr, handoff_window_base, lane_slot_index, result_word)) {
     inst_not_implemented(pI);
     return;
   }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT traversal-complete (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-         "reason=%s, has_traversal=%u, hit_geometry=%u, "
+         "lane_slot_index=%u, reason=%s, has_traversal=%u, hit_geometry=%u, "
          "result=0x%08x, w0=0x%08x, w1=0x%08x, w2=0x%08x, w3=0x%08x\n",
          pI->source_file(), pI->source_line(), context_ptr,
-         handoff_window_base, rtcore_return_reason_name(reason),
+         handoff_window_base, lane_slot_index, rtcore_return_reason_name(reason),
          has_traversal_data ? 1 : 0, hit_geometry ? 1 : 0, result_word,
          header.w0, header.w1, header.w2, header.w3);
   fflush(stdout);
@@ -7621,14 +7657,17 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       thread->get_operand_value(context_ptr, context_ptr, B64_TYPE, thread, 1);
   ptx_reg_t handoff_window_base_data = thread->get_operand_value(
       handoff_window_base, handoff_window_base, B64_TYPE, thread, 1);
+  const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
 
   if (!rtcore_submit_operands_are_valid(context_ptr_data.u64,
                                         handoff_window_base_data.u64)) {
     printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
-           "context_ptr=0x%llx, handoff_window_base=0x%llx\n",
+           "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u\n",
            pI->source_file(), pI->source_line(),
            (unsigned long long)context_ptr_data.u64,
-           (unsigned long long)handoff_window_base_data.u64);
+           (unsigned long long)handoff_window_base_data.u64,
+           lane_slot_index);
     fflush(stdout);
     inst_not_implemented(pI);
     return;
@@ -7651,11 +7690,13 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
 
   const bool operands_are_valid = rtcore_submit_operands_are_valid(
       context_ptr_data.u64, handoff_window_base_data.u64);
+  const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
+  const rtcore_synthetic_handoff_key key = rtcore_make_synthetic_handoff_key(
+      handoff_window_base_data.u64, lane_slot_index);
   const rtcore_synthetic_handoff_header *window =
       operands_are_valid
           ? rtcore_acquire_synthetic_handoff_window(
-                g_rtcore_synthetic_handoff_windows,
-                handoff_window_base_data.u64)
+                g_rtcore_synthetic_handoff_windows, key)
           : NULL;
   const bool tracked_window = window != NULL;
   const bool matching_context =
@@ -7664,11 +7705,11 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   if (!operands_are_valid || !tracked_window || !matching_context) {
     printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
            "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-           "valid=%u, tracked=%u, matching_context=%u\n",
+           "lane_slot_index=%u, valid=%u, tracked=%u, matching_context=%u\n",
            pI->source_file(), pI->source_line(),
            (unsigned long long)context_ptr_data.u64,
            (unsigned long long)handoff_window_base_data.u64,
-           operands_are_valid ? 1 : 0, tracked_window ? 1 : 0,
+           lane_slot_index, operands_are_valid ? 1 : 0, tracked_window ? 1 : 0,
            matching_context ? 1 : 0);
     fflush(stdout);
     inst_not_implemented(pI);
@@ -7678,10 +7719,11 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   // Functional execution reaches here once per active lane; real window release
   // is deferred until a warp-level allocator exists.
   printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT synthetic-retire (%s:%u), "
-         "context_ptr=0x%llx, handoff_window_base=0x%llx\n",
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u\n",
          pI->source_file(), pI->source_line(),
          (unsigned long long)context_ptr_data.u64,
-         (unsigned long long)handoff_window_base_data.u64);
+         (unsigned long long)handoff_window_base_data.u64, lane_slot_index);
   fflush(stdout);
 }
 
