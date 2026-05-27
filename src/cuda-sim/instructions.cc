@@ -7472,6 +7472,41 @@ void rtcore_reject_symbolic_submit(const ptx_instruction *pI) {
   inst_not_implemented(pI);
 }
 
+bool rtcore_synthetic_handoff_window_is_live(
+    const rtcore_synthetic_handoff_key &key) {
+  return g_rtcore_synthetic_handoff_windows.find(key) !=
+         g_rtcore_synthetic_handoff_windows.end();
+}
+
+bool rtcore_symbolic_submit_lane_slot_available(
+    const ptx_instruction *pI, const rtcore_synthetic_handoff_key &key,
+    unsigned long long context_ptr) {
+  const bool live_slot = rtcore_synthetic_handoff_window_is_live(key);
+  const bool slot_available = !live_slot;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT lane-slot-check (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_hw_sid=%u, owner_hw_wid=%u, "
+         "live_slot=%u, slot_available=%u\n",
+         pI->source_file(), pI->source_line(), context_ptr,
+         key.handoff_window_base, key.lane_slot_index, key.owner_hw_sid,
+         key.owner_hw_wid, live_slot ? 1 : 0, slot_available ? 1 : 0);
+  fflush(stdout);
+
+  if (live_slot) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=LIVE_SLOT_OVERWRITE, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "owner_hw_sid=%u, owner_hw_wid=%u, consumed=0\n",
+           pI->source_file(), pI->source_line(), context_ptr,
+           key.handoff_window_base, key.lane_slot_index, key.owner_hw_sid,
+           key.owner_hw_wid);
+    fflush(stdout);
+  }
+
+  return slot_available;
+}
+
 rtcore_synthetic_handoff_key rtcore_make_synthetic_handoff_key(
     unsigned long long handoff_window_base, unsigned lane_slot_index,
     ptx_thread_info *thread) {
@@ -7523,7 +7558,18 @@ bool rtcore_synthetic_owner_tuple_matches(
 void rtcore_publish_synthetic_handoff_window(
     const ptx_instruction *pI, const rtcore_synthetic_handoff_key &key,
     const rtcore_synthetic_handoff_header &header) {
-  g_rtcore_synthetic_handoff_windows[key] = header;
+  const bool inserted =
+      g_rtcore_synthetic_handoff_windows.insert(std::make_pair(key, header))
+          .second;
+  if (!inserted) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=LIVE_SLOT_OVERWRITE_AT_PUBLISH, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u\n",
+           pI->source_file(), pI->source_line(), header.context_ptr,
+           key.handoff_window_base, key.lane_slot_index);
+    fflush(stdout);
+  }
+  assert(inserted);
   const unsigned lane_slot_byte_offset =
       rtcore_handoff_lane_slot_byte_offset(key.lane_slot_index);
   const unsigned long long lane_slot_base =
@@ -7949,6 +7995,14 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (!rtcore_symbolic_submit_has_capacity(
           pI, resource_profile, lane_slot_index, context_ptr_data.u64,
           handoff_window_base_data.u64)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+
+  const rtcore_synthetic_handoff_key key = rtcore_make_synthetic_handoff_key(
+      handoff_window_base_data.u64, lane_slot_index, thread);
+  if (!rtcore_symbolic_submit_lane_slot_available(
+          pI, key, context_ptr_data.u64)) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
