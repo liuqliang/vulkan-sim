@@ -7338,13 +7338,40 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   ptx_reg_t handoff_window_base_data = thread->get_operand_value(
       handoff_window_base, handoff_window_base, B64_TYPE, thread, 1);
 
-  printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
+  const bool operands_are_valid = rtcore_submit_operands_are_valid(
+      context_ptr_data.u64, handoff_window_base_data.u64);
+  std::map<unsigned long long, rtcore_synthetic_handoff_header>::const_iterator
+      window = operands_are_valid
+                   ? g_rtcore_synthetic_handoff_windows.find(
+                         handoff_window_base_data.u64)
+                   : g_rtcore_synthetic_handoff_windows.end();
+  const bool tracked_window =
+      window != g_rtcore_synthetic_handoff_windows.end();
+  const bool matching_context =
+      tracked_window && window->second.context_ptr == context_ptr_data.u64;
+
+  if (!operands_are_valid || !tracked_window || !matching_context) {
+    printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
+           "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "valid=%u, tracked=%u, matching_context=%u\n",
+           pI->source_file(), pI->source_line(),
+           (unsigned long long)context_ptr_data.u64,
+           (unsigned long long)handoff_window_base_data.u64,
+           operands_are_valid ? 1 : 0, tracked_window ? 1 : 0,
+           matching_context ? 1 : 0);
+    fflush(stdout);
+    inst_not_implemented(pI);
+    return;
+  }
+
+  // Functional execution reaches here once per active lane; real window release
+  // is deferred until a warp-level allocator exists.
+  printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT synthetic-retire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx\n",
          pI->source_file(), pI->source_line(),
          (unsigned long long)context_ptr_data.u64,
          (unsigned long long)handoff_window_base_data.u64);
   fflush(stdout);
-  inst_not_implemented(pI);
 }
 
 void end_trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
