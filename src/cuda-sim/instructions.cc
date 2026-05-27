@@ -7285,6 +7285,72 @@ const char *rtcore_return_reason_name(unsigned reason) {
   }
 }
 
+bool rtcore_software_acquire_synthetic_completion(
+    const ptx_instruction *pI, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned result_word) {
+  const rtcore_synthetic_handoff_header *window =
+      rtcore_acquire_synthetic_handoff_window(
+          g_rtcore_synthetic_handoff_windows, handoff_window_base);
+  const bool tracked_window = window != NULL;
+  const bool matching_context =
+      tracked_window && window->context_ptr == context_ptr;
+  const bool result_matches_w0 = tracked_window && window->w0 == result_word;
+  const bool completion_valid =
+      (result_word & RTCORE_COMPLETION_VALID) != 0 &&
+      tracked_window && (window->w0 & RTCORE_COMPLETION_VALID) != 0 &&
+      (window->w1 & 1u) != 0;
+
+  const unsigned result_reason = result_word & 0xf;
+  const unsigned window_reason =
+      tracked_window ? ((window->w1 >> 8) & 0xf) : 0;
+  const bool reason_matches =
+      tracked_window && result_reason == window_reason;
+
+  const unsigned result_flags = (result_word >> 4) & 0xff;
+  const unsigned window_flags =
+      tracked_window ? ((window->w1 >> 16) & 0xff) : 0;
+  const bool flags_matches = tracked_window && result_flags == window_flags;
+
+  const unsigned result_completion_seq_low = (result_word >> 12) & 0xff;
+  const unsigned window_completion_seq =
+      tracked_window ? (window->w2 & 0xffff) : 0;
+  const bool completion_seq_matches =
+      tracked_window &&
+      result_completion_seq_low == (window_completion_seq & 0xff);
+
+  const unsigned result_resume_seq_low = (result_word >> 20) & 0xff;
+  const unsigned window_resume_seq =
+      tracked_window ? ((window->w2 >> 16) & 0xffff) : 0;
+  const bool resume_seq_matches =
+      tracked_window && result_resume_seq_low == (window_resume_seq & 0xff);
+
+  const unsigned result_window_tag_low = (result_word >> 28) & 0x7;
+  const unsigned window_tag = tracked_window ? (window->w3 & 0x7) : 0;
+  const bool window_tag_matches =
+      tracked_window && result_window_tag_low == window_tag;
+
+  const bool accepted =
+      tracked_window && matching_context && result_matches_w0 &&
+      completion_valid && reason_matches && flags_matches &&
+      completion_seq_matches && resume_seq_matches && window_tag_matches;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT software-acquire (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "result=0x%08x, tracked=%u, matching_context=%u, "
+         "w0_match=%u, valid=%u, reason_match=%u, flags_match=%u, "
+         "completion_seq_match=%u, resume_seq_match=%u, tag_match=%u, "
+         "accepted=%u, reason=%s\n",
+         pI->source_file(), pI->source_line(), context_ptr,
+         handoff_window_base, result_word, tracked_window ? 1 : 0,
+         matching_context ? 1 : 0, result_matches_w0 ? 1 : 0,
+         completion_valid ? 1 : 0, reason_matches ? 1 : 0,
+         flags_matches ? 1 : 0, completion_seq_matches ? 1 : 0,
+         resume_seq_matches ? 1 : 0, window_tag_matches ? 1 : 0,
+         accepted ? 1 : 0, rtcore_return_reason_name(result_reason));
+  fflush(stdout);
+  return accepted;
+}
+
 void rtcore_publish_traversal_completion(
     const ptx_instruction *pI, ptx_thread_info *thread,
     const operand_info &result, unsigned long long context_ptr,
@@ -7337,6 +7403,12 @@ void rtcore_publish_traversal_completion(
   ptx_reg_t result_data;
   result_data.u32 = result_word;
   thread->set_operand_value(result, result_data, U32_TYPE, thread, pI);
+
+  if (!rtcore_software_acquire_synthetic_completion(
+          pI, context_ptr, handoff_window_base, result_word)) {
+    inst_not_implemented(pI);
+    return;
+  }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT traversal-complete (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
