@@ -7227,9 +7227,18 @@ const unsigned RTCORE_HANDOFF_WINDOW_WORDS_PER_LANE = 32;
 const unsigned RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE = 128;
 const unsigned RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP =
     RTCORE_MAX_LANES_PER_WARP * RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE;
+const unsigned RTCORE_WINDOW_STATE_COMPLETE = 3;
 
 struct rtcore_synthetic_handoff_header {
   unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  unsigned long long lane_slot_base;
+  unsigned owner_hw_tid;
+  unsigned owner_hw_wid;
+  unsigned owner_hw_sid;
+  unsigned thread_mask;
+  unsigned window_state;
   unsigned w0;
   unsigned w1;
   unsigned w2;
@@ -7258,11 +7267,19 @@ struct rtcore_synthetic_handoff_header {
 
 struct rtcore_synthetic_handoff_key {
   unsigned long long handoff_window_base;
+  unsigned owner_hw_sid;
+  unsigned owner_hw_wid;
   unsigned lane_slot_index;
 
   bool operator<(const rtcore_synthetic_handoff_key &other) const {
     if (handoff_window_base != other.handoff_window_base) {
       return handoff_window_base < other.handoff_window_base;
+    }
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    if (owner_hw_wid != other.owner_hw_wid) {
+      return owner_hw_wid < other.owner_hw_wid;
     }
     return lane_slot_index < other.lane_slot_index;
   }
@@ -7286,6 +7303,20 @@ unsigned long long rtcore_handoff_lane_slot_base(
          rtcore_handoff_lane_slot_byte_offset(lane_slot_index);
 }
 
+unsigned rtcore_lane_thread_mask(unsigned lane_slot_index) {
+  return 1u << lane_slot_index;
+}
+
+unsigned rtcore_active_thread_mask(const ptx_instruction *pI) {
+  active_mask_t active_mask = pI->get_warp_active_mask();
+  const unsigned active_mask_value =
+      static_cast<unsigned>(active_mask.to_ulong());
+  if (active_mask_value != 0) {
+    return active_mask_value;
+  }
+  return 0xffffffffu;
+}
+
 void rtcore_log_symbolic_resource_profile_once() {
   if (g_rtcore_symbolic_resource_profile_logged) {
     return;
@@ -7304,11 +7335,51 @@ void rtcore_log_symbolic_resource_profile_once() {
 }
 
 rtcore_synthetic_handoff_key rtcore_make_synthetic_handoff_key(
-    unsigned long long handoff_window_base, unsigned lane_slot_index) {
+    unsigned long long handoff_window_base, unsigned lane_slot_index,
+    ptx_thread_info *thread) {
   rtcore_synthetic_handoff_key key;
   key.handoff_window_base = handoff_window_base;
+  key.owner_hw_sid = thread->get_hw_sid();
+  key.owner_hw_wid = thread->get_hw_wid();
   key.lane_slot_index = lane_slot_index;
   return key;
+}
+
+void rtcore_populate_synthetic_owner_tuple(
+    rtcore_synthetic_handoff_header *header,
+    const rtcore_synthetic_handoff_key &key, const ptx_instruction *pI,
+    ptx_thread_info *thread) {
+  header->handoff_window_base = key.handoff_window_base;
+  header->lane_slot_index = key.lane_slot_index;
+  header->lane_slot_base = rtcore_handoff_lane_slot_base(
+      key.handoff_window_base, key.lane_slot_index);
+  header->owner_hw_tid = thread->get_hw_tid();
+  header->owner_hw_wid = thread->get_hw_wid();
+  header->owner_hw_sid = thread->get_hw_sid();
+  header->thread_mask = rtcore_active_thread_mask(pI);
+  header->window_state = RTCORE_WINDOW_STATE_COMPLETE;
+}
+
+bool rtcore_synthetic_owner_tuple_matches(
+    const rtcore_synthetic_handoff_header &window,
+    const rtcore_synthetic_handoff_key &key, unsigned long long context_ptr,
+    const ptx_instruction *pI, ptx_thread_info *thread) {
+  const unsigned lane_thread_mask =
+      rtcore_lane_thread_mask(key.lane_slot_index);
+  return window.context_ptr == context_ptr &&
+         window.handoff_window_base == key.handoff_window_base &&
+         window.lane_slot_index == key.lane_slot_index &&
+         window.owner_hw_sid == key.owner_hw_sid &&
+         window.owner_hw_wid == key.owner_hw_wid &&
+         window.lane_slot_base == rtcore_handoff_lane_slot_base(
+                                      key.handoff_window_base,
+                                      key.lane_slot_index) &&
+         window.owner_hw_tid == thread->get_hw_tid() &&
+         window.owner_hw_wid == thread->get_hw_wid() &&
+         window.owner_hw_sid == thread->get_hw_sid() &&
+         (window.thread_mask & lane_thread_mask) != 0 &&
+         (rtcore_active_thread_mask(pI) & lane_thread_mask) != 0 &&
+         window.window_state == RTCORE_WINDOW_STATE_COMPLETE;
 }
 
 void rtcore_publish_synthetic_handoff_window(
@@ -7324,11 +7395,14 @@ void rtcore_publish_synthetic_handoff_window(
   printf("GPGPU-Sim PTX: RT_SUBMIT handoff-window-published (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, lane_slot_byte_offset=%u, "
-         "lane_slot_base=0x%llx, w0=0x%08x, w1=0x%08x, "
+         "lane_slot_base=0x%llx, owner_hw_tid=%u, owner_hw_wid=%u, "
+         "owner_hw_sid=%u, thread_mask=0x%08x, w0=0x%08x, w1=0x%08x, "
          "w2=0x%08x, w3=0x%08x\n",
          pI->source_file(), pI->source_line(), header.context_ptr,
          key.handoff_window_base, key.lane_slot_index, lane_slot_byte_offset,
-         lane_slot_base, header.w0, header.w1, header.w2, header.w3);
+         lane_slot_base, header.owner_hw_tid, header.owner_hw_wid,
+         header.owner_hw_sid, header.thread_mask, header.w0, header.w1,
+         header.w2, header.w3);
   fflush(stdout);
 }
 
@@ -7532,15 +7606,20 @@ bool rtcore_software_lazy_load_synthetic_groups(
 bool rtcore_software_acquire_synthetic_completion(
     const ptx_instruction *pI, unsigned long long context_ptr,
     unsigned long long handoff_window_base, unsigned lane_slot_index,
-    unsigned result_word) {
+    unsigned result_word, ptx_thread_info *thread) {
   const rtcore_synthetic_handoff_key key =
-      rtcore_make_synthetic_handoff_key(handoff_window_base, lane_slot_index);
+      rtcore_make_synthetic_handoff_key(handoff_window_base, lane_slot_index,
+                                        thread);
   const rtcore_synthetic_handoff_header *window =
       rtcore_acquire_synthetic_handoff_window(
           g_rtcore_synthetic_handoff_windows, key);
   const bool tracked_window = window != NULL;
   const bool matching_context =
       tracked_window && window->context_ptr == context_ptr;
+  const bool owner_tuple_matches =
+      tracked_window &&
+      rtcore_synthetic_owner_tuple_matches(*window, key, context_ptr, pI,
+                                           thread);
   const bool result_matches_w0 = tracked_window && window->w0 == result_word;
   const bool completion_valid =
       (result_word & RTCORE_COMPLETION_VALID) != 0 &&
@@ -7582,21 +7661,22 @@ bool rtcore_software_acquire_synthetic_completion(
           result_resume_seq_low, result_window_tag_low, lane_slot_index);
 
   const bool accepted =
-      tracked_window && matching_context && result_matches_w0 &&
-      completion_valid && reason_matches && flags_matches &&
-      completion_seq_matches && resume_seq_matches && window_tag_matches &&
-      dependent_groups_match;
+      tracked_window && matching_context && owner_tuple_matches &&
+      result_matches_w0 && completion_valid && reason_matches &&
+      flags_matches && completion_seq_matches && resume_seq_matches &&
+      window_tag_matches && dependent_groups_match;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT software-acquire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, result=0x%08x, tracked=%u, matching_context=%u, "
-         "w0_match=%u, valid=%u, reason_match=%u, flags_match=%u, "
-         "completion_seq_match=%u, resume_seq_match=%u, tag_match=%u, "
-         "dependent_groups_match=%u, accepted=%u, reason=%s\n",
+         "owner_tuple_match=%u, w0_match=%u, valid=%u, reason_match=%u, "
+         "flags_match=%u, completion_seq_match=%u, resume_seq_match=%u, "
+         "tag_match=%u, dependent_groups_match=%u, accepted=%u, reason=%s\n",
          pI->source_file(), pI->source_line(), context_ptr,
          handoff_window_base, lane_slot_index, result_word,
          tracked_window ? 1 : 0,
-         matching_context ? 1 : 0, result_matches_w0 ? 1 : 0,
+         matching_context ? 1 : 0, owner_tuple_matches ? 1 : 0,
+         result_matches_w0 ? 1 : 0,
          completion_valid ? 1 : 0, reason_matches ? 1 : 0,
          flags_matches ? 1 : 0, completion_seq_matches ? 1 : 0,
          resume_seq_matches ? 1 : 0, window_tag_matches ? 1 : 0,
@@ -7615,7 +7695,8 @@ void rtcore_publish_traversal_completion(
   const unsigned window_tag_low = 1;
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
   const rtcore_synthetic_handoff_key key =
-      rtcore_make_synthetic_handoff_key(handoff_window_base, lane_slot_index);
+      rtcore_make_synthetic_handoff_key(handoff_window_base, lane_slot_index,
+                                        thread);
 
   memory_space *mem = thread->get_global_memory();
   Traversal_data traversal_data;
@@ -7658,6 +7739,7 @@ void rtcore_publish_traversal_completion(
               (RTCORE_COMPLETION_FLAG_TRACE_DONE << 16);
   header.w2 = completion_seq_low | (resume_seq_low << 16);
   header.w3 = window_tag_low;
+  rtcore_populate_synthetic_owner_tuple(&header, key, pI, thread);
   rtcore_publish_synthetic_dependent_groups(
       pI, traversal_data, reason, completion_seq_low, resume_seq_low,
       window_tag_low, &header);
@@ -7668,7 +7750,8 @@ void rtcore_publish_traversal_completion(
   thread->set_operand_value(result, result_data, U32_TYPE, thread, pI);
 
   if (!rtcore_software_acquire_synthetic_completion(
-          pI, context_ptr, handoff_window_base, lane_slot_index, result_word)) {
+          pI, context_ptr, handoff_window_base, lane_slot_index, result_word,
+          thread)) {
     inst_not_implemented(pI);
     return;
   }
@@ -7733,7 +7816,7 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
       context_ptr_data.u64, handoff_window_base_data.u64);
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
   const rtcore_synthetic_handoff_key key = rtcore_make_synthetic_handoff_key(
-      handoff_window_base_data.u64, lane_slot_index);
+      handoff_window_base_data.u64, lane_slot_index, thread);
   const rtcore_synthetic_handoff_header *window =
       operands_are_valid
           ? rtcore_acquire_synthetic_handoff_window(
@@ -7742,16 +7825,22 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   const bool tracked_window = window != NULL;
   const bool matching_context =
       tracked_window && window->context_ptr == context_ptr_data.u64;
+  const bool owner_tuple_matches =
+      tracked_window &&
+      rtcore_synthetic_owner_tuple_matches(*window, key, context_ptr_data.u64,
+                                           pI, thread);
 
-  if (!operands_are_valid || !tracked_window || !matching_context) {
+  if (!operands_are_valid || !tracked_window || !matching_context ||
+      !owner_tuple_matches) {
     printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
            "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-           "lane_slot_index=%u, valid=%u, tracked=%u, matching_context=%u\n",
+           "lane_slot_index=%u, valid=%u, tracked=%u, matching_context=%u, "
+           "owner_tuple_match=%u\n",
            pI->source_file(), pI->source_line(),
            (unsigned long long)context_ptr_data.u64,
            (unsigned long long)handoff_window_base_data.u64,
            lane_slot_index, operands_are_valid ? 1 : 0, tracked_window ? 1 : 0,
-           matching_context ? 1 : 0);
+           matching_context ? 1 : 0, owner_tuple_matches ? 1 : 0);
     fflush(stdout);
     inst_not_implemented(pI);
     return;
@@ -7761,10 +7850,11 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   // is deferred until a warp-level allocator exists.
   printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT synthetic-retire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-         "lane_slot_index=%u\n",
+         "lane_slot_index=%u, owner_tuple_match=%u\n",
          pI->source_file(), pI->source_line(),
          (unsigned long long)context_ptr_data.u64,
-         (unsigned long long)handoff_window_base_data.u64, lane_slot_index);
+         (unsigned long long)handoff_window_base_data.u64, lane_slot_index,
+         owner_tuple_matches ? 1 : 0);
   fflush(stdout);
 }
 
