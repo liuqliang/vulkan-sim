@@ -7419,6 +7419,15 @@ const rtcore_synthetic_handoff_header *rtcore_acquire_synthetic_handoff_window(
   return &window->second;
 }
 
+bool rtcore_release_synthetic_handoff_window(
+    const rtcore_synthetic_handoff_key &key) {
+  return g_rtcore_synthetic_handoff_windows.erase(key) == 1;
+}
+
+size_t rtcore_synthetic_handoff_window_count() {
+  return g_rtcore_synthetic_handoff_windows.size();
+}
+
 unsigned rtcore_compact_result(unsigned reason, unsigned flags,
                                unsigned completion_seq_low,
                                unsigned resume_seq_low,
@@ -7848,13 +7857,16 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
 
   // Functional execution reaches here once per active lane; real window release
   // is deferred until a warp-level allocator exists.
+  const bool released_window = rtcore_release_synthetic_handoff_window(key);
   printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT synthetic-retire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-         "lane_slot_index=%u, owner_tuple_match=%u\n",
+         "lane_slot_index=%u, owner_tuple_match=%u, released=%u, "
+         "remaining_windows=%zu\n",
          pI->source_file(), pI->source_line(),
          (unsigned long long)context_ptr_data.u64,
          (unsigned long long)handoff_window_base_data.u64, lane_slot_index,
-         owner_tuple_matches ? 1 : 0);
+         owner_tuple_matches ? 1 : 0, released_window ? 1 : 0,
+         rtcore_synthetic_handoff_window_count());
   fflush(stdout);
 }
 
