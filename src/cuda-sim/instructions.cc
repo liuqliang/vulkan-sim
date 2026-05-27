@@ -7216,6 +7216,7 @@ namespace {
 
 const unsigned long long RTCORE_CONTEXT_ALIGNMENT = 64;
 const unsigned long long RTCORE_HANDOFF_WINDOW_ALIGNMENT = 128;
+const unsigned RTCORE_RETURN_FOR_CLOSEST_HIT = 0x02;
 const unsigned RTCORE_RETURN_FOR_MISS = 0x03;
 const unsigned RTCORE_COMPLETION_FLAG_TRACE_DONE = 1u << 3;
 const unsigned RTCORE_COMPLETION_VALID = 1u << 31;
@@ -7248,24 +7249,61 @@ bool rtcore_submit_operands_are_valid(unsigned long long context_ptr,
          (handoff_window_base % RTCORE_HANDOFF_WINDOW_ALIGNMENT) == 0;
 }
 
-void rtcore_publish_synthetic_miss(const ptx_instruction *pI,
-                                   ptx_thread_info *thread,
-                                   const operand_info &result,
-                                   unsigned long long context_ptr,
-                                   unsigned long long handoff_window_base) {
+const char *rtcore_return_reason_name(unsigned reason) {
+  switch (reason) {
+    case RTCORE_RETURN_FOR_CLOSEST_HIT:
+      return "closest_hit";
+    case RTCORE_RETURN_FOR_MISS:
+      return "miss";
+    default:
+      return "unknown";
+  }
+}
+
+void rtcore_publish_traversal_completion(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    const operand_info &result, unsigned long long context_ptr,
+    unsigned long long handoff_window_base) {
   const unsigned completion_seq_low = 1;
   const unsigned resume_seq_low = 0;
   const unsigned window_tag_low = 1;
-  const unsigned result_word =
-      rtcore_compact_result(RTCORE_RETURN_FOR_MISS,
-                            RTCORE_COMPLETION_FLAG_TRACE_DONE,
-                            completion_seq_low, resume_seq_low,
-                            window_tag_low);
+
+  memory_space *mem = thread->get_global_memory();
+  const bool has_traversal_data =
+      !thread->RT_thread_data->traversal_data.empty();
+  bool hit_geometry = false;
+  if (has_traversal_data) {
+    Traversal_data *traversal_data =
+        thread->RT_thread_data->traversal_data.back();
+    mem->read(&(traversal_data->hit_geometry),
+              sizeof(traversal_data->hit_geometry), &hit_geometry);
+  } else {
+    Traversal_data traversal_data;
+    memset(&traversal_data, 0, sizeof(traversal_data));
+    traversal_data.hit_geometry = false;
+    traversal_data.current_shader_counter = -1;
+    traversal_data.current_shader_type = -1;
+    traversal_data.missIndex = 0;
+
+    Traversal_data *device_traversal_data =
+        (Traversal_data *)VulkanRayTracing::gpgpusim_alloc(
+            sizeof(Traversal_data));
+    mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data,
+               thread, pI);
+    thread->RT_thread_data->all_hit_data.clear();
+    thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
+  }
+
+  const unsigned reason =
+      hit_geometry ? RTCORE_RETURN_FOR_CLOSEST_HIT : RTCORE_RETURN_FOR_MISS;
+  const unsigned result_word = rtcore_compact_result(
+      reason, RTCORE_COMPLETION_FLAG_TRACE_DONE, completion_seq_low,
+      resume_seq_low, window_tag_low);
 
   rtcore_synthetic_handoff_header header;
   header.context_ptr = context_ptr;
   header.w0 = result_word;
-  header.w1 = 1u | (RTCORE_RETURN_FOR_MISS << 8) |
+  header.w1 = 1u | (reason << 8) |
               (RTCORE_COMPLETION_FLAG_TRACE_DONE << 16);
   header.w2 = completion_seq_low | (resume_seq_low << 16);
   header.w3 = window_tag_low;
@@ -7275,27 +7313,14 @@ void rtcore_publish_synthetic_miss(const ptx_instruction *pI,
   result_data.u32 = result_word;
   thread->set_operand_value(result, result_data, U32_TYPE, thread, pI);
 
-  Traversal_data traversal_data;
-  memset(&traversal_data, 0, sizeof(traversal_data));
-  traversal_data.hit_geometry = false;
-  traversal_data.current_shader_counter = -1;
-  traversal_data.current_shader_type = -1;
-  traversal_data.missIndex = 0;
-
-  memory_space *mem = thread->get_global_memory();
-  Traversal_data *device_traversal_data =
-      (Traversal_data *)VulkanRayTracing::gpgpusim_alloc(sizeof(Traversal_data));
-  mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data,
-             thread, pI);
-  thread->RT_thread_data->all_hit_data.clear();
-  thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
-
-  printf("GPGPU-Sim PTX: RT_SUBMIT synthetic-complete (%s:%u), "
+  printf("GPGPU-Sim PTX: RT_SUBMIT traversal-complete (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "reason=%s, has_traversal=%u, hit_geometry=%u, "
          "result=0x%08x, w0=0x%08x, w1=0x%08x, w2=0x%08x, w3=0x%08x\n",
          pI->source_file(), pI->source_line(), context_ptr,
-         handoff_window_base, result_word, header.w0, header.w1, header.w2,
-         header.w3);
+         handoff_window_base, rtcore_return_reason_name(reason),
+         has_traversal_data ? 1 : 0, hit_geometry ? 1 : 0, result_word,
+         header.w0, header.w1, header.w2, header.w3);
   fflush(stdout);
 }
 
@@ -7324,8 +7349,9 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
-  rtcore_publish_synthetic_miss(pI, thread, result, context_ptr_data.u64,
-                                handoff_window_base_data.u64);
+  rtcore_publish_traversal_completion(pI, thread, result,
+                                      context_ptr_data.u64,
+                                      handoff_window_base_data.u64);
 }
 
 void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
