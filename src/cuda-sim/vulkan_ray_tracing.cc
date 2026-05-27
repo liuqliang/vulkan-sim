@@ -2060,6 +2060,9 @@ void VulkanRayTracing::getTexture(struct DESCRIPTOR_STRUCT *desc,
 #if defined(MESA_USE_LVPIPE_DRIVER)
 FILE *img_bin = nullptr;
 
+static const int RTCORE_LVP_ACCUMULATION_IMAGE_BINDING = 1;
+static const int RTCORE_LVP_OUTPUT_IMAGE_BINDING = 2;
+
 static unsigned rtcore_clamp_ppm_channel(float value)
 {
     if (!std::isfinite(value) || value <= 0.0f) {
@@ -2069,6 +2072,40 @@ static unsigned rtcore_clamp_ppm_channel(float value)
         return 255;
     }
     return static_cast<unsigned>(std::lround(value * 255.0f));
+}
+
+static int rtcore_lvp_descriptor_binding(const struct DESCRIPTOR_SET_STRUCT *descriptor_set,
+                                         const struct DESCRIPTOR_STRUCT *desc)
+{
+    if (descriptor_set == NULL || descriptor_set->layout == NULL || desc == NULL) {
+        return -1;
+    }
+
+    for (uint32_t binding = 0; binding < descriptor_set->layout->binding_count; ++binding) {
+        const struct DESCRIPTOR_LAYOUT_STRUCT *bind_layout = &descriptor_set->layout->binding[binding];
+        if (!bind_layout->valid || bind_layout->type != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+            continue;
+        }
+        const struct DESCRIPTOR_STRUCT *base =
+            &descriptor_set->descriptors[bind_layout->descriptor_index];
+        const struct DESCRIPTOR_STRUCT *end = base + bind_layout->array_size;
+        if (desc >= base && desc < end) {
+            return binding;
+        }
+    }
+
+    return -1;
+}
+
+static bool rtcore_lvp_should_dump_storage_image(int binding)
+{
+    if (binding == RTCORE_LVP_ACCUMULATION_IMAGE_BINDING) {
+        return false;
+    }
+    if (binding == RTCORE_LVP_OUTPUT_IMAGE_BINDING) {
+        return true;
+    }
+    return true;
 }
 #endif
 
@@ -2183,8 +2220,10 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
 
     uint32_t width = image->vk.extent.width;
     uint32_t height = image->vk.extent.height;
+    const int storage_image_binding =
+        rtcore_lvp_descriptor_binding(VulkanRayTracing::descriptorSet, desc);
 
-    if (writeImageBinary) {
+    if (writeImageBinary && rtcore_lvp_should_dump_storage_image(storage_image_binding)) {
         // TODO: fix the bottom, is NULL
         // assert(image->vk.base.object_name);
         // std::string img_name(image->vk.base.object_name);
