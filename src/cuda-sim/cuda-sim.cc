@@ -2103,6 +2103,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
 
     if (pI->get_opcode() == RT_SUBMIT_OP ||
         pI->get_opcode() == RT_RETIRE_CONTEXT_OP) {
+      inst.init_per_scalar_thread();
       insn_space.set_type(global_space);
       inst.space = insn_space;
       insn_data_size = 16;
