@@ -7222,6 +7222,11 @@ const unsigned RTCORE_COMPLETION_FLAG_TRACE_DONE = 1u << 3;
 const unsigned RTCORE_COMPLETION_VALID = 1u << 31;
 const unsigned RTCORE_WINDOW_GROUP_VALID = RTCORE_COMPLETION_VALID;
 const unsigned RTCORE_MAX_LANES_PER_WARP = 32;
+const unsigned RTCORE_CONTEXT_BYTES_PER_LANE = 0x280;
+const unsigned RTCORE_HANDOFF_WINDOW_WORDS_PER_LANE = 32;
+const unsigned RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE = 128;
+const unsigned RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP =
+    RTCORE_MAX_LANES_PER_WARP * RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE;
 
 struct rtcore_synthetic_handoff_header {
   unsigned long long context_ptr;
@@ -7265,9 +7270,37 @@ struct rtcore_synthetic_handoff_key {
 
 static std::map<rtcore_synthetic_handoff_key, rtcore_synthetic_handoff_header>
     g_rtcore_synthetic_handoff_windows;
+bool g_rtcore_symbolic_resource_profile_logged = false;
 
 unsigned rtcore_lane_slot_index(ptx_thread_info *thread) {
   return thread->get_hw_tid() % RTCORE_MAX_LANES_PER_WARP;
+}
+
+unsigned rtcore_handoff_lane_slot_byte_offset(unsigned lane_slot_index) {
+  return lane_slot_index * RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE;
+}
+
+unsigned long long rtcore_handoff_lane_slot_base(
+    unsigned long long handoff_window_base, unsigned lane_slot_index) {
+  return handoff_window_base +
+         rtcore_handoff_lane_slot_byte_offset(lane_slot_index);
+}
+
+void rtcore_log_symbolic_resource_profile_once() {
+  if (g_rtcore_symbolic_resource_profile_logged) {
+    return;
+  }
+  g_rtcore_symbolic_resource_profile_logged = true;
+
+  printf("GPGPU-Sim PTX: RT resource-profile "
+         "lanes_per_warp=%u, handoff_words_per_lane=%u, "
+         "handoff_bytes_per_lane=%u, handoff_bytes_full_warp=%u, "
+         "context_bytes_per_lane=%u\n",
+         RTCORE_MAX_LANES_PER_WARP, RTCORE_HANDOFF_WINDOW_WORDS_PER_LANE,
+         RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE,
+         RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP,
+         RTCORE_CONTEXT_BYTES_PER_LANE);
+  fflush(stdout);
 }
 
 rtcore_synthetic_handoff_key rtcore_make_synthetic_handoff_key(
@@ -7282,14 +7315,20 @@ void rtcore_publish_synthetic_handoff_window(
     const ptx_instruction *pI, const rtcore_synthetic_handoff_key &key,
     const rtcore_synthetic_handoff_header &header) {
   g_rtcore_synthetic_handoff_windows[key] = header;
+  const unsigned lane_slot_byte_offset =
+      rtcore_handoff_lane_slot_byte_offset(key.lane_slot_index);
+  const unsigned long long lane_slot_base =
+      rtcore_handoff_lane_slot_base(key.handoff_window_base,
+                                    key.lane_slot_index);
 
   printf("GPGPU-Sim PTX: RT_SUBMIT handoff-window-published (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-         "lane_slot_index=%u, w0=0x%08x, w1=0x%08x, "
+         "lane_slot_index=%u, lane_slot_byte_offset=%u, "
+         "lane_slot_base=0x%llx, w0=0x%08x, w1=0x%08x, "
          "w2=0x%08x, w3=0x%08x\n",
          pI->source_file(), pI->source_line(), header.context_ptr,
-         key.handoff_window_base, key.lane_slot_index, header.w0, header.w1,
-         header.w2, header.w3);
+         key.handoff_window_base, key.lane_slot_index, lane_slot_byte_offset,
+         lane_slot_base, header.w0, header.w1, header.w2, header.w3);
   fflush(stdout);
 }
 
@@ -7672,6 +7711,8 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     inst_not_implemented(pI);
     return;
   }
+
+  rtcore_log_symbolic_resource_profile_once();
 
   rtcore_publish_traversal_completion(pI, thread, result,
                                       context_ptr_data.u64,
