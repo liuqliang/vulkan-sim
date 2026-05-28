@@ -58,8 +58,8 @@ void Scoreboard::printContents() const {
 }
 
 bool Scoreboard::isRtSubmitWaitInstruction(const class inst_t* inst) const {
-  return inst && inst->op == RT_CORE_OP && inst->outcount == 1 &&
-         inst->incount == 2;
+  return inst && inst->op == RT_CORE_OP &&
+         inst->rt_subop == RT_CORE_SUBOP_SUBMIT;
 }
 
 void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {

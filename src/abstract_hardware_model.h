@@ -117,6 +117,14 @@ enum uarch_op_t {
 };
 typedef enum uarch_op_t op_type;
 
+enum rt_core_subop_t {
+  RT_CORE_SUBOP_NONE = 0,
+  RT_CORE_SUBOP_TRACE_RAY,
+  RT_CORE_SUBOP_SUBMIT,
+  RT_CORE_SUBOP_RETIRE_CONTEXT,
+};
+typedef enum rt_core_subop_t rt_core_subop_type;
+
 enum uarch_bar_t { NOT_BAR = -1, SYNC = 1, ARRIVE, RED };
 typedef enum uarch_bar_t barrier_type;
 
@@ -1111,6 +1119,7 @@ class inst_t {
     pc = (address_type)-1;
     reconvergence_pc = (address_type)-1;
     op = NO_OP;
+    rt_subop = RT_CORE_SUBOP_NONE;
     bar_type = NOT_BAR;
     red_type = NOT_RED;
     bar_id = (unsigned)-1;
@@ -1170,6 +1179,7 @@ class inst_t {
   address_type pc;  // program counter address of instruction
   unsigned isize;   // size of instruction in bytes
   op_type op;       // opcode (uarch visible)
+  rt_core_subop_t rt_subop;  // RT hard-op kind when op == RT_CORE_OP
 
   barrier_type bar_type;
   reduction_type red_type;

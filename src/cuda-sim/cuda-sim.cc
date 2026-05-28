@@ -781,13 +781,21 @@ void ptx_instruction::set_opcode_and_latency() {
     }
   }
   op = ALU_OP;
+  rt_subop = RT_CORE_SUBOP_NONE;
   mem_op = NOT_TEX;
   initiation_interval = latency = 1;
   switch (m_opcode) {
     case TRACE_RAY_OP:
+      op = RT_CORE_OP;
+      rt_subop = RT_CORE_SUBOP_TRACE_RAY;
+      break;
     case RT_SUBMIT_OP:
+      op = RT_CORE_OP;
+      rt_subop = RT_CORE_SUBOP_SUBMIT;
+      break;
     case RT_RETIRE_CONTEXT_OP:
       op = RT_CORE_OP;
+      rt_subop = RT_CORE_SUBOP_RETIRE_CONTEXT;
       break;
     case MOV_OP:
       assert(!(has_memory_read() && has_memory_write()));
