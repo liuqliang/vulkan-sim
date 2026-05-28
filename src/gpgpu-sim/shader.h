@@ -1313,6 +1313,18 @@ class rt_unit : public pipelined_simd_unit {
       mem_fetch* process_memory_access_queue(warp_inst_t &inst);
       void schedule_next_warp(warp_inst_t &inst);
       void memory_cycle(warp_inst_t &inst);
+      struct rtcore_synthetic_completion_event {
+        unsigned warp_uid;
+        unsigned warp_id;
+        rt_core_subop_t rt_subop;
+        unsigned long long enqueue_cycle;
+        unsigned long long ready_cycle;
+      };
+      void enqueue_synthetic_completion(const warp_inst_t &inst,
+                                        unsigned long long current_cycle);
+      bool synthetic_completion_ready(const warp_inst_t &inst,
+                                      unsigned long long current_cycle) const;
+      void retire_synthetic_completion(const warp_inst_t &inst);
                           
       virtual void process_cache_access(
             baseline_cache *cache, warp_inst_t &inst, mem_fetch *mf);
@@ -1356,6 +1368,8 @@ class rt_unit : public pipelined_simd_unit {
       
       // {warp id, warp instruction}
       std::map<unsigned, warp_inst_t> m_current_warps;
+      std::map<unsigned, rtcore_synthetic_completion_event>
+          m_synthetic_completion_queue;
       unsigned n_warps;
 
       unsigned cacheline_count;

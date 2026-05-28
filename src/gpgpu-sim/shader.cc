@@ -2879,6 +2879,40 @@ unsigned rt_unit::active_warps() {
   return warp_ids.size();
 }
 
+void rt_unit::enqueue_synthetic_completion(
+    const warp_inst_t &inst, unsigned long long current_cycle) {
+  if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
+    return;
+  }
+
+  rtcore_synthetic_completion_event event;
+  event.warp_uid = inst.get_uid();
+  event.warp_id = inst.warp_id();
+  event.rt_subop = inst.rt_subop;
+  event.enqueue_cycle = current_cycle;
+  event.ready_cycle = current_cycle + 1;
+  m_synthetic_completion_queue[inst.get_uid()] = event;
+}
+
+bool rt_unit::synthetic_completion_ready(
+    const warp_inst_t &inst, unsigned long long current_cycle) const {
+  if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
+    return true;
+  }
+  std::map<unsigned, rtcore_synthetic_completion_event>::const_iterator event =
+      m_synthetic_completion_queue.find(inst.get_uid());
+  if (event == m_synthetic_completion_queue.end()) {
+    return false;
+  }
+  return current_cycle >= event->second.ready_cycle;
+}
+
+void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {
+  if (inst.rt_subop == RT_CORE_SUBOP_SUBMIT) {
+    m_synthetic_completion_queue.erase(inst.get_uid());
+  }
+}
+
 void rt_unit::cycle() {
   // Debugging roofline plot
   cacheline_count = 0;
@@ -2905,6 +2939,9 @@ void rt_unit::cycle() {
     
     pipe_reg.set_start_cycle(current_cycle);
     pipe_reg.set_thread_end_cycle(current_cycle);
+    if (pipe_reg.rt_subop == RT_CORE_SUBOP_SUBMIT) {
+      enqueue_synthetic_completion(pipe_reg, current_cycle);
+    }
 
     if (m_config->m_rt_coherence_engine) {
       if (!m_ray_coherence_engine->m_initialized) {
@@ -3087,8 +3124,7 @@ void rt_unit::cycle() {
     assert(it->first == debug_inst.get_uid());
     RT_DPRINTF("Checking warp inst uid: %d\n", debug_inst.get_uid());
     const bool synthetic_submit_completion_ready =
-        it->second.rt_subop != RT_CORE_SUBOP_SUBMIT ||
-        current_cycle > it->second.get_start_cycle();
+        synthetic_completion_ready(it->second, current_cycle);
     // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
     if (synthetic_submit_completion_ready &&
         it->second.rt_mem_accesses_empty() &&
@@ -3096,6 +3132,7 @@ void rt_unit::cycle() {
         !it->second.has_pending_writes()) {
       RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid, it->second.warp_id(), it->first);
       if (m_operand_collector->writeback(it->second)) {
+        retire_synthetic_completion(it->second);
         m_scoreboard->releaseRegisters(&it->second);
         m_core->warp_inst_complete(it->second);
         m_core->dec_inst_in_pipeline(it->second.warp_id());
