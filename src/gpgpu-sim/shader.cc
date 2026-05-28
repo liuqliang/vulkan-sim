@@ -2897,6 +2897,11 @@ unsigned rt_unit::rtcore_synthetic_completion_latency() const {
   return (unsigned)parsed;
 }
 
+extern "C" bool rtcore_claim_adapter_completion(
+    unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
+    unsigned *active_mask, unsigned *completed_lane_mask,
+    unsigned *static_inst_uid);
+
 void rt_unit::enqueue_synthetic_completion(
     const warp_inst_t &inst, unsigned long long current_cycle) {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
@@ -2907,22 +2912,36 @@ void rt_unit::enqueue_synthetic_completion(
   event.warp_uid = inst.get_uid();
   event.warp_id = inst.warp_id();
   event.rt_subop = inst.rt_subop;
+  event.adapter_active_mask = 0;
+  event.adapter_completed_lane_mask = 0;
+  event.adapter_static_inst_uid = 0;
+  event.adapter_completion_ready = rtcore_claim_adapter_completion(
+      event.warp_uid, event.warp_id, m_sid, &event.adapter_active_mask,
+      &event.adapter_completed_lane_mask, &event.adapter_static_inst_uid);
   event.enqueue_cycle = current_cycle;
   event.ready_cycle = current_cycle + rtcore_synthetic_completion_latency();
   m_synthetic_completion_queue[inst.get_uid()] = event;
 }
 
 bool rt_unit::synthetic_completion_ready(
-    const warp_inst_t &inst, unsigned long long current_cycle) const {
+    const warp_inst_t &inst, unsigned long long current_cycle) {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
     return true;
   }
-  std::map<unsigned, rtcore_synthetic_completion_event>::const_iterator event =
+  std::map<unsigned, rtcore_synthetic_completion_event>::iterator event =
       m_synthetic_completion_queue.find(inst.get_uid());
   if (event == m_synthetic_completion_queue.end()) {
     return false;
   }
-  return current_cycle >= event->second.ready_cycle;
+  if (!event->second.adapter_completion_ready) {
+    event->second.adapter_completion_ready = rtcore_claim_adapter_completion(
+        event->second.warp_uid, event->second.warp_id, m_sid,
+        &event->second.adapter_active_mask,
+        &event->second.adapter_completed_lane_mask,
+        &event->second.adapter_static_inst_uid);
+  }
+  return event->second.adapter_completion_ready &&
+         current_cycle >= event->second.ready_cycle;
 }
 
 void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {

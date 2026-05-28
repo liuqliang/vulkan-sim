@@ -1317,6 +1317,10 @@ class rt_unit : public pipelined_simd_unit {
         unsigned warp_uid;
         unsigned warp_id;
         rt_core_subop_t rt_subop;
+        bool adapter_completion_ready;
+        unsigned adapter_active_mask;
+        unsigned adapter_completed_lane_mask;
+        unsigned adapter_static_inst_uid;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
       };
@@ -1324,7 +1328,7 @@ class rt_unit : public pipelined_simd_unit {
       void enqueue_synthetic_completion(const warp_inst_t &inst,
                                         unsigned long long current_cycle);
       bool synthetic_completion_ready(const warp_inst_t &inst,
-                                      unsigned long long current_cycle) const;
+                                      unsigned long long current_cycle);
       void retire_synthetic_completion(const warp_inst_t &inst);
                           
       virtual void process_cache_access(
