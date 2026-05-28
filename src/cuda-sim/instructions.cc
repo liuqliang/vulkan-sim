@@ -8547,6 +8547,7 @@ void rtcore_traversal_completion_adapter_publish(
   header.w2 = completion_seq_low | (resume_seq_low << 16);
   header.w3 = window_tag;
   rtcore_populate_synthetic_owner_tuple(&header, key, pI, thread);
+  header.thread_mask = current_warp_metadata.active_mask;
   rtcore_publish_synthetic_dependent_groups(
       pI, traversal_data, reason, completion_seq_low, resume_seq_low,
       window_tag, &header);
