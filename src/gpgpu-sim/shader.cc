@@ -30,6 +30,7 @@
 #include "shader.h"
 #include <float.h>
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../../libcuda/gpgpu_context.h"
 #include "../cuda-sim/cuda-sim.h"
@@ -2879,6 +2880,23 @@ unsigned rt_unit::active_warps() {
   return warp_ids.size();
 }
 
+unsigned rt_unit::rtcore_synthetic_completion_latency() const {
+  const char *value = getenv("VULKAN_SIM_RTCORE_SYNTHETIC_COMPLETION_LATENCY");
+  if (value == NULL || *value == '\0') {
+    return 1;
+  }
+
+  char *end = NULL;
+  const unsigned long parsed = strtoul(value, &end, 10);
+  if (end == value || *end != '\0' || parsed == 0) {
+    return 1;
+  }
+  if (parsed > UINT_MAX) {
+    return UINT_MAX;
+  }
+  return (unsigned)parsed;
+}
+
 void rt_unit::enqueue_synthetic_completion(
     const warp_inst_t &inst, unsigned long long current_cycle) {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
@@ -2890,7 +2908,7 @@ void rt_unit::enqueue_synthetic_completion(
   event.warp_id = inst.warp_id();
   event.rt_subop = inst.rt_subop;
   event.enqueue_cycle = current_cycle;
-  event.ready_cycle = current_cycle + 1;
+  event.ready_cycle = current_cycle + rtcore_synthetic_completion_latency();
   m_synthetic_completion_queue[inst.get_uid()] = event;
 }
 

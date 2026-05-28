@@ -1320,6 +1320,7 @@ class rt_unit : public pipelined_simd_unit {
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
       };
+      unsigned rtcore_synthetic_completion_latency() const;
       void enqueue_synthetic_completion(const warp_inst_t &inst,
                                         unsigned long long current_cycle);
       bool synthetic_completion_ready(const warp_inst_t &inst,
