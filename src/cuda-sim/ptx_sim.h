@@ -309,6 +309,45 @@ class ptx_thread_info {
   void ptx_fetch_inst(inst_t &inst) const;
   void ptx_exec_inst(warp_inst_t &inst, unsigned lane_id);
 
+  struct rtcore_current_warp_metadata {
+    rtcore_current_warp_metadata()
+        : valid(false),
+          warp_uid(0),
+          warp_id(0),
+          owner_hw_sid(0),
+          active_mask(0),
+          static_inst_uid(0) {}
+
+    bool valid;
+    unsigned warp_uid;
+    unsigned warp_id;
+    unsigned owner_hw_sid;
+    unsigned active_mask;
+    unsigned static_inst_uid;
+  };
+
+  void set_rtcore_current_warp_metadata(unsigned warp_uid, unsigned warp_id,
+                                        unsigned owner_hw_sid,
+                                        unsigned active_mask,
+                                        unsigned static_inst_uid) {
+    m_rtcore_current_warp_metadata.valid = true;
+    m_rtcore_current_warp_metadata.warp_uid = warp_uid;
+    m_rtcore_current_warp_metadata.warp_id = warp_id;
+    m_rtcore_current_warp_metadata.owner_hw_sid = owner_hw_sid;
+    m_rtcore_current_warp_metadata.active_mask = active_mask;
+    m_rtcore_current_warp_metadata.static_inst_uid = static_inst_uid;
+  }
+  void clear_rtcore_current_warp_metadata() {
+    m_rtcore_current_warp_metadata = rtcore_current_warp_metadata();
+  }
+  bool get_rtcore_current_warp_metadata(
+      rtcore_current_warp_metadata *metadata) const {
+    if (metadata != NULL) {
+      *metadata = m_rtcore_current_warp_metadata;
+    }
+    return m_rtcore_current_warp_metadata.valid;
+  }
+
   const ptx_version &get_ptx_version() const;
   void set_reg(const symbol *reg, const ptx_reg_t &value);
   void print_reg_thread(char *fname);
@@ -526,6 +565,7 @@ class ptx_thread_info {
   unsigned m_hw_tid;
   unsigned m_hw_wid;
   unsigned m_hw_ctaid;
+  rtcore_current_warp_metadata m_rtcore_current_warp_metadata;
 
   unsigned m_icount;
   unsigned m_PC;

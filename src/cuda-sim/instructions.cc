@@ -8323,6 +8323,42 @@ bool rtcore_software_acquire_synthetic_completion(
   return accepted;
 }
 
+bool rtcore_current_warp_metadata_is_valid(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    const ptx_thread_info::rtcore_current_warp_metadata *metadata,
+    unsigned lane_slot_index) {
+  const bool has_metadata = metadata != NULL && metadata->valid;
+  const bool owner_hw_sid_matches =
+      has_metadata && metadata->owner_hw_sid == thread->get_hw_sid();
+  const bool warp_id_matches =
+      has_metadata && metadata->warp_id == thread->get_hw_wid();
+  const bool static_inst_uid_matches =
+      has_metadata && metadata->static_inst_uid == pI->uid();
+  const bool lane_active =
+      has_metadata &&
+      rtcore_lane_is_active_in_mask(metadata->active_mask, lane_slot_index);
+  const bool accepted =
+      has_metadata && owner_hw_sid_matches && warp_id_matches &&
+      static_inst_uid_matches && lane_active;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT current-warp-metadata (%s:%u), "
+         "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
+         "active_mask=0x%08x, static_inst_uid=%u, lane_slot_index=%u, "
+         "valid=%u, owner_hw_sid_match=%u, warp_id_match=%u, "
+         "static_inst_uid_match=%u, lane_active=%u, accepted=%u\n",
+         pI->source_file(), pI->source_line(),
+         has_metadata ? metadata->warp_uid : 0,
+         has_metadata ? metadata->warp_id : 0,
+         has_metadata ? metadata->owner_hw_sid : 0,
+         has_metadata ? metadata->active_mask : 0,
+         has_metadata ? metadata->static_inst_uid : 0, lane_slot_index,
+         has_metadata ? 1 : 0, owner_hw_sid_matches ? 1 : 0,
+         warp_id_matches ? 1 : 0, static_inst_uid_matches ? 1 : 0,
+         lane_active ? 1 : 0, accepted ? 1 : 0);
+  fflush(stdout);
+  return accepted;
+}
+
 // Adapter boundary from functional traversal results to the architectural
 // per-lane result/window/token completion transaction.
 void rtcore_traversal_completion_adapter_publish(
@@ -8336,6 +8372,13 @@ void rtcore_traversal_completion_adapter_publish(
   const rtcore_symbolic_rt_token_key token_key =
       rtcore_make_symbolic_rt_token_key(context_ptr, handoff_window_base,
                                         lane_slot_index, thread);
+  ptx_thread_info::rtcore_current_warp_metadata current_warp_metadata;
+  thread->get_rtcore_current_warp_metadata(&current_warp_metadata);
+  if (!rtcore_current_warp_metadata_is_valid(
+          pI, thread, &current_warp_metadata, lane_slot_index)) {
+    inst_not_implemented(pI);
+    return;
+  }
   const unsigned window_generation =
       rtcore_peek_next_synthetic_window_generation(key);
   const unsigned completion_seq_low =
