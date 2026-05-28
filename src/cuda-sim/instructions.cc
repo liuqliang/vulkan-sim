@@ -7765,8 +7765,8 @@ void rtcore_reject_symbolic_submit(const ptx_instruction *pI) {
 
 bool rtcore_symbolic_submit_lane_is_active(
     const ptx_instruction *pI, unsigned lane_slot_index,
-    unsigned long long context_ptr, unsigned long long handoff_window_base) {
-  unsigned active_lane_mask = rtcore_active_thread_mask(pI);
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned active_lane_mask) {
   const unsigned lane_thread_mask =
       rtcore_lane_thread_mask(lane_slot_index);
   const bool test_active_mask_override =
@@ -8629,9 +8629,17 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
+  ptx_thread_info::rtcore_current_warp_metadata current_warp_metadata;
+  thread->get_rtcore_current_warp_metadata(&current_warp_metadata);
+  if (!rtcore_current_warp_metadata_is_valid(
+          pI, thread, &current_warp_metadata, lane_slot_index)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+
   if (!rtcore_symbolic_submit_lane_is_active(
           pI, lane_slot_index, context_ptr_data.u64,
-          handoff_window_base_data.u64)) {
+          handoff_window_base_data.u64, current_warp_metadata.active_mask)) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
