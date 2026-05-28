@@ -52,6 +52,7 @@ class Scoreboard {
 
  private:
   void reserveRegister(unsigned wid, unsigned regnum);
+  bool isRtSubmitWaitInstruction(const inst_t *inst) const;
   int get_sid() const { return m_sid; }
 
   unsigned m_sid;
@@ -61,6 +62,7 @@ class Scoreboard {
   std::vector<std::set<unsigned> > reg_table;
   // Register that depend on a long operation (global, local or tex memory)
   std::vector<std::set<unsigned> > longopregs;
+  std::vector<bool> m_pending_rt_warps;
 
   class gpgpu_t *m_gpu;
 };

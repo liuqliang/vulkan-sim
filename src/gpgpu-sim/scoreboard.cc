@@ -38,6 +38,7 @@ Scoreboard::Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t* gpu)
   // Initialize size of table
   reg_table.resize(n_warps);
   longopregs.resize(n_warps);
+  m_pending_rt_warps.resize(n_warps, false);
 
   m_gpu = gpu;
 }
@@ -51,8 +52,14 @@ void Scoreboard::printContents() const {
     std::set<unsigned>::const_iterator it;
     for (it = reg_table[i].begin(); it != reg_table[i].end(); it++)
       printf("%u ", *it);
+    if (m_pending_rt_warps[i]) printf("rt_wait ");
     printf("\n");
   }
+}
+
+bool Scoreboard::isRtSubmitWaitInstruction(const class inst_t* inst) const {
+  return inst && inst->op == RT_CORE_OP && inst->outcount == 1 &&
+         inst->incount == 2;
 }
 
 void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
@@ -104,6 +111,13 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
       }
     }
   }
+
+  if (isRtSubmitWaitInstruction(inst)) {
+    assert(inst->warp_id() < m_pending_rt_warps.size());
+    m_pending_rt_warps[inst->warp_id()] = true;
+    SHADER_DPRINTF(SCOREBOARD, "RT wait marked - warp:%d\n",
+                   inst->warp_id());
+  }
 }
 
 // Release registers for an instruction
@@ -116,6 +130,13 @@ void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
       longopregs[inst->warp_id()].erase(inst->out[r]);
     }
   }
+
+  if (isRtSubmitWaitInstruction(inst)) {
+    assert(inst->warp_id() < m_pending_rt_warps.size());
+    m_pending_rt_warps[inst->warp_id()] = false;
+    SHADER_DPRINTF(SCOREBOARD, "RT wait released - warp:%d\n",
+                   inst->warp_id());
+  }
 }
 
 /**
@@ -126,6 +147,11 @@ void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
  * true if WAW or RAW hazard (no WAR since in-order issue)
  **/
 bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
+  assert(wid < m_pending_rt_warps.size());
+  if (m_pending_rt_warps[wid]) {
+    return true;
+  }
+
   // Get list of all input and output registers
   std::set<int> inst_regs;
 
@@ -150,5 +176,5 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
 }
 
 bool Scoreboard::pendingWrites(unsigned wid) const {
-  return !reg_table[wid].empty();
+  return !reg_table[wid].empty() || m_pending_rt_warps[wid];
 }
