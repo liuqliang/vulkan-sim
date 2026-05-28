@@ -8945,7 +8945,7 @@ void image_deref_store_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
 
   //MRS_TODO: There are more operands
 
-  VulkanRayTracing::image_store(image, gl_LaunchIDEXT_X, gl_LaunchIDEXT_Y, gl_LaunchIDEXT_W, gl_LaunchIDEXT_W, 
+  VulkanRayTracing::image_store(image, gl_LaunchIDEXT_X, gl_LaunchIDEXT_Y, gl_LaunchIDEXT_Z, gl_LaunchIDEXT_W,
               hitValue_X, hitValue_Y, hitValue_Z, hitValue_W, pI, thread);
 }
 

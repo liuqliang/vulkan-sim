@@ -34,11 +34,20 @@
 #include <string>
 #include <fstream>
 #include <cmath>
+#include <cstdlib>
 #define BOOST_FILESYSTEM_VERSION 3
 #define BOOST_FILESYSTEM_NO_DEPRECATED 
 #include <boost/filesystem.hpp>
 
 namespace fs = boost::filesystem;
+
+static bool rt_progress_logging_enabled() {
+    static int enabled = []() {
+        const char *value = getenv("VULKAN_SIM_PROGRESS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
 
 #define __CUDA_RUNTIME_API_H__
 // clang-format off
@@ -594,7 +603,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             stack.pop_back();
         }
 
-        while (next_node_addr > 0)
+        while (next_node_addr != NULL)
         {
             // TLAS offset
             device_offset = (uint64_t)tlas_addr - (uint64_t)_topLevelAS;
@@ -718,7 +727,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             float4x4 worldToObjectMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.WorldToObjectm00);
             float4x4 objectToWorldMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.ObjectToWorldm00);
 
-            assert(instanceLeaf.BVHAddress != NULL);
+            assert(instanceLeaf.BVHAddress != 0);
             GEN_RT_BVH botLevelASAddr;
             GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
 
@@ -769,7 +778,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                 
 
                 // traverse bottom level internal nodes
-                while (next_node_addr > 0)
+                while (next_node_addr != NULL)
                 {
                     node_addr = next_node_addr;
                     next_node_addr = NULL;
@@ -1602,7 +1611,12 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     fflush(stdout);
 
     while(!op.is_done() && !op.get_kernel()->done()) {
-        printf("waiting for op to finish\n");
+        if (rt_progress_logging_enabled()) {
+            printf("gpgpusim: waiting for op to finish (kernel_uid=%u done=%d is_finished=%d)\n",
+                   op.get_kernel()->get_uid(), op.get_kernel()->done(), op.get_kernel()->is_finished());
+        } else {
+            printf("waiting for op to finish\n");
+        }
         sleep(1);
         continue;
     }
@@ -2058,7 +2072,16 @@ void VulkanRayTracing::getTexture(struct DESCRIPTOR_STRUCT *desc,
 }
 
 #if defined(MESA_USE_LVPIPE_DRIVER)
-FILE *img_bin = nullptr;
+struct ImageOutputState {
+    std::string path;
+    std::string contents;
+    std::vector<uint8_t> written_pixels;
+    size_t header_offset = 0;
+    size_t pixel_count = 0;
+    bool flushed = false;
+};
+
+static std::map<std::string, ImageOutputState> outputImageStates;
 
 static const int RTCORE_LVP_ACCUMULATION_IMAGE_BINDING = 1;
 static const int RTCORE_LVP_OUTPUT_IMAGE_BINDING = 2;
@@ -2229,7 +2252,7 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
         // std::string img_name(image->vk.base.object_name);
         std::string img_name("SCENE");
 
-        if (outputImages.find(img_name) == outputImages.end()) {
+        if (outputImageStates.find(img_name) == outputImageStates.end()) {
             std::time_t raw_time = std::time(0);
             struct tm *time_info;
             char time_buf[30];
@@ -2244,18 +2267,55 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
             outputImages[img_name] = new_img_file_name + ".ppm";
             printf("gpgpusim: saving image %s to file %s\n", img_name.c_str(), outputImages[img_name].c_str());
 
-            img_bin = fopen(outputImages[img_name].c_str(), "w");
-            fprintf(img_bin, "P3\n%d %d\n255\n", width, height);
+            ImageOutputState state;
+            state.path = outputImages[img_name];
+            state.contents = "P3\n" + std::to_string(width) + " " + std::to_string(height) + "\n255\n";
+            state.header_offset = state.contents.size();
+            state.contents.resize(state.header_offset + static_cast<size_t>(width) * height * 12, ' ');
+            state.written_pixels.assign(static_cast<size_t>(width) * height, 0);
+            outputImageStates[img_name] = std::move(state);
         }
 
-        uint32_t header_offset = 
-            strlen("P3\n \n255\n") + std::to_string(width).length() + std::to_string(height).length();
-        uint32_t value_offset = (gl_LaunchIDEXT_X + gl_LaunchIDEXT_Y * width) * (3*3 + 3);
-        fseeko(img_bin, header_offset + value_offset, SEEK_SET);
-        fprintf(img_bin, "%3u %3u %3u\n",
-                rtcore_clamp_ppm_channel(hitValue_X),
-                rtcore_clamp_ppm_channel(hitValue_Y),
-                rtcore_clamp_ppm_channel(hitValue_Z));
+        ImageOutputState &state = outputImageStates[img_name];
+        const size_t pixel_index = gl_LaunchIDEXT_X + static_cast<size_t>(gl_LaunchIDEXT_Y) * width;
+        const size_t value_offset = state.header_offset + pixel_index * 12;
+        char pixel_line[13];
+        snprintf(pixel_line, sizeof(pixel_line), "%3u %3u %3u\n",
+                 rtcore_clamp_ppm_channel(hitValue_X),
+                 rtcore_clamp_ppm_channel(hitValue_Y),
+                 rtcore_clamp_ppm_channel(hitValue_Z));
+        state.contents.replace(value_offset, 12, pixel_line, 12);
+
+        if (!state.written_pixels[pixel_index]) {
+            state.written_pixels[pixel_index] = 1;
+            state.pixel_count++;
+            if (rt_progress_logging_enabled() &&
+                (state.pixel_count == 1 || state.pixel_count % 4096 == 0 ||
+                 state.pixel_count == state.written_pixels.size())) {
+                printf("gpgpusim: image %s progress %zu / %zu pixels\n",
+                       img_name.c_str(), state.pixel_count, state.written_pixels.size());
+            }
+        }
+
+        if (!state.flushed && state.pixel_count == state.written_pixels.size()) {
+            FILE *img_bin = fopen(state.path.c_str(), "wb");
+            if (img_bin == nullptr) {
+                perror("gpgpusim: fopen image output");
+                abort();
+            }
+
+            const size_t written = fwrite(state.contents.data(), 1, state.contents.size(), img_bin);
+            if (written != state.contents.size()) {
+                perror("gpgpusim: fwrite image output");
+                fclose(img_bin);
+                abort();
+            }
+
+            fflush(img_bin);
+            fclose(img_bin);
+            state.flushed = true;
+            printf("gpgpusim: finished image %s (%zu pixels)\n", img_name.c_str(), state.pixel_count);
+        }
     }
 
     // Setup transaction record for timing model
@@ -2288,7 +2348,7 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
             uint32_t tileWidth = 16;
             uint32_t tileHeight = 16;
 
-            uint32_t nTileX = ceil(width / tileWidth);
+            uint32_t nTileX = (width + tileWidth - 1) / tileWidth;
             uint32_t tileX = floor(pixelX / tileWidth);
             uint32_t tileY = floor(pixelY / tileHeight);
 
@@ -3009,4 +3069,3 @@ void* VulkanRayTracing::allocBuffer(void* bufferAddr, uint64_t bufferSize)
     mem->bind_vulkan_buffer(bufferAddr, bufferSize, devPtr);
     return devPtr;
 }
-

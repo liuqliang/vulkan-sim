@@ -32,6 +32,14 @@
 #include "gpgpu-sim/gpu-sim.h"
 #include "gpgpusim_entrypoint.h"
 
+static bool stream_progress_logging_enabled() {
+  static int enabled = []() {
+    const char *value = getenv("VULKAN_SIM_PROGRESS_LOG");
+    return value && value[0] && strcmp(value, "0") != 0;
+  }();
+  return enabled;
+}
+
 unsigned CUstream_st::sm_next_stream_uid = 0;
 
 CUstream_st::CUstream_st() {
@@ -485,7 +493,19 @@ void stream_manager::push(stream_operation op) {
   if (m_cuda_launch_blocking || stream == NULL) {
     unsigned int wait_amount = 100;
     unsigned int wait_cap = 100000;  // 100ms
+    time_t last_report = time(NULL);
     while (!empty()) {
+      if (stream_progress_logging_enabled()) {
+        time_t now = time(NULL);
+        if (now - last_report >= 5) {
+          pthread_mutex_lock(&m_lock);
+          printf("gpgpusim: stream_manager waiting, stream_zero_empty=%d concurrent_empty=%d\n",
+                 m_stream_zero.empty(), concurrent_streams_empty());
+          print_impl(stdout);
+          pthread_mutex_unlock(&m_lock);
+          last_report = now;
+        }
+      }
       // sleep to prevent CPU hog by empty spin
       // sleep time increased exponentially ensure fast response when needed
       usleep(wait_amount);
