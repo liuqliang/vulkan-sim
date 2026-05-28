@@ -8067,7 +8067,6 @@ bool rtcore_synthetic_owner_tuple_matches(
          window.owner_hw_wid == thread->get_hw_wid() &&
          window.owner_hw_sid == thread->get_hw_sid() &&
          (window.thread_mask & lane_thread_mask) != 0 &&
-         (rtcore_active_thread_mask(pI) & lane_thread_mask) != 0 &&
          window.window_state == RTCORE_WINDOW_STATE_COMPLETE;
 }
 
