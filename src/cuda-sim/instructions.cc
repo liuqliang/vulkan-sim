@@ -7513,6 +7513,11 @@ bool rtcore_test_inactive_lane_submit_enabled() {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+bool rtcore_test_inactive_lane_retire_enabled() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_TEST_INACTIVE_LANE_RETIRE");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 bool rtcore_lane_is_active_in_mask(unsigned active_thread_mask,
                                    unsigned lane_slot_index) {
   const unsigned lane_thread_mask =
@@ -8698,6 +8703,12 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
   ptx_thread_info::rtcore_current_warp_metadata current_warp_metadata;
   thread->get_rtcore_current_warp_metadata(&current_warp_metadata);
+  const unsigned lane_thread_mask = rtcore_lane_thread_mask(lane_slot_index);
+  const bool test_active_mask_override =
+      rtcore_test_inactive_lane_retire_enabled();
+  if (test_active_mask_override) {
+    current_warp_metadata.active_mask &= ~lane_thread_mask;
+  }
   const bool retire_metadata_valid = rtcore_current_warp_metadata_is_valid(
       "RT_RETIRE_CONTEXT", pI, thread, &current_warp_metadata, lane_slot_index);
   const rtcore_synthetic_handoff_key key = rtcore_make_synthetic_handoff_key(
