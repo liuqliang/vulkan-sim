@@ -8123,8 +8123,9 @@ bool rtcore_synthetic_result_lane_binding_matches(
                                    key.handoff_window_base,
                                    key.lane_slot_index);
   const bool result_matches_header = header.w0 == result_word;
-  const bool active_lane =
-      rtcore_lane_is_active_in_instruction(pI, key.lane_slot_index);
+  const unsigned lane_thread_mask =
+      rtcore_lane_thread_mask(key.lane_slot_index);
+  const bool active_lane = (header.thread_mask & lane_thread_mask) != 0;
   const bool accepted =
       context_matches && window_base_matches && lane_slot_matches &&
       lane_slot_base_matches && result_matches_header && active_lane;
