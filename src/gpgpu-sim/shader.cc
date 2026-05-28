@@ -2897,6 +2897,18 @@ unsigned rt_unit::rtcore_synthetic_completion_latency() const {
   return (unsigned)parsed;
 }
 
+static bool rtcore_test_adapter_mask_mismatch_enabled() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_TEST_ADAPTER_MASK_MISMATCH");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static unsigned rtcore_first_active_lane_mask(unsigned active_mask) {
+  if (active_mask == 0) {
+    return 0;
+  }
+  return active_mask & (0u - active_mask);
+}
+
 extern "C" bool rtcore_claim_adapter_completion(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     unsigned *active_mask, unsigned *completed_lane_mask,
@@ -2916,6 +2928,16 @@ bool rt_unit::claim_adapter_completion_for_issue(
       &event->adapter_completed_lane_mask, &event->adapter_static_inst_uid);
   if (!event->adapter_completion_claimed) {
     return false;
+  }
+
+  const bool test_adapter_mask_mismatch =
+      rtcore_test_adapter_mask_mismatch_enabled();
+  if (test_adapter_mask_mismatch) {
+    const unsigned mismatch_lane_mask =
+        rtcore_first_active_lane_mask(event->issued_active_mask);
+    if (mismatch_lane_mask != 0) {
+      event->adapter_active_mask &= ~mismatch_lane_mask;
+    }
   }
 
   event->adapter_completion_issue_mask_match =
@@ -2942,6 +2964,21 @@ bool rt_unit::claim_adapter_completion_for_issue(
          event->adapter_completion_issued_lanes_complete ? 1 : 0,
          event->adapter_completion_ready ? 1 : 0);
   fflush(stdout);
+
+  if (test_adapter_mask_mismatch && !event->adapter_completion_ready) {
+    printf("GPGPU-Sim PTX: RT-unit adapter-completion fail-closed, "
+           "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
+           "issued_active_mask=0x%08x, adapter_active_mask=0x%08x, "
+           "adapter_completed_lane_mask=0x%08x, issue_mask_match=%u, "
+           "issued_lanes_complete=%u, accepted=%u\n",
+           event->warp_uid, event->warp_id, m_sid, event->issued_active_mask,
+           event->adapter_active_mask, event->adapter_completed_lane_mask,
+           event->adapter_completion_issue_mask_match ? 1 : 0,
+           event->adapter_completion_issued_lanes_complete ? 1 : 0,
+           event->adapter_completion_ready ? 1 : 0);
+    fflush(stdout);
+    abort();
+  }
   return event->adapter_completion_ready;
 }
 
