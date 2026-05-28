@@ -1325,10 +1325,19 @@ class rt_unit : public pipelined_simd_unit {
         unsigned adapter_active_mask;
         unsigned adapter_completed_lane_mask;
         unsigned adapter_static_inst_uid;
+        unsigned adapter_max_node_visits;
+        unsigned adapter_max_primitive_tests;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
+        unsigned completion_latency;
       };
       unsigned rtcore_synthetic_completion_latency() const;
+      bool rtcore_stats_completion_latency_enabled() const;
+      unsigned rtcore_stats_latency_base() const;
+      unsigned rtcore_stats_node_cost() const;
+      unsigned rtcore_stats_primitive_cost() const;
+      unsigned rtcore_effective_completion_latency(
+          const rtcore_synthetic_completion_event &event) const;
       bool claim_adapter_completion_for_issue(
           rtcore_synthetic_completion_event *event);
       void enqueue_synthetic_completion(const warp_inst_t &inst,

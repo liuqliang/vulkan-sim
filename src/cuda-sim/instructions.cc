@@ -7221,7 +7221,9 @@ struct rtcore_adapter_completion_record {
         owner_hw_sid(0),
         active_mask(0),
         completed_lane_mask(0),
-        static_inst_uid(0) {}
+        static_inst_uid(0),
+        max_node_visits(0),
+        max_primitive_tests(0) {}
 
   bool valid;
   unsigned warp_uid;
@@ -7230,6 +7232,8 @@ struct rtcore_adapter_completion_record {
   unsigned active_mask;
   unsigned completed_lane_mask;
   unsigned static_inst_uid;
+  unsigned max_node_visits;
+  unsigned max_primitive_tests;
 };
 
 struct rtcore_adapter_completion_claim_status {
@@ -7241,6 +7245,8 @@ struct rtcore_adapter_completion_claim_status {
         active_mask(0),
         completed_lane_mask(0),
         static_inst_uid(0),
+        max_node_visits(0),
+        max_primitive_tests(0),
         reject_reason("missing_record") {}
 
   bool found;
@@ -7250,6 +7256,8 @@ struct rtcore_adapter_completion_claim_status {
   unsigned active_mask;
   unsigned completed_lane_mask;
   unsigned static_inst_uid;
+  unsigned max_node_visits;
+  unsigned max_primitive_tests;
   const char *reject_reason;
 };
 
@@ -7320,7 +7328,8 @@ static std::map<std::pair<unsigned, unsigned>,
 extern "C" bool rtcore_publish_adapter_completion(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     unsigned active_mask, unsigned static_inst_uid,
-    unsigned lane_slot_index) {
+    unsigned lane_slot_index, unsigned node_visits,
+    unsigned primitive_tests) {
   const bool valid_lane = lane_slot_index < 32;
   const unsigned lane_thread_mask =
       valid_lane ? (1u << lane_slot_index) : 0;
@@ -7343,16 +7352,26 @@ extern "C" bool rtcore_publish_adapter_completion(
       record.static_inst_uid == static_inst_uid;
   if (valid_lane && lane_active && metadata_matches) {
     record.completed_lane_mask |= lane_thread_mask;
+    if (node_visits > record.max_node_visits) {
+      record.max_node_visits = node_visits;
+    }
+    if (primitive_tests > record.max_primitive_tests) {
+      record.max_primitive_tests = primitive_tests;
+    }
   }
   const bool accepted = valid_lane && lane_active && metadata_matches;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT adapter-completion-publish, "
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, active_mask=0x%08x, "
          "completed_lane_mask=0x%08x, static_inst_uid=%u, "
-         "lane_slot_index=%u, lane_thread_mask=0x%08x, accepted=%u\n",
+         "lane_slot_index=%u, lane_thread_mask=0x%08x, "
+         "node_visits=%u, primitive_tests=%u, max_node_visits=%u, "
+         "max_primitive_tests=%u, accepted=%u\n",
          warp_uid, warp_id, owner_hw_sid, active_mask,
          record.completed_lane_mask, static_inst_uid, lane_slot_index,
-         lane_thread_mask, accepted ? 1 : 0);
+         lane_thread_mask, node_visits, primitive_tests,
+         record.max_node_visits, record.max_primitive_tests,
+         accepted ? 1 : 0);
   fflush(stdout);
   return accepted;
 }
@@ -7439,11 +7458,16 @@ extern "C" bool rtcore_service_pending_traversal_completion(
     const bool drop_this_lane =
         test_drop_lane && !dropped_lane && metadata_matches;
     bool published = false;
+    const unsigned record_node_visits =
+        record.traversal_snapshot.rtcore_node_visits;
+    const unsigned record_primitive_tests =
+        record.traversal_snapshot.rtcore_primitive_tests;
     if (metadata_matches && !drop_this_lane) {
       published = rtcore_publish_adapter_completion(
           record.warp_uid, record.warp_id, record.owner_hw_sid,
           record.active_mask, record.static_inst_uid,
-          record.lane_slot_index);
+          record.lane_slot_index, record_node_visits,
+          record_primitive_tests);
       if (published) {
         published_lanes++;
       }
@@ -7495,6 +7519,8 @@ static rtcore_adapter_completion_claim_status rtcore_query_adapter_completion_st
   status.active_mask = record.active_mask;
   status.completed_lane_mask = record.completed_lane_mask;
   status.static_inst_uid = record.static_inst_uid;
+  status.max_node_visits = record.max_node_visits;
+  status.max_primitive_tests = record.max_primitive_tests;
   status.metadata_match =
       record.valid && record.warp_uid == warp_uid &&
       record.warp_id == warp_id && record.owner_hw_sid == owner_hw_sid;
@@ -7515,7 +7541,8 @@ static rtcore_adapter_completion_claim_status rtcore_query_adapter_completion_st
 extern "C" bool rtcore_claim_adapter_completion(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     unsigned *active_mask, unsigned *completed_lane_mask,
-    unsigned *static_inst_uid) {
+    unsigned *static_inst_uid, unsigned *max_node_visits,
+    unsigned *max_primitive_tests) {
   rtcore_adapter_completion_claim_status status =
       rtcore_query_adapter_completion_status_internal(
           warp_uid, warp_id, owner_hw_sid);
@@ -7523,10 +7550,12 @@ extern "C" bool rtcore_claim_adapter_completion(
     printf("GPGPU-Sim PTX: RT-unit adapter-completion-claim, "
            "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, found=0, "
            "active_mask=0x%08x, completed_lane_mask=0x%08x, "
-           "static_inst_uid=%u, metadata_match=%u, lanes_complete=%u, "
+           "static_inst_uid=%u, max_node_visits=%u, "
+           "max_primitive_tests=%u, metadata_match=%u, lanes_complete=%u, "
            "accepted=%u, reject_reason=%s\n",
            warp_uid, warp_id, owner_hw_sid, status.active_mask,
            status.completed_lane_mask, status.static_inst_uid,
+           status.max_node_visits, status.max_primitive_tests,
            status.metadata_match ? 1 : 0, status.lanes_complete ? 1 : 0,
            status.accepted ? 1 : 0, status.reject_reason);
     fflush(stdout);
@@ -7543,16 +7572,24 @@ extern "C" bool rtcore_claim_adapter_completion(
     if (static_inst_uid != NULL) {
       *static_inst_uid = status.static_inst_uid;
     }
+    if (max_node_visits != NULL) {
+      *max_node_visits = status.max_node_visits;
+    }
+    if (max_primitive_tests != NULL) {
+      *max_primitive_tests = status.max_primitive_tests;
+    }
     g_rtcore_adapter_completions.erase(warp_uid);
   }
 
   printf("GPGPU-Sim PTX: RT-unit adapter-completion-claim, "
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, found=1, "
          "active_mask=0x%08x, completed_lane_mask=0x%08x, "
-         "static_inst_uid=%u, metadata_match=%u, lanes_complete=%u, "
+         "static_inst_uid=%u, max_node_visits=%u, "
+         "max_primitive_tests=%u, metadata_match=%u, lanes_complete=%u, "
          "accepted=%u, reject_reason=%s\n",
          warp_uid, warp_id, owner_hw_sid, status.active_mask,
          status.completed_lane_mask, status.static_inst_uid,
+         status.max_node_visits, status.max_primitive_tests,
          status.metadata_match ? 1 : 0, status.lanes_complete ? 1 : 0,
          status.accepted ? 1 : 0, status.reject_reason);
   fflush(stdout);
@@ -8868,11 +8905,16 @@ void rtcore_traversal_completion_adapter_publish(
         completion_seq_low, resume_seq_low, window_tag, reason,
         traversal_data);
   } else {
+    const unsigned adapter_node_visits =
+        traversal_data.rtcore_node_visits;
+    const unsigned adapter_primitive_tests =
+        traversal_data.rtcore_primitive_tests;
     if (!rtcore_publish_adapter_completion(
             current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
             current_warp_metadata.owner_hw_sid,
             current_warp_metadata.active_mask,
-            current_warp_metadata.static_inst_uid, lane_slot_index)) {
+            current_warp_metadata.static_inst_uid, lane_slot_index,
+            adapter_node_visits, adapter_primitive_tests)) {
       inst_not_implemented(pI);
       return;
     }

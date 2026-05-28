@@ -2897,6 +2897,96 @@ unsigned rt_unit::rtcore_synthetic_completion_latency() const {
   return (unsigned)parsed;
 }
 
+bool rt_unit::rtcore_stats_completion_latency_enabled() const {
+  const char *value = getenv("VULKAN_SIM_RTCORE_STATS_COMPLETION_LATENCY");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+unsigned rt_unit::rtcore_stats_latency_base() const {
+  const char *value = getenv("VULKAN_SIM_RTCORE_STATS_LATENCY_BASE");
+  if (value == NULL || *value == '\0') {
+    return rtcore_synthetic_completion_latency();
+  }
+
+  char *end = NULL;
+  const unsigned long parsed = strtoul(value, &end, 10);
+  if (end == value || *end != '\0' || parsed == 0) {
+    return rtcore_synthetic_completion_latency();
+  }
+  if (parsed > UINT_MAX) {
+    return UINT_MAX;
+  }
+  return (unsigned)parsed;
+}
+
+unsigned rt_unit::rtcore_stats_node_cost() const {
+  const char *value = getenv("VULKAN_SIM_RTCORE_STATS_NODE_COST");
+  if (value == NULL || *value == '\0') {
+    return 1;
+  }
+
+  char *end = NULL;
+  const unsigned long parsed = strtoul(value, &end, 10);
+  if (end == value || *end != '\0') {
+    return 1;
+  }
+  if (parsed > UINT_MAX) {
+    return UINT_MAX;
+  }
+  return (unsigned)parsed;
+}
+
+unsigned rt_unit::rtcore_stats_primitive_cost() const {
+  const char *value = getenv("VULKAN_SIM_RTCORE_STATS_PRIMITIVE_COST");
+  if (value == NULL || *value == '\0') {
+    return 1;
+  }
+
+  char *end = NULL;
+  const unsigned long parsed = strtoul(value, &end, 10);
+  if (end == value || *end != '\0') {
+    return 1;
+  }
+  if (parsed > UINT_MAX) {
+    return UINT_MAX;
+  }
+  return (unsigned)parsed;
+}
+
+unsigned rt_unit::rtcore_effective_completion_latency(
+    const rtcore_synthetic_completion_event &event) const {
+  const bool stats_enabled = rtcore_stats_completion_latency_enabled();
+  const unsigned fixed_latency = stats_enabled
+                                     ? rtcore_stats_latency_base()
+                                     : rtcore_synthetic_completion_latency();
+  const unsigned node_cost = stats_enabled ? rtcore_stats_node_cost() : 0;
+  const unsigned primitive_cost =
+      stats_enabled ? rtcore_stats_primitive_cost() : 0;
+  unsigned long long stats_latency = fixed_latency;
+  if (stats_enabled) {
+    stats_latency +=
+        (unsigned long long)event.adapter_max_node_visits * node_cost;
+    stats_latency += (unsigned long long)event.adapter_max_primitive_tests *
+                     primitive_cost;
+  }
+  const unsigned completion_latency =
+      stats_latency > UINT_MAX ? UINT_MAX : (unsigned)stats_latency;
+  const unsigned long long ready_cycle =
+      event.enqueue_cycle + completion_latency;
+
+  printf("GPGPU-Sim PTX: RT-unit synthetic-completion-latency, "
+         "warp_uid=%u, warp_id=%u, mode=%s, fixed_latency=%u, "
+         "stats_latency=%u, node_cost=%u, primitive_cost=%u, "
+         "max_node_visits=%u, max_primitive_tests=%u, "
+         "completion_latency=%u, enqueue_cycle=%llu, ready_cycle=%llu\n",
+         event.warp_uid, event.warp_id, stats_enabled ? "stats" : "fixed",
+         fixed_latency, completion_latency, node_cost, primitive_cost,
+         event.adapter_max_node_visits, event.adapter_max_primitive_tests,
+         completion_latency, event.enqueue_cycle, ready_cycle);
+  fflush(stdout);
+  return completion_latency;
+}
+
 static bool rtcore_test_adapter_mask_mismatch_enabled() {
   const char *value = getenv("VULKAN_SIM_RTCORE_TEST_ADAPTER_MASK_MISMATCH");
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
@@ -2928,7 +3018,8 @@ extern "C" bool rtcore_service_pending_traversal_completion(
 extern "C" bool rtcore_claim_adapter_completion(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     unsigned *active_mask, unsigned *completed_lane_mask,
-    unsigned *static_inst_uid);
+    unsigned *static_inst_uid, unsigned *max_node_visits,
+    unsigned *max_primitive_tests);
 
 bool rt_unit::claim_adapter_completion_for_issue(
     rtcore_synthetic_completion_event *event) {
@@ -2944,7 +3035,8 @@ bool rt_unit::claim_adapter_completion_for_issue(
           event->warp_uid, event->warp_id, m_sid, event->issued_active_mask);
   event->adapter_completion_claimed = rtcore_claim_adapter_completion(
       event->warp_uid, event->warp_id, m_sid, &event->adapter_active_mask,
-      &event->adapter_completed_lane_mask, &event->adapter_static_inst_uid);
+      &event->adapter_completed_lane_mask, &event->adapter_static_inst_uid,
+      &event->adapter_max_node_visits, &event->adapter_max_primitive_tests);
   if (!event->adapter_completion_claimed) {
     if (serviced_delayed_completion &&
         rtcore_test_delayed_completion_metadata_mismatch_enabled()) {
@@ -3036,13 +3128,16 @@ void rt_unit::enqueue_synthetic_completion(
   event.adapter_active_mask = 0;
   event.adapter_completed_lane_mask = 0;
   event.adapter_static_inst_uid = 0;
+  event.adapter_max_node_visits = 0;
+  event.adapter_max_primitive_tests = 0;
   event.adapter_completion_ready = false;
   event.adapter_completion_claimed = false;
   event.adapter_completion_issue_mask_match = false;
   event.adapter_completion_issued_lanes_complete = false;
-  claim_adapter_completion_for_issue(&event);
   event.enqueue_cycle = current_cycle;
-  event.ready_cycle = current_cycle + rtcore_synthetic_completion_latency();
+  claim_adapter_completion_for_issue(&event);
+  event.completion_latency = rtcore_effective_completion_latency(event);
+  event.ready_cycle = current_cycle + event.completion_latency;
   m_synthetic_completion_queue[inst.get_uid()] = event;
 }
 
@@ -3057,7 +3152,14 @@ bool rt_unit::synthetic_completion_ready(
     return false;
   }
   if (!event->second.adapter_completion_ready) {
+    const bool was_ready = event->second.adapter_completion_ready;
     claim_adapter_completion_for_issue(&event->second);
+    if (!was_ready && event->second.adapter_completion_ready) {
+      event->second.completion_latency =
+          rtcore_effective_completion_latency(event->second);
+      event->second.ready_cycle =
+          event->second.enqueue_cycle + event->second.completion_latency;
+    }
   }
   return event->second.adapter_completion_ready &&
          current_cycle >= event->second.ready_cycle;
