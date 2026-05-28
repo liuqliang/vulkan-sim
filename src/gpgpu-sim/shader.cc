@@ -3086,8 +3086,14 @@ void rt_unit::cycle() {
     warp_inst_t debug_inst = it->second;
     assert(it->first == debug_inst.get_uid());
     RT_DPRINTF("Checking warp inst uid: %d\n", debug_inst.get_uid());
+    const bool synthetic_submit_completion_ready =
+        it->second.rt_subop != RT_CORE_SUBOP_SUBMIT ||
+        current_cycle > it->second.get_start_cycle();
     // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
-    if (it->second.rt_mem_accesses_empty() && it->second.rt_intersection_delay_done() && !it->second.has_pending_writes()) {
+    if (synthetic_submit_completion_ready &&
+        it->second.rt_mem_accesses_empty() &&
+        it->second.rt_intersection_delay_done() &&
+        !it->second.has_pending_writes()) {
       RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid, it->second.warp_id(), it->first);
       if (m_operand_collector->writeback(it->second)) {
         m_scoreboard->releaseRegisters(&it->second);
