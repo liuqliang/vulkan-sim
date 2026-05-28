@@ -8323,7 +8323,9 @@ bool rtcore_software_acquire_synthetic_completion(
   return accepted;
 }
 
-void rtcore_publish_traversal_completion(
+// Adapter boundary from functional traversal results to the architectural
+// per-lane result/window/token completion transaction.
+void rtcore_traversal_completion_adapter_publish(
     const ptx_instruction *pI, ptx_thread_info *thread,
     const operand_info &result, unsigned long long context_ptr,
     unsigned long long handoff_window_base) {
@@ -8503,9 +8505,8 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
-  rtcore_publish_traversal_completion(pI, thread, result,
-                                      context_ptr_data.u64,
-                                      handoff_window_base_data.u64);
+  rtcore_traversal_completion_adapter_publish(
+      pI, thread, result, context_ptr_data.u64, handoff_window_base_data.u64);
 }
 
 void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
