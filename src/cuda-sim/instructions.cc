@@ -8438,9 +8438,10 @@ bool rtcore_software_acquire_synthetic_completion(
 }
 
 bool rtcore_current_warp_metadata_is_valid(
-    const ptx_instruction *pI, ptx_thread_info *thread,
+    const char *op_name, const ptx_instruction *pI, ptx_thread_info *thread,
     const ptx_thread_info::rtcore_current_warp_metadata *metadata,
     unsigned lane_slot_index) {
+  const char *metadata_op_name = op_name != NULL ? op_name : "RT_OP";
   const bool has_metadata = metadata != NULL && metadata->valid;
   const bool owner_hw_sid_matches =
       has_metadata && metadata->owner_hw_sid == thread->get_hw_sid();
@@ -8455,12 +8456,12 @@ bool rtcore_current_warp_metadata_is_valid(
       has_metadata && owner_hw_sid_matches && warp_id_matches &&
       static_inst_uid_matches && lane_active;
 
-  printf("GPGPU-Sim PTX: RT_SUBMIT current-warp-metadata (%s:%u), "
+  printf("GPGPU-Sim PTX: %s current-warp-metadata (%s:%u), "
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
          "active_mask=0x%08x, static_inst_uid=%u, lane_slot_index=%u, "
          "valid=%u, owner_hw_sid_match=%u, warp_id_match=%u, "
          "static_inst_uid_match=%u, lane_active=%u, accepted=%u\n",
-         pI->source_file(), pI->source_line(),
+         metadata_op_name, pI->source_file(), pI->source_line(),
          has_metadata ? metadata->warp_uid : 0,
          has_metadata ? metadata->warp_id : 0,
          has_metadata ? metadata->owner_hw_sid : 0,
@@ -8489,7 +8490,7 @@ void rtcore_traversal_completion_adapter_publish(
   ptx_thread_info::rtcore_current_warp_metadata current_warp_metadata;
   thread->get_rtcore_current_warp_metadata(&current_warp_metadata);
   if (!rtcore_current_warp_metadata_is_valid(
-          pI, thread, &current_warp_metadata, lane_slot_index)) {
+          "RT_SUBMIT", pI, thread, &current_warp_metadata, lane_slot_index)) {
     inst_not_implemented(pI);
     return;
   }
@@ -8631,7 +8632,7 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_thread_info::rtcore_current_warp_metadata current_warp_metadata;
   thread->get_rtcore_current_warp_metadata(&current_warp_metadata);
   if (!rtcore_current_warp_metadata_is_valid(
-          pI, thread, &current_warp_metadata, lane_slot_index)) {
+          "RT_SUBMIT", pI, thread, &current_warp_metadata, lane_slot_index)) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
@@ -8695,6 +8696,10 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   const bool operands_are_valid = rtcore_submit_operands_are_valid(
       context_ptr_data.u64, handoff_window_base_data.u64);
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
+  ptx_thread_info::rtcore_current_warp_metadata current_warp_metadata;
+  thread->get_rtcore_current_warp_metadata(&current_warp_metadata);
+  const bool retire_metadata_valid = rtcore_current_warp_metadata_is_valid(
+      "RT_RETIRE_CONTEXT", pI, thread, &current_warp_metadata, lane_slot_index);
   const rtcore_synthetic_handoff_key key = rtcore_make_synthetic_handoff_key(
       handoff_window_base_data.u64, lane_slot_index, thread);
   const rtcore_symbolic_rt_token_key token_key =
@@ -8714,20 +8719,21 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
       rtcore_synthetic_owner_tuple_matches(*window, key, context_ptr_data.u64,
                                            pI, thread);
   const bool token_can_retire =
-      operands_are_valid && tracked_window && matching_context &&
-      owner_tuple_matches &&
+      operands_are_valid && retire_metadata_valid && tracked_window &&
+      matching_context && owner_tuple_matches &&
       rtcore_symbolic_rt_token_can_retire(pI, token_key);
 
-  if (!operands_are_valid || !tracked_window || !matching_context ||
-      !owner_tuple_matches || !token_can_retire) {
+  if (!operands_are_valid || !retire_metadata_valid || !tracked_window ||
+      !matching_context || !owner_tuple_matches || !token_can_retire) {
     printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
            "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-           "lane_slot_index=%u, valid=%u, tracked=%u, matching_context=%u, "
-           "owner_tuple_match=%u, token_can_retire=%u\n",
+           "lane_slot_index=%u, valid=%u, metadata_valid=%u, tracked=%u, "
+           "matching_context=%u, owner_tuple_match=%u, token_can_retire=%u\n",
            pI->source_file(), pI->source_line(),
            (unsigned long long)context_ptr_data.u64,
            (unsigned long long)handoff_window_base_data.u64,
-           lane_slot_index, operands_are_valid ? 1 : 0, tracked_window ? 1 : 0,
+           lane_slot_index, operands_are_valid ? 1 : 0,
+           retire_metadata_valid ? 1 : 0, tracked_window ? 1 : 0,
            matching_context ? 1 : 0, owner_tuple_matches ? 1 : 0,
            token_can_retire ? 1 : 0);
     fflush(stdout);
