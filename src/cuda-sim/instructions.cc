@@ -7456,6 +7456,12 @@ unsigned rtcore_resource_env_u32(const char *name, unsigned fallback) {
   return static_cast<unsigned>(parsed);
 }
 
+bool rtcore_test_retire_before_completion_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_RETIRE_BEFORE_COMPLETION");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 bool rtcore_address_in_range(unsigned long long address,
                              unsigned long long base,
                              unsigned long long bytes) {
@@ -7821,29 +7827,34 @@ bool rtcore_complete_symbolic_rt_token(
       live_token && token->second.resume_seq == resume_seq;
   const bool window_tag_matches =
       live_token && token->second.window_tag == window_tag;
-  const bool completed = live_token && result_matches &&
-                         completion_seq_matches && resume_seq_matches &&
-                         window_tag_matches;
+  const bool completion_validated =
+      live_token && result_matches && completion_seq_matches &&
+      resume_seq_matches && window_tag_matches;
+  const bool test_retire_before_completion =
+      completion_validated && rtcore_test_retire_before_completion_enabled();
 
-  if (completed) {
+  if (completion_validated && !test_retire_before_completion) {
     token->second.completed = true;
   }
+  const bool completed = live_token && token->second.completed;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT token-complete (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
          "owner_hw_sid=%u, live_token=%u, result_match=%u, "
          "completion_seq_match=%u, resume_seq_match=%u, "
-         "window_tag_match=%u, completed=%u\n",
+         "window_tag_match=%u, test_retire_before_completion=%u, "
+         "completed=%u\n",
          pI->source_file(), pI->source_line(), key.context_ptr,
          key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
          key.owner_hw_wid, key.owner_hw_sid, live_token ? 1 : 0,
          result_matches ? 1 : 0, completion_seq_matches ? 1 : 0,
          resume_seq_matches ? 1 : 0, window_tag_matches ? 1 : 0,
+         test_retire_before_completion ? 1 : 0,
          completed ? 1 : 0);
   fflush(stdout);
 
-  return completed;
+  return completion_validated;
 }
 
 bool rtcore_symbolic_rt_token_can_retire(
