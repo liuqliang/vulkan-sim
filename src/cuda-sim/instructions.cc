@@ -8036,8 +8036,8 @@ size_t rtcore_symbolic_rt_token_count() {
 
 void rtcore_populate_synthetic_owner_tuple(
     rtcore_synthetic_handoff_header *header,
-    const rtcore_synthetic_handoff_key &key, const ptx_instruction *pI,
-    ptx_thread_info *thread) {
+    const rtcore_synthetic_handoff_key &key, ptx_thread_info *thread,
+    unsigned thread_mask) {
   header->handoff_window_base = key.handoff_window_base;
   header->lane_slot_index = key.lane_slot_index;
   header->lane_slot_base = rtcore_handoff_lane_slot_base(
@@ -8045,7 +8045,7 @@ void rtcore_populate_synthetic_owner_tuple(
   header->owner_hw_tid = thread->get_hw_tid();
   header->owner_hw_wid = thread->get_hw_wid();
   header->owner_hw_sid = thread->get_hw_sid();
-  header->thread_mask = rtcore_active_thread_mask(pI);
+  header->thread_mask = thread_mask;
   header->window_state = RTCORE_WINDOW_STATE_COMPLETE;
 }
 
@@ -8546,8 +8546,8 @@ void rtcore_traversal_completion_adapter_publish(
               (RTCORE_COMPLETION_FLAG_TRACE_DONE << 16);
   header.w2 = completion_seq_low | (resume_seq_low << 16);
   header.w3 = window_tag;
-  rtcore_populate_synthetic_owner_tuple(&header, key, pI, thread);
-  header.thread_mask = current_warp_metadata.active_mask;
+  rtcore_populate_synthetic_owner_tuple(
+      &header, key, thread, current_warp_metadata.active_mask);
   rtcore_publish_synthetic_dependent_groups(
       pI, traversal_data, reason, completion_seq_low, resume_seq_low,
       window_tag, &header);
