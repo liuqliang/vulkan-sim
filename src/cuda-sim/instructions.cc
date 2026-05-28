@@ -7232,6 +7232,27 @@ struct rtcore_adapter_completion_record {
   unsigned static_inst_uid;
 };
 
+struct rtcore_adapter_completion_claim_status {
+  rtcore_adapter_completion_claim_status()
+      : found(false),
+        metadata_match(false),
+        lanes_complete(false),
+        accepted(false),
+        active_mask(0),
+        completed_lane_mask(0),
+        static_inst_uid(0),
+        reject_reason("missing_record") {}
+
+  bool found;
+  bool metadata_match;
+  bool lanes_complete;
+  bool accepted;
+  unsigned active_mask;
+  unsigned completed_lane_mask;
+  unsigned static_inst_uid;
+  const char *reject_reason;
+};
+
 static std::map<unsigned, rtcore_adapter_completion_record>
     g_rtcore_adapter_completions;
 
@@ -7440,56 +7461,82 @@ extern "C" bool rtcore_service_pending_traversal_completion(
   return serviced;
 }
 
+static rtcore_adapter_completion_claim_status rtcore_query_adapter_completion_status_internal(
+    unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid) {
+  rtcore_adapter_completion_claim_status status;
+  std::map<unsigned, rtcore_adapter_completion_record>::iterator event =
+      g_rtcore_adapter_completions.find(warp_uid);
+  if (event == g_rtcore_adapter_completions.end()) {
+    return status;
+  }
+
+  const rtcore_adapter_completion_record &record = event->second;
+  status.found = true;
+  status.active_mask = record.active_mask;
+  status.completed_lane_mask = record.completed_lane_mask;
+  status.static_inst_uid = record.static_inst_uid;
+  status.metadata_match =
+      record.valid && record.warp_uid == warp_uid &&
+      record.warp_id == warp_id && record.owner_hw_sid == owner_hw_sid;
+  status.lanes_complete =
+      record.active_mask != 0 &&
+      (record.completed_lane_mask & record.active_mask) == record.active_mask;
+  status.accepted = status.metadata_match && status.lanes_complete;
+  if (status.accepted) {
+    status.reject_reason = "accepted";
+  } else if (!status.metadata_match) {
+    status.reject_reason = "metadata_mismatch";
+  } else {
+    status.reject_reason = "incomplete_lanes";
+  }
+  return status;
+}
+
 extern "C" bool rtcore_claim_adapter_completion(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     unsigned *active_mask, unsigned *completed_lane_mask,
     unsigned *static_inst_uid) {
-  std::map<unsigned, rtcore_adapter_completion_record>::iterator event =
-      g_rtcore_adapter_completions.find(warp_uid);
-  if (event == g_rtcore_adapter_completions.end()) {
+  rtcore_adapter_completion_claim_status status =
+      rtcore_query_adapter_completion_status_internal(
+          warp_uid, warp_id, owner_hw_sid);
+  if (!status.found) {
     printf("GPGPU-Sim PTX: RT-unit adapter-completion-claim, "
            "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, found=0, "
-           "accepted=0\n",
-           warp_uid, warp_id, owner_hw_sid);
+           "active_mask=0x%08x, completed_lane_mask=0x%08x, "
+           "static_inst_uid=%u, metadata_match=%u, lanes_complete=%u, "
+           "accepted=%u, reject_reason=%s\n",
+           warp_uid, warp_id, owner_hw_sid, status.active_mask,
+           status.completed_lane_mask, status.static_inst_uid,
+           status.metadata_match ? 1 : 0, status.lanes_complete ? 1 : 0,
+           status.accepted ? 1 : 0, status.reject_reason);
     fflush(stdout);
     return false;
   }
 
-  const rtcore_adapter_completion_record &record = event->second;
-  const bool metadata_matches =
-      record.valid && record.warp_uid == warp_uid &&
-      record.warp_id == warp_id && record.owner_hw_sid == owner_hw_sid;
-  const bool lanes_complete =
-      record.active_mask != 0 &&
-      (record.completed_lane_mask & record.active_mask) == record.active_mask;
-  const bool accepted = metadata_matches && lanes_complete;
-  const unsigned claimed_active_mask = record.active_mask;
-  const unsigned claimed_completed_lane_mask = record.completed_lane_mask;
-  const unsigned claimed_static_inst_uid = record.static_inst_uid;
-  if (accepted) {
+  if (status.accepted) {
     if (active_mask != NULL) {
-      *active_mask = claimed_active_mask;
+      *active_mask = status.active_mask;
     }
     if (completed_lane_mask != NULL) {
-      *completed_lane_mask = claimed_completed_lane_mask;
+      *completed_lane_mask = status.completed_lane_mask;
     }
     if (static_inst_uid != NULL) {
-      *static_inst_uid = claimed_static_inst_uid;
+      *static_inst_uid = status.static_inst_uid;
     }
-    g_rtcore_adapter_completions.erase(event);
+    g_rtcore_adapter_completions.erase(warp_uid);
   }
 
   printf("GPGPU-Sim PTX: RT-unit adapter-completion-claim, "
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, found=1, "
          "active_mask=0x%08x, completed_lane_mask=0x%08x, "
          "static_inst_uid=%u, metadata_match=%u, lanes_complete=%u, "
-         "accepted=%u\n",
-         warp_uid, warp_id, owner_hw_sid, claimed_active_mask,
-         claimed_completed_lane_mask, claimed_static_inst_uid,
-         metadata_matches ? 1 : 0, lanes_complete ? 1 : 0,
-         accepted ? 1 : 0);
+         "accepted=%u, reject_reason=%s\n",
+         warp_uid, warp_id, owner_hw_sid, status.active_mask,
+         status.completed_lane_mask, status.static_inst_uid,
+         status.metadata_match ? 1 : 0, status.lanes_complete ? 1 : 0,
+         status.accepted ? 1 : 0, status.reject_reason);
   fflush(stdout);
-  return accepted;
+  return status.accepted;
 }
 
 namespace {
