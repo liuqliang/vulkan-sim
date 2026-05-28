@@ -8881,11 +8881,14 @@ void rtcore_traversal_completion_adapter_publish(
   printf("GPGPU-Sim PTX: RT_SUBMIT traversal-complete (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, reason=%s, has_traversal=%u, hit_geometry=%u, "
-         "result=0x%08x, w0=0x%08x, w1=0x%08x, w2=0x%08x, w3=0x%08x\n",
+         "result=0x%08x, w0=0x%08x, w1=0x%08x, w2=0x%08x, w3=0x%08x, "
+         "node_visits=%u, primitive_tests=%u\n",
          pI->source_file(), pI->source_line(), context_ptr,
          handoff_window_base, lane_slot_index, rtcore_return_reason_name(reason),
          has_traversal_data ? 1 : 0, hit_geometry ? 1 : 0, result_word,
-         header.w0, header.w1, header.w2, header.w3);
+         header.w0, header.w1, header.w2, header.w3,
+         traversal_data.rtcore_node_visits,
+         traversal_data.rtcore_primitive_tests);
   fflush(stdout);
 }
 

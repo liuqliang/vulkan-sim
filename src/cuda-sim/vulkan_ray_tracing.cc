@@ -504,6 +504,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.missIndex = missIndex;
     traversal_data.Tmin = Tmin;
     traversal_data.Tmax = Tmax;
+    traversal_data.rtcore_node_visits = 0;
+    traversal_data.rtcore_primitive_tests = 0;
 
     bool hit_procedural = false;
 
@@ -532,6 +534,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     else ctx->func_sim->g_n_closesthit_rays++;
 
     unsigned total_nodes_accessed = 0;
+    unsigned total_primitive_tests = 0;
     std::map<uint8_t*, unsigned> tree_level_map;
     
 	// Create ray
@@ -905,6 +908,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
                         // Triangle intersection algorithm
                         float thit;
+                        total_primitive_tests++;
                         bool hit = VulkanRayTracing::mt_ray_triangle_test(p[0], p[1], p[2], objectRay, &thit);
 
                         assert(leaf.PrimitiveIndex1Delta == 0);
@@ -1108,6 +1112,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
     memory_space *mem = thread->get_global_memory();
     Traversal_data* device_traversal_data = (Traversal_data*) VulkanRayTracing::gpgpusim_alloc(sizeof(Traversal_data));
+    traversal_data.rtcore_node_visits = total_nodes_accessed;
+    traversal_data.rtcore_primitive_tests = total_primitive_tests;
     mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);
     thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
     
