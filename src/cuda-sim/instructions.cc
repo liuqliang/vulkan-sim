@@ -8477,6 +8477,21 @@ void rtcore_publish_synthetic_dependent_groups(
   header->w22 = 0;
   header->w23 = 0;
 
+  const bool hit_payload_matches_traversal =
+      !closest_hit || !traversal_data.hit_geometry ||
+      (header->w9 == (unsigned)traversal_data.closest_hit.geometryType &&
+       header->w10 == (unsigned)traversal_data.closest_hit.hitGroupIndex &&
+       header->w11 == traversal_data.closest_hit.primitive_index &&
+       header->w12 == traversal_data.closest_hit.instance_index &&
+       header->w13 ==
+           rtcore_float_to_u32(traversal_data.closest_hit.world_min_thit) &&
+       header->w14 ==
+           rtcore_float_to_u32(
+               traversal_data.closest_hit.barycentric_coordinates.x) &&
+       header->w15 ==
+           rtcore_float_to_u32(
+               traversal_data.closest_hit.barycentric_coordinates.y));
+
   printf("GPGPU-Sim PTX: RT_SUBMIT handoff-dependent-groups (%s:%u), "
          "reason=%s, dispatch={w4=0x%08x,w5=0x%08x,w6=0x%08x,w7=0x%08x}, "
          "hit={w8=0x%08x,w9=0x%08x,w10=0x%08x,w11=0x%08x,"
@@ -8490,6 +8505,29 @@ void rtcore_publish_synthetic_dependent_groups(
          header->w16, header->w17, header->w18, header->w19, header->w20,
          header->w21, header->w22, header->w23);
   fflush(stdout);
+
+  if (closest_hit && traversal_data.hit_geometry) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT traversal-hit-payload (%s:%u), "
+           "source=traversal_data.closest_hit, payload_match=%u, "
+           "geometry_type=%u, hit_group_index=%d, primitive_index=%u, "
+           "instance_index=%u, world_min_thit_bits=0x%08x, "
+           "barycentric_x_bits=0x%08x, barycentric_y_bits=0x%08x, "
+           "w9=0x%08x, w10=0x%08x, w11=0x%08x, w12=0x%08x, "
+           "w13=0x%08x, w14=0x%08x, w15=0x%08x\n",
+           pI->source_file(), pI->source_line(),
+           hit_payload_matches_traversal ? 1 : 0,
+           (unsigned)traversal_data.closest_hit.geometryType,
+           (int)traversal_data.closest_hit.hitGroupIndex,
+           traversal_data.closest_hit.primitive_index,
+           traversal_data.closest_hit.instance_index, header->w13, header->w14,
+           header->w15, header->w9, header->w10, header->w11, header->w12,
+           header->w13, header->w14, header->w15);
+    fflush(stdout);
+    if (!hit_payload_matches_traversal) {
+      inst_not_implemented(pI);
+      return;
+    }
+  }
 }
 
 bool rtcore_submit_operands_are_valid(unsigned long long context_ptr,
