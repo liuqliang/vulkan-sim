@@ -1317,7 +1317,11 @@ class rt_unit : public pipelined_simd_unit {
         unsigned warp_uid;
         unsigned warp_id;
         rt_core_subop_t rt_subop;
+        unsigned issued_active_mask;
         bool adapter_completion_ready;
+        bool adapter_completion_claimed;
+        bool adapter_completion_issue_mask_match;
+        bool adapter_completion_issued_lanes_complete;
         unsigned adapter_active_mask;
         unsigned adapter_completed_lane_mask;
         unsigned adapter_static_inst_uid;
@@ -1325,6 +1329,8 @@ class rt_unit : public pipelined_simd_unit {
         unsigned long long ready_cycle;
       };
       unsigned rtcore_synthetic_completion_latency() const;
+      bool claim_adapter_completion_for_issue(
+          rtcore_synthetic_completion_event *event);
       void enqueue_synthetic_completion(const warp_inst_t &inst,
                                         unsigned long long current_cycle);
       bool synthetic_completion_ready(const warp_inst_t &inst,

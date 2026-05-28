@@ -2902,6 +2902,49 @@ extern "C" bool rtcore_claim_adapter_completion(
     unsigned *active_mask, unsigned *completed_lane_mask,
     unsigned *static_inst_uid);
 
+bool rt_unit::claim_adapter_completion_for_issue(
+    rtcore_synthetic_completion_event *event) {
+  if (event == NULL) {
+    return false;
+  }
+  if (event->adapter_completion_claimed) {
+    return event->adapter_completion_ready;
+  }
+
+  event->adapter_completion_claimed = rtcore_claim_adapter_completion(
+      event->warp_uid, event->warp_id, m_sid, &event->adapter_active_mask,
+      &event->adapter_completed_lane_mask, &event->adapter_static_inst_uid);
+  if (!event->adapter_completion_claimed) {
+    return false;
+  }
+
+  event->adapter_completion_issue_mask_match =
+      event->adapter_active_mask == event->issued_active_mask;
+  event->adapter_completion_issued_lanes_complete =
+      event->issued_active_mask != 0 &&
+      (event->adapter_completed_lane_mask & event->issued_active_mask) ==
+          event->issued_active_mask;
+  event->adapter_completion_ready =
+      event->adapter_completion_issue_mask_match &&
+      event->adapter_completion_issued_lanes_complete;
+
+  printf("GPGPU-Sim PTX: RT-unit adapter-completion-ready, "
+         "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
+         "issued_active_mask=0x%08x, adapter_active_mask=0x%08x, "
+         "adapter_completed_lane_mask=0x%08x, adapter_static_inst_uid=%u, "
+         "claimed=%u, issue_mask_match=%u, issued_lanes_complete=%u, "
+         "accepted=%u\n",
+         event->warp_uid, event->warp_id, m_sid, event->issued_active_mask,
+         event->adapter_active_mask, event->adapter_completed_lane_mask,
+         event->adapter_static_inst_uid,
+         event->adapter_completion_claimed ? 1 : 0,
+         event->adapter_completion_issue_mask_match ? 1 : 0,
+         event->adapter_completion_issued_lanes_complete ? 1 : 0,
+         event->adapter_completion_ready ? 1 : 0);
+  fflush(stdout);
+  return event->adapter_completion_ready;
+}
+
 void rt_unit::enqueue_synthetic_completion(
     const warp_inst_t &inst, unsigned long long current_cycle) {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
@@ -2912,12 +2955,16 @@ void rt_unit::enqueue_synthetic_completion(
   event.warp_uid = inst.get_uid();
   event.warp_id = inst.warp_id();
   event.rt_subop = inst.rt_subop;
+  event.issued_active_mask =
+      static_cast<unsigned>(inst.get_warp_active_mask().to_ulong());
   event.adapter_active_mask = 0;
   event.adapter_completed_lane_mask = 0;
   event.adapter_static_inst_uid = 0;
-  event.adapter_completion_ready = rtcore_claim_adapter_completion(
-      event.warp_uid, event.warp_id, m_sid, &event.adapter_active_mask,
-      &event.adapter_completed_lane_mask, &event.adapter_static_inst_uid);
+  event.adapter_completion_ready = false;
+  event.adapter_completion_claimed = false;
+  event.adapter_completion_issue_mask_match = false;
+  event.adapter_completion_issued_lanes_complete = false;
+  claim_adapter_completion_for_issue(&event);
   event.enqueue_cycle = current_cycle;
   event.ready_cycle = current_cycle + rtcore_synthetic_completion_latency();
   m_synthetic_completion_queue[inst.get_uid()] = event;
@@ -2934,11 +2981,7 @@ bool rt_unit::synthetic_completion_ready(
     return false;
   }
   if (!event->second.adapter_completion_ready) {
-    event->second.adapter_completion_ready = rtcore_claim_adapter_completion(
-        event->second.warp_uid, event->second.warp_id, m_sid,
-        &event->second.adapter_active_mask,
-        &event->second.adapter_completed_lane_mask,
-        &event->second.adapter_static_inst_uid);
+    claim_adapter_completion_for_issue(&event->second);
   }
   return event->second.adapter_completion_ready &&
          current_cycle >= event->second.ready_cycle;
