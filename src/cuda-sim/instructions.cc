@@ -44,6 +44,7 @@ class ptx_recognizer;
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
 #include "../gpgpu-sim/shader.h"
@@ -7234,6 +7235,61 @@ struct rtcore_adapter_completion_record {
 static std::map<unsigned, rtcore_adapter_completion_record>
     g_rtcore_adapter_completions;
 
+static bool rtcore_delayed_traversal_completion_enabled() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_DELAYED_TRAVERSAL_COMPLETION");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool rtcore_test_delayed_completion_drop_lane_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_DELAYED_COMPLETION_DROP_LANE");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+struct rtcore_pending_traversal_completion {
+  rtcore_pending_traversal_completion()
+      : valid(false),
+        warp_uid(0),
+        warp_id(0),
+        owner_hw_sid(0),
+        active_mask(0),
+        static_inst_uid(0),
+        lane_slot_index(0),
+        lane_thread_mask(0),
+        context_ptr(0),
+        handoff_window_base(0),
+        result_word(0),
+        window_generation(0),
+        completion_seq_low(0),
+        resume_seq_low(0),
+        window_tag(0),
+        reason(0) {
+    memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
+  }
+
+  bool valid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned owner_hw_sid;
+  unsigned active_mask;
+  unsigned static_inst_uid;
+  unsigned lane_slot_index;
+  unsigned lane_thread_mask;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned result_word;
+  unsigned window_generation;
+  unsigned completion_seq_low;
+  unsigned resume_seq_low;
+  unsigned window_tag;
+  unsigned reason;
+  Traversal_data traversal_snapshot;
+};
+
+static std::map<std::pair<unsigned, unsigned>,
+                rtcore_pending_traversal_completion>
+    g_rtcore_pending_traversal_completions;
+
 extern "C" bool rtcore_publish_adapter_completion(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     unsigned active_mask, unsigned static_inst_uid,
@@ -7272,6 +7328,116 @@ extern "C" bool rtcore_publish_adapter_completion(
          lane_thread_mask, accepted ? 1 : 0);
   fflush(stdout);
   return accepted;
+}
+
+static void rtcore_enqueue_pending_traversal_completion(
+    unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
+    unsigned active_mask, unsigned static_inst_uid, unsigned lane_slot_index,
+    unsigned lane_thread_mask, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned result_word,
+    unsigned window_generation, unsigned completion_seq_low,
+    unsigned resume_seq_low, unsigned window_tag, unsigned reason,
+    const Traversal_data &traversal_snapshot) {
+  const std::pair<unsigned, unsigned> key =
+      std::make_pair(warp_uid, lane_slot_index);
+  rtcore_pending_traversal_completion &record =
+      g_rtcore_pending_traversal_completions[key];
+  record.valid = true;
+  record.warp_uid = warp_uid;
+  record.warp_id = warp_id;
+  record.owner_hw_sid = owner_hw_sid;
+  record.active_mask = active_mask;
+  record.static_inst_uid = static_inst_uid;
+  record.lane_slot_index = lane_slot_index;
+  record.lane_thread_mask = lane_thread_mask;
+  record.context_ptr = context_ptr;
+  record.handoff_window_base = handoff_window_base;
+  record.result_word = result_word;
+  record.window_generation = window_generation;
+  record.completion_seq_low = completion_seq_low;
+  record.resume_seq_low = resume_seq_low;
+  record.window_tag = window_tag;
+  record.reason = reason;
+  record.traversal_snapshot = traversal_snapshot;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT delayed-completion-enqueue, "
+         "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, active_mask=0x%08x, "
+         "static_inst_uid=%u, lane_slot_index=%u, "
+         "lane_thread_mask=0x%08x, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, result=0x%08x, "
+         "completion_seq=%u, resume_seq=%u, window_tag=%u, reason=%u\n",
+         warp_uid, warp_id, owner_hw_sid, active_mask, static_inst_uid,
+         lane_slot_index, lane_thread_mask, context_ptr, handoff_window_base,
+         result_word, completion_seq_low, resume_seq_low, window_tag, reason);
+  fflush(stdout);
+}
+
+extern "C" bool rtcore_service_pending_traversal_completion(
+    unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
+    unsigned issued_active_mask) {
+  if (!rtcore_delayed_traversal_completion_enabled()) {
+    return false;
+  }
+
+  const bool test_drop_lane =
+      rtcore_test_delayed_completion_drop_lane_enabled();
+  bool serviced = false;
+  bool dropped_lane = false;
+  unsigned dropped_lane_mask = 0;
+  unsigned published_lanes = 0;
+
+  std::map<std::pair<unsigned, unsigned>,
+           rtcore_pending_traversal_completion>::iterator event =
+      g_rtcore_pending_traversal_completions.begin();
+  while (event != g_rtcore_pending_traversal_completions.end()) {
+    rtcore_pending_traversal_completion record = event->second;
+    if (event->first.first != warp_uid) {
+      ++event;
+      continue;
+    }
+
+    serviced = true;
+    const bool metadata_matches =
+        record.valid && record.warp_uid == warp_uid &&
+        record.warp_id == warp_id && record.owner_hw_sid == owner_hw_sid &&
+        record.active_mask == issued_active_mask;
+    const bool drop_this_lane =
+        test_drop_lane && !dropped_lane && metadata_matches;
+    bool published = false;
+    if (metadata_matches && !drop_this_lane) {
+      published = rtcore_publish_adapter_completion(
+          record.warp_uid, record.warp_id, record.owner_hw_sid,
+          record.active_mask, record.static_inst_uid,
+          record.lane_slot_index);
+      if (published) {
+        published_lanes++;
+      }
+    } else if (drop_this_lane) {
+      dropped_lane = true;
+      dropped_lane_mask = record.lane_thread_mask;
+    }
+
+    printf("GPGPU-Sim PTX: RT-unit delayed-completion-service, "
+           "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
+           "lane_slot_index=%u, lane_thread_mask=0x%08x, "
+           "metadata_match=%u, dropped_lane=%u, published=%u\n",
+           warp_uid, warp_id, owner_hw_sid, record.lane_slot_index,
+           record.lane_thread_mask, metadata_matches ? 1 : 0,
+           drop_this_lane ? 1 : 0, published ? 1 : 0);
+    fflush(stdout);
+    event = g_rtcore_pending_traversal_completions.erase(event);
+  }
+
+  if (serviced) {
+    printf("GPGPU-Sim PTX: RT-unit delayed-completion-service-summary, "
+           "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
+           "issued_active_mask=0x%08x, published_lanes=%u, "
+           "dropped_lane=%u, dropped_lane_mask=0x%08x\n",
+           warp_uid, warp_id, owner_hw_sid, issued_active_mask,
+           published_lanes, dropped_lane ? 1 : 0, dropped_lane_mask);
+    fflush(stdout);
+  }
+  return serviced;
 }
 
 extern "C" bool rtcore_claim_adapter_completion(
@@ -8587,12 +8753,24 @@ void rtcore_traversal_completion_adapter_publish(
     inst_not_implemented(pI);
     return;
   }
-  if (!rtcore_publish_adapter_completion(
-          current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
-          current_warp_metadata.owner_hw_sid, current_warp_metadata.active_mask,
-          current_warp_metadata.static_inst_uid, lane_slot_index)) {
-    inst_not_implemented(pI);
-    return;
+  if (rtcore_delayed_traversal_completion_enabled()) {
+    rtcore_enqueue_pending_traversal_completion(
+        current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
+        current_warp_metadata.owner_hw_sid, current_warp_metadata.active_mask,
+        current_warp_metadata.static_inst_uid, lane_slot_index,
+        rtcore_lane_thread_mask(lane_slot_index), context_ptr,
+        handoff_window_base, result_word, window_generation,
+        completion_seq_low, resume_seq_low, window_tag, reason,
+        traversal_data);
+  } else {
+    if (!rtcore_publish_adapter_completion(
+            current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
+            current_warp_metadata.owner_hw_sid,
+            current_warp_metadata.active_mask,
+            current_warp_metadata.static_inst_uid, lane_slot_index)) {
+      inst_not_implemented(pI);
+      return;
+    }
   }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT traversal-complete (%s:%u), "
