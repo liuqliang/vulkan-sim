@@ -2915,6 +2915,12 @@ static bool rtcore_test_delayed_completion_drop_lane_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool rtcore_test_delayed_completion_metadata_mismatch_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_DELAYED_COMPLETION_METADATA_MISMATCH");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
 extern "C" bool rtcore_service_pending_traversal_completion(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     unsigned issued_active_mask);
@@ -2940,6 +2946,16 @@ bool rt_unit::claim_adapter_completion_for_issue(
       event->warp_uid, event->warp_id, m_sid, &event->adapter_active_mask,
       &event->adapter_completed_lane_mask, &event->adapter_static_inst_uid);
   if (!event->adapter_completion_claimed) {
+    if (serviced_delayed_completion &&
+        rtcore_test_delayed_completion_metadata_mismatch_enabled()) {
+      printf("GPGPU-Sim PTX: RT-unit delayed-completion metadata-mismatch fail-closed, "
+             "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
+             "issued_active_mask=0x%08x, serviced=%u, accepted=0\n",
+             event->warp_uid, event->warp_id, m_sid,
+             event->issued_active_mask, serviced_delayed_completion ? 1 : 0);
+      fflush(stdout);
+      abort();
+    }
     if (serviced_delayed_completion &&
         rtcore_test_delayed_completion_drop_lane_enabled()) {
       printf("GPGPU-Sim PTX: RT-unit delayed-completion fail-closed, "

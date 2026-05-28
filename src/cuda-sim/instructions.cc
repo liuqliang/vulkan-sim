@@ -7267,6 +7267,12 @@ static bool rtcore_test_delayed_completion_drop_lane_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool rtcore_test_delayed_completion_metadata_mismatch_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_DELAYED_COMPLETION_METADATA_MISMATCH");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
 struct rtcore_pending_traversal_completion {
   rtcore_pending_traversal_completion()
       : valid(false),
@@ -7380,6 +7386,11 @@ static void rtcore_enqueue_pending_traversal_completion(
   record.window_tag = window_tag;
   record.reason = reason;
   record.traversal_snapshot = traversal_snapshot;
+  const bool test_metadata_mismatch =
+      rtcore_test_delayed_completion_metadata_mismatch_enabled();
+  if (test_metadata_mismatch) {
+    record.owner_hw_sid = owner_hw_sid + 1;
+  }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT delayed-completion-enqueue, "
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, active_mask=0x%08x, "
@@ -7406,6 +7417,7 @@ extern "C" bool rtcore_service_pending_traversal_completion(
   bool dropped_lane = false;
   unsigned dropped_lane_mask = 0;
   unsigned published_lanes = 0;
+  unsigned metadata_mismatch_lanes = 0;
 
   std::map<std::pair<unsigned, unsigned>,
            rtcore_pending_traversal_completion>::iterator event =
@@ -7422,6 +7434,8 @@ extern "C" bool rtcore_service_pending_traversal_completion(
         record.valid && record.warp_uid == warp_uid &&
         record.warp_id == warp_id && record.owner_hw_sid == owner_hw_sid &&
         record.active_mask == issued_active_mask;
+    const char *reject_reason =
+        metadata_matches ? "accepted" : "metadata_mismatch";
     const bool drop_this_lane =
         test_drop_lane && !dropped_lane && metadata_matches;
     bool published = false;
@@ -7436,15 +7450,19 @@ extern "C" bool rtcore_service_pending_traversal_completion(
     } else if (drop_this_lane) {
       dropped_lane = true;
       dropped_lane_mask = record.lane_thread_mask;
+      reject_reason = "dropped_lane";
+    } else {
+      metadata_mismatch_lanes++;
     }
 
     printf("GPGPU-Sim PTX: RT-unit delayed-completion-service, "
            "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
            "lane_slot_index=%u, lane_thread_mask=0x%08x, "
-           "metadata_match=%u, dropped_lane=%u, published=%u\n",
+           "metadata_match=%u, reject_reason=%s, dropped_lane=%u, "
+           "published=%u\n",
            warp_uid, warp_id, owner_hw_sid, record.lane_slot_index,
            record.lane_thread_mask, metadata_matches ? 1 : 0,
-           drop_this_lane ? 1 : 0, published ? 1 : 0);
+           reject_reason, drop_this_lane ? 1 : 0, published ? 1 : 0);
     fflush(stdout);
     event = g_rtcore_pending_traversal_completions.erase(event);
   }
@@ -7453,9 +7471,11 @@ extern "C" bool rtcore_service_pending_traversal_completion(
     printf("GPGPU-Sim PTX: RT-unit delayed-completion-service-summary, "
            "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
            "issued_active_mask=0x%08x, published_lanes=%u, "
-           "dropped_lane=%u, dropped_lane_mask=0x%08x\n",
+           "dropped_lane=%u, dropped_lane_mask=0x%08x, "
+           "metadata_mismatch_lanes=%u\n",
            warp_uid, warp_id, owner_hw_sid, issued_active_mask,
-           published_lanes, dropped_lane ? 1 : 0, dropped_lane_mask);
+           published_lanes, dropped_lane ? 1 : 0, dropped_lane_mask,
+           metadata_mismatch_lanes);
     fflush(stdout);
   }
   return serviced;
