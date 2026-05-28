@@ -7394,6 +7394,11 @@ unsigned rtcore_active_thread_mask(const ptx_instruction *pI) {
   return 0xffffffffu;
 }
 
+bool rtcore_test_inactive_lane_submit_enabled() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_TEST_INACTIVE_LANE_SUBMIT");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 bool rtcore_lane_is_active_in_mask(unsigned active_thread_mask,
                                    unsigned lane_slot_index) {
   const unsigned lane_thread_mask =
@@ -7647,19 +7652,25 @@ void rtcore_reject_symbolic_submit(const ptx_instruction *pI) {
 bool rtcore_symbolic_submit_lane_is_active(
     const ptx_instruction *pI, unsigned lane_slot_index,
     unsigned long long context_ptr, unsigned long long handoff_window_base) {
-  const unsigned active_lane_mask = rtcore_active_thread_mask(pI);
+  unsigned active_lane_mask = rtcore_active_thread_mask(pI);
   const unsigned lane_thread_mask =
       rtcore_lane_thread_mask(lane_slot_index);
+  const bool test_active_mask_override =
+      rtcore_test_inactive_lane_submit_enabled();
+  if (test_active_mask_override) {
+    active_lane_mask &= ~lane_thread_mask;
+  }
   const bool lane_active =
       rtcore_lane_is_active_in_mask(active_lane_mask, lane_slot_index);
 
   printf("GPGPU-Sim PTX: RT_SUBMIT active-mask-check (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-         "lane_slot_index=%u, active_lane_mask=0x%08x, "
-         "lane_thread_mask=0x%08x, active=%u\n",
+         "lane_slot_index=%u, test_active_mask_override=%u, "
+         "active_lane_mask=0x%08x, lane_thread_mask=0x%08x, active=%u\n",
          pI->source_file(), pI->source_line(), context_ptr,
-         handoff_window_base, lane_slot_index, active_lane_mask,
-         lane_thread_mask, lane_active ? 1 : 0);
+         handoff_window_base, lane_slot_index,
+         test_active_mask_override ? 1 : 0, active_lane_mask, lane_thread_mask,
+         lane_active ? 1 : 0);
   fflush(stdout);
 
   if (!lane_active) {
