@@ -9614,14 +9614,46 @@ bool rtcore_current_warp_metadata_is_valid(
   return accepted;
 }
 
+enum rtcore_traversal_source_provider {
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL = 0,
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED = 1
+};
+
+static const char *rtcore_traversal_source_provider_name(
+    rtcore_traversal_source_provider provider) {
+  switch (provider) {
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL:
+      return "legacy_functional";
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
+    default:
+      return "unsupported";
+  }
+}
+
+static rtcore_traversal_source_provider
+rtcore_select_traversal_source_provider() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TRAVERSAL_SOURCE_PROVIDER");
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "legacy") == 0 ||
+      strcmp(value, "legacy_functional") == 0) {
+    return RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL;
+  }
+  return RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED;
+}
+
 struct rtcore_traversal_source_snapshot {
   rtcore_traversal_source_snapshot()
-      : has_traversal_data(false),
+      : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
+        provider_supported(true),
+        has_traversal_data(false),
         initialized_default_miss(false),
         hit_geometry(false) {
     memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
   }
 
+  rtcore_traversal_source_provider provider;
+  bool provider_supported;
   Traversal_data traversal_snapshot;
   bool has_traversal_data;
   bool initialized_default_miss;
@@ -9629,9 +9661,11 @@ struct rtcore_traversal_source_snapshot {
 };
 
 static rtcore_traversal_source_snapshot
-rtcore_make_traversal_source_snapshot(const ptx_instruction *pI,
-                                      ptx_thread_info *thread) {
+rtcore_make_legacy_functional_traversal_source_snapshot(
+    const ptx_instruction *pI, ptx_thread_info *thread) {
   rtcore_traversal_source_snapshot snapshot;
+  snapshot.provider = RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL;
+  snapshot.provider_supported = true;
   memory_space *mem = thread->get_global_memory();
   snapshot.has_traversal_data =
       !thread->RT_thread_data->traversal_data.empty();
@@ -9659,6 +9693,29 @@ rtcore_make_traversal_source_snapshot(const ptx_instruction *pI,
     snapshot.hit_geometry = snapshot.traversal_snapshot.hit_geometry;
   }
   return snapshot;
+}
+
+static rtcore_traversal_source_snapshot
+rtcore_make_unsupported_traversal_source_snapshot(
+    rtcore_traversal_source_provider provider) {
+  rtcore_traversal_source_snapshot snapshot;
+  snapshot.provider = provider;
+  snapshot.provider_supported = false;
+  return snapshot;
+}
+
+static rtcore_traversal_source_snapshot
+rtcore_make_traversal_source_snapshot(const ptx_instruction *pI,
+                                      ptx_thread_info *thread) {
+  const rtcore_traversal_source_provider provider =
+      rtcore_select_traversal_source_provider();
+  switch (provider) {
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL:
+      return rtcore_make_legacy_functional_traversal_source_snapshot(pI, thread);
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
+    default:
+      return rtcore_make_unsupported_traversal_source_snapshot(provider);
+  }
 }
 
 struct rtcore_traversal_completion_event {
@@ -9826,6 +9883,18 @@ bool rtcore_build_traversal_completion_event(
 
   rtcore_traversal_source_snapshot source_snapshot =
       rtcore_make_traversal_source_snapshot(pI, thread);
+  if (!source_snapshot.provider_supported) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED, "
+           "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u, traversal-source-provider-unsupported=1\n",
+           pI->source_file(), pI->source_line(),
+           rtcore_traversal_source_provider_name(source_snapshot.provider),
+           event->context_ptr, event->handoff_window_base,
+           event->lane_slot_index);
+    fflush(stdout);
+    return false;
+  }
   rtcore_apply_traversal_source_snapshot(event, source_snapshot);
 
   const bool forced_memory_fault =
