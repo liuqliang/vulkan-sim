@@ -1342,6 +1342,9 @@ class rt_unit : public pipelined_simd_unit {
         RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE,
         RTCORE_COMPLETION_QUEUE_ACTION_RETIRE
       };
+      enum rtcore_synthetic_release_action {
+        RTCORE_SYNTHETIC_RELEASE_ACTION_RELEASE
+      };
       struct rtcore_completion_queue_state_snapshot {
         rtcore_completion_queue_state_snapshot()
             : action(RTCORE_COMPLETION_QUEUE_ACTION_CAPACITY_CHECK),
@@ -1375,6 +1378,32 @@ class rt_unit : public pipelined_simd_unit {
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
         unsigned completion_latency;
+      };
+      struct rtcore_synthetic_release_snapshot {
+        rtcore_synthetic_release_snapshot()
+            : action(RTCORE_SYNTHETIC_RELEASE_ACTION_RELEASE),
+              submit(false),
+              warp_uid(0),
+              warp_id(0),
+              owner_hw_sid(0),
+              issued_active_mask(0),
+              adapter_active_mask(0),
+              adapter_completed_lane_mask(0),
+              enqueue_cycle(0),
+              ready_cycle(0),
+              current_cycle(0) {}
+
+        rtcore_synthetic_release_action action;
+        bool submit;
+        unsigned warp_uid;
+        unsigned warp_id;
+        unsigned owner_hw_sid;
+        unsigned issued_active_mask;
+        unsigned adapter_active_mask;
+        unsigned adapter_completed_lane_mask;
+        unsigned long long enqueue_cycle;
+        unsigned long long ready_cycle;
+        unsigned long long current_cycle;
       };
       struct rtcore_adapter_readiness_snapshot {
         rtcore_adapter_readiness_snapshot()
@@ -1449,6 +1478,12 @@ class rt_unit : public pipelined_simd_unit {
       void rtcore_apply_completion_timing_snapshot(
           rtcore_synthetic_completion_event *event,
           const rtcore_completion_timing_snapshot &snapshot) const;
+      rtcore_synthetic_release_snapshot rtcore_make_synthetic_release_snapshot(
+          const warp_inst_t &inst,
+          const rtcore_synthetic_completion_event &event,
+          unsigned long long current_cycle) const;
+      void rtcore_apply_synthetic_release_snapshot(
+          const rtcore_synthetic_release_snapshot &snapshot) const;
       bool claim_adapter_completion_for_issue(
           rtcore_synthetic_completion_event *event);
       void enqueue_synthetic_completion(const warp_inst_t &inst,

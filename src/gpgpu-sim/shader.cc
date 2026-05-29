@@ -3340,6 +3340,46 @@ void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {
   }
 }
 
+rt_unit::rtcore_synthetic_release_snapshot
+rt_unit::rtcore_make_synthetic_release_snapshot(
+    const warp_inst_t &inst, const rtcore_synthetic_completion_event &event,
+    unsigned long long current_cycle) const {
+  rtcore_synthetic_release_snapshot snapshot;
+  snapshot.action = RTCORE_SYNTHETIC_RELEASE_ACTION_RELEASE;
+  snapshot.submit = inst.rt_subop == RT_CORE_SUBOP_SUBMIT;
+  snapshot.warp_uid = event.warp_uid;
+  snapshot.warp_id = event.warp_id;
+  snapshot.owner_hw_sid = m_sid;
+  snapshot.issued_active_mask = event.issued_active_mask;
+  snapshot.adapter_active_mask = event.adapter_active_mask;
+  snapshot.adapter_completed_lane_mask = event.adapter_completed_lane_mask;
+  snapshot.enqueue_cycle = event.enqueue_cycle;
+  snapshot.ready_cycle = event.ready_cycle;
+  snapshot.current_cycle = current_cycle;
+  return snapshot;
+}
+
+void rt_unit::rtcore_apply_synthetic_release_snapshot(
+    const rtcore_synthetic_release_snapshot &snapshot) const {
+  if (!snapshot.submit) {
+    return;
+  }
+  if (snapshot.action != RTCORE_SYNTHETIC_RELEASE_ACTION_RELEASE) {
+    return;
+  }
+
+  printf("GPGPU-Sim PTX: RT-unit synthetic-completion-release, "
+         "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
+         "issued_active_mask=0x%08x, adapter_active_mask=0x%08x, "
+         "adapter_completed_lane_mask=0x%08x, ready_cycle=%llu, "
+         "current_cycle=%llu, action=release\n",
+         snapshot.warp_uid, snapshot.warp_id, snapshot.owner_hw_sid,
+         snapshot.issued_active_mask, snapshot.adapter_active_mask,
+         snapshot.adapter_completed_lane_mask, snapshot.ready_cycle,
+         snapshot.current_cycle);
+  fflush(stdout);
+}
+
 void rt_unit::cycle() {
   // Debugging roofline plot
   cacheline_count = 0;
@@ -3565,18 +3605,10 @@ void rt_unit::cycle() {
               release_event =
                   m_synthetic_completion_queue.find(it->second.get_uid());
           if (release_event != m_synthetic_completion_queue.end()) {
-            printf("GPGPU-Sim PTX: RT-unit synthetic-completion-release, "
-                   "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
-                   "issued_active_mask=0x%08x, adapter_active_mask=0x%08x, "
-                   "adapter_completed_lane_mask=0x%08x, ready_cycle=%llu, "
-                   "current_cycle=%llu, action=release\n",
-                   release_event->second.warp_uid,
-                   release_event->second.warp_id, m_sid,
-                   release_event->second.issued_active_mask,
-                   release_event->second.adapter_active_mask,
-                   release_event->second.adapter_completed_lane_mask,
-                   release_event->second.ready_cycle, current_cycle);
-            fflush(stdout);
+            rtcore_synthetic_release_snapshot release_snapshot =
+                rtcore_make_synthetic_release_snapshot(
+                    it->second, release_event->second, current_cycle);
+            rtcore_apply_synthetic_release_snapshot(release_snapshot);
           }
         }
         retire_synthetic_completion(it->second);
