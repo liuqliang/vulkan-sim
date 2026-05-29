@@ -7619,6 +7619,10 @@ const unsigned RTCORE_SHARED_MEMORY_BYTES_PER_EXECUTION_PARTITION = 49152;
 const unsigned RTCORE_MAX_RESIDENT_WARPS_PER_EXECUTION_PARTITION = 16;
 const unsigned RTCORE_RT_TOKENS_PER_EXECUTION_PARTITION = 128;
 const unsigned RTCORE_TRAVERSAL_STACK_ENTRIES_PER_ACTIVE_LANE = 16;
+const unsigned RTCORE_TRAVERSAL_STACK_ENTRIES_PER_EXECUTION_PARTITION =
+    RTCORE_MAX_RESIDENT_WARPS_PER_EXECUTION_PARTITION *
+    RTCORE_MAX_LANES_PER_WARP *
+    RTCORE_TRAVERSAL_STACK_ENTRIES_PER_ACTIVE_LANE;
 const unsigned RTCORE_WINDOW_STATE_COMPLETE = 3;
 const unsigned long long RTCORE_SHARED_HANDOFF_WINDOW_BASE = 0x20000000ull;
 const unsigned long long RTCORE_SHARED_HANDOFF_WINDOW_BYTES = 0x10000000ull;
@@ -7640,9 +7644,12 @@ struct rtcore_symbolic_resource_profile {
   unsigned handoff_window_bytes_per_active_rt_lane;
   unsigned rt_tokens_per_execution_partition;
   unsigned traversal_stack_entries_per_active_lane;
+  unsigned traversal_stack_entries_per_execution_partition;
+  unsigned traversal_stack_entries_per_full_warp;
   unsigned full_warp_handoff_window_bytes;
   unsigned handoff_window_limited_warps;
   unsigned token_limited_warps;
+  unsigned traversal_stack_limited_warps;
   unsigned resident_rt_warps;
 };
 
@@ -7817,6 +7824,10 @@ unsigned rtcore_count_active_lanes(unsigned active_mask) {
 
 unsigned rtcore_min_u32(unsigned a, unsigned b) { return a < b ? a : b; }
 
+unsigned rtcore_u64_to_u32_saturating(unsigned long long value) {
+  return value > 0xffffffffull ? 0xffffffffu : static_cast<unsigned>(value);
+}
+
 unsigned rtcore_peek_next_synthetic_window_generation(
     const rtcore_synthetic_handoff_key &key) {
   std::map<rtcore_synthetic_handoff_key, unsigned>::const_iterator
@@ -7966,8 +7977,16 @@ rtcore_symbolic_resource_profile rtcore_get_symbolic_resource_profile() {
   profile.traversal_stack_entries_per_active_lane = rtcore_resource_env_u32(
       "VULKAN_SIM_RTCORE_TRAVERSAL_STACK_ENTRIES",
       RTCORE_TRAVERSAL_STACK_ENTRIES_PER_ACTIVE_LANE);
+  profile.traversal_stack_entries_per_execution_partition =
+      rtcore_resource_env_u32(
+          "VULKAN_SIM_RTCORE_TRAVERSAL_STACK_ENTRIES_TOTAL",
+          RTCORE_TRAVERSAL_STACK_ENTRIES_PER_EXECUTION_PARTITION);
   profile.full_warp_handoff_window_bytes =
       RTCORE_MAX_LANES_PER_WARP * RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE;
+  profile.traversal_stack_entries_per_full_warp =
+      rtcore_u64_to_u32_saturating(
+          (unsigned long long)profile.max_active_lanes_per_rt_warp *
+          profile.traversal_stack_entries_per_active_lane);
   profile.handoff_window_limited_warps =
       profile.full_warp_handoff_window_bytes == 0
           ? 0
@@ -7978,11 +7997,34 @@ rtcore_symbolic_resource_profile rtcore_get_symbolic_resource_profile() {
           ? 0
           : profile.rt_tokens_per_execution_partition /
                 profile.max_active_lanes_per_rt_warp;
+  profile.traversal_stack_limited_warps =
+      profile.traversal_stack_entries_per_full_warp == 0
+          ? 0
+          : profile.traversal_stack_entries_per_execution_partition /
+                profile.traversal_stack_entries_per_full_warp;
   profile.resident_rt_warps = rtcore_min_u32(
       profile.max_resident_warps_per_execution_partition,
       rtcore_min_u32(profile.handoff_window_limited_warps,
-                     profile.token_limited_warps));
+                     rtcore_min_u32(profile.token_limited_warps,
+                                    profile.traversal_stack_limited_warps)));
   return profile;
+}
+
+const char *rtcore_symbolic_resource_limit_name(
+    const rtcore_symbolic_resource_profile &profile) {
+  if (profile.handoff_window_limited_warps == 0) {
+    return "HANDOFF_WINDOW_EXHAUSTED";
+  }
+  if (profile.token_limited_warps == 0) {
+    return "RT_TOKEN_EXHAUSTED";
+  }
+  if (profile.traversal_stack_limited_warps == 0) {
+    return "TRAVERSAL_STACK_EXHAUSTED";
+  }
+  if (profile.max_resident_warps_per_execution_partition == 0) {
+    return "MAX_RESIDENT_WARPS_ZERO";
+  }
+  return "RESOURCE_EXHAUSTED";
 }
 
 void rtcore_log_symbolic_resource_profile_once(
@@ -8002,7 +8044,10 @@ void rtcore_log_symbolic_resource_profile_once(
          "handoff_window_bytes_per_active_rt_lane=%u, "
          "rt_tokens_per_execution_partition=%u, "
          "traversal_stack_entries_per_active_lane=%u, "
+         "traversal_stack_entries_per_execution_partition=%u, "
+         "traversal_stack_entries_per_full_warp=%u, "
          "handoff_window_limited_warps=%u, token_limited_warps=%u, "
+         "traversal_stack_limited_warps=%u, "
          "resident_rt_warps=%u\n",
          RTCORE_MAX_LANES_PER_WARP, RTCORE_HANDOFF_WINDOW_WORDS_PER_LANE,
          RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE,
@@ -8014,7 +8059,10 @@ void rtcore_log_symbolic_resource_profile_once(
          profile.handoff_window_bytes_per_active_rt_lane,
          profile.rt_tokens_per_execution_partition,
          profile.traversal_stack_entries_per_active_lane,
+         profile.traversal_stack_entries_per_execution_partition,
+         profile.traversal_stack_entries_per_full_warp,
          profile.handoff_window_limited_warps, profile.token_limited_warps,
+         profile.traversal_stack_limited_warps,
          profile.resident_rt_warps);
   fflush(stdout);
 }
@@ -8034,22 +8082,35 @@ bool rtcore_symbolic_submit_has_capacity(
          "full_warp_handoff_window_bytes=%u, "
          "rt_tokens_per_execution_partition=%u, "
          "traversal_stack_entries_per_active_lane=%u, "
+         "traversal_stack_entries_per_execution_partition=%u, "
+         "traversal_stack_entries_per_full_warp=%u, "
+         "traversal_stack_limited_warps=%u, "
          "resident_rt_warps=%u, capacity_available=%u\n",
          pI->source_file(), pI->source_line(), context_ptr,
          handoff_window_base, lane_slot_index, active_lane_mask, active_lanes,
          RTCORE_MAX_LANES_PER_WARP, profile.full_warp_handoff_window_bytes,
          profile.rt_tokens_per_execution_partition,
          profile.traversal_stack_entries_per_active_lane,
+         profile.traversal_stack_entries_per_execution_partition,
+         profile.traversal_stack_entries_per_full_warp,
+         profile.traversal_stack_limited_warps,
          profile.resident_rt_warps, resident_capacity_available ? 1 : 0);
   fflush(stdout);
 
   if (profile.resident_rt_warps == 0) {
     printf("GPGPU-Sim PTX: RT_SUBMIT resource-wait-or-reject (%s:%u), "
-           "reason=RESOURCE_EXHAUSTED, context_ptr=0x%llx, "
+           "reason=%s, context_ptr=0x%llx, "
            "handoff_window_base=0x%llx, lane_slot_index=%u, "
-           "resident_rt_warps=%u, consumed=0\n",
-           pI->source_file(), pI->source_line(), context_ptr,
-           handoff_window_base, lane_slot_index, profile.resident_rt_warps);
+           "traversal_stack_entries_per_execution_partition=%u, "
+           "traversal_stack_entries_per_full_warp=%u, "
+           "traversal_stack_limited_warps=%u, resident_rt_warps=%u, "
+           "consumed=0\n",
+           pI->source_file(), pI->source_line(),
+           rtcore_symbolic_resource_limit_name(profile), context_ptr,
+           handoff_window_base, lane_slot_index,
+           profile.traversal_stack_entries_per_execution_partition,
+           profile.traversal_stack_entries_per_full_warp,
+           profile.traversal_stack_limited_warps, profile.resident_rt_warps);
     fflush(stdout);
   }
 
