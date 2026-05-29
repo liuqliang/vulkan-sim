@@ -9619,7 +9619,8 @@ enum rtcore_traversal_source_provider {
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STUB = 1,
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_REJECT = 2,
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_EMPTY = 3,
-  RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED = 4
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_DEFAULT_MISS = 4,
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED = 5
 };
 
 static const char *rtcore_traversal_source_provider_name(
@@ -9633,6 +9634,8 @@ static const char *rtcore_traversal_source_provider_name(
       return "rtcore_reject";
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_EMPTY:
       return "rtcore_empty";
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_DEFAULT_MISS:
+      return "rtcore_default_miss";
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
     default:
       return "unsupported";
@@ -9658,6 +9661,10 @@ rtcore_select_traversal_source_provider() {
   if (strcmp(value, "rtcore_empty") == 0 ||
       strcmp(value, "rtcore_accepted_empty") == 0) {
     return RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_EMPTY;
+  }
+  if (strcmp(value, "rtcore_default_miss") == 0 ||
+      strcmp(value, "rtcore_miss") == 0) {
+    return RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_DEFAULT_MISS;
   }
   return RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED;
 }
@@ -9897,6 +9904,36 @@ rtcore_make_rtcore_empty_traversal_provider_response(
   return response;
 }
 
+static rtcore_traversal_provider_response
+rtcore_make_rtcore_default_miss_traversal_provider_response(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_traversal_provider_response response;
+  response.provider = descriptor.provider;
+  response.provider_supported = true;
+  response.provider_accepted = true;
+  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
+  response.traversal_snapshot.hit_geometry = false;
+  response.traversal_snapshot.current_shader_counter = -1;
+  response.traversal_snapshot.current_shader_type = -1;
+  response.traversal_snapshot.missIndex = 0;
+  response.initialized_default_miss = true;
+  response.hit_geometry = false;
+  printf("GPGPU-Sim PTX: RT_SUBMIT traversal-source-rtcore-default-miss, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "rtcore-default-miss-provider-supported=1, "
+         "rtcore-default-miss-provider-accepted=1, "
+         "rtcore-default-miss-provider-payload=1, "
+         "rtcore-default-miss-initialized=1, "
+         "rtcore-default-miss-hit-geometry=0\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
+         descriptor.warp_metadata.active_mask);
+  fflush(stdout);
+  return response;
+}
+
 static rtcore_traversal_source_snapshot
 rtcore_make_traversal_source_snapshot_from_provider_response(
     const rtcore_traversal_provider_response &response) {
@@ -9943,6 +9980,12 @@ rtcore_make_traversal_provider_response(
       rtcore_traversal_work_descriptor descriptor =
           rtcore_make_traversal_work_descriptor(request);
       return rtcore_make_rtcore_empty_traversal_provider_response(descriptor);
+    }
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_DEFAULT_MISS: {
+      rtcore_traversal_work_descriptor descriptor =
+          rtcore_make_traversal_work_descriptor(request);
+      return rtcore_make_rtcore_default_miss_traversal_provider_response(
+          descriptor);
     }
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
     default:
