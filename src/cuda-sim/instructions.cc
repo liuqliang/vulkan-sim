@@ -9685,6 +9685,35 @@ rtcore_make_traversal_source_request(
   return request;
 }
 
+struct rtcore_traversal_work_descriptor {
+  rtcore_traversal_work_descriptor()
+      : valid(false),
+        provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0) {}
+
+  bool valid;
+  rtcore_traversal_source_provider provider;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+};
+
+static rtcore_traversal_work_descriptor
+rtcore_make_traversal_work_descriptor(
+    const rtcore_traversal_source_request &request) {
+  rtcore_traversal_work_descriptor descriptor;
+  descriptor.valid = true;
+  descriptor.provider = request.provider;
+  descriptor.context_ptr = request.context_ptr;
+  descriptor.handoff_window_base = request.handoff_window_base;
+  descriptor.lane_slot_index = request.lane_slot_index;
+  descriptor.warp_metadata = request.warp_metadata;
+  return descriptor;
+}
+
 struct rtcore_traversal_source_snapshot {
   rtcore_traversal_source_snapshot()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
@@ -9742,18 +9771,18 @@ rtcore_make_legacy_functional_traversal_source_snapshot(
 
 static rtcore_traversal_source_snapshot
 rtcore_make_rtcore_stub_traversal_source_snapshot(
-    const rtcore_traversal_source_request &request) {
+    const rtcore_traversal_work_descriptor &descriptor) {
   rtcore_traversal_source_snapshot snapshot;
-  snapshot.provider = request.provider;
+  snapshot.provider = descriptor.provider;
   snapshot.provider_supported = false;
   printf("GPGPU-Sim PTX: RT_SUBMIT traversal-source-rtcore-stub, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
          "rtcore-stub-provider-unimplemented=1\n",
-         rtcore_traversal_source_provider_name(request.provider),
-         request.context_ptr, request.handoff_window_base,
-         request.lane_slot_index, request.warp_metadata.warp_uid,
-         request.warp_metadata.active_mask);
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
+         descriptor.warp_metadata.active_mask);
   fflush(stdout);
   return snapshot;
 }
@@ -9773,8 +9802,11 @@ rtcore_make_traversal_source_snapshot(
   switch (request.provider) {
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL:
       return rtcore_make_legacy_functional_traversal_source_snapshot(request);
-    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STUB:
-      return rtcore_make_rtcore_stub_traversal_source_snapshot(request);
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STUB: {
+      rtcore_traversal_work_descriptor descriptor =
+          rtcore_make_traversal_work_descriptor(request);
+      return rtcore_make_rtcore_stub_traversal_source_snapshot(descriptor);
+    }
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
     default:
       return rtcore_make_unsupported_traversal_source_snapshot(request);
