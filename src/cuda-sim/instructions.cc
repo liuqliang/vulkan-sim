@@ -9642,6 +9642,43 @@ rtcore_select_traversal_source_provider() {
   return RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED;
 }
 
+struct rtcore_traversal_source_request {
+  rtcore_traversal_source_request()
+      : pI(NULL),
+        thread(NULL),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL) {}
+
+  const ptx_instruction *pI;
+  ptx_thread_info *thread;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+  rtcore_traversal_source_provider provider;
+};
+
+static rtcore_traversal_source_request
+rtcore_make_traversal_source_request(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index,
+    const ptx_thread_info::rtcore_current_warp_metadata *warp_metadata) {
+  rtcore_traversal_source_request request;
+  request.pI = pI;
+  request.thread = thread;
+  request.context_ptr = context_ptr;
+  request.handoff_window_base = handoff_window_base;
+  request.lane_slot_index = lane_slot_index;
+  if (warp_metadata != NULL) {
+    request.warp_metadata = *warp_metadata;
+  }
+  request.provider = rtcore_select_traversal_source_provider();
+  return request;
+}
+
 struct rtcore_traversal_source_snapshot {
   rtcore_traversal_source_snapshot()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
@@ -9662,9 +9699,11 @@ struct rtcore_traversal_source_snapshot {
 
 static rtcore_traversal_source_snapshot
 rtcore_make_legacy_functional_traversal_source_snapshot(
-    const ptx_instruction *pI, ptx_thread_info *thread) {
+    const rtcore_traversal_source_request &request) {
+  const ptx_instruction *pI = request.pI;
+  ptx_thread_info *thread = request.thread;
   rtcore_traversal_source_snapshot snapshot;
-  snapshot.provider = RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL;
+  snapshot.provider = request.provider;
   snapshot.provider_supported = true;
   memory_space *mem = thread->get_global_memory();
   snapshot.has_traversal_data =
@@ -9697,24 +9736,22 @@ rtcore_make_legacy_functional_traversal_source_snapshot(
 
 static rtcore_traversal_source_snapshot
 rtcore_make_unsupported_traversal_source_snapshot(
-    rtcore_traversal_source_provider provider) {
+    const rtcore_traversal_source_request &request) {
   rtcore_traversal_source_snapshot snapshot;
-  snapshot.provider = provider;
+  snapshot.provider = request.provider;
   snapshot.provider_supported = false;
   return snapshot;
 }
 
 static rtcore_traversal_source_snapshot
-rtcore_make_traversal_source_snapshot(const ptx_instruction *pI,
-                                      ptx_thread_info *thread) {
-  const rtcore_traversal_source_provider provider =
-      rtcore_select_traversal_source_provider();
-  switch (provider) {
+rtcore_make_traversal_source_snapshot(
+    const rtcore_traversal_source_request &request) {
+  switch (request.provider) {
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL:
-      return rtcore_make_legacy_functional_traversal_source_snapshot(pI, thread);
+      return rtcore_make_legacy_functional_traversal_source_snapshot(request);
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
     default:
-      return rtcore_make_unsupported_traversal_source_snapshot(provider);
+      return rtcore_make_unsupported_traversal_source_snapshot(request);
   }
 }
 
@@ -9881,8 +9918,12 @@ bool rtcore_build_traversal_completion_event(
   event->window_tag =
       rtcore_synthetic_window_tag_for_generation(event->window_generation);
 
+  rtcore_traversal_source_request source_request =
+      rtcore_make_traversal_source_request(
+          pI, thread, event->context_ptr, event->handoff_window_base,
+          event->lane_slot_index, &event->warp_metadata);
   rtcore_traversal_source_snapshot source_snapshot =
-      rtcore_make_traversal_source_snapshot(pI, thread);
+      rtcore_make_traversal_source_snapshot(source_request);
   if (!source_snapshot.provider_supported) {
     printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
            "reason=RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED, "
