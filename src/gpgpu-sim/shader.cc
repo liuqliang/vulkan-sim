@@ -2921,43 +2921,63 @@ unsigned rt_unit::rtcore_completion_queue_inflight() const {
   return g_rtcore_completion_queue_inflight;
 }
 
-void rt_unit::rtcore_record_completion_queue_enqueue(
-    const warp_inst_t &inst) {
-  if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
-    return;
-  }
-  g_rtcore_completion_queue_inflight++;
+rt_unit::rtcore_completion_queue_state_snapshot
+rt_unit::rtcore_make_completion_queue_state_snapshot(
+    const warp_inst_t &inst, rtcore_completion_queue_action action) const {
+  rtcore_completion_queue_state_snapshot snapshot;
+  snapshot.action = action;
+  snapshot.submit = inst.rt_subop == RT_CORE_SUBOP_SUBMIT;
+  snapshot.capacity = rtcore_completion_queue_capacity();
+  snapshot.inflight = rtcore_completion_queue_inflight();
+  snapshot.capacity_enabled = snapshot.capacity != 0;
+  snapshot.capacity_available =
+      !snapshot.submit || !snapshot.capacity_enabled ||
+      snapshot.inflight < snapshot.capacity;
+  return snapshot;
 }
 
-void rt_unit::rtcore_record_completion_queue_retire(const warp_inst_t &inst) {
-  if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
+void rt_unit::rtcore_apply_completion_queue_state_snapshot(
+    const rtcore_completion_queue_state_snapshot &snapshot) {
+  if (!snapshot.submit) {
     return;
   }
-  if (g_rtcore_completion_queue_inflight > 0) {
+  if (snapshot.action == RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE) {
+    g_rtcore_completion_queue_inflight++;
+  } else if (snapshot.action == RTCORE_COMPLETION_QUEUE_ACTION_RETIRE &&
+             g_rtcore_completion_queue_inflight > 0) {
     g_rtcore_completion_queue_inflight--;
   }
 }
 
+void rt_unit::rtcore_record_completion_queue_enqueue(
+    const warp_inst_t &inst) {
+  const rtcore_completion_queue_state_snapshot snapshot =
+      rtcore_make_completion_queue_state_snapshot(
+          inst, RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE);
+  rtcore_apply_completion_queue_state_snapshot(snapshot);
+}
+
+void rt_unit::rtcore_record_completion_queue_retire(const warp_inst_t &inst) {
+  const rtcore_completion_queue_state_snapshot snapshot =
+      rtcore_make_completion_queue_state_snapshot(
+          inst, RTCORE_COMPLETION_QUEUE_ACTION_RETIRE);
+  rtcore_apply_completion_queue_state_snapshot(snapshot);
+}
+
 bool rt_unit::rtcore_completion_queue_has_capacity(
     const warp_inst_t &inst) const {
-  if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
-    return true;
-  }
-
-  const unsigned capacity = rtcore_completion_queue_capacity();
-  if (capacity == 0) {
-    return true;
-  }
-
-  const unsigned inflight = rtcore_completion_queue_inflight();
-  if (inflight < capacity) {
+  const rtcore_completion_queue_state_snapshot snapshot =
+      rtcore_make_completion_queue_state_snapshot(
+          inst, RTCORE_COMPLETION_QUEUE_ACTION_CAPACITY_CHECK);
+  if (snapshot.capacity_available) {
     return true;
   }
 
   printf("GPGPU-Sim PTX: RT-unit completion-queue-backpressure, "
          "warp_uid=%u, warp_id=%u, inflight=%u, capacity=%u, "
          "capacity_available=0, action=stall\n",
-         inst.get_uid(), inst.warp_id(), inflight, capacity);
+         inst.get_uid(), inst.warp_id(), snapshot.inflight,
+         snapshot.capacity);
   fflush(stdout);
   return false;
 }

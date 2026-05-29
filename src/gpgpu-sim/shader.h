@@ -1337,6 +1337,27 @@ class rt_unit : public pipelined_simd_unit {
       mem_fetch* process_memory_access_queue(warp_inst_t &inst);
       void schedule_next_warp(warp_inst_t &inst);
       void memory_cycle(warp_inst_t &inst);
+      enum rtcore_completion_queue_action {
+        RTCORE_COMPLETION_QUEUE_ACTION_CAPACITY_CHECK,
+        RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE,
+        RTCORE_COMPLETION_QUEUE_ACTION_RETIRE
+      };
+      struct rtcore_completion_queue_state_snapshot {
+        rtcore_completion_queue_state_snapshot()
+            : action(RTCORE_COMPLETION_QUEUE_ACTION_CAPACITY_CHECK),
+              submit(false),
+              capacity_enabled(false),
+              capacity_available(true),
+              capacity(0),
+              inflight(0) {}
+
+        rtcore_completion_queue_action action;
+        bool submit;
+        bool capacity_enabled;
+        bool capacity_available;
+        unsigned capacity;
+        unsigned inflight;
+      };
       struct rtcore_synthetic_completion_event {
         unsigned warp_uid;
         unsigned warp_id;
@@ -1402,6 +1423,12 @@ class rt_unit : public pipelined_simd_unit {
       unsigned rtcore_synthetic_completion_latency() const;
       unsigned rtcore_completion_queue_capacity() const;
       unsigned rtcore_completion_queue_inflight() const;
+      rtcore_completion_queue_state_snapshot
+      rtcore_make_completion_queue_state_snapshot(
+          const warp_inst_t &inst,
+          rtcore_completion_queue_action action) const;
+      void rtcore_apply_completion_queue_state_snapshot(
+          const rtcore_completion_queue_state_snapshot &snapshot);
       void rtcore_record_completion_queue_enqueue(const warp_inst_t &inst);
       void rtcore_record_completion_queue_retire(const warp_inst_t &inst);
       bool rtcore_completion_queue_has_capacity(const warp_inst_t &inst) const;
