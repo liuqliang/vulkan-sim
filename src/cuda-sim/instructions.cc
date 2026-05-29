@@ -8334,6 +8334,18 @@ size_t rtcore_symbolic_rt_token_allocator_live_count() {
   return g_rtcore_symbolic_rt_token_allocator.live_allocations;
 }
 
+size_t rtcore_symbolic_rt_token_allocator_live_plus_reserved_count(
+    unsigned reserved_tokens) {
+  return rtcore_symbolic_rt_token_allocator_live_count() + reserved_tokens;
+}
+
+bool rtcore_symbolic_rt_token_allocator_has_capacity(
+    const rtcore_symbolic_resource_profile &profile,
+    unsigned reserved_tokens) {
+  return rtcore_symbolic_rt_token_allocator_live_plus_reserved_count(
+             reserved_tokens) <= profile.rt_tokens_per_execution_partition;
+}
+
 rtcore_symbolic_rt_token_allocation
 rtcore_allocate_symbolic_rt_token_slot(
     const ptx_instruction *pI, const rtcore_symbolic_rt_token_key &key) {
@@ -8552,13 +8564,24 @@ size_t rtcore_symbolic_rt_token_reservation_count() {
   return g_rtcore_symbolic_rt_token_reservations.size();
 }
 
+size_t rtcore_synthetic_handoff_window_count();
+
 bool rtcore_symbolic_submit_token_reservation_available(
     const ptx_instruction *pI, const rtcore_symbolic_resource_profile &profile,
     const rtcore_symbolic_rt_token_reservation_key &key,
     const rtcore_symbolic_rt_token_key &token_key, unsigned lane_slot_index) {
-  const size_t live_tokens = rtcore_symbolic_rt_token_count();
+  const size_t token_map_live_tokens = rtcore_symbolic_rt_token_count();
   const unsigned active_lanes = rtcore_count_active_lanes(key.active_mask);
   const unsigned reserved_tokens = active_lanes;
+  const size_t allocator_live_tokens =
+      rtcore_symbolic_rt_token_allocator_live_count();
+  const size_t allocator_live_plus_reserved_tokens =
+      rtcore_symbolic_rt_token_allocator_live_plus_reserved_count(
+          reserved_tokens);
+  const bool allocator_capacity_available =
+      rtcore_symbolic_rt_token_allocator_has_capacity(
+          profile, reserved_tokens);
+  const size_t live_tokens = allocator_live_tokens;
   std::map<rtcore_symbolic_rt_token_reservation_key,
            rtcore_symbolic_rt_token_reservation_record>::iterator reservation =
       g_rtcore_symbolic_rt_token_reservations.find(key);
@@ -8568,8 +8591,7 @@ bool rtcore_symbolic_submit_token_reservation_available(
   bool token_capacity_available = reservation_live;
 
   if (!reservation_live) {
-    token_capacity_available =
-        live_tokens + active_lanes <= profile.rt_tokens_per_execution_partition;
+    token_capacity_available = allocator_capacity_available;
     if (token_capacity_available) {
       rtcore_symbolic_rt_token_reservation_record record;
       record.active_mask = key.active_mask;
@@ -8590,13 +8612,18 @@ bool rtcore_symbolic_submit_token_reservation_available(
          "active_lane_mask=0x%08x, active_lanes=%u, "
          "reservation_live=%u, reservation_inserted=%u, "
          "reserved_tokens=%u, rt_tokens_per_execution_partition=%u, "
-         "live_tokens=%zu, token_capacity_available=%u\n",
+         "live_tokens=%zu, token_map_live_tokens=%zu, "
+         "allocator_live_tokens=%zu, allocator_reserved_tokens=%u, "
+         "allocator_live_plus_reserved_tokens=%zu, "
+         "token_capacity_available=%u\n",
          pI->source_file(), pI->source_line(), key.context_ptr,
          key.handoff_window_base, lane_slot_index, token_key.owner_hw_tid,
          key.warp_id, key.owner_hw_sid, key.warp_uid, key.static_inst_uid,
          key.active_mask, active_lanes, reservation_live ? 1 : 0,
          reservation_inserted ? 1 : 0, reserved_tokens,
          profile.rt_tokens_per_execution_partition, live_tokens,
+         token_map_live_tokens, allocator_live_tokens, reserved_tokens,
+         allocator_live_plus_reserved_tokens,
          token_capacity_available ? 1 : 0);
   fflush(stdout);
 
@@ -8608,13 +8635,24 @@ bool rtcore_symbolic_submit_token_reservation_available(
            "warp_uid=%u, static_inst_uid=%u, active_lane_mask=0x%08x, "
            "active_lanes=%u, reservation_live=%u, reserved_tokens=%u, "
            "rt_tokens_per_execution_partition=%u, live_tokens=%zu, "
-           "token_capacity_available=%u, consumed=0\n",
+           "token_map_live_tokens=%zu, allocator_live_tokens=%zu, "
+           "allocator_reserved_tokens=%u, "
+           "allocator_live_plus_reserved_tokens=%zu, "
+           "token_capacity_available=%u, remaining_windows=%zu, "
+           "remaining_tokens=%zu, remaining_reservations=%zu, "
+           "remaining_allocator_live=%zu, consumed=0\n",
            pI->source_file(), pI->source_line(), key.context_ptr,
            key.handoff_window_base, lane_slot_index, token_key.owner_hw_tid,
            key.warp_id, key.owner_hw_sid, key.warp_uid, key.static_inst_uid,
            key.active_mask, active_lanes, reservation_live ? 1 : 0,
            reserved_tokens, profile.rt_tokens_per_execution_partition,
-           live_tokens, token_capacity_available ? 1 : 0);
+           live_tokens, token_map_live_tokens, allocator_live_tokens,
+           reserved_tokens, allocator_live_plus_reserved_tokens,
+           token_capacity_available ? 1 : 0,
+           rtcore_synthetic_handoff_window_count(),
+           rtcore_symbolic_rt_token_count(),
+           rtcore_symbolic_rt_token_reservation_count(),
+           rtcore_symbolic_rt_token_allocator_live_count());
     fflush(stdout);
   }
 
