@@ -8392,6 +8392,42 @@ size_t rtcore_symbolic_rt_token_count() {
   return g_rtcore_symbolic_rt_tokens.size();
 }
 
+bool rtcore_symbolic_submit_token_capacity_available(
+    const ptx_instruction *pI, const rtcore_symbolic_resource_profile &profile,
+    const rtcore_symbolic_rt_token_key &key) {
+  const size_t live_tokens = rtcore_symbolic_rt_token_count();
+  const bool token_capacity_available =
+      live_tokens < profile.rt_tokens_per_execution_partition;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT token-capacity-check (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
+         "owner_hw_sid=%u, rt_tokens_per_execution_partition=%u, "
+         "live_tokens=%zu, token_capacity_available=%u\n",
+         pI->source_file(), pI->source_line(), key.context_ptr,
+         key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+         key.owner_hw_wid, key.owner_hw_sid,
+         profile.rt_tokens_per_execution_partition, live_tokens,
+         token_capacity_available ? 1 : 0);
+  fflush(stdout);
+
+  if (!token_capacity_available) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=RT_TOKEN_CAPACITY_EXHAUSTED, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "owner_hw_tid=%u, owner_hw_wid=%u, owner_hw_sid=%u, "
+           "rt_tokens_per_execution_partition=%u, live_tokens=%zu, "
+           "consumed=0\n",
+           pI->source_file(), pI->source_line(), key.context_ptr,
+           key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+           key.owner_hw_wid, key.owner_hw_sid,
+           profile.rt_tokens_per_execution_partition, live_tokens);
+    fflush(stdout);
+  }
+
+  return token_capacity_available;
+}
+
 void rtcore_populate_synthetic_owner_tuple(
     rtcore_synthetic_handoff_header *header,
     const rtcore_synthetic_handoff_key &key, ptx_thread_info *thread,
@@ -9199,6 +9235,12 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                                         handoff_window_base_data.u64,
                                         lane_slot_index, thread);
   if (!rtcore_symbolic_submit_token_available(pI, token_key)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+
+  if (!rtcore_symbolic_submit_token_capacity_available(
+          pI, resource_profile, token_key)) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
