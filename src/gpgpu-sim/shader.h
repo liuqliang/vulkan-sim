@@ -1377,6 +1377,28 @@ class rt_unit : public pipelined_simd_unit {
         unsigned adapter_max_node_visits;
         unsigned adapter_max_primitive_tests;
       };
+      struct rtcore_completion_timing_snapshot {
+        rtcore_completion_timing_snapshot()
+            : stats_mode(false),
+              fixed_latency(0),
+              node_cost(0),
+              primitive_cost(0),
+              adapter_max_node_visits(0),
+              adapter_max_primitive_tests(0),
+              completion_latency(0),
+              enqueue_cycle(0),
+              ready_cycle(0) {}
+
+        bool stats_mode;
+        unsigned fixed_latency;
+        unsigned node_cost;
+        unsigned primitive_cost;
+        unsigned adapter_max_node_visits;
+        unsigned adapter_max_primitive_tests;
+        unsigned completion_latency;
+        unsigned long long enqueue_cycle;
+        unsigned long long ready_cycle;
+      };
       unsigned rtcore_synthetic_completion_latency() const;
       unsigned rtcore_completion_queue_capacity() const;
       unsigned rtcore_completion_queue_inflight() const;
@@ -1395,6 +1417,11 @@ class rt_unit : public pipelined_simd_unit {
       void rtcore_apply_adapter_readiness_snapshot(
           rtcore_synthetic_completion_event *event,
           const rtcore_adapter_readiness_snapshot &snapshot) const;
+      rtcore_completion_timing_snapshot rtcore_make_completion_timing_snapshot(
+          const rtcore_synthetic_completion_event &event) const;
+      void rtcore_apply_completion_timing_snapshot(
+          rtcore_synthetic_completion_event *event,
+          const rtcore_completion_timing_snapshot &snapshot) const;
       bool claim_adapter_completion_for_issue(
           rtcore_synthetic_completion_event *event);
       void enqueue_synthetic_completion(const warp_inst_t &inst,

@@ -3018,38 +3018,66 @@ unsigned rt_unit::rtcore_stats_primitive_cost() const {
   return (unsigned)parsed;
 }
 
-unsigned rt_unit::rtcore_effective_completion_latency(
+rt_unit::rtcore_completion_timing_snapshot
+rt_unit::rtcore_make_completion_timing_snapshot(
     const rtcore_synthetic_completion_event &event) const {
-  const bool stats_enabled = rtcore_stats_completion_latency_enabled();
-  const unsigned fixed_latency = stats_enabled
-                                     ? rtcore_stats_latency_base()
-                                     : rtcore_synthetic_completion_latency();
-  const unsigned node_cost = stats_enabled ? rtcore_stats_node_cost() : 0;
-  const unsigned primitive_cost =
-      stats_enabled ? rtcore_stats_primitive_cost() : 0;
-  unsigned long long stats_latency = fixed_latency;
-  if (stats_enabled) {
+  rtcore_completion_timing_snapshot snapshot;
+  snapshot.stats_mode = rtcore_stats_completion_latency_enabled();
+  snapshot.fixed_latency = snapshot.stats_mode
+                               ? rtcore_stats_latency_base()
+                               : rtcore_synthetic_completion_latency();
+  snapshot.node_cost = snapshot.stats_mode ? rtcore_stats_node_cost() : 0;
+  snapshot.primitive_cost =
+      snapshot.stats_mode ? rtcore_stats_primitive_cost() : 0;
+  snapshot.adapter_max_node_visits = event.adapter_max_node_visits;
+  snapshot.adapter_max_primitive_tests = event.adapter_max_primitive_tests;
+  unsigned long long stats_latency = snapshot.fixed_latency;
+  if (snapshot.stats_mode) {
     stats_latency +=
-        (unsigned long long)event.adapter_max_node_visits * node_cost;
-    stats_latency += (unsigned long long)event.adapter_max_primitive_tests *
-                     primitive_cost;
+        (unsigned long long)snapshot.adapter_max_node_visits *
+        snapshot.node_cost;
+    stats_latency +=
+        (unsigned long long)snapshot.adapter_max_primitive_tests *
+        snapshot.primitive_cost;
   }
-  const unsigned completion_latency =
+  snapshot.completion_latency =
       stats_latency > UINT_MAX ? UINT_MAX : (unsigned)stats_latency;
-  const unsigned long long ready_cycle =
-      event.enqueue_cycle + completion_latency;
+  snapshot.enqueue_cycle = event.enqueue_cycle;
+  snapshot.ready_cycle =
+      snapshot.enqueue_cycle + snapshot.completion_latency;
 
   printf("GPGPU-Sim PTX: RT-unit synthetic-completion-latency, "
          "warp_uid=%u, warp_id=%u, mode=%s, fixed_latency=%u, "
          "stats_latency=%u, node_cost=%u, primitive_cost=%u, "
          "max_node_visits=%u, max_primitive_tests=%u, "
          "completion_latency=%u, enqueue_cycle=%llu, ready_cycle=%llu\n",
-         event.warp_uid, event.warp_id, stats_enabled ? "stats" : "fixed",
-         fixed_latency, completion_latency, node_cost, primitive_cost,
-         event.adapter_max_node_visits, event.adapter_max_primitive_tests,
-         completion_latency, event.enqueue_cycle, ready_cycle);
+         event.warp_uid, event.warp_id,
+         snapshot.stats_mode ? "stats" : "fixed",
+         snapshot.fixed_latency, snapshot.completion_latency,
+         snapshot.node_cost, snapshot.primitive_cost,
+         snapshot.adapter_max_node_visits,
+         snapshot.adapter_max_primitive_tests,
+         snapshot.completion_latency, snapshot.enqueue_cycle,
+         snapshot.ready_cycle);
   fflush(stdout);
-  return completion_latency;
+  return snapshot;
+}
+
+void rt_unit::rtcore_apply_completion_timing_snapshot(
+    rtcore_synthetic_completion_event *event,
+    const rtcore_completion_timing_snapshot &snapshot) const {
+  if (event == NULL) {
+    return;
+  }
+  event->completion_latency = snapshot.completion_latency;
+  event->ready_cycle = snapshot.ready_cycle;
+}
+
+unsigned rt_unit::rtcore_effective_completion_latency(
+    const rtcore_synthetic_completion_event &event) const {
+  rtcore_completion_timing_snapshot timing_snapshot =
+      rtcore_make_completion_timing_snapshot(event);
+  return timing_snapshot.completion_latency;
 }
 
 static bool rtcore_test_adapter_mask_mismatch_enabled() {
@@ -3250,8 +3278,9 @@ void rt_unit::enqueue_synthetic_completion(
   event.adapter_completion_issued_lanes_complete = false;
   event.enqueue_cycle = current_cycle;
   claim_adapter_completion_for_issue(&event);
-  event.completion_latency = rtcore_effective_completion_latency(event);
-  event.ready_cycle = current_cycle + event.completion_latency;
+  rtcore_completion_timing_snapshot timing_snapshot =
+      rtcore_make_completion_timing_snapshot(event);
+  rtcore_apply_completion_timing_snapshot(&event, timing_snapshot);
   const bool new_event =
       m_synthetic_completion_queue.find(inst.get_uid()) ==
       m_synthetic_completion_queue.end();
@@ -3275,10 +3304,9 @@ bool rt_unit::synthetic_completion_ready(
     const bool was_ready = event->second.adapter_completion_ready;
     claim_adapter_completion_for_issue(&event->second);
     if (!was_ready && event->second.adapter_completion_ready) {
-      event->second.completion_latency =
-          rtcore_effective_completion_latency(event->second);
-      event->second.ready_cycle =
-          event->second.enqueue_cycle + event->second.completion_latency;
+      rtcore_completion_timing_snapshot timing_snapshot =
+          rtcore_make_completion_timing_snapshot(event->second);
+      rtcore_apply_completion_timing_snapshot(&event->second, timing_snapshot);
     }
   }
   return event->second.adapter_completion_ready &&
