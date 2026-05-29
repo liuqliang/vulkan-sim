@@ -9620,7 +9620,8 @@ enum rtcore_traversal_source_provider {
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_REJECT = 2,
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_EMPTY = 3,
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_DEFAULT_MISS = 4,
-  RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED = 5
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STATS_MISS = 5,
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED = 6
 };
 
 static const char *rtcore_traversal_source_provider_name(
@@ -9636,6 +9637,8 @@ static const char *rtcore_traversal_source_provider_name(
       return "rtcore_empty";
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_DEFAULT_MISS:
       return "rtcore_default_miss";
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STATS_MISS:
+      return "rtcore_stats_miss";
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
     default:
       return "unsupported";
@@ -9665,6 +9668,10 @@ rtcore_select_traversal_source_provider() {
   if (strcmp(value, "rtcore_default_miss") == 0 ||
       strcmp(value, "rtcore_miss") == 0) {
     return RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_DEFAULT_MISS;
+  }
+  if (strcmp(value, "rtcore_stats_miss") == 0 ||
+      strcmp(value, "rtcore_stats_default_miss") == 0) {
+    return RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STATS_MISS;
   }
   return RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED;
 }
@@ -9934,6 +9941,45 @@ rtcore_make_rtcore_default_miss_traversal_provider_response(
   return response;
 }
 
+static const unsigned RTCORE_STATS_MISS_NODE_VISITS = 7;
+static const unsigned RTCORE_STATS_MISS_PRIMITIVE_TESTS = 3;
+
+static rtcore_traversal_provider_response
+rtcore_make_rtcore_stats_miss_traversal_provider_response(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_traversal_provider_response response;
+  response.provider = descriptor.provider;
+  response.provider_supported = true;
+  response.provider_accepted = true;
+  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
+  response.traversal_snapshot.hit_geometry = false;
+  response.traversal_snapshot.current_shader_counter = -1;
+  response.traversal_snapshot.current_shader_type = -1;
+  response.traversal_snapshot.missIndex = 0;
+  response.traversal_snapshot.rtcore_node_visits = RTCORE_STATS_MISS_NODE_VISITS;
+  response.traversal_snapshot.rtcore_primitive_tests =
+      RTCORE_STATS_MISS_PRIMITIVE_TESTS;
+  response.initialized_default_miss = true;
+  response.hit_geometry = false;
+  printf("GPGPU-Sim PTX: RT_SUBMIT traversal-source-rtcore-stats-miss, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "rtcore-stats-miss-provider-supported=1, "
+         "rtcore-stats-miss-provider-accepted=1, "
+         "rtcore-stats-miss-provider-payload=1, "
+         "rtcore-stats-miss-initialized=1, "
+         "rtcore-stats-miss-hit-geometry=0, "
+         "rtcore-stats-miss-node-visits=%u, "
+         "rtcore-stats-miss-primitive-tests=%u\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
+         descriptor.warp_metadata.active_mask, RTCORE_STATS_MISS_NODE_VISITS,
+         RTCORE_STATS_MISS_PRIMITIVE_TESTS);
+  fflush(stdout);
+  return response;
+}
+
 static rtcore_traversal_source_snapshot
 rtcore_make_traversal_source_snapshot_from_provider_response(
     const rtcore_traversal_provider_response &response) {
@@ -9985,6 +10031,12 @@ rtcore_make_traversal_provider_response(
       rtcore_traversal_work_descriptor descriptor =
           rtcore_make_traversal_work_descriptor(request);
       return rtcore_make_rtcore_default_miss_traversal_provider_response(
+          descriptor);
+    }
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STATS_MISS: {
+      rtcore_traversal_work_descriptor descriptor =
+          rtcore_make_traversal_work_descriptor(request);
+      return rtcore_make_rtcore_stats_miss_traversal_provider_response(
           descriptor);
     }
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
