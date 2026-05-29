@@ -7602,9 +7602,13 @@ const unsigned long long RTCORE_CONTEXT_ALIGNMENT = 64;
 const unsigned long long RTCORE_HANDOFF_WINDOW_ALIGNMENT = 128;
 const unsigned RTCORE_RETURN_FOR_CLOSEST_HIT = 0x02;
 const unsigned RTCORE_RETURN_FOR_MISS = 0x03;
+const unsigned RTCORE_RETURN_FOR_MEMORY_FAULT = 0x04;
 const unsigned RTCORE_COMPLETION_FLAG_TRACE_DONE = 1u << 3;
+const unsigned RTCORE_COMPLETION_FLAG_MEMORY_FAULT = 1u << 4;
 const unsigned RTCORE_COMPLETION_VALID = 1u << 31;
 const unsigned RTCORE_WINDOW_GROUP_VALID = RTCORE_COMPLETION_VALID;
+const unsigned RTCORE_FAULT_PAYLOAD_MAGIC = 0x46544c54;
+const unsigned RTCORE_FAULT_CODE_TRANSLATION = 1;
 const unsigned RTCORE_MAX_LANES_PER_WARP = 32;
 const unsigned RTCORE_CONTEXT_BYTES_PER_LANE = 0x280;
 const unsigned RTCORE_HANDOFF_WINDOW_WORDS_PER_LANE = 32;
@@ -7853,6 +7857,24 @@ unsigned rtcore_resource_env_u32(const char *name, unsigned fallback) {
 bool rtcore_test_retire_before_completion_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_TEST_RETIRE_BEFORE_COMPLETION");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+bool rtcore_test_memory_fault_publication_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_MEMORY_FAULT_PUBLICATION");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+bool rtcore_test_memory_fault_payload_omission_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_MEMORY_FAULT_PAYLOAD_OMISSION");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+bool rtcore_test_memory_fault_header_omission_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_MEMORY_FAULT_HEADER_OMISSION");
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
@@ -8468,17 +8490,25 @@ void rtcore_publish_synthetic_dependent_groups(
     unsigned reason, unsigned completion_seq_low, unsigned resume_seq_low,
     unsigned window_tag_low, rtcore_synthetic_handoff_header *header) {
   const bool closest_hit = reason == RTCORE_RETURN_FOR_CLOSEST_HIT;
+  const bool memory_fault = reason == RTCORE_RETURN_FOR_MEMORY_FAULT;
   const unsigned dispatch_selector =
       closest_hit ? (unsigned)traversal_data.closest_hit.hitGroupIndex
                   : traversal_data.missIndex;
 
-  header->w4 = rtcore_compact_result(
-      reason, RTCORE_COMPLETION_FLAG_TRACE_DONE, completion_seq_low,
-      resume_seq_low, window_tag_low);
-  header->w5 = dispatch_selector;
-  header->w6 =
-      closest_hit ? (unsigned)traversal_data.closest_hit.geometryType : 0;
-  header->w7 = 0;
+  if (!memory_fault) {
+    header->w4 = rtcore_compact_result(
+        reason, RTCORE_COMPLETION_FLAG_TRACE_DONE, completion_seq_low,
+        resume_seq_low, window_tag_low);
+    header->w5 = dispatch_selector;
+    header->w6 =
+        closest_hit ? (unsigned)traversal_data.closest_hit.geometryType : 0;
+    header->w7 = 0;
+  } else {
+    header->w4 = 0;
+    header->w5 = 0;
+    header->w6 = 0;
+    header->w7 = 0;
+  }
 
   if (closest_hit && traversal_data.hit_geometry) {
     header->w8 = rtcore_compact_result(
@@ -8513,6 +8543,21 @@ void rtcore_publish_synthetic_dependent_groups(
   header->w21 = 0;
   header->w22 = 0;
   header->w23 = 0;
+
+  const bool fault_payload_omitted =
+      rtcore_test_memory_fault_payload_omission_enabled();
+  if (memory_fault && !fault_payload_omitted) {
+    header->w16 = rtcore_compact_result(
+        reason, RTCORE_COMPLETION_FLAG_MEMORY_FAULT, completion_seq_low,
+        resume_seq_low, window_tag_low);
+    header->w17 = RTCORE_FAULT_PAYLOAD_MAGIC;
+    header->w18 = RTCORE_FAULT_CODE_TRANSLATION;
+    header->w19 = header->lane_slot_index;
+    header->w20 = completion_seq_low | (resume_seq_low << 16);
+    header->w21 = (unsigned)(header->context_ptr & 0xffffffffu);
+    header->w22 = (unsigned)((header->context_ptr >> 32) & 0xffffffffu);
+    header->w23 = window_tag_low;
+  }
 
   const bool hit_payload_matches_traversal =
       !closest_hit || !traversal_data.hit_geometry ||
@@ -8565,6 +8610,36 @@ void rtcore_publish_synthetic_dependent_groups(
       return;
     }
   }
+
+  if (memory_fault) {
+    const bool payload_valid =
+        (header->w16 & RTCORE_WINDOW_GROUP_VALID) != 0;
+    const bool fault_payload_matches =
+        payload_valid && ((header->w16 & 0xf) == reason) &&
+        (((header->w16 >> 12) & 0xff) == (completion_seq_low & 0xff)) &&
+        (((header->w16 >> 20) & 0xff) == (resume_seq_low & 0xff)) &&
+        (((header->w16 >> 28) & 0x7) == (window_tag_low & 0x7)) &&
+        header->w17 == RTCORE_FAULT_PAYLOAD_MAGIC &&
+        header->w18 == RTCORE_FAULT_CODE_TRANSLATION &&
+        header->w19 == header->lane_slot_index &&
+        header->w20 == (completion_seq_low | (resume_seq_low << 16)) &&
+        header->w21 == (unsigned)(header->context_ptr & 0xffffffffu) &&
+        header->w22 == (unsigned)((header->context_ptr >> 32) & 0xffffffffu) &&
+        header->w23 == window_tag_low;
+    printf("GPGPU-Sim PTX: RT_SUBMIT memory-fault-payload (%s:%u), "
+           "payload_valid=%u, payload_match=%u, fault_code=%u, "
+           "lane_slot_index=%u, context_ptr=0x%llx, "
+           "completion_seq=%u, resume_seq=%u, window_tag=%u, "
+           "w16=0x%08x, w17=0x%08x, w18=0x%08x, w19=0x%08x, "
+           "w20=0x%08x, w21=0x%08x, w22=0x%08x, w23=0x%08x\n",
+           pI->source_file(), pI->source_line(), payload_valid ? 1 : 0,
+           fault_payload_matches ? 1 : 0, RTCORE_FAULT_CODE_TRANSLATION,
+           header->lane_slot_index, header->context_ptr, completion_seq_low,
+           resume_seq_low, window_tag_low, header->w16, header->w17,
+           header->w18, header->w19, header->w20, header->w21, header->w22,
+           header->w23);
+    fflush(stdout);
+  }
 }
 
 bool rtcore_submit_operands_are_valid(unsigned long long context_ptr,
@@ -8580,6 +8655,8 @@ const char *rtcore_return_reason_name(unsigned reason) {
       return "closest_hit";
     case RTCORE_RETURN_FOR_MISS:
       return "miss";
+    case RTCORE_RETURN_FOR_MEMORY_FAULT:
+      return "memory_fault";
     default:
       return "unknown";
   }
@@ -8591,9 +8668,11 @@ bool rtcore_software_lazy_load_synthetic_groups(
     unsigned window_tag_low, unsigned lane_slot_index) {
   const bool known_reason =
       reason == RTCORE_RETURN_FOR_CLOSEST_HIT ||
-      reason == RTCORE_RETURN_FOR_MISS;
+      reason == RTCORE_RETURN_FOR_MISS ||
+      reason == RTCORE_RETURN_FOR_MEMORY_FAULT;
   const bool dispatch_required =
-      known_reason;
+      reason == RTCORE_RETURN_FOR_CLOSEST_HIT ||
+      reason == RTCORE_RETURN_FOR_MISS;
   const bool dispatch_valid =
       !dispatch_required || (window.w4 & RTCORE_WINDOW_GROUP_VALID) != 0;
   const bool dispatch_reason_matches =
@@ -8629,10 +8708,40 @@ bool rtcore_software_lazy_load_synthetic_groups(
   const bool resume_valid = !resume_required;
   const bool resume_seq_matches = !resume_required;
   const bool resume_tag_matches = !resume_required;
+
+  const bool fault_required = reason == RTCORE_RETURN_FOR_MEMORY_FAULT;
+  const bool fault_valid =
+      !fault_required || (window.w16 & RTCORE_WINDOW_GROUP_VALID) != 0;
+  const bool fault_reason_matches =
+      !fault_required || ((window.w16 & 0xf) == reason);
+  const bool fault_seq_matches =
+      !fault_required ||
+      (((window.w16 >> 12) & 0xff) == (completion_seq_low & 0xff) &&
+       (((window.w16 >> 20) & 0xff) == (resume_seq_low & 0xff)));
+  const bool fault_tag_matches =
+      !fault_required || (((window.w16 >> 28) & 0x7) == (window_tag_low & 0x7));
+  const bool fault_payload_magic_matches =
+      !fault_required || window.w17 == RTCORE_FAULT_PAYLOAD_MAGIC;
+  const bool fault_code_matches =
+      !fault_required || window.w18 == RTCORE_FAULT_CODE_TRANSLATION;
+  const bool fault_lane_matches =
+      !fault_required || window.w19 == lane_slot_index;
+  const bool fault_context_matches =
+      !fault_required ||
+      (window.w21 == (unsigned)(window.context_ptr & 0xffffffffu) &&
+       window.w22 == (unsigned)((window.context_ptr >> 32) & 0xffffffffu));
+  const bool fault_payload_matches =
+      !fault_required ||
+      (fault_valid && fault_reason_matches && fault_seq_matches &&
+       fault_tag_matches && fault_payload_magic_matches &&
+       fault_code_matches && fault_lane_matches && fault_context_matches &&
+       window.w20 == (completion_seq_low | (resume_seq_low << 16)) &&
+       window.w23 == window_tag_low);
   const bool resume_reserved =
-      window.w16 == 0 && window.w17 == 0 && window.w18 == 0 &&
-      window.w19 == 0 && window.w20 == 0 && window.w21 == 0 &&
-      window.w22 == 0 && window.w23 == 0;
+      fault_required ||
+      (window.w16 == 0 && window.w17 == 0 && window.w18 == 0 &&
+       window.w19 == 0 && window.w20 == 0 && window.w21 == 0 &&
+       window.w22 == 0 && window.w23 == 0);
 
   const bool accepted =
       known_reason && dispatch_valid && dispatch_reason_matches &&
@@ -8640,7 +8749,9 @@ bool rtcore_software_lazy_load_synthetic_groups(
       dispatch_reserved_matches && dispatch_aux_matches && hit_valid &&
       hit_reason_matches && hit_seq_matches && hit_tag_matches &&
       hit_group_zero_when_unused && resume_valid && resume_seq_matches &&
-      resume_tag_matches && resume_reserved;
+      resume_tag_matches && resume_reserved && fault_valid &&
+      fault_reason_matches && fault_seq_matches && fault_tag_matches &&
+      fault_payload_matches;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT software-lazy-load (%s:%u), "
          "lane_slot_index=%u, reason=%s, dispatch_required=%u, "
@@ -8651,6 +8762,11 @@ bool rtcore_software_lazy_load_synthetic_groups(
          "hit_reason_match=%u, hit_seq_match=%u, hit_tag_match=%u, "
          "hit_unused_zero=%u, resume_required=%u, resume_valid=%u, "
          "resume_seq_match=%u, resume_tag_match=%u, resume_reserved=%u, "
+         "fault_required=%u, fault_valid=%u, fault_reason_match=%u, "
+         "fault_seq_match=%u, fault_tag_match=%u, "
+         "fault_payload_magic_match=%u, fault_code_match=%u, "
+         "fault_lane_match=%u, fault_context_match=%u, "
+         "fault_payload_match=%u, "
          "accepted=%u\n",
          pI->source_file(), pI->source_line(), lane_slot_index,
          rtcore_return_reason_name(reason), dispatch_required ? 1 : 0,
@@ -8662,7 +8778,13 @@ bool rtcore_software_lazy_load_synthetic_groups(
          hit_tag_matches ? 1 : 0, hit_group_zero_when_unused ? 1 : 0,
          resume_required ? 1 : 0, resume_valid ? 1 : 0,
          resume_seq_matches ? 1 : 0, resume_tag_matches ? 1 : 0,
-         resume_reserved ? 1 : 0, accepted ? 1 : 0);
+         resume_reserved ? 1 : 0, fault_required ? 1 : 0,
+         fault_valid ? 1 : 0, fault_reason_matches ? 1 : 0,
+         fault_seq_matches ? 1 : 0, fault_tag_matches ? 1 : 0,
+         fault_payload_magic_matches ? 1 : 0,
+         fault_code_matches ? 1 : 0, fault_lane_matches ? 1 : 0,
+         fault_context_matches ? 1 : 0, fault_payload_matches ? 1 : 0,
+         accepted ? 1 : 0);
   fflush(stdout);
   return accepted;
 }
@@ -8842,11 +8964,18 @@ void rtcore_traversal_completion_adapter_publish(
     thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
   }
 
+  const bool forced_memory_fault =
+      rtcore_test_memory_fault_publication_enabled();
   const unsigned reason =
-      hit_geometry ? RTCORE_RETURN_FOR_CLOSEST_HIT : RTCORE_RETURN_FOR_MISS;
+      forced_memory_fault ? RTCORE_RETURN_FOR_MEMORY_FAULT
+                          : (hit_geometry ? RTCORE_RETURN_FOR_CLOSEST_HIT
+                                          : RTCORE_RETURN_FOR_MISS);
+  const unsigned completion_flags =
+      forced_memory_fault ? RTCORE_COMPLETION_FLAG_MEMORY_FAULT
+                          : RTCORE_COMPLETION_FLAG_TRACE_DONE;
   const unsigned result_word = rtcore_compact_result(
-      reason, RTCORE_COMPLETION_FLAG_TRACE_DONE, completion_seq_low,
-      resume_seq_low, window_tag);
+      reason, completion_flags, completion_seq_low, resume_seq_low,
+      window_tag);
 
   rtcore_synthetic_handoff_header header;
   memset(&header, 0, sizeof(header));
@@ -8856,8 +8985,9 @@ void rtcore_traversal_completion_adapter_publish(
   header.resume_seq = resume_seq_low;
   header.window_tag = window_tag;
   header.w0 = result_word;
-  header.w1 = 1u | (reason << 8) |
-              (RTCORE_COMPLETION_FLAG_TRACE_DONE << 16);
+  header.w1 = rtcore_test_memory_fault_header_omission_enabled()
+                  ? 1u
+                  : (1u | (reason << 8) | (completion_flags << 16));
   header.w2 = completion_seq_low | (resume_seq_low << 16);
   header.w3 = window_tag;
   rtcore_populate_synthetic_owner_tuple(
