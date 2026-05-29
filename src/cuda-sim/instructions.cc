@@ -9583,164 +9583,211 @@ bool rtcore_current_warp_metadata_is_valid(
   return accepted;
 }
 
-// Adapter boundary from functional traversal results to the architectural
-// per-lane result/window/token completion transaction.
-void rtcore_traversal_completion_adapter_publish(
+struct rtcore_traversal_completion_event {
+  rtcore_traversal_completion_event()
+      : warp_metadata(),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        window_generation(0),
+        completion_seq_low(0),
+        resume_seq_low(0),
+        window_tag(0),
+        reason(0),
+        completion_flags(0),
+        result_word(0),
+        has_traversal_data(false),
+        hit_geometry(false) {
+    memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
+    memset(&handoff_key, 0, sizeof(handoff_key));
+    memset(&token_key, 0, sizeof(token_key));
+    memset(&reservation_key, 0, sizeof(reservation_key));
+    memset(&header, 0, sizeof(header));
+  }
+
+  Traversal_data traversal_snapshot;
+  ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+  rtcore_synthetic_handoff_key handoff_key;
+  rtcore_symbolic_rt_token_key token_key;
+  rtcore_symbolic_rt_token_reservation_key reservation_key;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  unsigned window_generation;
+  unsigned completion_seq_low;
+  unsigned resume_seq_low;
+  unsigned window_tag;
+  unsigned reason;
+  unsigned completion_flags;
+  unsigned result_word;
+  rtcore_synthetic_handoff_header header;
+  bool has_traversal_data;
+  bool hit_geometry;
+};
+
+bool rtcore_build_traversal_completion_event(
     const ptx_instruction *pI, ptx_thread_info *thread,
-    const operand_info &result, unsigned long long context_ptr,
-    unsigned long long handoff_window_base) {
-  const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
-  const rtcore_synthetic_handoff_key key =
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index, rtcore_traversal_completion_event *event) {
+  if (event == NULL) {
+    return false;
+  }
+
+  *event = rtcore_traversal_completion_event();
+  event->context_ptr = context_ptr;
+  event->handoff_window_base = handoff_window_base;
+  event->lane_slot_index = lane_slot_index;
+  event->handoff_key =
       rtcore_make_synthetic_handoff_key(handoff_window_base, lane_slot_index,
                                         thread);
-  const rtcore_symbolic_rt_token_key token_key =
+  event->token_key =
       rtcore_make_symbolic_rt_token_key(context_ptr, handoff_window_base,
                                         lane_slot_index, thread);
-  ptx_thread_info::rtcore_current_warp_metadata current_warp_metadata;
-  thread->get_rtcore_current_warp_metadata(&current_warp_metadata);
+  thread->get_rtcore_current_warp_metadata(&event->warp_metadata);
   if (!rtcore_current_warp_metadata_is_valid(
-          "RT_SUBMIT", pI, thread, &current_warp_metadata, lane_slot_index)) {
-    inst_not_implemented(pI);
-    return;
+          "RT_SUBMIT", pI, thread, &event->warp_metadata, lane_slot_index)) {
+    return false;
   }
-  const unsigned window_generation =
-      rtcore_peek_next_synthetic_window_generation(key);
-  const unsigned completion_seq_low =
-      rtcore_synthetic_completion_seq_for_generation(window_generation);
-  const unsigned resume_seq_low = 0;
-  const unsigned window_tag =
-      rtcore_synthetic_window_tag_for_generation(window_generation);
+  event->reservation_key = rtcore_make_symbolic_rt_token_reservation_key(
+      event->warp_metadata, context_ptr, handoff_window_base);
+  event->window_generation =
+      rtcore_peek_next_synthetic_window_generation(event->handoff_key);
+  event->completion_seq_low =
+      rtcore_synthetic_completion_seq_for_generation(event->window_generation);
+  event->resume_seq_low = 0;
+  event->window_tag =
+      rtcore_synthetic_window_tag_for_generation(event->window_generation);
 
   memory_space *mem = thread->get_global_memory();
-  Traversal_data traversal_data;
-  memset(&traversal_data, 0, sizeof(traversal_data));
-  const bool has_traversal_data =
+  event->has_traversal_data =
       !thread->RT_thread_data->traversal_data.empty();
-  bool hit_geometry = false;
-  if (has_traversal_data) {
+  if (event->has_traversal_data) {
     Traversal_data *device_traversal_data =
         thread->RT_thread_data->traversal_data.back();
-    mem->read((mem_addr_t)device_traversal_data, sizeof(traversal_data),
-              &traversal_data);
-    hit_geometry = traversal_data.hit_geometry;
+    mem->read((mem_addr_t)device_traversal_data,
+              sizeof(event->traversal_snapshot),
+              &event->traversal_snapshot);
+    event->hit_geometry = event->traversal_snapshot.hit_geometry;
   } else {
-    traversal_data.hit_geometry = false;
-    traversal_data.current_shader_counter = -1;
-    traversal_data.current_shader_type = -1;
-    traversal_data.missIndex = 0;
+    event->traversal_snapshot.hit_geometry = false;
+    event->traversal_snapshot.current_shader_counter = -1;
+    event->traversal_snapshot.current_shader_type = -1;
+    event->traversal_snapshot.missIndex = 0;
 
     Traversal_data *device_traversal_data =
         (Traversal_data *)VulkanRayTracing::gpgpusim_alloc(
             sizeof(Traversal_data));
     mem->write((mem_addr_t)device_traversal_data, sizeof(Traversal_data),
-               &traversal_data, thread, pI);
+               &event->traversal_snapshot, thread, pI);
     thread->RT_thread_data->all_hit_data.clear();
     thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
   }
 
   const bool forced_memory_fault =
       rtcore_test_memory_fault_publication_enabled();
-  const unsigned reason =
-      forced_memory_fault ? RTCORE_RETURN_FOR_MEMORY_FAULT
-                          : (hit_geometry ? RTCORE_RETURN_FOR_CLOSEST_HIT
-                                          : RTCORE_RETURN_FOR_MISS);
-  const unsigned completion_flags =
+  event->reason =
+      forced_memory_fault
+          ? RTCORE_RETURN_FOR_MEMORY_FAULT
+          : (event->hit_geometry ? RTCORE_RETURN_FOR_CLOSEST_HIT
+                                 : RTCORE_RETURN_FOR_MISS);
+  event->completion_flags =
       forced_memory_fault ? RTCORE_COMPLETION_FLAG_MEMORY_FAULT
                           : RTCORE_COMPLETION_FLAG_TRACE_DONE;
-  const unsigned result_word = rtcore_compact_result(
-      reason, completion_flags, completion_seq_low, resume_seq_low,
-      window_tag);
+  event->result_word = rtcore_compact_result(
+      event->reason, event->completion_flags, event->completion_seq_low,
+      event->resume_seq_low, event->window_tag);
 
-  rtcore_synthetic_handoff_header header;
-  memset(&header, 0, sizeof(header));
-  header.context_ptr = context_ptr;
-  header.window_generation = window_generation;
-  header.completion_seq = completion_seq_low;
-  header.resume_seq = resume_seq_low;
-  header.window_tag = window_tag;
-  header.w0 = result_word;
-  header.w1 = rtcore_test_memory_fault_header_omission_enabled()
-                  ? 1u
-                  : (1u | (reason << 8) | (completion_flags << 16));
-  header.w2 = completion_seq_low | (resume_seq_low << 16);
-  header.w3 = window_tag;
+  memset(&event->header, 0, sizeof(event->header));
+  event->header.context_ptr = event->context_ptr;
+  event->header.window_generation = event->window_generation;
+  event->header.completion_seq = event->completion_seq_low;
+  event->header.resume_seq = event->resume_seq_low;
+  event->header.window_tag = event->window_tag;
+  event->header.w0 = event->result_word;
+  event->header.w1 = rtcore_test_memory_fault_header_omission_enabled()
+                         ? 1u
+                         : (1u | (event->reason << 8) |
+                            (event->completion_flags << 16));
+  event->header.w2 = event->completion_seq_low |
+                     (event->resume_seq_low << 16);
+  event->header.w3 = event->window_tag;
   rtcore_populate_synthetic_owner_tuple(
-      &header, key, thread, current_warp_metadata.active_mask);
+      &event->header, event->handoff_key, thread,
+      event->warp_metadata.active_mask);
   rtcore_publish_synthetic_dependent_groups(
-      pI, traversal_data, reason, completion_seq_low, resume_seq_low,
-      window_tag, &header);
-  if (!rtcore_synthetic_result_lane_binding_matches(
-          pI, key, header, context_ptr, result_word)) {
-    inst_not_implemented(pI);
-    return;
-  }
+      pI, event->traversal_snapshot, event->reason,
+      event->completion_seq_low, event->resume_seq_low, event->window_tag,
+      &event->header);
+  return rtcore_synthetic_result_lane_binding_matches(
+      pI, event->handoff_key, event->header, event->context_ptr,
+      event->result_word);
+}
+
+bool rtcore_materialize_traversal_completion_lane_transaction(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    const operand_info &result,
+    const rtcore_traversal_completion_event &event) {
   if (!rtcore_acquire_symbolic_rt_token(
-          pI, token_key, window_generation, completion_seq_low,
-          resume_seq_low, window_tag, result_word)) {
-    inst_not_implemented(pI);
-    return;
+          pI, event.token_key, event.window_generation,
+          event.completion_seq_low, event.resume_seq_low, event.window_tag,
+          event.result_word)) {
+    return false;
   }
-  const rtcore_symbolic_rt_token_reservation_key reservation_key =
-      rtcore_make_symbolic_rt_token_reservation_key(
-          current_warp_metadata, context_ptr, handoff_window_base);
   if (rtcore_test_fail_after_token_acquire_enabled()) {
     rtcore_rollback_symbolic_submit_after_token_acquire(
-        pI, token_key, reservation_key, key);
-    inst_not_implemented(pI);
-    return;
+        pI, event.token_key, event.reservation_key, event.handoff_key);
+    return false;
   }
   if (!rtcore_note_symbolic_rt_token_reservation_lane_acquired(
-          pI, reservation_key, lane_slot_index)) {
-    inst_not_implemented(pI);
-    return;
+          pI, event.reservation_key, event.lane_slot_index)) {
+    return false;
   }
-  rtcore_publish_synthetic_handoff_window(pI, key, header);
+  rtcore_publish_synthetic_handoff_window(
+      pI, event.handoff_key, event.header);
   if (rtcore_test_fail_after_handoff_publish_enabled()) {
     rtcore_rollback_symbolic_submit_after_handoff_publish(
-        pI, token_key, reservation_key, key);
-    inst_not_implemented(pI);
-    return;
+        pI, event.token_key, event.reservation_key, event.handoff_key);
+    return false;
   }
 
   ptx_reg_t result_data;
-  result_data.u32 = result_word;
+  result_data.u32 = event.result_word;
   thread->set_operand_value(result, result_data, U32_TYPE, thread, pI);
   if (rtcore_test_fail_after_result_write_enabled()) {
     rtcore_rollback_symbolic_submit_after_result_write(
-        pI, token_key, reservation_key, key);
-    inst_not_implemented(pI);
-    return;
+        pI, event.token_key, event.reservation_key, event.handoff_key);
+    return false;
   }
 
-  if (!rtcore_software_acquire_synthetic_completion(
-          pI, context_ptr, handoff_window_base, lane_slot_index, result_word,
-          thread)) {
-    inst_not_implemented(pI);
-    return;
-  }
+  return rtcore_software_acquire_synthetic_completion(
+      pI, event.context_ptr, event.handoff_window_base,
+      event.lane_slot_index, event.result_word, thread);
+}
 
+bool rtcore_publish_or_enqueue_traversal_completion_event(
+    const ptx_instruction *pI,
+    const rtcore_traversal_completion_event &event) {
   bool adapter_claim_accepted = false;
   if (rtcore_delayed_traversal_completion_enabled()) {
     adapter_claim_accepted = rtcore_enqueue_pending_traversal_completion(
-        current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
-        current_warp_metadata.owner_hw_sid, current_warp_metadata.active_mask,
-        current_warp_metadata.static_inst_uid, lane_slot_index,
-        rtcore_lane_thread_mask(lane_slot_index), context_ptr,
-        handoff_window_base, result_word, window_generation,
-        completion_seq_low, resume_seq_low, window_tag, reason,
-        traversal_data);
+        event.warp_metadata.warp_uid, event.warp_metadata.warp_id,
+        event.warp_metadata.owner_hw_sid, event.warp_metadata.active_mask,
+        event.warp_metadata.static_inst_uid, event.lane_slot_index,
+        rtcore_lane_thread_mask(event.lane_slot_index), event.context_ptr,
+        event.handoff_window_base, event.result_word, event.window_generation,
+        event.completion_seq_low, event.resume_seq_low, event.window_tag,
+        event.reason, event.traversal_snapshot);
   } else if (rtcore_test_adapter_claim_failure_enabled()) {
     adapter_claim_accepted = false;
   } else {
     const unsigned adapter_node_visits =
-        traversal_data.rtcore_node_visits;
+        event.traversal_snapshot.rtcore_node_visits;
     const unsigned adapter_primitive_tests =
-        traversal_data.rtcore_primitive_tests;
+        event.traversal_snapshot.rtcore_primitive_tests;
     adapter_claim_accepted = rtcore_publish_adapter_completion(
-        current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
-        current_warp_metadata.owner_hw_sid,
-        current_warp_metadata.active_mask,
-        current_warp_metadata.static_inst_uid, lane_slot_index,
+        event.warp_metadata.warp_uid, event.warp_metadata.warp_id,
+        event.warp_metadata.owner_hw_sid, event.warp_metadata.active_mask,
+        event.warp_metadata.static_inst_uid, event.lane_slot_index,
         adapter_node_visits, adapter_primitive_tests);
   }
 
@@ -9752,21 +9799,51 @@ void rtcore_traversal_completion_adapter_publish(
            "remaining_windows=%zu, remaining_tokens=%zu, "
            "remaining_reservations=%zu, remaining_allocator_live=%zu, "
            "consumed=0\n",
-           pI->source_file(), pI->source_line(), context_ptr,
-           handoff_window_base, lane_slot_index,
+           pI->source_file(), pI->source_line(), event.context_ptr,
+           event.handoff_window_base, event.lane_slot_index,
            adapter_claim_accepted ? 1 : 0,
            rtcore_synthetic_handoff_window_count(),
            rtcore_symbolic_rt_token_count(),
            rtcore_symbolic_rt_token_reservation_count(),
            rtcore_symbolic_rt_token_allocator_live_count());
     fflush(stdout);
+    return false;
+  }
+  return true;
+}
+
+bool rtcore_complete_traversal_completion_event_token(
+    const ptx_instruction *pI,
+    const rtcore_traversal_completion_event &event) {
+  return rtcore_complete_symbolic_rt_token(
+      pI, event.token_key, event.result_word, event.completion_seq_low,
+      event.resume_seq_low, event.window_tag);
+}
+
+// Adapter boundary from functional traversal results to the architectural
+// per-lane result/window/token completion transaction.
+void rtcore_traversal_completion_adapter_publish(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    const operand_info &result, unsigned long long context_ptr,
+    unsigned long long handoff_window_base) {
+  const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
+  rtcore_traversal_completion_event event;
+  if (!rtcore_build_traversal_completion_event(
+          pI, thread, context_ptr, handoff_window_base, lane_slot_index,
+          &event)) {
     inst_not_implemented(pI);
     return;
   }
-
-  if (!rtcore_complete_symbolic_rt_token(
-          pI, token_key, result_word, completion_seq_low, resume_seq_low,
-          window_tag)) {
+  if (!rtcore_materialize_traversal_completion_lane_transaction(
+          pI, thread, result, event)) {
+    inst_not_implemented(pI);
+    return;
+  }
+  if (!rtcore_publish_or_enqueue_traversal_completion_event(pI, event)) {
+    inst_not_implemented(pI);
+    return;
+  }
+  if (!rtcore_complete_traversal_completion_event_token(pI, event)) {
     inst_not_implemented(pI);
     return;
   }
@@ -9776,12 +9853,14 @@ void rtcore_traversal_completion_adapter_publish(
          "lane_slot_index=%u, reason=%s, has_traversal=%u, hit_geometry=%u, "
          "result=0x%08x, w0=0x%08x, w1=0x%08x, w2=0x%08x, w3=0x%08x, "
          "node_visits=%u, primitive_tests=%u\n",
-         pI->source_file(), pI->source_line(), context_ptr,
-         handoff_window_base, lane_slot_index, rtcore_return_reason_name(reason),
-         has_traversal_data ? 1 : 0, hit_geometry ? 1 : 0, result_word,
-         header.w0, header.w1, header.w2, header.w3,
-         traversal_data.rtcore_node_visits,
-         traversal_data.rtcore_primitive_tests);
+         pI->source_file(), pI->source_line(), event.context_ptr,
+         event.handoff_window_base, event.lane_slot_index,
+         rtcore_return_reason_name(event.reason),
+         event.has_traversal_data ? 1 : 0, event.hit_geometry ? 1 : 0,
+         event.result_word, event.header.w0, event.header.w1,
+         event.header.w2, event.header.w3,
+         event.traversal_snapshot.rtcore_node_visits,
+         event.traversal_snapshot.rtcore_primitive_tests);
   fflush(stdout);
 }
 
