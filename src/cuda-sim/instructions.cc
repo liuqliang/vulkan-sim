@@ -7383,57 +7383,6 @@ extern "C" bool rtcore_publish_adapter_completion(
   return accepted;
 }
 
-static bool rtcore_enqueue_pending_traversal_completion(
-    unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
-    unsigned active_mask, unsigned static_inst_uid, unsigned lane_slot_index,
-    unsigned lane_thread_mask, unsigned long long context_ptr,
-    unsigned long long handoff_window_base, unsigned result_word,
-    unsigned window_generation, unsigned completion_seq_low,
-    unsigned resume_seq_low, unsigned window_tag, unsigned reason,
-    const Traversal_data &traversal_snapshot) {
-  if (rtcore_test_adapter_claim_failure_enabled()) {
-    return false;
-  }
-  const std::pair<unsigned, unsigned> key =
-      std::make_pair(warp_uid, lane_slot_index);
-  rtcore_pending_traversal_completion &record =
-      g_rtcore_pending_traversal_completions[key];
-  record.valid = true;
-  record.warp_uid = warp_uid;
-  record.warp_id = warp_id;
-  record.owner_hw_sid = owner_hw_sid;
-  record.active_mask = active_mask;
-  record.static_inst_uid = static_inst_uid;
-  record.lane_slot_index = lane_slot_index;
-  record.lane_thread_mask = lane_thread_mask;
-  record.context_ptr = context_ptr;
-  record.handoff_window_base = handoff_window_base;
-  record.result_word = result_word;
-  record.window_generation = window_generation;
-  record.completion_seq_low = completion_seq_low;
-  record.resume_seq_low = resume_seq_low;
-  record.window_tag = window_tag;
-  record.reason = reason;
-  record.traversal_snapshot = traversal_snapshot;
-  const bool test_metadata_mismatch =
-      rtcore_test_delayed_completion_metadata_mismatch_enabled();
-  if (test_metadata_mismatch) {
-    record.owner_hw_sid = owner_hw_sid + 1;
-  }
-
-  printf("GPGPU-Sim PTX: RT_SUBMIT delayed-completion-enqueue, "
-         "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, active_mask=0x%08x, "
-         "static_inst_uid=%u, lane_slot_index=%u, "
-         "lane_thread_mask=0x%08x, context_ptr=0x%llx, "
-         "handoff_window_base=0x%llx, result=0x%08x, "
-         "completion_seq=%u, resume_seq=%u, window_tag=%u, reason=%u\n",
-         warp_uid, warp_id, owner_hw_sid, active_mask, static_inst_uid,
-         lane_slot_index, lane_thread_mask, context_ptr, handoff_window_base,
-         result_word, completion_seq_low, resume_seq_low, window_tag, reason);
-  fflush(stdout);
-  return true;
-}
-
 extern "C" bool rtcore_service_pending_traversal_completion(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     unsigned issued_active_mask) {
@@ -9625,6 +9574,65 @@ struct rtcore_traversal_completion_event {
   bool hit_geometry;
 };
 
+rtcore_pending_traversal_completion
+rtcore_make_pending_traversal_completion_from_event(
+    const rtcore_traversal_completion_event &event) {
+  rtcore_pending_traversal_completion record;
+  record.valid = true;
+  record.warp_uid = event.warp_metadata.warp_uid;
+  record.warp_id = event.warp_metadata.warp_id;
+  record.owner_hw_sid = event.warp_metadata.owner_hw_sid;
+  record.active_mask = event.warp_metadata.active_mask;
+  record.static_inst_uid = event.warp_metadata.static_inst_uid;
+  record.lane_slot_index = event.lane_slot_index;
+  record.lane_thread_mask =
+      rtcore_lane_thread_mask(event.lane_slot_index);
+  record.context_ptr = event.context_ptr;
+  record.handoff_window_base = event.handoff_window_base;
+  record.result_word = event.result_word;
+  record.window_generation = event.window_generation;
+  record.completion_seq_low = event.completion_seq_low;
+  record.resume_seq_low = event.resume_seq_low;
+  record.window_tag = event.window_tag;
+  record.reason = event.reason;
+  record.traversal_snapshot = event.traversal_snapshot;
+  return record;
+}
+
+static bool rtcore_enqueue_pending_traversal_completion(
+    const rtcore_traversal_completion_event &event) {
+  if (rtcore_test_adapter_claim_failure_enabled()) {
+    return false;
+  }
+
+  rtcore_pending_traversal_completion record =
+      rtcore_make_pending_traversal_completion_from_event(event);
+  const bool test_metadata_mismatch =
+      rtcore_test_delayed_completion_metadata_mismatch_enabled();
+  if (test_metadata_mismatch) {
+    record.owner_hw_sid = event.warp_metadata.owner_hw_sid + 1;
+  }
+
+  const std::pair<unsigned, unsigned> key =
+      std::make_pair(record.warp_uid, record.lane_slot_index);
+  g_rtcore_pending_traversal_completions[key] = record;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT delayed-completion-enqueue, "
+         "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, active_mask=0x%08x, "
+         "static_inst_uid=%u, lane_slot_index=%u, "
+         "lane_thread_mask=0x%08x, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, result=0x%08x, "
+         "completion_seq=%u, resume_seq=%u, window_tag=%u, reason=%u\n",
+         record.warp_uid, record.warp_id, record.owner_hw_sid,
+         record.active_mask, record.static_inst_uid,
+         record.lane_slot_index, record.lane_thread_mask,
+         record.context_ptr, record.handoff_window_base,
+         record.result_word, record.completion_seq_low,
+         record.resume_seq_low, record.window_tag, record.reason);
+  fflush(stdout);
+  return true;
+}
+
 bool rtcore_build_traversal_completion_event(
     const ptx_instruction *pI, ptx_thread_info *thread,
     unsigned long long context_ptr, unsigned long long handoff_window_base,
@@ -9769,14 +9777,8 @@ bool rtcore_publish_or_enqueue_traversal_completion_event(
     const rtcore_traversal_completion_event &event) {
   bool adapter_claim_accepted = false;
   if (rtcore_delayed_traversal_completion_enabled()) {
-    adapter_claim_accepted = rtcore_enqueue_pending_traversal_completion(
-        event.warp_metadata.warp_uid, event.warp_metadata.warp_id,
-        event.warp_metadata.owner_hw_sid, event.warp_metadata.active_mask,
-        event.warp_metadata.static_inst_uid, event.lane_slot_index,
-        rtcore_lane_thread_mask(event.lane_slot_index), event.context_ptr,
-        event.handoff_window_base, event.result_word, event.window_generation,
-        event.completion_seq_low, event.resume_seq_low, event.window_tag,
-        event.reason, event.traversal_snapshot);
+    adapter_claim_accepted =
+        rtcore_enqueue_pending_traversal_completion(event);
   } else if (rtcore_test_adapter_claim_failure_enabled()) {
     adapter_claim_accepted = false;
   } else {
