@@ -7282,6 +7282,12 @@ static bool rtcore_test_delayed_completion_metadata_mismatch_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool rtcore_test_adapter_claim_failure_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_ADAPTER_CLAIM_FAILURE");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
 struct rtcore_pending_traversal_completion {
   rtcore_pending_traversal_completion()
       : valid(false),
@@ -7377,7 +7383,7 @@ extern "C" bool rtcore_publish_adapter_completion(
   return accepted;
 }
 
-static void rtcore_enqueue_pending_traversal_completion(
+static bool rtcore_enqueue_pending_traversal_completion(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     unsigned active_mask, unsigned static_inst_uid, unsigned lane_slot_index,
     unsigned lane_thread_mask, unsigned long long context_ptr,
@@ -7385,6 +7391,9 @@ static void rtcore_enqueue_pending_traversal_completion(
     unsigned window_generation, unsigned completion_seq_low,
     unsigned resume_seq_low, unsigned window_tag, unsigned reason,
     const Traversal_data &traversal_snapshot) {
+  if (rtcore_test_adapter_claim_failure_enabled()) {
+    return false;
+  }
   const std::pair<unsigned, unsigned> key =
       std::make_pair(warp_uid, lane_slot_index);
   rtcore_pending_traversal_completion &record =
@@ -7422,6 +7431,7 @@ static void rtcore_enqueue_pending_traversal_completion(
          lane_slot_index, lane_thread_mask, context_ptr, handoff_window_base,
          result_word, completion_seq_low, resume_seq_low, window_tag, reason);
   fflush(stdout);
+  return true;
 }
 
 extern "C" bool rtcore_service_pending_traversal_completion(
@@ -9604,14 +9614,9 @@ void rtcore_traversal_completion_adapter_publish(
     return;
   }
 
-  if (!rtcore_complete_symbolic_rt_token(
-          pI, token_key, result_word, completion_seq_low, resume_seq_low,
-          window_tag)) {
-    inst_not_implemented(pI);
-    return;
-  }
+  bool adapter_claim_accepted = false;
   if (rtcore_delayed_traversal_completion_enabled()) {
-    rtcore_enqueue_pending_traversal_completion(
+    adapter_claim_accepted = rtcore_enqueue_pending_traversal_completion(
         current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
         current_warp_metadata.owner_hw_sid, current_warp_metadata.active_mask,
         current_warp_metadata.static_inst_uid, lane_slot_index,
@@ -9619,20 +9624,46 @@ void rtcore_traversal_completion_adapter_publish(
         handoff_window_base, result_word, window_generation,
         completion_seq_low, resume_seq_low, window_tag, reason,
         traversal_data);
+  } else if (rtcore_test_adapter_claim_failure_enabled()) {
+    adapter_claim_accepted = false;
   } else {
     const unsigned adapter_node_visits =
         traversal_data.rtcore_node_visits;
     const unsigned adapter_primitive_tests =
         traversal_data.rtcore_primitive_tests;
-    if (!rtcore_publish_adapter_completion(
-            current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
-            current_warp_metadata.owner_hw_sid,
-            current_warp_metadata.active_mask,
-            current_warp_metadata.static_inst_uid, lane_slot_index,
-            adapter_node_visits, adapter_primitive_tests)) {
-      inst_not_implemented(pI);
-      return;
-    }
+    adapter_claim_accepted = rtcore_publish_adapter_completion(
+        current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
+        current_warp_metadata.owner_hw_sid,
+        current_warp_metadata.active_mask,
+        current_warp_metadata.static_inst_uid, lane_slot_index,
+        adapter_node_visits, adapter_primitive_tests);
+  }
+
+  if (!adapter_claim_accepted) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=RT_TOKEN_ADAPTER_CLAIM_FAILED, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "adapter_claim_accepted=%u, completed_token=0, "
+           "remaining_windows=%zu, remaining_tokens=%zu, "
+           "remaining_reservations=%zu, remaining_allocator_live=%zu, "
+           "consumed=0\n",
+           pI->source_file(), pI->source_line(), context_ptr,
+           handoff_window_base, lane_slot_index,
+           adapter_claim_accepted ? 1 : 0,
+           rtcore_synthetic_handoff_window_count(),
+           rtcore_symbolic_rt_token_count(),
+           rtcore_symbolic_rt_token_reservation_count(),
+           rtcore_symbolic_rt_token_allocator_live_count());
+    fflush(stdout);
+    inst_not_implemented(pI);
+    return;
+  }
+
+  if (!rtcore_complete_symbolic_rt_token(
+          pI, token_key, result_word, completion_seq_low, resume_seq_low,
+          window_tag)) {
+    inst_not_implemented(pI);
+    return;
   }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT traversal-complete (%s:%u), "
