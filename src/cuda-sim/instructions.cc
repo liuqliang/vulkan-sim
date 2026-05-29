@@ -7550,14 +7550,31 @@ static rtcore_adapter_completion_claim_status rtcore_query_adapter_completion_st
   return status;
 }
 
-extern "C" bool rtcore_claim_adapter_completion(
+static void rtcore_fill_adapter_completion_claim_snapshot(
+    const rtcore_adapter_completion_claim_status &status,
+    rtcore_adapter_completion_claim_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->found = status.found;
+  snapshot->metadata_match = status.metadata_match;
+  snapshot->lanes_complete = status.lanes_complete;
+  snapshot->accepted = status.accepted;
+  snapshot->active_mask = status.active_mask;
+  snapshot->completed_lane_mask = status.completed_lane_mask;
+  snapshot->static_inst_uid = status.static_inst_uid;
+  snapshot->max_node_visits = status.max_node_visits;
+  snapshot->max_primitive_tests = status.max_primitive_tests;
+  snapshot->reject_reason = status.reject_reason;
+}
+
+extern "C" bool rtcore_claim_adapter_completion_snapshot(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
-    unsigned *active_mask, unsigned *completed_lane_mask,
-    unsigned *static_inst_uid, unsigned *max_node_visits,
-    unsigned *max_primitive_tests) {
+    rtcore_adapter_completion_claim_snapshot *snapshot) {
   rtcore_adapter_completion_claim_status status =
       rtcore_query_adapter_completion_status_internal(
           warp_uid, warp_id, owner_hw_sid);
+  rtcore_fill_adapter_completion_claim_snapshot(status, snapshot);
   if (!status.found) {
     printf("GPGPU-Sim PTX: RT-unit adapter-completion-claim, "
            "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, found=0, "
@@ -7575,21 +7592,6 @@ extern "C" bool rtcore_claim_adapter_completion(
   }
 
   if (status.accepted) {
-    if (active_mask != NULL) {
-      *active_mask = status.active_mask;
-    }
-    if (completed_lane_mask != NULL) {
-      *completed_lane_mask = status.completed_lane_mask;
-    }
-    if (static_inst_uid != NULL) {
-      *static_inst_uid = status.static_inst_uid;
-    }
-    if (max_node_visits != NULL) {
-      *max_node_visits = status.max_node_visits;
-    }
-    if (max_primitive_tests != NULL) {
-      *max_primitive_tests = status.max_primitive_tests;
-    }
     g_rtcore_adapter_completions.erase(warp_uid);
   }
 
@@ -7606,6 +7608,34 @@ extern "C" bool rtcore_claim_adapter_completion(
          status.accepted ? 1 : 0, status.reject_reason);
   fflush(stdout);
   return status.accepted;
+}
+
+extern "C" bool rtcore_claim_adapter_completion(
+    unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
+    unsigned *active_mask, unsigned *completed_lane_mask,
+    unsigned *static_inst_uid, unsigned *max_node_visits,
+    unsigned *max_primitive_tests) {
+  rtcore_adapter_completion_claim_snapshot snapshot;
+  const bool accepted = rtcore_claim_adapter_completion_snapshot(
+      warp_uid, warp_id, owner_hw_sid, &snapshot);
+  if (accepted) {
+    if (active_mask != NULL) {
+      *active_mask = snapshot.active_mask;
+    }
+    if (completed_lane_mask != NULL) {
+      *completed_lane_mask = snapshot.completed_lane_mask;
+    }
+    if (static_inst_uid != NULL) {
+      *static_inst_uid = snapshot.static_inst_uid;
+    }
+    if (max_node_visits != NULL) {
+      *max_node_visits = snapshot.max_node_visits;
+    }
+    if (max_primitive_tests != NULL) {
+      *max_primitive_tests = snapshot.max_primitive_tests;
+    }
+  }
+  return accepted;
 }
 
 namespace {

@@ -3086,6 +3086,10 @@ extern "C" bool rtcore_claim_adapter_completion(
     unsigned *static_inst_uid, unsigned *max_node_visits,
     unsigned *max_primitive_tests);
 
+extern "C" bool rtcore_claim_adapter_completion_snapshot(
+    unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
+    rtcore_adapter_completion_claim_snapshot *snapshot);
+
 bool rt_unit::claim_adapter_completion_for_issue(
     rtcore_synthetic_completion_event *event) {
   if (event == NULL) {
@@ -3098,10 +3102,10 @@ bool rt_unit::claim_adapter_completion_for_issue(
   const bool serviced_delayed_completion =
       rtcore_service_pending_traversal_completion(
           event->warp_uid, event->warp_id, m_sid, event->issued_active_mask);
-  event->adapter_completion_claimed = rtcore_claim_adapter_completion(
-      event->warp_uid, event->warp_id, m_sid, &event->adapter_active_mask,
-      &event->adapter_completed_lane_mask, &event->adapter_static_inst_uid,
-      &event->adapter_max_node_visits, &event->adapter_max_primitive_tests);
+  rtcore_adapter_completion_claim_snapshot claim_snapshot;
+  rtcore_claim_adapter_completion_snapshot(event->warp_uid, event->warp_id,
+                                           m_sid, &claim_snapshot);
+  event->adapter_completion_claimed = claim_snapshot.accepted;
   if (!event->adapter_completion_claimed) {
     if (serviced_delayed_completion &&
         rtcore_test_delayed_completion_metadata_mismatch_enabled()) {
@@ -3125,6 +3129,12 @@ bool rt_unit::claim_adapter_completion_for_issue(
     }
     return false;
   }
+
+  event->adapter_active_mask = claim_snapshot.active_mask;
+  event->adapter_completed_lane_mask = claim_snapshot.completed_lane_mask;
+  event->adapter_static_inst_uid = claim_snapshot.static_inst_uid;
+  event->adapter_max_node_visits = claim_snapshot.max_node_visits;
+  event->adapter_max_primitive_tests = claim_snapshot.max_primitive_tests;
 
   const bool test_adapter_mask_mismatch =
       rtcore_test_adapter_mask_mismatch_enabled();

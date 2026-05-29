@@ -1278,6 +1278,30 @@ class shader_memory_interface;
 class shader_core_mem_fetch_allocator;
 class cache_t;
 
+struct rtcore_adapter_completion_claim_snapshot {
+  rtcore_adapter_completion_claim_snapshot()
+      : found(false),
+        metadata_match(false),
+        lanes_complete(false),
+        accepted(false),
+        active_mask(0),
+        completed_lane_mask(0),
+        static_inst_uid(0),
+        max_node_visits(0),
+        max_primitive_tests(0),
+        reject_reason("missing_record") {}
+
+  bool found;
+  bool metadata_match;
+  bool lanes_complete;
+  bool accepted;
+  unsigned active_mask;
+  unsigned completed_lane_mask;
+  unsigned static_inst_uid;
+  unsigned max_node_visits;
+  unsigned max_primitive_tests;
+  const char *reject_reason;
+};
 
 class rt_unit : public pipelined_simd_unit {
     public:
