@@ -1332,6 +1332,11 @@ class rt_unit : public pipelined_simd_unit {
         unsigned completion_latency;
       };
       unsigned rtcore_synthetic_completion_latency() const;
+      unsigned rtcore_completion_queue_capacity() const;
+      unsigned rtcore_completion_queue_inflight() const;
+      void rtcore_record_completion_queue_enqueue(const warp_inst_t &inst);
+      void rtcore_record_completion_queue_retire(const warp_inst_t &inst);
+      bool rtcore_completion_queue_has_capacity(const warp_inst_t &inst) const;
       bool rtcore_stats_completion_latency_enabled() const;
       unsigned rtcore_stats_latency_base() const;
       unsigned rtcore_stats_node_cost() const;
