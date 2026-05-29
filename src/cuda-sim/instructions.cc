@@ -9622,7 +9622,8 @@ enum rtcore_traversal_source_provider {
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_DEFAULT_MISS = 4,
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STATS_MISS = 5,
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_LANE_STATS_MISS = 6,
-  RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED = 7
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_STUB = 7,
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED = 8
 };
 
 static const char *rtcore_traversal_source_provider_name(
@@ -9642,6 +9643,8 @@ static const char *rtcore_traversal_source_provider_name(
       return "rtcore_stats_miss";
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_LANE_STATS_MISS:
       return "rtcore_lane_stats_miss";
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_STUB:
+      return "rtcore_custom_stub";
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
     default:
       return "unsupported";
@@ -9679,6 +9682,10 @@ rtcore_select_traversal_source_provider() {
   if (strcmp(value, "rtcore_lane_stats_miss") == 0 ||
       strcmp(value, "rtcore_per_lane_stats_miss") == 0) {
     return RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_LANE_STATS_MISS;
+  }
+  if (strcmp(value, "rtcore_custom_stub") == 0 ||
+      strcmp(value, "rtcore_backend_stub") == 0) {
+    return RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_STUB;
   }
   return RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED;
 }
@@ -10031,6 +10038,28 @@ rtcore_make_rtcore_lane_stats_miss_traversal_provider_response(
 }
 
 static rtcore_traversal_provider_response
+rtcore_invoke_custom_rtcore_backend_stub(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_traversal_provider_response response;
+  response.provider = descriptor.provider;
+  response.provider_supported = false;
+  response.provider_accepted = false;
+  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED;
+  printf("GPGPU-Sim PTX: RT_SUBMIT custom-rtcore-backend-stub, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "custom-rtcore-backend-stub-invoked=1, "
+         "custom-rtcore-backend-stub-supported=0, "
+         "custom-rtcore-backend-stub-accepted=0\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
+         descriptor.warp_metadata.active_mask);
+  fflush(stdout);
+  return response;
+}
+
+static rtcore_traversal_provider_response
 rtcore_invoke_rtcore_provider_bridge(
     const rtcore_traversal_work_descriptor &descriptor) {
   printf("GPGPU-Sim PTX: RT_SUBMIT rtcore-provider-bridge-invoke, "
@@ -10068,6 +10097,9 @@ rtcore_invoke_rtcore_provider_bridge(
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_LANE_STATS_MISS:
       response = rtcore_make_rtcore_lane_stats_miss_traversal_provider_response(
           descriptor);
+      break;
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_STUB:
+      response = rtcore_invoke_custom_rtcore_backend_stub(descriptor);
       break;
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL:
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
@@ -10136,7 +10168,8 @@ rtcore_make_traversal_provider_response(
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_EMPTY:
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_DEFAULT_MISS:
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STATS_MISS:
-    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_LANE_STATS_MISS: {
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_LANE_STATS_MISS:
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_STUB: {
       rtcore_traversal_work_descriptor descriptor =
           rtcore_make_traversal_work_descriptor(request);
       return rtcore_invoke_rtcore_provider_bridge(descriptor);
