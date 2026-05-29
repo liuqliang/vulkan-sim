@@ -9757,6 +9757,7 @@ struct rtcore_traversal_source_snapshot {
   rtcore_traversal_source_snapshot()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
         provider_supported(true),
+        provider_accepted(true),
         reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE),
         has_traversal_data(false),
         initialized_default_miss(false),
@@ -9766,6 +9767,7 @@ struct rtcore_traversal_source_snapshot {
 
   rtcore_traversal_source_provider provider;
   bool provider_supported;
+  bool provider_accepted;
   rtcore_traversal_provider_reject_reason reject_reason;
   Traversal_data traversal_snapshot;
   bool has_traversal_data;
@@ -9838,6 +9840,7 @@ rtcore_make_traversal_source_snapshot_from_provider_response(
   rtcore_traversal_source_snapshot snapshot;
   snapshot.provider = response.provider;
   snapshot.provider_supported = response.provider_supported;
+  snapshot.provider_accepted = response.provider_accepted;
   snapshot.reject_reason = response.reject_reason;
   snapshot.traversal_snapshot = response.traversal_snapshot;
   snapshot.has_traversal_data = response.has_traversal_data;
@@ -10051,17 +10054,25 @@ bool rtcore_build_traversal_completion_event(
           event->lane_slot_index, &event->warp_metadata);
   rtcore_traversal_source_snapshot source_snapshot =
       rtcore_make_traversal_source_snapshot(source_request);
-  if (!source_snapshot.provider_supported) {
+  const bool provider_unsupported = !source_snapshot.provider_supported;
+  const bool provider_rejected =
+      source_snapshot.provider_supported && !source_snapshot.provider_accepted;
+  if (provider_unsupported || provider_rejected) {
     printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
            "reason=%s, "
            "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
-           "lane_slot_index=%u, traversal-source-provider-unsupported=1\n",
+           "lane_slot_index=%u, provider_supported=%u, "
+           "provider_accepted=%u, traversal-source-provider-unsupported=%u, "
+           "traversal-source-provider-rejected=%u\n",
            pI->source_file(), pI->source_line(),
            rtcore_traversal_provider_reject_reason_name(
                source_snapshot.reject_reason),
            rtcore_traversal_source_provider_name(source_snapshot.provider),
            event->context_ptr, event->handoff_window_base,
-           event->lane_slot_index);
+           event->lane_slot_index,
+           source_snapshot.provider_supported ? 1 : 0,
+           source_snapshot.provider_accepted ? 1 : 0,
+           provider_unsupported ? 1 : 0, provider_rejected ? 1 : 0);
     fflush(stdout);
     return false;
   }
