@@ -7751,6 +7751,42 @@ struct rtcore_symbolic_rt_token_record {
   bool completed;
 };
 
+struct rtcore_symbolic_rt_token_reservation_key {
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned owner_hw_sid;
+  unsigned static_inst_uid;
+  unsigned active_mask;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+
+  bool operator<(
+      const rtcore_symbolic_rt_token_reservation_key &other) const {
+    if (warp_uid != other.warp_uid) {
+      return warp_uid < other.warp_uid;
+    }
+    if (warp_id != other.warp_id) {
+      return warp_id < other.warp_id;
+    }
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    if (static_inst_uid != other.static_inst_uid) {
+      return static_inst_uid < other.static_inst_uid;
+    }
+    if (active_mask != other.active_mask) {
+      return active_mask < other.active_mask;
+    }
+    return handoff_window_base < other.handoff_window_base;
+  }
+};
+
+struct rtcore_symbolic_rt_token_reservation_record {
+  unsigned active_mask;
+  unsigned active_lanes;
+  unsigned acquired_lane_mask;
+};
+
 static std::map<rtcore_synthetic_handoff_key, rtcore_synthetic_handoff_header>
     g_rtcore_synthetic_handoff_windows;
 static std::map<rtcore_synthetic_handoff_key, unsigned>
@@ -7758,6 +7794,9 @@ static std::map<rtcore_synthetic_handoff_key, unsigned>
 static std::map<rtcore_symbolic_rt_token_key,
                 rtcore_symbolic_rt_token_record>
     g_rtcore_symbolic_rt_tokens;
+static std::map<rtcore_symbolic_rt_token_reservation_key,
+                rtcore_symbolic_rt_token_reservation_record>
+    g_rtcore_symbolic_rt_token_reservations;
 unsigned g_rtcore_next_symbolic_rt_token_id = 1;
 bool g_rtcore_symbolic_resource_profile_logged = false;
 
@@ -8218,6 +8257,21 @@ rtcore_symbolic_rt_token_key rtcore_make_symbolic_rt_token_key(
   return key;
 }
 
+rtcore_symbolic_rt_token_reservation_key
+rtcore_make_symbolic_rt_token_reservation_key(
+    const ptx_thread_info::rtcore_current_warp_metadata &metadata,
+    unsigned long long context_ptr, unsigned long long handoff_window_base) {
+  rtcore_symbolic_rt_token_reservation_key key;
+  key.warp_uid = metadata.warp_uid;
+  key.warp_id = metadata.warp_id;
+  key.owner_hw_sid = metadata.owner_hw_sid;
+  key.static_inst_uid = metadata.static_inst_uid;
+  key.active_mask = metadata.active_mask;
+  key.context_ptr = context_ptr;
+  key.handoff_window_base = handoff_window_base;
+  return key;
+}
+
 bool rtcore_symbolic_rt_token_is_live(
     const rtcore_symbolic_rt_token_key &key) {
   return g_rtcore_symbolic_rt_tokens.find(key) !=
@@ -8392,21 +8446,50 @@ size_t rtcore_symbolic_rt_token_count() {
   return g_rtcore_symbolic_rt_tokens.size();
 }
 
-bool rtcore_symbolic_submit_token_capacity_available(
+bool rtcore_symbolic_submit_token_reservation_available(
     const ptx_instruction *pI, const rtcore_symbolic_resource_profile &profile,
-    const rtcore_symbolic_rt_token_key &key) {
+    const rtcore_symbolic_rt_token_reservation_key &key,
+    const rtcore_symbolic_rt_token_key &token_key, unsigned lane_slot_index) {
   const size_t live_tokens = rtcore_symbolic_rt_token_count();
-  const bool token_capacity_available =
-      live_tokens < profile.rt_tokens_per_execution_partition;
+  const unsigned active_lanes = rtcore_count_active_lanes(key.active_mask);
+  const unsigned reserved_tokens = active_lanes;
+  std::map<rtcore_symbolic_rt_token_reservation_key,
+           rtcore_symbolic_rt_token_reservation_record>::iterator reservation =
+      g_rtcore_symbolic_rt_token_reservations.find(key);
+  const bool reservation_live =
+      reservation != g_rtcore_symbolic_rt_token_reservations.end();
+  bool reservation_inserted = false;
+  bool token_capacity_available = reservation_live;
 
-  printf("GPGPU-Sim PTX: RT_SUBMIT token-capacity-check (%s:%u), "
+  if (!reservation_live) {
+    token_capacity_available =
+        live_tokens + active_lanes <= profile.rt_tokens_per_execution_partition;
+    if (token_capacity_available) {
+      rtcore_symbolic_rt_token_reservation_record record;
+      record.active_mask = key.active_mask;
+      record.active_lanes = active_lanes;
+      record.acquired_lane_mask = 0;
+      reservation_inserted =
+          g_rtcore_symbolic_rt_token_reservations.insert(
+              std::make_pair(key, record))
+              .second;
+      token_capacity_available = reservation_inserted;
+    }
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT token-reservation-check (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
-         "owner_hw_sid=%u, rt_tokens_per_execution_partition=%u, "
+         "owner_hw_sid=%u, warp_uid=%u, static_inst_uid=%u, "
+         "active_lane_mask=0x%08x, active_lanes=%u, "
+         "reservation_live=%u, reservation_inserted=%u, "
+         "reserved_tokens=%u, rt_tokens_per_execution_partition=%u, "
          "live_tokens=%zu, token_capacity_available=%u\n",
          pI->source_file(), pI->source_line(), key.context_ptr,
-         key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
-         key.owner_hw_wid, key.owner_hw_sid,
+         key.handoff_window_base, lane_slot_index, token_key.owner_hw_tid,
+         key.warp_id, key.owner_hw_sid, key.warp_uid, key.static_inst_uid,
+         key.active_mask, active_lanes, reservation_live ? 1 : 0,
+         reservation_inserted ? 1 : 0, reserved_tokens,
          profile.rt_tokens_per_execution_partition, live_tokens,
          token_capacity_available ? 1 : 0);
   fflush(stdout);
@@ -8416,16 +8499,73 @@ bool rtcore_symbolic_submit_token_capacity_available(
            "reason=RT_TOKEN_CAPACITY_EXHAUSTED, context_ptr=0x%llx, "
            "handoff_window_base=0x%llx, lane_slot_index=%u, "
            "owner_hw_tid=%u, owner_hw_wid=%u, owner_hw_sid=%u, "
+           "warp_uid=%u, static_inst_uid=%u, active_lane_mask=0x%08x, "
+           "active_lanes=%u, reservation_live=%u, reserved_tokens=%u, "
            "rt_tokens_per_execution_partition=%u, live_tokens=%zu, "
-           "consumed=0\n",
+           "token_capacity_available=%u, consumed=0\n",
            pI->source_file(), pI->source_line(), key.context_ptr,
-           key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
-           key.owner_hw_wid, key.owner_hw_sid,
-           profile.rt_tokens_per_execution_partition, live_tokens);
+           key.handoff_window_base, lane_slot_index, token_key.owner_hw_tid,
+           key.warp_id, key.owner_hw_sid, key.warp_uid, key.static_inst_uid,
+           key.active_mask, active_lanes, reservation_live ? 1 : 0,
+           reserved_tokens, profile.rt_tokens_per_execution_partition,
+           live_tokens, token_capacity_available ? 1 : 0);
     fflush(stdout);
   }
 
   return token_capacity_available;
+}
+
+bool rtcore_note_symbolic_rt_token_reservation_lane_acquired(
+    const ptx_instruction *pI,
+    const rtcore_symbolic_rt_token_reservation_key &key,
+    unsigned lane_slot_index) {
+  std::map<rtcore_symbolic_rt_token_reservation_key,
+           rtcore_symbolic_rt_token_reservation_record>::iterator reservation =
+      g_rtcore_symbolic_rt_token_reservations.find(key);
+  const bool reservation_live =
+      reservation != g_rtcore_symbolic_rt_token_reservations.end();
+  const unsigned lane_thread_mask = rtcore_lane_thread_mask(lane_slot_index);
+  unsigned acquired_lane_mask = 0;
+  unsigned active_lanes = 0;
+  bool reservation_complete = false;
+
+  if (reservation_live) {
+    reservation->second.acquired_lane_mask |= lane_thread_mask;
+    acquired_lane_mask = reservation->second.acquired_lane_mask;
+    active_lanes = reservation->second.active_lanes;
+    reservation_complete =
+        (acquired_lane_mask & reservation->second.active_mask) ==
+        reservation->second.active_mask;
+    if (reservation_complete) {
+      g_rtcore_symbolic_rt_token_reservations.erase(reservation);
+    }
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT token-reservation-acquire (%s:%u), "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, static_inst_uid=%u, "
+         "active_lane_mask=0x%08x, active_lanes=%u, "
+         "lane_thread_mask=0x%08x, acquired_lane_mask=0x%08x, "
+         "reservation_live=%u, reservation_complete=%u\n",
+         pI->source_file(), pI->source_line(), key.context_ptr,
+         key.handoff_window_base, lane_slot_index, key.warp_uid,
+         key.static_inst_uid, key.active_mask, active_lanes,
+         lane_thread_mask, acquired_lane_mask, reservation_live ? 1 : 0,
+         reservation_complete ? 1 : 0);
+  fflush(stdout);
+
+  if (!reservation_live) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=RT_TOKEN_RESERVATION_MISSING, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "warp_uid=%u, static_inst_uid=%u, consumed=0\n",
+           pI->source_file(), pI->source_line(), key.context_ptr,
+           key.handoff_window_base, lane_slot_index, key.warp_uid,
+           key.static_inst_uid);
+    fflush(stdout);
+  }
+
+  return reservation_live;
 }
 
 void rtcore_populate_synthetic_owner_tuple(
@@ -9103,6 +9243,14 @@ void rtcore_traversal_completion_adapter_publish(
     inst_not_implemented(pI);
     return;
   }
+  const rtcore_symbolic_rt_token_reservation_key reservation_key =
+      rtcore_make_symbolic_rt_token_reservation_key(
+          current_warp_metadata, context_ptr, handoff_window_base);
+  if (!rtcore_note_symbolic_rt_token_reservation_lane_acquired(
+          pI, reservation_key, lane_slot_index)) {
+    inst_not_implemented(pI);
+    return;
+  }
   rtcore_publish_synthetic_handoff_window(pI, key, header);
 
   ptx_reg_t result_data;
@@ -9239,8 +9387,12 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
-  if (!rtcore_symbolic_submit_token_capacity_available(
-          pI, resource_profile, token_key)) {
+  const rtcore_symbolic_rt_token_reservation_key reservation_key =
+      rtcore_make_symbolic_rt_token_reservation_key(
+          current_warp_metadata, context_ptr_data.u64,
+          handoff_window_base_data.u64);
+  if (!rtcore_symbolic_submit_token_reservation_available(
+          pI, resource_profile, reservation_key, token_key, lane_slot_index)) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
