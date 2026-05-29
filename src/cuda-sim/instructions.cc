@@ -7237,6 +7237,29 @@ struct rtcore_adapter_completion_record {
   unsigned max_primitive_tests;
 };
 
+struct rtcore_adapter_completion_publication {
+  rtcore_adapter_completion_publication()
+      : warp_uid(0),
+        warp_id(0),
+        owner_hw_sid(0),
+        active_mask(0),
+        static_inst_uid(0),
+        lane_slot_index(0),
+        lane_thread_mask(0),
+        node_visits(0),
+        primitive_tests(0) {}
+
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned owner_hw_sid;
+  unsigned active_mask;
+  unsigned static_inst_uid;
+  unsigned lane_slot_index;
+  unsigned lane_thread_mask;
+  unsigned node_visits;
+  unsigned primitive_tests;
+};
+
 struct rtcore_adapter_completion_claim_status {
   rtcore_adapter_completion_claim_status()
       : found(false),
@@ -7332,38 +7355,52 @@ static std::map<std::pair<unsigned, unsigned>,
                 rtcore_pending_traversal_completion>
     g_rtcore_pending_traversal_completions;
 
-extern "C" bool rtcore_publish_adapter_completion(
-    unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
-    unsigned active_mask, unsigned static_inst_uid,
-    unsigned lane_slot_index, unsigned node_visits,
-    unsigned primitive_tests) {
-  const bool valid_lane = lane_slot_index < 32;
-  const unsigned lane_thread_mask =
-      valid_lane ? (1u << lane_slot_index) : 0;
-  const bool lane_active = (active_mask & lane_thread_mask) != 0;
+static rtcore_adapter_completion_publication
+rtcore_make_adapter_completion_publication_from_pending(
+    const rtcore_pending_traversal_completion &record) {
+  rtcore_adapter_completion_publication publication;
+  publication.warp_uid = record.warp_uid;
+  publication.warp_id = record.warp_id;
+  publication.owner_hw_sid = record.owner_hw_sid;
+  publication.active_mask = record.active_mask;
+  publication.static_inst_uid = record.static_inst_uid;
+  publication.lane_slot_index = record.lane_slot_index;
+  publication.lane_thread_mask = record.lane_thread_mask;
+  publication.node_visits = record.traversal_snapshot.rtcore_node_visits;
+  publication.primitive_tests =
+      record.traversal_snapshot.rtcore_primitive_tests;
+  return publication;
+}
+
+static bool rtcore_publish_adapter_completion_record(
+    const rtcore_adapter_completion_publication &publication) {
+  const bool valid_lane = publication.lane_slot_index < 32;
+  const bool lane_active =
+      (publication.active_mask & publication.lane_thread_mask) != 0;
   rtcore_adapter_completion_record &record =
-      g_rtcore_adapter_completions[warp_uid];
+      g_rtcore_adapter_completions[publication.warp_uid];
   if (!record.valid) {
     record.valid = true;
-    record.warp_uid = warp_uid;
-    record.warp_id = warp_id;
-    record.owner_hw_sid = owner_hw_sid;
-    record.active_mask = active_mask;
-    record.static_inst_uid = static_inst_uid;
+    record.warp_uid = publication.warp_uid;
+    record.warp_id = publication.warp_id;
+    record.owner_hw_sid = publication.owner_hw_sid;
+    record.active_mask = publication.active_mask;
+    record.static_inst_uid = publication.static_inst_uid;
   }
 
   const bool metadata_matches =
-      record.warp_uid == warp_uid && record.warp_id == warp_id &&
-      record.owner_hw_sid == owner_hw_sid &&
-      record.active_mask == active_mask &&
-      record.static_inst_uid == static_inst_uid;
+      record.warp_uid == publication.warp_uid &&
+      record.warp_id == publication.warp_id &&
+      record.owner_hw_sid == publication.owner_hw_sid &&
+      record.active_mask == publication.active_mask &&
+      record.static_inst_uid == publication.static_inst_uid;
   if (valid_lane && lane_active && metadata_matches) {
-    record.completed_lane_mask |= lane_thread_mask;
-    if (node_visits > record.max_node_visits) {
-      record.max_node_visits = node_visits;
+    record.completed_lane_mask |= publication.lane_thread_mask;
+    if (publication.node_visits > record.max_node_visits) {
+      record.max_node_visits = publication.node_visits;
     }
-    if (primitive_tests > record.max_primitive_tests) {
-      record.max_primitive_tests = primitive_tests;
+    if (publication.primitive_tests > record.max_primitive_tests) {
+      record.max_primitive_tests = publication.primitive_tests;
     }
   }
   const bool accepted = valid_lane && lane_active && metadata_matches;
@@ -7374,13 +7411,34 @@ extern "C" bool rtcore_publish_adapter_completion(
          "lane_slot_index=%u, lane_thread_mask=0x%08x, "
          "node_visits=%u, primitive_tests=%u, max_node_visits=%u, "
          "max_primitive_tests=%u, accepted=%u\n",
-         warp_uid, warp_id, owner_hw_sid, active_mask,
-         record.completed_lane_mask, static_inst_uid, lane_slot_index,
-         lane_thread_mask, node_visits, primitive_tests,
+         publication.warp_uid, publication.warp_id, publication.owner_hw_sid,
+         publication.active_mask, record.completed_lane_mask,
+         publication.static_inst_uid, publication.lane_slot_index,
+         publication.lane_thread_mask, publication.node_visits,
+         publication.primitive_tests,
          record.max_node_visits, record.max_primitive_tests,
          accepted ? 1 : 0);
   fflush(stdout);
   return accepted;
+}
+
+extern "C" bool rtcore_publish_adapter_completion(
+    unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
+    unsigned active_mask, unsigned static_inst_uid,
+    unsigned lane_slot_index, unsigned node_visits,
+    unsigned primitive_tests) {
+  rtcore_adapter_completion_publication publication;
+  publication.warp_uid = warp_uid;
+  publication.warp_id = warp_id;
+  publication.owner_hw_sid = owner_hw_sid;
+  publication.active_mask = active_mask;
+  publication.static_inst_uid = static_inst_uid;
+  publication.lane_slot_index = lane_slot_index;
+  publication.lane_thread_mask =
+      lane_slot_index < 32 ? (1u << lane_slot_index) : 0;
+  publication.node_visits = node_visits;
+  publication.primitive_tests = primitive_tests;
+  return rtcore_publish_adapter_completion_record(publication);
 }
 
 extern "C" bool rtcore_service_pending_traversal_completion(
@@ -7418,16 +7476,10 @@ extern "C" bool rtcore_service_pending_traversal_completion(
     const bool drop_this_lane =
         test_drop_lane && !dropped_lane && metadata_matches;
     bool published = false;
-    const unsigned record_node_visits =
-        record.traversal_snapshot.rtcore_node_visits;
-    const unsigned record_primitive_tests =
-        record.traversal_snapshot.rtcore_primitive_tests;
     if (metadata_matches && !drop_this_lane) {
-      published = rtcore_publish_adapter_completion(
-          record.warp_uid, record.warp_id, record.owner_hw_sid,
-          record.active_mask, record.static_inst_uid,
-          record.lane_slot_index, record_node_visits,
-          record_primitive_tests);
+      rtcore_adapter_completion_publication publication =
+          rtcore_make_adapter_completion_publication_from_pending(record);
+      published = rtcore_publish_adapter_completion_record(publication);
       if (published) {
         published_lanes++;
       }
@@ -9599,6 +9651,24 @@ rtcore_make_pending_traversal_completion_from_event(
   return record;
 }
 
+rtcore_adapter_completion_publication
+rtcore_make_adapter_completion_publication_from_event(
+    const rtcore_traversal_completion_event &event) {
+  rtcore_adapter_completion_publication publication;
+  publication.warp_uid = event.warp_metadata.warp_uid;
+  publication.warp_id = event.warp_metadata.warp_id;
+  publication.owner_hw_sid = event.warp_metadata.owner_hw_sid;
+  publication.active_mask = event.warp_metadata.active_mask;
+  publication.static_inst_uid = event.warp_metadata.static_inst_uid;
+  publication.lane_slot_index = event.lane_slot_index;
+  publication.lane_thread_mask =
+      rtcore_lane_thread_mask(event.lane_slot_index);
+  publication.node_visits = event.traversal_snapshot.rtcore_node_visits;
+  publication.primitive_tests =
+      event.traversal_snapshot.rtcore_primitive_tests;
+  return publication;
+}
+
 static bool rtcore_enqueue_pending_traversal_completion(
     const rtcore_traversal_completion_event &event) {
   if (rtcore_test_adapter_claim_failure_enabled()) {
@@ -9782,15 +9852,10 @@ bool rtcore_publish_or_enqueue_traversal_completion_event(
   } else if (rtcore_test_adapter_claim_failure_enabled()) {
     adapter_claim_accepted = false;
   } else {
-    const unsigned adapter_node_visits =
-        event.traversal_snapshot.rtcore_node_visits;
-    const unsigned adapter_primitive_tests =
-        event.traversal_snapshot.rtcore_primitive_tests;
-    adapter_claim_accepted = rtcore_publish_adapter_completion(
-        event.warp_metadata.warp_uid, event.warp_metadata.warp_id,
-        event.warp_metadata.owner_hw_sid, event.warp_metadata.active_mask,
-        event.warp_metadata.static_inst_uid, event.lane_slot_index,
-        adapter_node_visits, adapter_primitive_tests);
+    rtcore_adapter_completion_publication publication =
+        rtcore_make_adapter_completion_publication_from_event(event);
+    adapter_claim_accepted =
+        rtcore_publish_adapter_completion_record(publication);
   }
 
   if (!adapter_claim_accepted) {
