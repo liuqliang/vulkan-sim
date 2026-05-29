@@ -45,6 +45,7 @@ class ptx_recognizer;
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
 #include "../gpgpu-sim/shader.h"
@@ -7747,11 +7748,19 @@ struct rtcore_symbolic_rt_token_allocation {
   bool allocated;
 };
 
+struct rtcore_symbolic_rt_token_allocator_slot {
+  unsigned slot_id;
+  unsigned generation;
+  bool live;
+};
+
 struct rtcore_symbolic_rt_token_allocator_state {
   unsigned next_slot_id;
   unsigned next_generation;
   size_t live_allocations;
   size_t released_allocations;
+  std::map<unsigned, rtcore_symbolic_rt_token_allocator_slot> slots;
+  std::vector<unsigned> free_slot_ids;
 };
 
 struct rtcore_symbolic_rt_token_record {
@@ -7948,6 +7957,12 @@ bool rtcore_test_memory_fault_header_omission_enabled() {
 bool rtcore_test_fail_after_token_acquire_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_TEST_FAIL_AFTER_TOKEN_ACQUIRE");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+bool rtcore_test_stale_allocator_generation_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_STALE_ALLOCATOR_GENERATION");
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
@@ -8334,6 +8349,14 @@ size_t rtcore_symbolic_rt_token_allocator_live_count() {
   return g_rtcore_symbolic_rt_token_allocator.live_allocations;
 }
 
+size_t rtcore_symbolic_rt_token_allocator_free_count() {
+  return g_rtcore_symbolic_rt_token_allocator.free_slot_ids.size();
+}
+
+size_t rtcore_symbolic_rt_token_allocator_slot_count() {
+  return g_rtcore_symbolic_rt_token_allocator.slots.size();
+}
+
 size_t rtcore_symbolic_rt_token_allocator_live_plus_reserved_count(
     unsigned reserved_tokens) {
   return rtcore_symbolic_rt_token_allocator_live_count() + reserved_tokens;
@@ -8346,29 +8369,89 @@ bool rtcore_symbolic_rt_token_allocator_has_capacity(
              reserved_tokens) <= profile.rt_tokens_per_execution_partition;
 }
 
+bool rtcore_symbolic_rt_token_allocator_record_matches(
+    const rtcore_symbolic_rt_token_record &record) {
+  if (record.allocator_slot_id == 0 || record.allocator_generation == 0) {
+    return false;
+  }
+  std::map<unsigned, rtcore_symbolic_rt_token_allocator_slot>::const_iterator
+      slot = g_rtcore_symbolic_rt_token_allocator.slots.find(
+          record.allocator_slot_id);
+  return slot != g_rtcore_symbolic_rt_token_allocator.slots.end() &&
+         slot->second.live &&
+         slot->second.generation == record.allocator_generation;
+}
+
 rtcore_symbolic_rt_token_allocation
 rtcore_allocate_symbolic_rt_token_slot(
-    const ptx_instruction *pI, const rtcore_symbolic_rt_token_key &key) {
+    const ptx_instruction *pI, const rtcore_symbolic_rt_token_key &key,
+    const rtcore_symbolic_resource_profile &profile) {
   rtcore_symbolic_rt_token_allocation allocation;
-  allocation.slot_id =
-      g_rtcore_symbolic_rt_token_allocator.next_slot_id++;
-  allocation.generation =
-      g_rtcore_symbolic_rt_token_allocator.next_generation++;
-  allocation.allocated = true;
-  g_rtcore_symbolic_rt_token_allocator.live_allocations++;
+  allocation.slot_id = 0;
+  allocation.generation = 0;
+  allocation.allocated = false;
+  bool reused_slot = false;
+  rtcore_symbolic_rt_token_allocator_slot *slot = NULL;
+
+  if (!g_rtcore_symbolic_rt_token_allocator.free_slot_ids.empty()) {
+    allocation.slot_id =
+        g_rtcore_symbolic_rt_token_allocator.free_slot_ids.back();
+    g_rtcore_symbolic_rt_token_allocator.free_slot_ids.pop_back();
+    std::map<unsigned, rtcore_symbolic_rt_token_allocator_slot>::iterator
+        free_slot =
+            g_rtcore_symbolic_rt_token_allocator.slots.find(
+                allocation.slot_id);
+    if (free_slot != g_rtcore_symbolic_rt_token_allocator.slots.end() &&
+        !free_slot->second.live) {
+      slot = &free_slot->second;
+      reused_slot = true;
+    }
+  } else if (g_rtcore_symbolic_rt_token_allocator.slots.size() <
+             profile.rt_tokens_per_execution_partition) {
+    rtcore_symbolic_rt_token_allocator_slot new_slot;
+    allocation.slot_id =
+        g_rtcore_symbolic_rt_token_allocator.next_slot_id++;
+    allocation.generation =
+        g_rtcore_symbolic_rt_token_allocator.next_generation++;
+    new_slot.slot_id = allocation.slot_id;
+    new_slot.generation = allocation.generation;
+    new_slot.live = false;
+    std::pair<std::map<unsigned, rtcore_symbolic_rt_token_allocator_slot>::
+                  iterator,
+              bool>
+        inserted = g_rtcore_symbolic_rt_token_allocator.slots.insert(
+            std::make_pair(new_slot.slot_id, new_slot));
+    if (inserted.second) {
+      slot = &inserted.first->second;
+    }
+  }
+
+  if (slot != NULL) {
+    slot->live = true;
+    allocation.slot_id = slot->slot_id;
+    allocation.generation = slot->generation;
+    allocation.allocated = true;
+    g_rtcore_symbolic_rt_token_allocator.live_allocations++;
+  }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT allocator-allocate (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
          "owner_hw_sid=%u, allocator_slot_id=%u, "
          "allocator_generation=%u, allocator_live=%zu, "
-         "allocator_released=%zu\n",
+         "allocator_released=%zu, allocator_free=%zu, "
+         "allocator_slots=%zu, allocator_slot_reused=%u, "
+         "rt_tokens_per_execution_partition=%u, allocated=%u\n",
          pI->source_file(), pI->source_line(), key.context_ptr,
          key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
          key.owner_hw_wid, key.owner_hw_sid, allocation.slot_id,
          allocation.generation,
          g_rtcore_symbolic_rt_token_allocator.live_allocations,
-         g_rtcore_symbolic_rt_token_allocator.released_allocations);
+         g_rtcore_symbolic_rt_token_allocator.released_allocations,
+         rtcore_symbolic_rt_token_allocator_free_count(),
+         rtcore_symbolic_rt_token_allocator_slot_count(),
+         reused_slot ? 1 : 0, profile.rt_tokens_per_execution_partition,
+         allocation.allocated ? 1 : 0);
   fflush(stdout);
 
   return allocation;
@@ -8376,12 +8459,23 @@ rtcore_allocate_symbolic_rt_token_slot(
 
 bool rtcore_release_symbolic_rt_token_allocation(
     const rtcore_symbolic_rt_token_record &record) {
-  const bool valid_allocation =
+  const bool valid_metadata =
       record.allocator_slot_id != 0 && record.allocator_generation != 0;
+  const bool valid_allocation =
+      valid_metadata &&
+      rtcore_symbolic_rt_token_allocator_record_matches(record);
   if (!valid_allocation ||
       g_rtcore_symbolic_rt_token_allocator.live_allocations == 0) {
     return false;
   }
+  std::map<unsigned, rtcore_symbolic_rt_token_allocator_slot>::iterator slot =
+      g_rtcore_symbolic_rt_token_allocator.slots.find(
+          record.allocator_slot_id);
+  slot->second.live = false;
+  slot->second.generation =
+      g_rtcore_symbolic_rt_token_allocator.next_generation++;
+  g_rtcore_symbolic_rt_token_allocator.free_slot_ids.push_back(
+      record.allocator_slot_id);
   g_rtcore_symbolic_rt_token_allocator.live_allocations--;
   g_rtcore_symbolic_rt_token_allocator.released_allocations++;
   return true;
@@ -8391,8 +8485,26 @@ bool rtcore_acquire_symbolic_rt_token(
     const ptx_instruction *pI, const rtcore_symbolic_rt_token_key &key,
     unsigned window_generation, unsigned completion_seq, unsigned resume_seq,
     unsigned window_tag, unsigned result_word) {
+  const rtcore_symbolic_resource_profile profile =
+      rtcore_get_symbolic_resource_profile();
   const rtcore_symbolic_rt_token_allocation allocation =
-      rtcore_allocate_symbolic_rt_token_slot(pI, key);
+      rtcore_allocate_symbolic_rt_token_slot(pI, key, profile);
+  if (!allocation.allocated) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=RT_TOKEN_ALLOCATOR_EXHAUSTED_AT_ACQUIRE, "
+           "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u, rt_tokens_per_execution_partition=%u, "
+           "allocator_live=%zu, allocator_free=%zu, allocator_slots=%zu, "
+           "consumed=0\n",
+           pI->source_file(), pI->source_line(), key.context_ptr,
+           key.handoff_window_base, key.lane_slot_index,
+           profile.rt_tokens_per_execution_partition,
+           rtcore_symbolic_rt_token_allocator_live_count(),
+           rtcore_symbolic_rt_token_allocator_free_count(),
+           rtcore_symbolic_rt_token_allocator_slot_count());
+    fflush(stdout);
+    return false;
+  }
   rtcore_symbolic_rt_token_record record;
   record.token_id = g_rtcore_next_symbolic_rt_token_id++;
   record.allocator_slot_id = allocation.slot_id;
@@ -8416,7 +8528,8 @@ bool rtcore_acquire_symbolic_rt_token(
          "owner_hw_sid=%u, token_id=%u, allocator_slot_id=%u, "
          "allocator_generation=%u, window_generation=%u, "
          "completion_seq=%u, resume_seq=%u, window_tag=%u, result=0x%08x, "
-         "acquired=%u, live_tokens=%zu, allocator_live=%zu\n",
+         "acquired=%u, live_tokens=%zu, allocator_live=%zu, "
+         "allocator_free=%zu, allocator_slots=%zu\n",
          pI->source_file(), pI->source_line(), key.context_ptr,
          key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
          key.owner_hw_wid, key.owner_hw_sid, record.token_id,
@@ -8424,7 +8537,9 @@ bool rtcore_acquire_symbolic_rt_token(
          record.window_generation, record.completion_seq, record.resume_seq,
          record.window_tag, record.result_word, inserted ? 1 : 0,
          g_rtcore_symbolic_rt_tokens.size(),
-         rtcore_symbolic_rt_token_allocator_live_count());
+         rtcore_symbolic_rt_token_allocator_live_count(),
+         rtcore_symbolic_rt_token_allocator_free_count(),
+         rtcore_symbolic_rt_token_allocator_slot_count());
   fflush(stdout);
 
   if (!inserted) {
@@ -8451,8 +8566,11 @@ bool rtcore_complete_symbolic_rt_token(
       live_token ? token->second.allocator_slot_id : 0;
   const unsigned allocator_generation =
       live_token ? token->second.allocator_generation : 0;
+  const bool allocator_record_matches =
+      live_token &&
+      rtcore_symbolic_rt_token_allocator_record_matches(token->second);
   const bool allocator_metadata_valid =
-      live_token && allocator_slot_id != 0 && allocator_generation != 0;
+      allocator_record_matches;
   const bool result_matches = live_token && token->second.result_word == result_word;
   const bool completion_seq_matches =
       live_token && token->second.completion_seq == completion_seq;
@@ -8494,6 +8612,10 @@ bool rtcore_complete_symbolic_rt_token(
   return completion_validated;
 }
 
+size_t rtcore_synthetic_handoff_window_count();
+size_t rtcore_symbolic_rt_token_count();
+size_t rtcore_symbolic_rt_token_reservation_count();
+
 bool rtcore_symbolic_rt_token_can_retire(
     const ptx_instruction *pI, const rtcore_symbolic_rt_token_key &key) {
   std::map<rtcore_symbolic_rt_token_key,
@@ -8501,16 +8623,28 @@ bool rtcore_symbolic_rt_token_can_retire(
       g_rtcore_symbolic_rt_tokens.find(key);
   const bool live_token = token != g_rtcore_symbolic_rt_tokens.end();
   const bool completed = live_token && token->second.completed;
-  const bool accepted = live_token && completed;
+  const bool allocator_record_matches =
+      live_token &&
+      rtcore_symbolic_rt_token_allocator_record_matches(token->second);
+  const bool test_stale_allocator_generation =
+      live_token && completed &&
+      rtcore_test_stale_allocator_generation_enabled();
+  const bool allocator_generation_matches =
+      allocator_record_matches && !test_stale_allocator_generation;
+  const bool accepted = live_token && completed && allocator_generation_matches;
 
   printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT token-check (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
-         "owner_hw_sid=%u, live_token=%u, completed=%u, accepted=%u\n",
+         "owner_hw_sid=%u, live_token=%u, completed=%u, "
+         "allocator_generation_matches=%u, "
+         "test_stale_allocator_generation=%u, accepted=%u\n",
          pI->source_file(), pI->source_line(), key.context_ptr,
          key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
          key.owner_hw_wid, key.owner_hw_sid, live_token ? 1 : 0,
-         completed ? 1 : 0, accepted ? 1 : 0);
+         completed ? 1 : 0, allocator_generation_matches ? 1 : 0,
+         test_stale_allocator_generation ? 1 : 0,
+         accepted ? 1 : 0);
   fflush(stdout);
 
   if (!live_token) {
@@ -8532,6 +8666,21 @@ bool rtcore_symbolic_rt_token_can_retire(
            key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
            key.owner_hw_wid, key.owner_hw_sid);
     fflush(stdout);
+  } else if (!allocator_generation_matches) {
+    printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
+           "reason=RT_TOKEN_ALLOCATOR_STALE_GENERATION, "
+           "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
+           "owner_hw_sid=%u, remaining_windows=%zu, remaining_tokens=%zu, "
+           "remaining_reservations=%zu, remaining_allocator_live=%zu\n",
+           pI->source_file(), pI->source_line(), key.context_ptr,
+           key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
+           key.owner_hw_wid, key.owner_hw_sid,
+           rtcore_synthetic_handoff_window_count(),
+           rtcore_symbolic_rt_token_count(),
+           rtcore_symbolic_rt_token_reservation_count(),
+           rtcore_symbolic_rt_token_allocator_live_count());
+    fflush(stdout);
   }
 
   return accepted;
@@ -8547,6 +8696,9 @@ bool rtcore_release_symbolic_rt_token(
   }
   const bool released_allocation =
       rtcore_release_symbolic_rt_token_allocation(token->second);
+  if (!released_allocation) {
+    return false;
+  }
   g_rtcore_symbolic_rt_tokens.erase(token);
   return released_allocation;
 }
