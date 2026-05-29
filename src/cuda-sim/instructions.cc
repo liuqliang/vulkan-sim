@@ -9714,6 +9714,33 @@ rtcore_make_traversal_work_descriptor(
   return descriptor;
 }
 
+enum rtcore_traversal_provider_reject_reason {
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE = 0,
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED = 1
+};
+
+struct rtcore_traversal_provider_response {
+  rtcore_traversal_provider_response()
+      : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
+        provider_supported(false),
+        provider_accepted(false),
+        reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED),
+        has_traversal_data(false),
+        initialized_default_miss(false),
+        hit_geometry(false) {
+    memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
+  }
+
+  rtcore_traversal_source_provider provider;
+  bool provider_supported;
+  bool provider_accepted;
+  rtcore_traversal_provider_reject_reason reject_reason;
+  Traversal_data traversal_snapshot;
+  bool has_traversal_data;
+  bool initialized_default_miss;
+  bool hit_geometry;
+};
+
 struct rtcore_traversal_source_snapshot {
   rtcore_traversal_source_snapshot()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
@@ -9769,12 +9796,14 @@ rtcore_make_legacy_functional_traversal_source_snapshot(
   return snapshot;
 }
 
-static rtcore_traversal_source_snapshot
-rtcore_make_rtcore_stub_traversal_source_snapshot(
+static rtcore_traversal_provider_response
+rtcore_make_rtcore_stub_traversal_provider_response(
     const rtcore_traversal_work_descriptor &descriptor) {
-  rtcore_traversal_source_snapshot snapshot;
-  snapshot.provider = descriptor.provider;
-  snapshot.provider_supported = false;
+  rtcore_traversal_provider_response response;
+  response.provider = descriptor.provider;
+  response.provider_supported = false;
+  response.provider_accepted = false;
+  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED;
   printf("GPGPU-Sim PTX: RT_SUBMIT traversal-source-rtcore-stub, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
@@ -9784,6 +9813,19 @@ rtcore_make_rtcore_stub_traversal_source_snapshot(
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
          descriptor.warp_metadata.active_mask);
   fflush(stdout);
+  return response;
+}
+
+static rtcore_traversal_source_snapshot
+rtcore_make_traversal_source_snapshot_from_provider_response(
+    const rtcore_traversal_provider_response &response) {
+  rtcore_traversal_source_snapshot snapshot;
+  snapshot.provider = response.provider;
+  snapshot.provider_supported = response.provider_supported;
+  snapshot.traversal_snapshot = response.traversal_snapshot;
+  snapshot.has_traversal_data = response.has_traversal_data;
+  snapshot.initialized_default_miss = response.initialized_default_miss;
+  snapshot.hit_geometry = response.hit_geometry;
   return snapshot;
 }
 
@@ -9805,7 +9847,10 @@ rtcore_make_traversal_source_snapshot(
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STUB: {
       rtcore_traversal_work_descriptor descriptor =
           rtcore_make_traversal_work_descriptor(request);
-      return rtcore_make_rtcore_stub_traversal_source_snapshot(descriptor);
+      rtcore_traversal_provider_response response =
+          rtcore_make_rtcore_stub_traversal_provider_response(descriptor);
+      return rtcore_make_traversal_source_snapshot_from_provider_response(
+          response);
     }
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
     default:
