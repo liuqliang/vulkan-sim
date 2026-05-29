@@ -9773,41 +9773,43 @@ struct rtcore_traversal_source_snapshot {
   bool hit_geometry;
 };
 
-static rtcore_traversal_source_snapshot
-rtcore_make_legacy_functional_traversal_source_snapshot(
+static rtcore_traversal_provider_response
+rtcore_make_legacy_functional_traversal_provider_response(
     const rtcore_traversal_source_request &request) {
   const ptx_instruction *pI = request.pI;
   ptx_thread_info *thread = request.thread;
-  rtcore_traversal_source_snapshot snapshot;
-  snapshot.provider = request.provider;
-  snapshot.provider_supported = true;
+  rtcore_traversal_provider_response response;
+  response.provider = request.provider;
+  response.provider_supported = true;
+  response.provider_accepted = true;
+  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
   memory_space *mem = thread->get_global_memory();
-  snapshot.has_traversal_data =
+  response.has_traversal_data =
       !thread->RT_thread_data->traversal_data.empty();
-  if (snapshot.has_traversal_data) {
+  if (response.has_traversal_data) {
     Traversal_data *device_traversal_data =
         thread->RT_thread_data->traversal_data.back();
     mem->read((mem_addr_t)device_traversal_data,
-              sizeof(snapshot.traversal_snapshot),
-              &snapshot.traversal_snapshot);
-    snapshot.hit_geometry = snapshot.traversal_snapshot.hit_geometry;
+              sizeof(response.traversal_snapshot),
+              &response.traversal_snapshot);
+    response.hit_geometry = response.traversal_snapshot.hit_geometry;
   } else {
-    snapshot.traversal_snapshot.hit_geometry = false;
-    snapshot.traversal_snapshot.current_shader_counter = -1;
-    snapshot.traversal_snapshot.current_shader_type = -1;
-    snapshot.traversal_snapshot.missIndex = 0;
+    response.traversal_snapshot.hit_geometry = false;
+    response.traversal_snapshot.current_shader_counter = -1;
+    response.traversal_snapshot.current_shader_type = -1;
+    response.traversal_snapshot.missIndex = 0;
 
     Traversal_data *device_traversal_data =
         (Traversal_data *)VulkanRayTracing::gpgpusim_alloc(
             sizeof(Traversal_data));
     mem->write((mem_addr_t)device_traversal_data, sizeof(Traversal_data),
-               &snapshot.traversal_snapshot, thread, pI);
+               &response.traversal_snapshot, thread, pI);
     thread->RT_thread_data->all_hit_data.clear();
     thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
-    snapshot.initialized_default_miss = true;
-    snapshot.hit_geometry = snapshot.traversal_snapshot.hit_geometry;
+    response.initialized_default_miss = true;
+    response.hit_geometry = response.traversal_snapshot.hit_geometry;
   }
-  return snapshot;
+  return response;
 }
 
 static rtcore_traversal_provider_response
@@ -9844,34 +9846,40 @@ rtcore_make_traversal_source_snapshot_from_provider_response(
   return snapshot;
 }
 
-static rtcore_traversal_source_snapshot
-rtcore_make_unsupported_traversal_source_snapshot(
+static rtcore_traversal_provider_response
+rtcore_make_unsupported_traversal_provider_response(
     const rtcore_traversal_source_request &request) {
-  rtcore_traversal_source_snapshot snapshot;
-  snapshot.provider = request.provider;
-  snapshot.provider_supported = false;
-  snapshot.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED;
-  return snapshot;
+  rtcore_traversal_provider_response response;
+  response.provider = request.provider;
+  response.provider_supported = false;
+  response.provider_accepted = false;
+  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED;
+  return response;
+}
+
+static rtcore_traversal_provider_response
+rtcore_make_traversal_provider_response(
+    const rtcore_traversal_source_request &request) {
+  switch (request.provider) {
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL:
+      return rtcore_make_legacy_functional_traversal_provider_response(request);
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STUB: {
+      rtcore_traversal_work_descriptor descriptor =
+          rtcore_make_traversal_work_descriptor(request);
+      return rtcore_make_rtcore_stub_traversal_provider_response(descriptor);
+    }
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
+    default:
+      return rtcore_make_unsupported_traversal_provider_response(request);
+  }
 }
 
 static rtcore_traversal_source_snapshot
 rtcore_make_traversal_source_snapshot(
     const rtcore_traversal_source_request &request) {
-  switch (request.provider) {
-    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL:
-      return rtcore_make_legacy_functional_traversal_source_snapshot(request);
-    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STUB: {
-      rtcore_traversal_work_descriptor descriptor =
-          rtcore_make_traversal_work_descriptor(request);
-      rtcore_traversal_provider_response response =
-          rtcore_make_rtcore_stub_traversal_provider_response(descriptor);
-      return rtcore_make_traversal_source_snapshot_from_provider_response(
-          response);
-    }
-    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
-    default:
-      return rtcore_make_unsupported_traversal_source_snapshot(request);
-  }
+  rtcore_traversal_provider_response response =
+      rtcore_make_traversal_provider_response(request);
+  return rtcore_make_traversal_source_snapshot_from_provider_response(response);
 }
 
 struct rtcore_traversal_completion_event {
