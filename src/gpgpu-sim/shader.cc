@@ -3462,6 +3462,26 @@ void rt_unit::cycle() {
         !it->second.has_pending_writes()) {
       RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid, it->second.warp_id(), it->first);
       if (m_operand_collector->writeback(it->second)) {
+        if (it->second.rt_subop == RT_CORE_SUBOP_SUBMIT) {
+          const std::map<unsigned,
+                         rtcore_synthetic_completion_event>::const_iterator
+              release_event =
+                  m_synthetic_completion_queue.find(it->second.get_uid());
+          if (release_event != m_synthetic_completion_queue.end()) {
+            printf("GPGPU-Sim PTX: RT-unit synthetic-completion-release, "
+                   "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
+                   "issued_active_mask=0x%08x, adapter_active_mask=0x%08x, "
+                   "adapter_completed_lane_mask=0x%08x, ready_cycle=%llu, "
+                   "current_cycle=%llu, action=release\n",
+                   release_event->second.warp_uid,
+                   release_event->second.warp_id, m_sid,
+                   release_event->second.issued_active_mask,
+                   release_event->second.adapter_active_mask,
+                   release_event->second.adapter_completed_lane_mask,
+                   release_event->second.ready_cycle, current_cycle);
+            fflush(stdout);
+          }
+        }
         retire_synthetic_completion(it->second);
         m_scoreboard->releaseRegisters(&it->second);
         m_core->warp_inst_complete(it->second);
