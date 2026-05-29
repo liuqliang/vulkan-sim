@@ -7976,6 +7976,12 @@ bool rtcore_test_fail_after_handoff_publish_enabled() {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+bool rtcore_test_fail_after_result_write_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TEST_FAIL_AFTER_RESULT_WRITE");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 bool rtcore_test_stale_allocator_generation_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_TEST_STALE_ALLOCATOR_GENERATION");
@@ -9094,6 +9100,47 @@ void rtcore_rollback_symbolic_submit_after_handoff_publish(
   fflush(stdout);
 }
 
+void rtcore_rollback_symbolic_submit_after_result_write(
+    const ptx_instruction *pI,
+    const rtcore_symbolic_rt_token_key &token_key,
+    const rtcore_symbolic_rt_token_reservation_key &reservation_key,
+    const rtcore_synthetic_handoff_key &handoff_key) {
+  const bool released_window =
+      rtcore_release_synthetic_handoff_window(handoff_key);
+  const bool released_token =
+      rtcore_release_symbolic_rt_token(token_key);
+  const bool cancelled_reservation =
+      rtcore_cancel_symbolic_rt_token_reservation(reservation_key);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT rollback-cleanup (%s:%u), "
+         "reason=FAIL_AFTER_RESULT_WRITE, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "owner_hw_tid=%u, owner_hw_wid=%u, owner_hw_sid=%u, "
+         "warp_uid=%u, static_inst_uid=%u, result_written=1, "
+         "released_window=%u, released_token=%u, "
+         "cancelled_reservation=%u, remaining_windows=%zu, "
+         "remaining_tokens=%zu, remaining_reservations=%zu, "
+         "remaining_allocator_live=%zu\n",
+         pI->source_file(), pI->source_line(), token_key.context_ptr,
+         handoff_key.handoff_window_base, handoff_key.lane_slot_index,
+         token_key.owner_hw_tid, token_key.owner_hw_wid,
+         token_key.owner_hw_sid, reservation_key.warp_uid,
+         reservation_key.static_inst_uid, released_window ? 1 : 0,
+         released_token ? 1 : 0, cancelled_reservation ? 1 : 0,
+         rtcore_synthetic_handoff_window_count(),
+         rtcore_symbolic_rt_token_count(),
+         rtcore_symbolic_rt_token_reservation_count(),
+         rtcore_symbolic_rt_token_allocator_live_count());
+  fflush(stdout);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=FAIL_AFTER_RESULT_WRITE, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, consumed=0\n",
+         pI->source_file(), pI->source_line(), token_key.context_ptr,
+         handoff_key.handoff_window_base, handoff_key.lane_slot_index);
+  fflush(stdout);
+}
+
 unsigned rtcore_compact_result(unsigned reason, unsigned flags,
                                unsigned completion_seq_low,
                                unsigned resume_seq_low,
@@ -9658,6 +9705,12 @@ void rtcore_traversal_completion_adapter_publish(
   ptx_reg_t result_data;
   result_data.u32 = result_word;
   thread->set_operand_value(result, result_data, U32_TYPE, thread, pI);
+  if (rtcore_test_fail_after_result_write_enabled()) {
+    rtcore_rollback_symbolic_submit_after_result_write(
+        pI, token_key, reservation_key, key);
+    inst_not_implemented(pI);
+    return;
+  }
 
   if (!rtcore_software_acquire_synthetic_completion(
           pI, context_ptr, handoff_window_base, lane_slot_index, result_word,
