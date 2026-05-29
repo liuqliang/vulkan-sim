@@ -9614,6 +9614,53 @@ bool rtcore_current_warp_metadata_is_valid(
   return accepted;
 }
 
+struct rtcore_traversal_source_snapshot {
+  rtcore_traversal_source_snapshot()
+      : has_traversal_data(false),
+        initialized_default_miss(false),
+        hit_geometry(false) {
+    memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
+  }
+
+  Traversal_data traversal_snapshot;
+  bool has_traversal_data;
+  bool initialized_default_miss;
+  bool hit_geometry;
+};
+
+static rtcore_traversal_source_snapshot
+rtcore_make_traversal_source_snapshot(const ptx_instruction *pI,
+                                      ptx_thread_info *thread) {
+  rtcore_traversal_source_snapshot snapshot;
+  memory_space *mem = thread->get_global_memory();
+  snapshot.has_traversal_data =
+      !thread->RT_thread_data->traversal_data.empty();
+  if (snapshot.has_traversal_data) {
+    Traversal_data *device_traversal_data =
+        thread->RT_thread_data->traversal_data.back();
+    mem->read((mem_addr_t)device_traversal_data,
+              sizeof(snapshot.traversal_snapshot),
+              &snapshot.traversal_snapshot);
+    snapshot.hit_geometry = snapshot.traversal_snapshot.hit_geometry;
+  } else {
+    snapshot.traversal_snapshot.hit_geometry = false;
+    snapshot.traversal_snapshot.current_shader_counter = -1;
+    snapshot.traversal_snapshot.current_shader_type = -1;
+    snapshot.traversal_snapshot.missIndex = 0;
+
+    Traversal_data *device_traversal_data =
+        (Traversal_data *)VulkanRayTracing::gpgpusim_alloc(
+            sizeof(Traversal_data));
+    mem->write((mem_addr_t)device_traversal_data, sizeof(Traversal_data),
+               &snapshot.traversal_snapshot, thread, pI);
+    thread->RT_thread_data->all_hit_data.clear();
+    thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
+    snapshot.initialized_default_miss = true;
+    snapshot.hit_geometry = snapshot.traversal_snapshot.hit_geometry;
+  }
+  return snapshot;
+}
+
 struct rtcore_traversal_completion_event {
   rtcore_traversal_completion_event()
       : warp_metadata(),
@@ -9655,6 +9702,17 @@ struct rtcore_traversal_completion_event {
   bool has_traversal_data;
   bool hit_geometry;
 };
+
+static void rtcore_apply_traversal_source_snapshot(
+    rtcore_traversal_completion_event *event,
+    const rtcore_traversal_source_snapshot &snapshot) {
+  if (event == NULL) {
+    return;
+  }
+  event->has_traversal_data = snapshot.has_traversal_data;
+  event->traversal_snapshot = snapshot.traversal_snapshot;
+  event->hit_geometry = snapshot.hit_geometry;
+}
 
 rtcore_pending_traversal_completion
 rtcore_make_pending_traversal_completion_from_event(
@@ -9766,30 +9824,9 @@ bool rtcore_build_traversal_completion_event(
   event->window_tag =
       rtcore_synthetic_window_tag_for_generation(event->window_generation);
 
-  memory_space *mem = thread->get_global_memory();
-  event->has_traversal_data =
-      !thread->RT_thread_data->traversal_data.empty();
-  if (event->has_traversal_data) {
-    Traversal_data *device_traversal_data =
-        thread->RT_thread_data->traversal_data.back();
-    mem->read((mem_addr_t)device_traversal_data,
-              sizeof(event->traversal_snapshot),
-              &event->traversal_snapshot);
-    event->hit_geometry = event->traversal_snapshot.hit_geometry;
-  } else {
-    event->traversal_snapshot.hit_geometry = false;
-    event->traversal_snapshot.current_shader_counter = -1;
-    event->traversal_snapshot.current_shader_type = -1;
-    event->traversal_snapshot.missIndex = 0;
-
-    Traversal_data *device_traversal_data =
-        (Traversal_data *)VulkanRayTracing::gpgpusim_alloc(
-            sizeof(Traversal_data));
-    mem->write((mem_addr_t)device_traversal_data, sizeof(Traversal_data),
-               &event->traversal_snapshot, thread, pI);
-    thread->RT_thread_data->all_hit_data.clear();
-    thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
-  }
+  rtcore_traversal_source_snapshot source_snapshot =
+      rtcore_make_traversal_source_snapshot(pI, thread);
+  rtcore_apply_traversal_source_snapshot(event, source_snapshot);
 
   const bool forced_memory_fault =
       rtcore_test_memory_fault_publication_enabled();
