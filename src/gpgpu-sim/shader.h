@@ -1355,6 +1355,28 @@ class rt_unit : public pipelined_simd_unit {
         unsigned long long ready_cycle;
         unsigned completion_latency;
       };
+      struct rtcore_adapter_readiness_snapshot {
+        rtcore_adapter_readiness_snapshot()
+            : claim_accepted(false),
+              issue_mask_match(false),
+              issued_lanes_complete(false),
+              adapter_ready(false),
+              adapter_active_mask(0),
+              adapter_completed_lane_mask(0),
+              adapter_static_inst_uid(0),
+              adapter_max_node_visits(0),
+              adapter_max_primitive_tests(0) {}
+
+        bool claim_accepted;
+        bool issue_mask_match;
+        bool issued_lanes_complete;
+        bool adapter_ready;
+        unsigned adapter_active_mask;
+        unsigned adapter_completed_lane_mask;
+        unsigned adapter_static_inst_uid;
+        unsigned adapter_max_node_visits;
+        unsigned adapter_max_primitive_tests;
+      };
       unsigned rtcore_synthetic_completion_latency() const;
       unsigned rtcore_completion_queue_capacity() const;
       unsigned rtcore_completion_queue_inflight() const;
@@ -1367,6 +1389,12 @@ class rt_unit : public pipelined_simd_unit {
       unsigned rtcore_stats_primitive_cost() const;
       unsigned rtcore_effective_completion_latency(
           const rtcore_synthetic_completion_event &event) const;
+      rtcore_adapter_readiness_snapshot rtcore_make_adapter_readiness_snapshot(
+          const rtcore_adapter_completion_claim_snapshot &claim_snapshot,
+          unsigned issued_active_mask) const;
+      void rtcore_apply_adapter_readiness_snapshot(
+          rtcore_synthetic_completion_event *event,
+          const rtcore_adapter_readiness_snapshot &snapshot) const;
       bool claim_adapter_completion_for_issue(
           rtcore_synthetic_completion_event *event);
       void enqueue_synthetic_completion(const warp_inst_t &inst,

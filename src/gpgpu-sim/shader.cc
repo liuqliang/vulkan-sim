@@ -3090,6 +3090,47 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
     unsigned warp_uid, unsigned warp_id, unsigned owner_hw_sid,
     rtcore_adapter_completion_claim_snapshot *snapshot);
 
+rt_unit::rtcore_adapter_readiness_snapshot
+rt_unit::rtcore_make_adapter_readiness_snapshot(
+    const rtcore_adapter_completion_claim_snapshot &claim_snapshot,
+    unsigned issued_active_mask) const {
+  rtcore_adapter_readiness_snapshot snapshot;
+  snapshot.claim_accepted = claim_snapshot.accepted;
+  snapshot.adapter_active_mask = claim_snapshot.active_mask;
+  snapshot.adapter_completed_lane_mask = claim_snapshot.completed_lane_mask;
+  snapshot.adapter_static_inst_uid = claim_snapshot.static_inst_uid;
+  snapshot.adapter_max_node_visits = claim_snapshot.max_node_visits;
+  snapshot.adapter_max_primitive_tests = claim_snapshot.max_primitive_tests;
+  snapshot.issue_mask_match =
+      snapshot.adapter_active_mask == issued_active_mask;
+  snapshot.issued_lanes_complete =
+      issued_active_mask != 0 &&
+      (snapshot.adapter_completed_lane_mask & issued_active_mask) ==
+          issued_active_mask;
+  snapshot.adapter_ready =
+      snapshot.claim_accepted && snapshot.issue_mask_match &&
+      snapshot.issued_lanes_complete;
+  return snapshot;
+}
+
+void rt_unit::rtcore_apply_adapter_readiness_snapshot(
+    rtcore_synthetic_completion_event *event,
+    const rtcore_adapter_readiness_snapshot &snapshot) const {
+  if (event == NULL) {
+    return;
+  }
+  event->adapter_completion_claimed = snapshot.claim_accepted;
+  event->adapter_active_mask = snapshot.adapter_active_mask;
+  event->adapter_completed_lane_mask = snapshot.adapter_completed_lane_mask;
+  event->adapter_static_inst_uid = snapshot.adapter_static_inst_uid;
+  event->adapter_max_node_visits = snapshot.adapter_max_node_visits;
+  event->adapter_max_primitive_tests = snapshot.adapter_max_primitive_tests;
+  event->adapter_completion_issue_mask_match = snapshot.issue_mask_match;
+  event->adapter_completion_issued_lanes_complete =
+      snapshot.issued_lanes_complete;
+  event->adapter_completion_ready = snapshot.adapter_ready;
+}
+
 bool rt_unit::claim_adapter_completion_for_issue(
     rtcore_synthetic_completion_event *event) {
   if (event == NULL) {
@@ -3105,8 +3146,10 @@ bool rt_unit::claim_adapter_completion_for_issue(
   rtcore_adapter_completion_claim_snapshot claim_snapshot;
   rtcore_claim_adapter_completion_snapshot(event->warp_uid, event->warp_id,
                                            m_sid, &claim_snapshot);
-  event->adapter_completion_claimed = claim_snapshot.accepted;
-  if (!event->adapter_completion_claimed) {
+  rtcore_adapter_readiness_snapshot readiness_snapshot =
+      rtcore_make_adapter_readiness_snapshot(claim_snapshot,
+                                             event->issued_active_mask);
+  if (!readiness_snapshot.claim_accepted) {
     if (serviced_delayed_completion &&
         rtcore_test_delayed_completion_metadata_mismatch_enabled()) {
       printf("GPGPU-Sim PTX: RT-unit delayed-completion metadata-mismatch fail-closed, "
@@ -3130,11 +3173,7 @@ bool rt_unit::claim_adapter_completion_for_issue(
     return false;
   }
 
-  event->adapter_active_mask = claim_snapshot.active_mask;
-  event->adapter_completed_lane_mask = claim_snapshot.completed_lane_mask;
-  event->adapter_static_inst_uid = claim_snapshot.static_inst_uid;
-  event->adapter_max_node_visits = claim_snapshot.max_node_visits;
-  event->adapter_max_primitive_tests = claim_snapshot.max_primitive_tests;
+  rtcore_apply_adapter_readiness_snapshot(event, readiness_snapshot);
 
   const bool test_adapter_mask_mismatch =
       rtcore_test_adapter_mask_mismatch_enabled();
