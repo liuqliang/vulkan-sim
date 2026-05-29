@@ -9719,6 +9719,18 @@ enum rtcore_traversal_provider_reject_reason {
   RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED = 1
 };
 
+static const char *rtcore_traversal_provider_reject_reason_name(
+    rtcore_traversal_provider_reject_reason reason) {
+  switch (reason) {
+    case RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED:
+      return "RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED";
+    case RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE:
+      return "RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE";
+    default:
+      return "RTCORE_TRAVERSAL_PROVIDER_REJECT_UNKNOWN";
+  }
+}
+
 struct rtcore_traversal_provider_response {
   rtcore_traversal_provider_response()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
@@ -9745,6 +9757,7 @@ struct rtcore_traversal_source_snapshot {
   rtcore_traversal_source_snapshot()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
         provider_supported(true),
+        reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE),
         has_traversal_data(false),
         initialized_default_miss(false),
         hit_geometry(false) {
@@ -9753,6 +9766,7 @@ struct rtcore_traversal_source_snapshot {
 
   rtcore_traversal_source_provider provider;
   bool provider_supported;
+  rtcore_traversal_provider_reject_reason reject_reason;
   Traversal_data traversal_snapshot;
   bool has_traversal_data;
   bool initialized_default_miss;
@@ -9822,6 +9836,7 @@ rtcore_make_traversal_source_snapshot_from_provider_response(
   rtcore_traversal_source_snapshot snapshot;
   snapshot.provider = response.provider;
   snapshot.provider_supported = response.provider_supported;
+  snapshot.reject_reason = response.reject_reason;
   snapshot.traversal_snapshot = response.traversal_snapshot;
   snapshot.has_traversal_data = response.has_traversal_data;
   snapshot.initialized_default_miss = response.initialized_default_miss;
@@ -9835,6 +9850,7 @@ rtcore_make_unsupported_traversal_source_snapshot(
   rtcore_traversal_source_snapshot snapshot;
   snapshot.provider = request.provider;
   snapshot.provider_supported = false;
+  snapshot.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED;
   return snapshot;
 }
 
@@ -10029,10 +10045,12 @@ bool rtcore_build_traversal_completion_event(
       rtcore_make_traversal_source_snapshot(source_request);
   if (!source_snapshot.provider_supported) {
     printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
-           "reason=RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED, "
+           "reason=%s, "
            "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
            "lane_slot_index=%u, traversal-source-provider-unsupported=1\n",
            pI->source_file(), pI->source_line(),
+           rtcore_traversal_provider_reject_reason_name(
+               source_snapshot.reject_reason),
            rtcore_traversal_source_provider_name(source_snapshot.provider),
            event->context_ptr, event->handoff_window_base,
            event->lane_slot_index);
