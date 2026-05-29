@@ -9618,7 +9618,8 @@ enum rtcore_traversal_source_provider {
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL = 0,
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STUB = 1,
   RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_REJECT = 2,
-  RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED = 3
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_EMPTY = 3,
+  RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED = 4
 };
 
 static const char *rtcore_traversal_source_provider_name(
@@ -9630,6 +9631,8 @@ static const char *rtcore_traversal_source_provider_name(
       return "rtcore_stub";
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_REJECT:
       return "rtcore_reject";
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_EMPTY:
+      return "rtcore_empty";
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
     default:
       return "unsupported";
@@ -9651,6 +9654,10 @@ rtcore_select_traversal_source_provider() {
   if (strcmp(value, "rtcore_reject") == 0 ||
       strcmp(value, "rtcore_supported_reject") == 0) {
     return RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_REJECT;
+  }
+  if (strcmp(value, "rtcore_empty") == 0 ||
+      strcmp(value, "rtcore_accepted_empty") == 0) {
+    return RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_EMPTY;
   }
   return RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED;
 }
@@ -9724,12 +9731,15 @@ rtcore_make_traversal_work_descriptor(
 enum rtcore_traversal_provider_reject_reason {
   RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE = 0,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED = 1,
-  RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED = 2
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED = 2,
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING = 3
 };
 
 static const char *rtcore_traversal_provider_reject_reason_name(
     rtcore_traversal_provider_reject_reason reason) {
   switch (reason) {
+    case RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING:
+      return "RTCORE_TRAVERSAL_PROVIDER_ACCEPTED_PAYLOAD_MISSING";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED:
       return "RTCORE_TRAVERSAL_PROVIDER_WORK_DESCRIPTOR_REJECTED";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED:
@@ -9865,6 +9875,28 @@ rtcore_make_rtcore_reject_traversal_provider_response(
   return response;
 }
 
+static rtcore_traversal_provider_response
+rtcore_make_rtcore_empty_traversal_provider_response(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_traversal_provider_response response;
+  response.provider = descriptor.provider;
+  response.provider_supported = true;
+  response.provider_accepted = true;
+  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
+  printf("GPGPU-Sim PTX: RT_SUBMIT traversal-source-rtcore-empty, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "rtcore-empty-provider-supported=1, "
+         "rtcore-empty-provider-accepted=1, "
+         "rtcore-empty-provider-payload=0\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
+         descriptor.warp_metadata.active_mask);
+  fflush(stdout);
+  return response;
+}
+
 static rtcore_traversal_source_snapshot
 rtcore_make_traversal_source_snapshot_from_provider_response(
     const rtcore_traversal_provider_response &response) {
@@ -9907,6 +9939,11 @@ rtcore_make_traversal_provider_response(
           rtcore_make_traversal_work_descriptor(request);
       return rtcore_make_rtcore_reject_traversal_provider_response(descriptor);
     }
+    case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_EMPTY: {
+      rtcore_traversal_work_descriptor descriptor =
+          rtcore_make_traversal_work_descriptor(request);
+      return rtcore_make_rtcore_empty_traversal_provider_response(descriptor);
+    }
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
     default:
       return rtcore_make_unsupported_traversal_provider_response(request);
@@ -9919,6 +9956,12 @@ rtcore_make_traversal_source_snapshot(
   rtcore_traversal_provider_response response =
       rtcore_make_traversal_provider_response(request);
   return rtcore_make_traversal_source_snapshot_from_provider_response(response);
+}
+
+static bool rtcore_traversal_source_snapshot_has_accepted_payload(
+    const rtcore_traversal_source_snapshot &snapshot) {
+  return !snapshot.provider_accepted || snapshot.has_traversal_data ||
+         snapshot.initialized_default_miss;
 }
 
 struct rtcore_traversal_completion_event {
@@ -10093,13 +10136,20 @@ bool rtcore_build_traversal_completion_event(
   const bool provider_unsupported = !source_snapshot.provider_supported;
   const bool provider_rejected =
       source_snapshot.provider_supported && !source_snapshot.provider_accepted;
-  if (provider_unsupported || provider_rejected) {
+  const bool provider_payload_missing =
+      source_snapshot.provider_supported && source_snapshot.provider_accepted &&
+      !rtcore_traversal_source_snapshot_has_accepted_payload(source_snapshot);
+  if (provider_payload_missing) {
+    source_snapshot.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING;
+  }
+  if (provider_unsupported || provider_rejected || provider_payload_missing) {
     printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
            "reason=%s, "
            "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
            "lane_slot_index=%u, provider_supported=%u, "
            "provider_accepted=%u, traversal-source-provider-unsupported=%u, "
-           "traversal-source-provider-rejected=%u\n",
+           "traversal-source-provider-rejected=%u, "
+           "traversal-source-provider-payload-missing=%u\n",
            pI->source_file(), pI->source_line(),
            rtcore_traversal_provider_reject_reason_name(
                source_snapshot.reject_reason),
@@ -10108,7 +10158,8 @@ bool rtcore_build_traversal_completion_event(
            event->lane_slot_index,
            source_snapshot.provider_supported ? 1 : 0,
            source_snapshot.provider_accepted ? 1 : 0,
-           provider_unsupported ? 1 : 0, provider_rejected ? 1 : 0);
+           provider_unsupported ? 1 : 0, provider_rejected ? 1 : 0,
+           provider_payload_missing ? 1 : 0);
     fflush(stdout);
     return false;
   }
