@@ -3247,11 +3247,15 @@ bool rt_unit::claim_adapter_completion_for_issue(
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
          "issued_active_mask=0x%08x, adapter_active_mask=0x%08x, "
          "adapter_completed_lane_mask=0x%08x, adapter_static_inst_uid=%u, "
+         "adapter_max_node_visits=%u, "
+         "adapter_max_primitive_tests=%u, "
          "claimed=%u, issue_mask_match=%u, issued_lanes_complete=%u, "
          "accepted=%u\n",
          event->warp_uid, event->warp_id, m_sid, event->issued_active_mask,
          event->adapter_active_mask, event->adapter_completed_lane_mask,
          event->adapter_static_inst_uid,
+         event->adapter_max_node_visits,
+         event->adapter_max_primitive_tests,
          event->adapter_completion_claimed ? 1 : 0,
          event->adapter_completion_issue_mask_match ? 1 : 0,
          event->adapter_completion_issued_lanes_complete ? 1 : 0,
@@ -3353,6 +3357,8 @@ rt_unit::rtcore_make_synthetic_release_snapshot(
   snapshot.issued_active_mask = event.issued_active_mask;
   snapshot.adapter_active_mask = event.adapter_active_mask;
   snapshot.adapter_completed_lane_mask = event.adapter_completed_lane_mask;
+  snapshot.adapter_max_node_visits = event.adapter_max_node_visits;
+  snapshot.adapter_max_primitive_tests = event.adapter_max_primitive_tests;
   snapshot.enqueue_cycle = event.enqueue_cycle;
   snapshot.ready_cycle = event.ready_cycle;
   snapshot.current_cycle = current_cycle;
@@ -3372,11 +3378,13 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
          "issued_active_mask=0x%08x, adapter_active_mask=0x%08x, "
          "adapter_completed_lane_mask=0x%08x, ready_cycle=%llu, "
-         "current_cycle=%llu, action=release\n",
+         "current_cycle=%llu, adapter_max_node_visits=%u, "
+         "adapter_max_primitive_tests=%u, action=release\n",
          snapshot.warp_uid, snapshot.warp_id, snapshot.owner_hw_sid,
          snapshot.issued_active_mask, snapshot.adapter_active_mask,
          snapshot.adapter_completed_lane_mask, snapshot.ready_cycle,
-         snapshot.current_cycle);
+         snapshot.current_cycle, snapshot.adapter_max_node_visits,
+         snapshot.adapter_max_primitive_tests);
   fflush(stdout);
 }
 

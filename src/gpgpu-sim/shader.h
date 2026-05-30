@@ -1389,6 +1389,8 @@ class rt_unit : public pipelined_simd_unit {
               issued_active_mask(0),
               adapter_active_mask(0),
               adapter_completed_lane_mask(0),
+              adapter_max_node_visits(0),
+              adapter_max_primitive_tests(0),
               enqueue_cycle(0),
               ready_cycle(0),
               current_cycle(0) {}
@@ -1401,6 +1403,8 @@ class rt_unit : public pipelined_simd_unit {
         unsigned issued_active_mask;
         unsigned adapter_active_mask;
         unsigned adapter_completed_lane_mask;
+        unsigned adapter_max_node_visits;
+        unsigned adapter_max_primitive_tests;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
         unsigned long long current_cycle;
