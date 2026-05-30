@@ -53,7 +53,7 @@
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
-extern "C" bool rtcore_symbolic_submit_issue_has_token_capacity(
+extern "C" bool rtcore_symbolic_submit_issue_resources_available(
     unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
     unsigned long long static_inst_pc);
 
@@ -1657,12 +1657,12 @@ void scheduler_unit::cycle() {
 
                 const unsigned rtcore_active_mask =
                     static_cast<unsigned>(active_mask.to_ulong());
-                const bool rtcore_token_capacity_ready =
+                const bool rtcore_issue_resources_ready =
                     pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
-                    rtcore_symbolic_submit_issue_has_token_capacity(
+                    rtcore_symbolic_submit_issue_resources_available(
                         warp_id, m_shader->get_sid(), rtcore_active_mask,
                         pI->pc);
-                if (!rtcore_token_capacity_ready) {
+                if (!rtcore_issue_resources_ready) {
                   break;
                 }
 

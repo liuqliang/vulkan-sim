@@ -8869,13 +8869,35 @@ bool rtcore_symbolic_submit_issue_token_backpressure_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
-extern "C" bool rtcore_symbolic_submit_issue_has_token_capacity(
-    unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
-    unsigned long long static_inst_pc) {
-  if (!rtcore_symbolic_submit_issue_token_backpressure_enabled()) {
+bool rtcore_symbolic_submit_issue_resource_backpressure_enabled() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_ISSUE_RESOURCE_BACKPRESSURE");
+  if (value != NULL && *value != '\0' && strcmp(value, "0") != 0) {
     return true;
   }
+  return rtcore_symbolic_submit_issue_token_backpressure_enabled();
+}
 
+struct rtcore_symbolic_submit_issue_resource_snapshot {
+  unsigned warp_id;
+  unsigned owner_hw_sid;
+  unsigned active_lane_mask;
+  unsigned long long static_inst_pc;
+  unsigned active_lanes;
+  unsigned rt_tokens_per_execution_partition;
+  size_t allocator_live_tokens;
+  size_t allocator_live_plus_demand_tokens;
+  bool demand_exceeds_capacity;
+  unsigned handoff_window_limited_warps;
+  unsigned traversal_stack_limited_warps;
+  unsigned resident_rt_warps;
+  bool token_capacity_available;
+  bool capacity_available;
+};
+
+rtcore_symbolic_submit_issue_resource_snapshot
+rtcore_make_submit_issue_resource_snapshot(
+    unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
+    unsigned long long static_inst_pc) {
   const rtcore_symbolic_resource_profile profile =
       rtcore_get_symbolic_resource_profile();
   const unsigned active_lanes = rtcore_count_active_lanes(active_mask);
@@ -8890,23 +8912,72 @@ extern "C" bool rtcore_symbolic_submit_issue_has_token_capacity(
       allocator_live_plus_demand_tokens <=
           profile.rt_tokens_per_execution_partition;
 
-  if (!token_capacity_available) {
+  rtcore_symbolic_submit_issue_resource_snapshot snapshot;
+  snapshot.warp_id = warp_id;
+  snapshot.owner_hw_sid = owner_hw_sid;
+  snapshot.active_lane_mask = active_mask;
+  snapshot.static_inst_pc = static_inst_pc;
+  snapshot.active_lanes = active_lanes;
+  snapshot.rt_tokens_per_execution_partition =
+      profile.rt_tokens_per_execution_partition;
+  snapshot.allocator_live_tokens = allocator_live_tokens;
+  snapshot.allocator_live_plus_demand_tokens =
+      allocator_live_plus_demand_tokens;
+  snapshot.demand_exceeds_capacity = demand_exceeds_capacity;
+  snapshot.handoff_window_limited_warps = profile.handoff_window_limited_warps;
+  snapshot.traversal_stack_limited_warps =
+      profile.traversal_stack_limited_warps;
+  snapshot.resident_rt_warps = profile.resident_rt_warps;
+  snapshot.token_capacity_available = token_capacity_available;
+  snapshot.capacity_available = token_capacity_available;
+  return snapshot;
+}
+
+extern "C" bool rtcore_symbolic_submit_issue_resources_available(
+    unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
+    unsigned long long static_inst_pc) {
+  if (!rtcore_symbolic_submit_issue_resource_backpressure_enabled()) {
+    return true;
+  }
+
+  const rtcore_symbolic_submit_issue_resource_snapshot snapshot =
+      rtcore_make_submit_issue_resource_snapshot(
+          warp_id, owner_hw_sid, active_mask, static_inst_pc);
+
+  if (!snapshot.capacity_available) {
     printf("GPGPU-Sim PTX: RT_SUBMIT token-resource-backpressure, "
+           "diagnostic=RT_SUBMIT issue-resource-snapshot, "
            "warp_id=%u, owner_hw_sid=%u, static_inst_pc=0x%llx, "
            "active_lane_mask=0x%08x, active_lanes=%u, "
            "rt_tokens_per_execution_partition=%u, "
            "allocator_live_tokens=%zu, "
            "allocator_live_plus_demand_tokens=%zu, "
-           "demand_exceeds_capacity=%u, capacity_available=0, "
+           "demand_exceeds_capacity=%u, "
+           "handoff_window_limited_warps=%u, "
+           "traversal_stack_limited_warps=%u, resident_rt_warps=%u, "
+           "token_capacity_available=%u, capacity_available=0, "
            "action=stall\n",
-           warp_id, owner_hw_sid, static_inst_pc, active_mask, active_lanes,
-           profile.rt_tokens_per_execution_partition, allocator_live_tokens,
-           allocator_live_plus_demand_tokens,
-           demand_exceeds_capacity ? 1 : 0);
+           snapshot.warp_id, snapshot.owner_hw_sid, snapshot.static_inst_pc,
+           snapshot.active_lane_mask, snapshot.active_lanes,
+           snapshot.rt_tokens_per_execution_partition,
+           snapshot.allocator_live_tokens,
+           snapshot.allocator_live_plus_demand_tokens,
+           snapshot.demand_exceeds_capacity ? 1 : 0,
+           snapshot.handoff_window_limited_warps,
+           snapshot.traversal_stack_limited_warps,
+           snapshot.resident_rt_warps,
+           snapshot.token_capacity_available ? 1 : 0);
     fflush(stdout);
   }
 
-  return token_capacity_available;
+  return snapshot.capacity_available;
+}
+
+extern "C" bool rtcore_symbolic_submit_issue_has_token_capacity(
+    unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
+    unsigned long long static_inst_pc) {
+  return rtcore_symbolic_submit_issue_resources_available(
+      warp_id, owner_hw_sid, active_mask, static_inst_pc);
 }
 
 bool rtcore_note_symbolic_rt_token_reservation_lane_acquired(
