@@ -8887,6 +8887,11 @@ struct rtcore_symbolic_submit_issue_resource_snapshot {
   size_t allocator_live_tokens;
   size_t allocator_live_plus_demand_tokens;
   bool demand_exceeds_capacity;
+  size_t handoff_live_slots;
+  size_t handoff_slot_capacity;
+  size_t handoff_live_plus_demand_slots;
+  bool handoff_demand_exceeds_capacity;
+  bool handoff_capacity_available;
   unsigned handoff_window_limited_warps;
   unsigned traversal_stack_limited_warps;
   unsigned resident_rt_warps;
@@ -8911,6 +8916,18 @@ rtcore_make_submit_issue_resource_snapshot(
       active_lanes == 0 || demand_exceeds_capacity ||
       allocator_live_plus_demand_tokens <=
           profile.rt_tokens_per_execution_partition;
+  const size_t handoff_live_slots =
+      rtcore_synthetic_handoff_window_count();
+  const size_t handoff_slot_capacity =
+      (size_t)profile.handoff_window_limited_warps *
+      profile.max_active_lanes_per_rt_warp;
+  const size_t handoff_live_plus_demand_slots =
+      handoff_live_slots + active_lanes;
+  const bool handoff_demand_exceeds_capacity =
+      active_lanes > handoff_slot_capacity;
+  const bool handoff_capacity_available =
+      active_lanes == 0 || handoff_demand_exceeds_capacity ||
+      handoff_live_plus_demand_slots <= handoff_slot_capacity;
 
   rtcore_symbolic_submit_issue_resource_snapshot snapshot;
   snapshot.warp_id = warp_id;
@@ -8924,12 +8941,19 @@ rtcore_make_submit_issue_resource_snapshot(
   snapshot.allocator_live_plus_demand_tokens =
       allocator_live_plus_demand_tokens;
   snapshot.demand_exceeds_capacity = demand_exceeds_capacity;
+  snapshot.handoff_live_slots = handoff_live_slots;
+  snapshot.handoff_slot_capacity = handoff_slot_capacity;
+  snapshot.handoff_live_plus_demand_slots = handoff_live_plus_demand_slots;
+  snapshot.handoff_demand_exceeds_capacity =
+      handoff_demand_exceeds_capacity;
+  snapshot.handoff_capacity_available = handoff_capacity_available;
   snapshot.handoff_window_limited_warps = profile.handoff_window_limited_warps;
   snapshot.traversal_stack_limited_warps =
       profile.traversal_stack_limited_warps;
   snapshot.resident_rt_warps = profile.resident_rt_warps;
   snapshot.token_capacity_available = token_capacity_available;
-  snapshot.capacity_available = token_capacity_available;
+  snapshot.capacity_available =
+      token_capacity_available && handoff_capacity_available;
   return snapshot;
 }
 
@@ -8945,7 +8969,11 @@ extern "C" bool rtcore_symbolic_submit_issue_resources_available(
           warp_id, owner_hw_sid, active_mask, static_inst_pc);
 
   if (!snapshot.capacity_available) {
-    printf("GPGPU-Sim PTX: RT_SUBMIT token-resource-backpressure, "
+    const char *backpressure_kind =
+        !snapshot.token_capacity_available
+            ? "token-resource-backpressure"
+            : "handoff-slot-backpressure";
+    printf("GPGPU-Sim PTX: RT_SUBMIT %s, "
            "diagnostic=RT_SUBMIT issue-resource-snapshot, "
            "warp_id=%u, owner_hw_sid=%u, static_inst_pc=0x%llx, "
            "active_lane_mask=0x%08x, active_lanes=%u, "
@@ -8953,20 +8981,29 @@ extern "C" bool rtcore_symbolic_submit_issue_resources_available(
            "allocator_live_tokens=%zu, "
            "allocator_live_plus_demand_tokens=%zu, "
            "demand_exceeds_capacity=%u, "
+           "handoff_live_slots=%zu, handoff_slot_capacity=%zu, "
+           "handoff_live_plus_demand_slots=%zu, "
+           "handoff_demand_exceeds_capacity=%u, "
            "handoff_window_limited_warps=%u, "
            "traversal_stack_limited_warps=%u, resident_rt_warps=%u, "
-           "token_capacity_available=%u, capacity_available=0, "
+           "token_capacity_available=%u, handoff_capacity_available=%u, "
+           "capacity_available=0, "
            "action=stall\n",
-           snapshot.warp_id, snapshot.owner_hw_sid, snapshot.static_inst_pc,
+           backpressure_kind, snapshot.warp_id, snapshot.owner_hw_sid,
+           snapshot.static_inst_pc,
            snapshot.active_lane_mask, snapshot.active_lanes,
            snapshot.rt_tokens_per_execution_partition,
            snapshot.allocator_live_tokens,
            snapshot.allocator_live_plus_demand_tokens,
            snapshot.demand_exceeds_capacity ? 1 : 0,
+           snapshot.handoff_live_slots, snapshot.handoff_slot_capacity,
+           snapshot.handoff_live_plus_demand_slots,
+           snapshot.handoff_demand_exceeds_capacity ? 1 : 0,
            snapshot.handoff_window_limited_warps,
            snapshot.traversal_stack_limited_warps,
            snapshot.resident_rt_warps,
-           snapshot.token_capacity_available ? 1 : 0);
+           snapshot.token_capacity_available ? 1 : 0,
+           snapshot.handoff_capacity_available ? 1 : 0);
     fflush(stdout);
   }
 
