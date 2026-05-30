@@ -9822,6 +9822,71 @@ struct rtcore_traversal_provider_response {
   bool hit_geometry;
 };
 
+struct rtcore_custom_backend_result {
+  rtcore_custom_backend_result()
+      : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED),
+        supported(false),
+        accepted(false),
+        reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED),
+        has_traversal_data(false),
+        initialized_default_miss(false),
+        hit_geometry(false),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0) {
+    memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
+  }
+
+  rtcore_traversal_source_provider provider;
+  bool supported;
+  bool accepted;
+  rtcore_traversal_provider_reject_reason reject_reason;
+  Traversal_data traversal_snapshot;
+  bool has_traversal_data;
+  bool initialized_default_miss;
+  bool hit_geometry;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+};
+
+static rtcore_traversal_provider_response
+rtcore_make_provider_response_from_custom_rtcore_backend_result(
+    const rtcore_custom_backend_result &custom_result) {
+  rtcore_traversal_provider_response response;
+  response.provider = custom_result.provider;
+  response.provider_supported = custom_result.supported;
+  response.provider_accepted = custom_result.accepted;
+  response.reject_reason = custom_result.reject_reason;
+  response.traversal_snapshot = custom_result.traversal_snapshot;
+  response.has_traversal_data = custom_result.has_traversal_data;
+  response.initialized_default_miss = custom_result.initialized_default_miss;
+  response.hit_geometry = custom_result.hit_geometry;
+  printf("GPGPU-Sim PTX: RT_SUBMIT custom-rtcore-backend-result-adapt, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "custom-rtcore-backend-result-adapted=1, "
+         "provider_supported=%u, provider_accepted=%u, reject_reason=%s, "
+         "has_traversal_data=%u, initialized_default_miss=%u, "
+         "hit_geometry=%u, node_visits=%u, primitive_tests=%u\n",
+         rtcore_traversal_source_provider_name(custom_result.provider),
+         custom_result.context_ptr, custom_result.handoff_window_base,
+         custom_result.lane_slot_index,
+         custom_result.warp_metadata.warp_uid,
+         custom_result.warp_metadata.active_mask,
+         custom_result.supported ? 1 : 0, custom_result.accepted ? 1 : 0,
+         rtcore_traversal_provider_reject_reason_name(
+             custom_result.reject_reason),
+         custom_result.has_traversal_data ? 1 : 0,
+         custom_result.initialized_default_miss ? 1 : 0,
+         custom_result.hit_geometry ? 1 : 0,
+         custom_result.traversal_snapshot.rtcore_node_visits,
+         custom_result.traversal_snapshot.rtcore_primitive_tests);
+  fflush(stdout);
+  return response;
+}
+
 struct rtcore_traversal_source_snapshot {
   rtcore_traversal_source_snapshot()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
@@ -10058,14 +10123,26 @@ rtcore_make_rtcore_lane_stats_miss_traversal_provider_response(
   return response;
 }
 
-static rtcore_traversal_provider_response
-rtcore_invoke_custom_rtcore_backend_stub(
+static rtcore_custom_backend_result
+rtcore_make_custom_rtcore_backend_result_base(
     const rtcore_traversal_work_descriptor &descriptor) {
-  rtcore_traversal_provider_response response;
-  response.provider = descriptor.provider;
-  response.provider_supported = false;
-  response.provider_accepted = false;
-  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED;
+  rtcore_custom_backend_result result;
+  result.provider = descriptor.provider;
+  result.context_ptr = descriptor.context_ptr;
+  result.handoff_window_base = descriptor.handoff_window_base;
+  result.lane_slot_index = descriptor.lane_slot_index;
+  result.warp_metadata = descriptor.warp_metadata;
+  return result;
+}
+
+static rtcore_custom_backend_result
+rtcore_make_custom_rtcore_backend_stub_result(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_custom_backend_result result =
+      rtcore_make_custom_rtcore_backend_result_base(descriptor);
+  result.supported = false;
+  result.accepted = false;
+  result.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED;
   printf("GPGPU-Sim PTX: RT_SUBMIT custom-rtcore-backend-stub, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
@@ -10077,23 +10154,32 @@ rtcore_invoke_custom_rtcore_backend_stub(
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
          descriptor.warp_metadata.active_mask);
   fflush(stdout);
-  return response;
+  return result;
 }
 
 static rtcore_traversal_provider_response
-rtcore_make_custom_rtcore_default_miss_backend_response(
+rtcore_invoke_custom_rtcore_backend_stub(
     const rtcore_traversal_work_descriptor &descriptor) {
-  rtcore_traversal_provider_response response;
-  response.provider = descriptor.provider;
-  response.provider_supported = true;
-  response.provider_accepted = true;
-  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
-  response.traversal_snapshot.hit_geometry = false;
-  response.traversal_snapshot.current_shader_counter = -1;
-  response.traversal_snapshot.current_shader_type = -1;
-  response.traversal_snapshot.missIndex = 0;
-  response.initialized_default_miss = true;
-  response.hit_geometry = false;
+  rtcore_custom_backend_result custom_result =
+      rtcore_make_custom_rtcore_backend_stub_result(descriptor);
+  return rtcore_make_provider_response_from_custom_rtcore_backend_result(
+      custom_result);
+}
+
+static rtcore_custom_backend_result
+rtcore_make_custom_rtcore_default_miss_backend_result(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_custom_backend_result result =
+      rtcore_make_custom_rtcore_backend_result_base(descriptor);
+  result.supported = true;
+  result.accepted = true;
+  result.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
+  result.traversal_snapshot.hit_geometry = false;
+  result.traversal_snapshot.current_shader_counter = -1;
+  result.traversal_snapshot.current_shader_type = -1;
+  result.traversal_snapshot.missIndex = 0;
+  result.initialized_default_miss = true;
+  result.hit_geometry = false;
   printf("GPGPU-Sim PTX: RT_SUBMIT custom-rtcore-backend-default-miss, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
@@ -10108,30 +10194,39 @@ rtcore_make_custom_rtcore_default_miss_backend_response(
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
          descriptor.warp_metadata.active_mask);
   fflush(stdout);
-  return response;
+  return result;
+}
+
+static rtcore_traversal_provider_response
+rtcore_make_custom_rtcore_default_miss_backend_response(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_custom_backend_result custom_result =
+      rtcore_make_custom_rtcore_default_miss_backend_result(descriptor);
+  return rtcore_make_provider_response_from_custom_rtcore_backend_result(
+      custom_result);
 }
 
 static const unsigned RTCORE_CUSTOM_STATS_MISS_NODE_VISITS = 11;
 static const unsigned RTCORE_CUSTOM_STATS_MISS_PRIMITIVE_TESTS = 5;
 
-static rtcore_traversal_provider_response
-rtcore_make_custom_rtcore_stats_miss_backend_response(
+static rtcore_custom_backend_result
+rtcore_make_custom_rtcore_stats_miss_backend_result(
     const rtcore_traversal_work_descriptor &descriptor) {
-  rtcore_traversal_provider_response response;
-  response.provider = descriptor.provider;
-  response.provider_supported = true;
-  response.provider_accepted = true;
-  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
-  response.traversal_snapshot.hit_geometry = false;
-  response.traversal_snapshot.current_shader_counter = -1;
-  response.traversal_snapshot.current_shader_type = -1;
-  response.traversal_snapshot.missIndex = 0;
-  response.traversal_snapshot.rtcore_node_visits =
+  rtcore_custom_backend_result result =
+      rtcore_make_custom_rtcore_backend_result_base(descriptor);
+  result.supported = true;
+  result.accepted = true;
+  result.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
+  result.traversal_snapshot.hit_geometry = false;
+  result.traversal_snapshot.current_shader_counter = -1;
+  result.traversal_snapshot.current_shader_type = -1;
+  result.traversal_snapshot.missIndex = 0;
+  result.traversal_snapshot.rtcore_node_visits =
       RTCORE_CUSTOM_STATS_MISS_NODE_VISITS;
-  response.traversal_snapshot.rtcore_primitive_tests =
+  result.traversal_snapshot.rtcore_primitive_tests =
       RTCORE_CUSTOM_STATS_MISS_PRIMITIVE_TESTS;
-  response.initialized_default_miss = true;
-  response.hit_geometry = false;
+  result.initialized_default_miss = true;
+  result.hit_geometry = false;
   printf("GPGPU-Sim PTX: RT_SUBMIT custom-rtcore-backend-stats-miss, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
@@ -10150,15 +10245,24 @@ rtcore_make_custom_rtcore_stats_miss_backend_response(
          RTCORE_CUSTOM_STATS_MISS_NODE_VISITS,
          RTCORE_CUSTOM_STATS_MISS_PRIMITIVE_TESTS);
   fflush(stdout);
-  return response;
+  return result;
+}
+
+static rtcore_traversal_provider_response
+rtcore_make_custom_rtcore_stats_miss_backend_response(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_custom_backend_result custom_result =
+      rtcore_make_custom_rtcore_stats_miss_backend_result(descriptor);
+  return rtcore_make_provider_response_from_custom_rtcore_backend_result(
+      custom_result);
 }
 
 static const unsigned RTCORE_CUSTOM_LANE_STATS_MISS_NODE_VISITS_BASE = 13;
 static const unsigned RTCORE_CUSTOM_LANE_STATS_MISS_PRIMITIVE_TESTS_BASE = 4;
 static const unsigned RTCORE_CUSTOM_LANE_STATS_MISS_PRIMITIVE_TESTS_STRIDE = 3;
 
-static rtcore_traversal_provider_response
-rtcore_make_custom_rtcore_lane_stats_miss_backend_response(
+static rtcore_custom_backend_result
+rtcore_make_custom_rtcore_lane_stats_miss_backend_result(
     const rtcore_traversal_work_descriptor &descriptor) {
   const unsigned node_visits =
       RTCORE_CUSTOM_LANE_STATS_MISS_NODE_VISITS_BASE +
@@ -10167,19 +10271,19 @@ rtcore_make_custom_rtcore_lane_stats_miss_backend_response(
       RTCORE_CUSTOM_LANE_STATS_MISS_PRIMITIVE_TESTS_BASE +
       descriptor.lane_slot_index *
           RTCORE_CUSTOM_LANE_STATS_MISS_PRIMITIVE_TESTS_STRIDE;
-  rtcore_traversal_provider_response response;
-  response.provider = descriptor.provider;
-  response.provider_supported = true;
-  response.provider_accepted = true;
-  response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
-  response.traversal_snapshot.hit_geometry = false;
-  response.traversal_snapshot.current_shader_counter = -1;
-  response.traversal_snapshot.current_shader_type = -1;
-  response.traversal_snapshot.missIndex = 0;
-  response.traversal_snapshot.rtcore_node_visits = node_visits;
-  response.traversal_snapshot.rtcore_primitive_tests = primitive_tests;
-  response.initialized_default_miss = true;
-  response.hit_geometry = false;
+  rtcore_custom_backend_result result =
+      rtcore_make_custom_rtcore_backend_result_base(descriptor);
+  result.supported = true;
+  result.accepted = true;
+  result.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
+  result.traversal_snapshot.hit_geometry = false;
+  result.traversal_snapshot.current_shader_counter = -1;
+  result.traversal_snapshot.current_shader_type = -1;
+  result.traversal_snapshot.missIndex = 0;
+  result.traversal_snapshot.rtcore_node_visits = node_visits;
+  result.traversal_snapshot.rtcore_primitive_tests = primitive_tests;
+  result.initialized_default_miss = true;
+  result.hit_geometry = false;
   printf("GPGPU-Sim PTX: RT_SUBMIT custom-rtcore-backend-lane-stats-miss, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
@@ -10196,7 +10300,16 @@ rtcore_make_custom_rtcore_lane_stats_miss_backend_response(
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
          descriptor.warp_metadata.active_mask, node_visits, primitive_tests);
   fflush(stdout);
-  return response;
+  return result;
+}
+
+static rtcore_traversal_provider_response
+rtcore_make_custom_rtcore_lane_stats_miss_backend_response(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_custom_backend_result custom_result =
+      rtcore_make_custom_rtcore_lane_stats_miss_backend_result(descriptor);
+  return rtcore_make_provider_response_from_custom_rtcore_backend_result(
+      custom_result);
 }
 
 static rtcore_traversal_provider_response
