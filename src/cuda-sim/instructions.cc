@@ -9759,6 +9759,15 @@ rtcore_make_traversal_source_request(
     request.warp_metadata = *warp_metadata;
   }
   request.provider = rtcore_select_traversal_source_provider();
+  printf("GPGPU-Sim PTX: RT_SUBMIT traversal-source-provider-selected, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "traversal-source-provider-selected=1\n",
+         rtcore_traversal_source_provider_name(request.provider),
+         request.context_ptr, request.handoff_window_base,
+         request.lane_slot_index, request.warp_metadata.warp_uid,
+         request.warp_metadata.active_mask);
+  fflush(stdout);
   return request;
 }
 
