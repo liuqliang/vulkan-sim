@@ -53,6 +53,10 @@
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
+extern "C" bool rtcore_symbolic_submit_issue_has_token_capacity(
+    unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
+    unsigned long long static_inst_pc);
+
 mem_fetch *shader_core_mem_fetch_allocator::alloc(
     new_addr_type addr, mem_access_type type, unsigned size, bool wr,
     unsigned long long cycle) const {
@@ -1651,12 +1655,23 @@ void scheduler_unit::cycle() {
                   && !(diff_exec_units && 
                         previous_issued_inst_exec_type == exec_unit_type_t::RT)) {
 
-                  m_shader->issue_warp(*m_rt_core_out, pI, active_mask,
-                                       warp_id, m_id);
-                  issued++;
-                  issued_inst = true;
-                  warp_inst_issued = true;
-                  previous_issued_inst_exec_type = exec_unit_type_t::RT;              
+                const unsigned rtcore_active_mask =
+                    static_cast<unsigned>(active_mask.to_ulong());
+                const bool rtcore_token_capacity_ready =
+                    pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+                    rtcore_symbolic_submit_issue_has_token_capacity(
+                        warp_id, m_shader->get_sid(), rtcore_active_mask,
+                        pI->pc);
+                if (!rtcore_token_capacity_ready) {
+                  break;
+                }
+
+                m_shader->issue_warp(*m_rt_core_out, pI, active_mask,
+                                     warp_id, m_id);
+                issued++;
+                issued_inst = true;
+                warp_inst_issued = true;
+                previous_issued_inst_exec_type = exec_unit_type_t::RT;
               }
 
             } else {

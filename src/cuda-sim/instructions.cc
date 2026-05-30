@@ -8864,6 +8864,51 @@ bool rtcore_symbolic_submit_token_reservation_available(
   return token_capacity_available;
 }
 
+bool rtcore_symbolic_submit_issue_token_backpressure_enabled() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_TOKEN_BACKPRESSURE");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+extern "C" bool rtcore_symbolic_submit_issue_has_token_capacity(
+    unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
+    unsigned long long static_inst_pc) {
+  if (!rtcore_symbolic_submit_issue_token_backpressure_enabled()) {
+    return true;
+  }
+
+  const rtcore_symbolic_resource_profile profile =
+      rtcore_get_symbolic_resource_profile();
+  const unsigned active_lanes = rtcore_count_active_lanes(active_mask);
+  const size_t allocator_live_tokens =
+      rtcore_symbolic_rt_token_allocator_live_count();
+  const bool demand_exceeds_capacity =
+      active_lanes > profile.rt_tokens_per_execution_partition;
+  const size_t allocator_live_plus_demand_tokens =
+      allocator_live_tokens + active_lanes;
+  const bool token_capacity_available =
+      active_lanes == 0 || demand_exceeds_capacity ||
+      allocator_live_plus_demand_tokens <=
+          profile.rt_tokens_per_execution_partition;
+
+  if (!token_capacity_available) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT token-resource-backpressure, "
+           "warp_id=%u, owner_hw_sid=%u, static_inst_pc=0x%llx, "
+           "active_lane_mask=0x%08x, active_lanes=%u, "
+           "rt_tokens_per_execution_partition=%u, "
+           "allocator_live_tokens=%zu, "
+           "allocator_live_plus_demand_tokens=%zu, "
+           "demand_exceeds_capacity=%u, capacity_available=0, "
+           "action=stall\n",
+           warp_id, owner_hw_sid, static_inst_pc, active_mask, active_lanes,
+           profile.rt_tokens_per_execution_partition, allocator_live_tokens,
+           allocator_live_plus_demand_tokens,
+           demand_exceeds_capacity ? 1 : 0);
+    fflush(stdout);
+  }
+
+  return token_capacity_available;
+}
+
 bool rtcore_note_symbolic_rt_token_reservation_lane_acquired(
     const ptx_instruction *pI,
     const rtcore_symbolic_rt_token_reservation_key &key,
