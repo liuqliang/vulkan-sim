@@ -56,6 +56,8 @@
 extern "C" bool rtcore_symbolic_submit_issue_resources_available(
     unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
     unsigned long long static_inst_pc);
+extern "C" bool
+rtcore_symbolic_submit_issue_resource_backpressure_is_enabled();
 
 mem_fetch *shader_core_mem_fetch_allocator::alloc(
     new_addr_type addr, mem_access_type type, unsigned size, bool wr,
@@ -1283,6 +1285,18 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   }
 }
 
+bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
+    const warp_inst_t &inst, unsigned warp_id) const {
+  if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
+    return true;
+  }
+  if (!rtcore_symbolic_submit_issue_resource_backpressure_is_enabled()) {
+    return true;
+  }
+  return m_rt_unit->rtcore_resident_warp_capacity_available(
+      inst, warp_id, m_sid, inst.pc);
+}
+
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                  const warp_inst_t *next_inst,
                                  const active_mask_t &active_mask,
@@ -1663,6 +1677,13 @@ void scheduler_unit::cycle() {
                         warp_id, m_shader->get_sid(), rtcore_active_mask,
                         pI->pc);
                 if (!rtcore_issue_resources_ready) {
+                  break;
+                }
+                const bool rtcore_resident_warp_capacity_ready =
+                    pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+                    m_shader->rtcore_submit_resident_warp_capacity_available(
+                        *pI, warp_id);
+                if (!rtcore_resident_warp_capacity_ready) {
                   break;
                 }
 
@@ -2894,6 +2915,30 @@ unsigned rt_unit::active_warps() {
     warp_ids.insert(warp_id);
   }
   return warp_ids.size();
+}
+
+bool rt_unit::rtcore_resident_warp_capacity_available(
+    const warp_inst_t &inst, unsigned warp_id, unsigned owner_hw_sid,
+    unsigned long long static_inst_pc) const {
+  if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
+    return true;
+  }
+  if (m_config->m_rt_max_warps == 0) {
+    return true;
+  }
+  if (n_warps >= m_config->m_rt_max_warps) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT resident-warp-backpressure, "
+           "diagnostic=RT_SUBMIT issue-resource-snapshot, warp_id=%u, "
+           "owner_hw_sid=%u, static_inst_pc=0x%llx, "
+           "resident_live_warps=%u, resident_warp_capacity=%u, "
+           "resident_live_plus_demand_warps=%u, capacity_available=0, "
+           "action=stall\n",
+           warp_id, owner_hw_sid, static_inst_pc, n_warps,
+           m_config->m_rt_max_warps, n_warps + 1);
+    fflush(stdout);
+    return false;
+  }
+  return true;
 }
 
 static unsigned g_rtcore_completion_queue_inflight = 0;

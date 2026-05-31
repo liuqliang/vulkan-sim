@@ -8877,6 +8877,11 @@ bool rtcore_symbolic_submit_issue_resource_backpressure_enabled() {
   return rtcore_symbolic_submit_issue_token_backpressure_enabled();
 }
 
+extern "C" bool
+rtcore_symbolic_submit_issue_resource_backpressure_is_enabled() {
+  return rtcore_symbolic_submit_issue_resource_backpressure_enabled();
+}
+
 struct rtcore_symbolic_submit_issue_resource_snapshot {
   unsigned warp_id;
   unsigned owner_hw_sid;
