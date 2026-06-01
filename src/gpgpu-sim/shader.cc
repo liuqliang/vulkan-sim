@@ -1301,6 +1301,15 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
       inst, warp_id, m_sid, inst.pc, snapshot);
 }
 
+bool shader_core_ctx::rtcore_submit_completion_queue_reserve_issue_slot(
+    const warp_inst_t &inst, unsigned warp_id) const {
+  if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
+    return true;
+  }
+  return m_rt_unit->rtcore_completion_queue_reserve_issue_slot(
+      inst, warp_id, m_sid, inst.pc);
+}
+
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                  const warp_inst_t *next_inst,
                                  const active_mask_t &active_mask,
@@ -1689,9 +1698,19 @@ void scheduler_unit::cycle() {
                 break;
               }
 
-              if (m_rt_core_out->has_free(m_shader->m_config->sub_core_model, m_id)
-                  && !(diff_exec_units && 
-                        previous_issued_inst_exec_type == exec_unit_type_t::RT)) {
+              const bool rt_core_issue_slot_ready =
+                  m_rt_core_out->has_free(m_shader->m_config->sub_core_model,
+                                          m_id) &&
+                  !(diff_exec_units &&
+                    previous_issued_inst_exec_type == exec_unit_type_t::RT);
+              if (rt_core_issue_slot_ready) {
+                const bool rtcore_completion_queue_ready =
+                    pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+                    m_shader->rtcore_submit_completion_queue_reserve_issue_slot(
+                        *pI, warp_id);
+                if (!rtcore_completion_queue_ready) {
+                  break;
+                }
 
                 m_shader->issue_warp(*m_rt_core_out, pI, active_mask,
                                      warp_id, m_id);
@@ -2974,7 +2993,68 @@ bool rt_unit::rtcore_resident_warp_capacity_available(
   return true;
 }
 
+struct rtcore_completion_queue_reservation_key {
+  unsigned owner_hw_sid;
+  unsigned warp_id;
+  unsigned long long static_inst_pc;
+
+  bool operator<(const rtcore_completion_queue_reservation_key &other) const {
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    if (warp_id != other.warp_id) {
+      return warp_id < other.warp_id;
+    }
+    return static_inst_pc < other.static_inst_pc;
+  }
+};
+
 static unsigned g_rtcore_completion_queue_inflight = 0;
+static std::set<rtcore_completion_queue_reservation_key>
+    g_rtcore_completion_queue_reservations;
+
+static rtcore_completion_queue_reservation_key
+rtcore_make_completion_queue_reservation_key(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned long long static_inst_pc) {
+  rtcore_completion_queue_reservation_key key;
+  key.owner_hw_sid = owner_hw_sid;
+  key.warp_id = warp_id;
+  key.static_inst_pc = static_inst_pc;
+  return key;
+}
+
+static unsigned rtcore_completion_queue_reservation_count() {
+  return (unsigned)g_rtcore_completion_queue_reservations.size();
+}
+
+static bool rtcore_completion_queue_reservation_contains(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned long long static_inst_pc) {
+  const rtcore_completion_queue_reservation_key key =
+      rtcore_make_completion_queue_reservation_key(
+          owner_hw_sid, warp_id, static_inst_pc);
+  return g_rtcore_completion_queue_reservations.find(key) !=
+         g_rtcore_completion_queue_reservations.end();
+}
+
+static bool rtcore_completion_queue_reservation_insert(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned long long static_inst_pc) {
+  const rtcore_completion_queue_reservation_key key =
+      rtcore_make_completion_queue_reservation_key(
+          owner_hw_sid, warp_id, static_inst_pc);
+  return g_rtcore_completion_queue_reservations.insert(key).second;
+}
+
+static bool rtcore_completion_queue_reservation_remove(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned long long static_inst_pc) {
+  const rtcore_completion_queue_reservation_key key =
+      rtcore_make_completion_queue_reservation_key(
+          owner_hw_sid, warp_id, static_inst_pc);
+  return g_rtcore_completion_queue_reservations.erase(key) != 0;
+}
 
 unsigned rt_unit::rtcore_synthetic_completion_latency() const {
   const char *value = getenv("VULKAN_SIM_RTCORE_SYNTHETIC_COMPLETION_LATENCY");
@@ -3022,10 +3102,18 @@ rt_unit::rtcore_make_completion_queue_state_snapshot(
   snapshot.submit = inst.rt_subop == RT_CORE_SUBOP_SUBMIT;
   snapshot.capacity = rtcore_completion_queue_capacity();
   snapshot.inflight = rtcore_completion_queue_inflight();
+  snapshot.reserved = rtcore_completion_queue_reservation_count();
+  snapshot.owner_hw_sid = m_sid;
+  snapshot.warp_id = inst.empty() ? 0 : inst.warp_id();
+  snapshot.static_inst_pc = inst.pc;
+  snapshot.has_reservation = rtcore_completion_queue_reservation_contains(
+      snapshot.owner_hw_sid, snapshot.warp_id, snapshot.static_inst_pc);
+  snapshot.live_plus_reserved = snapshot.inflight + snapshot.reserved;
   snapshot.capacity_enabled = snapshot.capacity != 0;
   snapshot.capacity_available =
       !snapshot.submit || !snapshot.capacity_enabled ||
-      snapshot.inflight < snapshot.capacity;
+      snapshot.has_reservation ||
+      snapshot.live_plus_reserved < snapshot.capacity;
   return snapshot;
 }
 
@@ -3035,11 +3123,52 @@ void rt_unit::rtcore_apply_completion_queue_state_snapshot(
     return;
   }
   if (snapshot.action == RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE) {
+    if (snapshot.has_reservation) {
+      rtcore_completion_queue_reservation_remove(
+          snapshot.owner_hw_sid, snapshot.warp_id, snapshot.static_inst_pc);
+    }
     g_rtcore_completion_queue_inflight++;
   } else if (snapshot.action == RTCORE_COMPLETION_QUEUE_ACTION_RETIRE &&
              g_rtcore_completion_queue_inflight > 0) {
     g_rtcore_completion_queue_inflight--;
   }
+}
+
+bool rt_unit::rtcore_completion_queue_reserve_issue_slot(
+    const warp_inst_t &inst, unsigned warp_id, unsigned owner_hw_sid,
+    unsigned long long static_inst_pc) const {
+  rtcore_completion_queue_state_snapshot snapshot =
+      rtcore_make_completion_queue_state_snapshot(
+          inst, RTCORE_COMPLETION_QUEUE_ACTION_RESERVE);
+  snapshot.owner_hw_sid = owner_hw_sid;
+  snapshot.warp_id = warp_id;
+  snapshot.static_inst_pc = static_inst_pc;
+  snapshot.reserved = rtcore_completion_queue_reservation_count();
+  snapshot.has_reservation = rtcore_completion_queue_reservation_contains(
+      snapshot.owner_hw_sid, snapshot.warp_id, snapshot.static_inst_pc);
+  snapshot.live_plus_reserved = snapshot.inflight + snapshot.reserved;
+  snapshot.capacity_available =
+      !snapshot.submit || !snapshot.capacity_enabled ||
+      snapshot.has_reservation ||
+      snapshot.live_plus_reserved < snapshot.capacity;
+
+  if (snapshot.capacity_available) {
+    if (snapshot.submit && snapshot.capacity_enabled &&
+        !snapshot.has_reservation) {
+      rtcore_completion_queue_reservation_insert(
+          snapshot.owner_hw_sid, snapshot.warp_id, snapshot.static_inst_pc);
+    }
+    return true;
+  }
+
+  printf("GPGPU-Sim PTX: RT-unit completion-queue-issue-backpressure, "
+         "warp_id=%u, owner_hw_sid=%u, static_inst_pc=%llu, "
+         "inflight=%u, reserved=%u, capacity=%u, "
+         "capacity_available=0, action=stall\n",
+         snapshot.warp_id, snapshot.owner_hw_sid, snapshot.static_inst_pc,
+         snapshot.inflight, snapshot.reserved, snapshot.capacity);
+  fflush(stdout);
+  return false;
 }
 
 void rt_unit::rtcore_record_completion_queue_enqueue(
@@ -3062,6 +3191,9 @@ bool rt_unit::rtcore_completion_queue_has_capacity(
   const rtcore_completion_queue_state_snapshot snapshot =
       rtcore_make_completion_queue_state_snapshot(
           inst, RTCORE_COMPLETION_QUEUE_ACTION_CAPACITY_CHECK);
+  if (snapshot.has_reservation) {
+    return true;
+  }
   if (snapshot.capacity_available) {
     return true;
   }

@@ -1357,6 +1357,9 @@ class rt_unit : public pipelined_simd_unit {
             const warp_inst_t &inst, unsigned warp_id,
             unsigned owner_hw_sid, unsigned long long static_inst_pc,
             const rtcore_resident_warp_demand_snapshot &snapshot) const;
+        bool rtcore_completion_queue_reserve_issue_slot(
+            const warp_inst_t &inst, unsigned warp_id,
+            unsigned owner_hw_sid, unsigned long long static_inst_pc) const;
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -1367,6 +1370,7 @@ class rt_unit : public pipelined_simd_unit {
       void memory_cycle(warp_inst_t &inst);
       enum rtcore_completion_queue_action {
         RTCORE_COMPLETION_QUEUE_ACTION_CAPACITY_CHECK,
+        RTCORE_COMPLETION_QUEUE_ACTION_RESERVE,
         RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE,
         RTCORE_COMPLETION_QUEUE_ACTION_RETIRE
       };
@@ -1380,7 +1384,13 @@ class rt_unit : public pipelined_simd_unit {
               capacity_enabled(false),
               capacity_available(true),
               capacity(0),
-              inflight(0) {}
+              inflight(0),
+              reserved(0),
+              live_plus_reserved(0),
+              has_reservation(false),
+              owner_hw_sid(0),
+              warp_id(0),
+              static_inst_pc(0) {}
 
         rtcore_completion_queue_action action;
         bool submit;
@@ -1388,6 +1398,12 @@ class rt_unit : public pipelined_simd_unit {
         bool capacity_available;
         unsigned capacity;
         unsigned inflight;
+        unsigned reserved;
+        unsigned live_plus_reserved;
+        bool has_reservation;
+        unsigned owner_hw_sid;
+        unsigned warp_id;
+        unsigned long long static_inst_pc;
       };
       struct rtcore_synthetic_completion_event {
         unsigned warp_uid;
@@ -2684,6 +2700,8 @@ class shader_core_ctx : public core_t {
   bool rtcore_submit_resident_warp_capacity_available(
       const warp_inst_t &inst, unsigned warp_id,
       unsigned rt_core_out_pending_warps) const;
+  bool rtcore_submit_completion_queue_reserve_issue_slot(
+      const warp_inst_t &inst, unsigned warp_id) const;
 
   void create_front_pipeline();
   void create_schedulers();
