@@ -2012,6 +2012,17 @@ class register_set {
     return false;
   }
 
+  unsigned count_ready_rt_subop(rt_core_subop_t subop) const {
+    unsigned count = 0;
+    for (unsigned i = 0; i < regs.size(); i++) {
+      if (not regs[i]->empty() && regs[i]->op == RT_CORE_OP &&
+          regs[i]->rt_subop == subop) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   void move_in(warp_inst_t *&src) {
     warp_inst_t **free = get_free();
     move_warp(*free, src);

@@ -1331,7 +1331,8 @@ class rt_unit : public pipelined_simd_unit {
         unsigned active_warps();
         bool rtcore_resident_warp_capacity_available(
             const warp_inst_t &inst, unsigned warp_id,
-            unsigned owner_hw_sid, unsigned long long static_inst_pc) const;
+            unsigned owner_hw_sid, unsigned long long static_inst_pc,
+            unsigned rt_core_out_pending_warps) const;
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -2657,7 +2658,8 @@ class shader_core_ctx : public core_t {
                   const active_mask_t &active_mask, unsigned warp_id,
                   unsigned sch_id);
   bool rtcore_submit_resident_warp_capacity_available(
-      const warp_inst_t &inst, unsigned warp_id) const;
+      const warp_inst_t &inst, unsigned warp_id,
+      unsigned rt_core_out_pending_warps) const;
 
   void create_front_pipeline();
   void create_schedulers();

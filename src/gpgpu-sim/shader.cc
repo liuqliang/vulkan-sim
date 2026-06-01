@@ -1286,7 +1286,8 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
 }
 
 bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
-    const warp_inst_t &inst, unsigned warp_id) const {
+    const warp_inst_t &inst, unsigned warp_id,
+    unsigned rt_core_out_pending_warps) const {
   if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
     return true;
   }
@@ -1294,7 +1295,7 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
     return true;
   }
   return m_rt_unit->rtcore_resident_warp_capacity_available(
-      inst, warp_id, m_sid, inst.pc);
+      inst, warp_id, m_sid, inst.pc, rt_core_out_pending_warps);
 }
 
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
@@ -1665,27 +1666,29 @@ void scheduler_unit::cycle() {
               }
             } else if (pI->op == RT_CORE_OP) {
               assert(m_shader->m_config->gpgpu_num_rt_core_units > 0);
+              const unsigned rtcore_active_mask =
+                  static_cast<unsigned>(active_mask.to_ulong());
+              const bool rtcore_issue_resources_ready =
+                  pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+                  rtcore_symbolic_submit_issue_resources_available(
+                      warp_id, m_shader->get_sid(), rtcore_active_mask,
+                      pI->pc);
+              if (!rtcore_issue_resources_ready) {
+                break;
+              }
+              const unsigned rt_core_out_pending_warps =
+                  m_rt_core_out->count_ready_rt_subop(RT_CORE_SUBOP_SUBMIT);
+              const bool rtcore_resident_warp_capacity_ready =
+                  pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+                  m_shader->rtcore_submit_resident_warp_capacity_available(
+                      *pI, warp_id, rt_core_out_pending_warps);
+              if (!rtcore_resident_warp_capacity_ready) {
+                break;
+              }
+
               if (m_rt_core_out->has_free(m_shader->m_config->sub_core_model, m_id)
                   && !(diff_exec_units && 
                         previous_issued_inst_exec_type == exec_unit_type_t::RT)) {
-
-                const unsigned rtcore_active_mask =
-                    static_cast<unsigned>(active_mask.to_ulong());
-                const bool rtcore_issue_resources_ready =
-                    pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
-                    rtcore_symbolic_submit_issue_resources_available(
-                        warp_id, m_shader->get_sid(), rtcore_active_mask,
-                        pI->pc);
-                if (!rtcore_issue_resources_ready) {
-                  break;
-                }
-                const bool rtcore_resident_warp_capacity_ready =
-                    pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
-                    m_shader->rtcore_submit_resident_warp_capacity_available(
-                        *pI, warp_id);
-                if (!rtcore_resident_warp_capacity_ready) {
-                  break;
-                }
 
                 m_shader->issue_warp(*m_rt_core_out, pI, active_mask,
                                      warp_id, m_id);
@@ -2919,22 +2922,29 @@ unsigned rt_unit::active_warps() {
 
 bool rt_unit::rtcore_resident_warp_capacity_available(
     const warp_inst_t &inst, unsigned warp_id, unsigned owner_hw_sid,
-    unsigned long long static_inst_pc) const {
+    unsigned long long static_inst_pc,
+    unsigned rt_core_out_pending_warps) const {
   if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
     return true;
   }
   if (m_config->m_rt_max_warps == 0) {
     return true;
   }
-  if (n_warps >= m_config->m_rt_max_warps) {
+  const unsigned dispatch_pending_warps = m_dispatch_reg->empty() ? 0 : 1;
+  const unsigned resident_live_warps =
+      n_warps + dispatch_pending_warps + rt_core_out_pending_warps;
+  if (resident_live_warps >= m_config->m_rt_max_warps) {
     printf("GPGPU-Sim PTX: RT_SUBMIT resident-warp-backpressure, "
            "diagnostic=RT_SUBMIT issue-resource-snapshot, warp_id=%u, "
            "owner_hw_sid=%u, static_inst_pc=0x%llx, "
            "resident_live_warps=%u, resident_warp_capacity=%u, "
-           "resident_live_plus_demand_warps=%u, capacity_available=0, "
-           "action=stall\n",
-           warp_id, owner_hw_sid, static_inst_pc, n_warps,
-           m_config->m_rt_max_warps, n_warps + 1);
+           "resident_dispatch_pending_warps=%u, "
+           "resident_rt_core_out_pending_warps=%u, "
+           "resident_live_plus_demand_warps=%u, "
+           "capacity_available=0, action=stall\n",
+           warp_id, owner_hw_sid, static_inst_pc, resident_live_warps,
+           m_config->m_rt_max_warps, dispatch_pending_warps,
+           rt_core_out_pending_warps, resident_live_warps + 1);
     fflush(stdout);
     return false;
   }
