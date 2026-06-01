@@ -1294,8 +1294,11 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
   if (!rtcore_symbolic_submit_issue_resource_backpressure_is_enabled()) {
     return true;
   }
+  const rtcore_resident_warp_demand_snapshot snapshot =
+      m_rt_unit->rtcore_make_resident_warp_demand_snapshot(
+          rt_core_out_pending_warps);
   return m_rt_unit->rtcore_resident_warp_capacity_available(
-      inst, warp_id, m_sid, inst.pc, rt_core_out_pending_warps);
+      inst, warp_id, m_sid, inst.pc, snapshot);
 }
 
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
@@ -2920,20 +2923,38 @@ unsigned rt_unit::active_warps() {
   return warp_ids.size();
 }
 
+rtcore_resident_warp_demand_snapshot
+rt_unit::rtcore_make_resident_warp_demand_snapshot(
+    unsigned rt_core_out_pending_warps) const {
+  rtcore_resident_warp_demand_snapshot snapshot;
+  snapshot.live_rt_unit_warps = n_warps;
+  snapshot.dispatch_pending_warps = m_dispatch_reg->empty() ? 0 : 1;
+  snapshot.rt_core_out_pending_warps = rt_core_out_pending_warps;
+  snapshot.resident_live_warps =
+      snapshot.live_rt_unit_warps + snapshot.dispatch_pending_warps +
+      snapshot.rt_core_out_pending_warps;
+  snapshot.resident_warp_capacity = m_config->m_rt_max_warps;
+  snapshot.resident_live_plus_demand_warps =
+      snapshot.resident_live_warps + 1;
+  snapshot.zero_capacity_fail_closed =
+      snapshot.resident_warp_capacity == 0;
+  snapshot.capacity_available =
+      snapshot.zero_capacity_fail_closed ||
+      snapshot.resident_live_warps < snapshot.resident_warp_capacity;
+  return snapshot;
+}
+
 bool rt_unit::rtcore_resident_warp_capacity_available(
     const warp_inst_t &inst, unsigned warp_id, unsigned owner_hw_sid,
     unsigned long long static_inst_pc,
-    unsigned rt_core_out_pending_warps) const {
+    const rtcore_resident_warp_demand_snapshot &snapshot) const {
   if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
     return true;
   }
-  if (m_config->m_rt_max_warps == 0) {
+  if (snapshot.zero_capacity_fail_closed) {
     return true;
   }
-  const unsigned dispatch_pending_warps = m_dispatch_reg->empty() ? 0 : 1;
-  const unsigned resident_live_warps =
-      n_warps + dispatch_pending_warps + rt_core_out_pending_warps;
-  if (resident_live_warps >= m_config->m_rt_max_warps) {
+  if (!snapshot.capacity_available) {
     printf("GPGPU-Sim PTX: RT_SUBMIT resident-warp-backpressure, "
            "diagnostic=RT_SUBMIT issue-resource-snapshot, warp_id=%u, "
            "owner_hw_sid=%u, static_inst_pc=0x%llx, "
@@ -2942,9 +2963,11 @@ bool rt_unit::rtcore_resident_warp_capacity_available(
            "resident_rt_core_out_pending_warps=%u, "
            "resident_live_plus_demand_warps=%u, "
            "capacity_available=0, action=stall\n",
-           warp_id, owner_hw_sid, static_inst_pc, resident_live_warps,
-           m_config->m_rt_max_warps, dispatch_pending_warps,
-           rt_core_out_pending_warps, resident_live_warps + 1);
+           warp_id, owner_hw_sid, static_inst_pc,
+           snapshot.resident_live_warps, snapshot.resident_warp_capacity,
+           snapshot.dispatch_pending_warps,
+           snapshot.rt_core_out_pending_warps,
+           snapshot.resident_live_plus_demand_warps);
     fflush(stdout);
     return false;
   }

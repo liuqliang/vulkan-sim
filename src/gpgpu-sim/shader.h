@@ -1303,6 +1303,27 @@ struct rtcore_adapter_completion_claim_snapshot {
   const char *reject_reason;
 };
 
+struct rtcore_resident_warp_demand_snapshot {
+  rtcore_resident_warp_demand_snapshot()
+      : live_rt_unit_warps(0),
+        dispatch_pending_warps(0),
+        rt_core_out_pending_warps(0),
+        resident_live_warps(0),
+        resident_warp_capacity(0),
+        resident_live_plus_demand_warps(0),
+        zero_capacity_fail_closed(false),
+        capacity_available(true) {}
+
+  unsigned live_rt_unit_warps;
+  unsigned dispatch_pending_warps;
+  unsigned rt_core_out_pending_warps;
+  unsigned resident_live_warps;
+  unsigned resident_warp_capacity;
+  unsigned resident_live_plus_demand_warps;
+  bool zero_capacity_fail_closed;
+  bool capacity_available;
+};
+
 class rt_unit : public pipelined_simd_unit {
     public:
         rt_unit(mem_fetch_interface *icnt,
@@ -1329,10 +1350,13 @@ class rt_unit : public pipelined_simd_unit {
         void get_L0C_sub_stats(struct cache_sub_stats &css) const;
 
         unsigned active_warps();
+        rtcore_resident_warp_demand_snapshot
+        rtcore_make_resident_warp_demand_snapshot(
+            unsigned rt_core_out_pending_warps) const;
         bool rtcore_resident_warp_capacity_available(
             const warp_inst_t &inst, unsigned warp_id,
             unsigned owner_hw_sid, unsigned long long static_inst_pc,
-            unsigned rt_core_out_pending_warps) const;
+            const rtcore_resident_warp_demand_snapshot &snapshot) const;
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
