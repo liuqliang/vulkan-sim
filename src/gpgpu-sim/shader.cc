@@ -1302,12 +1302,13 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
 }
 
 bool shader_core_ctx::rtcore_submit_completion_queue_reserve_issue_slot(
-    const warp_inst_t &inst, unsigned warp_id) const {
+    const warp_inst_t &inst, unsigned warp_id,
+    unsigned issued_active_mask) const {
   if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
     return true;
   }
   return m_rt_unit->rtcore_completion_queue_reserve_issue_slot(
-      inst, warp_id, m_sid, inst.pc);
+      inst, warp_id, m_sid, inst.pc, issued_active_mask);
 }
 
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
@@ -1707,7 +1708,7 @@ void scheduler_unit::cycle() {
                 const bool rtcore_completion_queue_ready =
                     pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
                     m_shader->rtcore_submit_completion_queue_reserve_issue_slot(
-                        *pI, warp_id);
+                        *pI, warp_id, rtcore_active_mask);
                 if (!rtcore_completion_queue_ready) {
                   break;
                 }
@@ -2997,6 +2998,7 @@ struct rtcore_completion_queue_reservation_key {
   unsigned owner_hw_sid;
   unsigned warp_id;
   unsigned long long static_inst_pc;
+  unsigned issued_active_mask;
 
   bool operator<(const rtcore_completion_queue_reservation_key &other) const {
     if (owner_hw_sid != other.owner_hw_sid) {
@@ -3005,7 +3007,10 @@ struct rtcore_completion_queue_reservation_key {
     if (warp_id != other.warp_id) {
       return warp_id < other.warp_id;
     }
-    return static_inst_pc < other.static_inst_pc;
+    if (static_inst_pc != other.static_inst_pc) {
+      return static_inst_pc < other.static_inst_pc;
+    }
+    return issued_active_mask < other.issued_active_mask;
   }
 };
 
@@ -3016,11 +3021,12 @@ static std::set<rtcore_completion_queue_reservation_key>
 static rtcore_completion_queue_reservation_key
 rtcore_make_completion_queue_reservation_key(
     unsigned owner_hw_sid, unsigned warp_id,
-    unsigned long long static_inst_pc) {
+    unsigned long long static_inst_pc, unsigned issued_active_mask) {
   rtcore_completion_queue_reservation_key key;
   key.owner_hw_sid = owner_hw_sid;
   key.warp_id = warp_id;
   key.static_inst_pc = static_inst_pc;
+  key.issued_active_mask = issued_active_mask;
   return key;
 }
 
@@ -3030,29 +3036,29 @@ static unsigned rtcore_completion_queue_reservation_count() {
 
 static bool rtcore_completion_queue_reservation_contains(
     unsigned owner_hw_sid, unsigned warp_id,
-    unsigned long long static_inst_pc) {
+    unsigned long long static_inst_pc, unsigned issued_active_mask) {
   const rtcore_completion_queue_reservation_key key =
       rtcore_make_completion_queue_reservation_key(
-          owner_hw_sid, warp_id, static_inst_pc);
+          owner_hw_sid, warp_id, static_inst_pc, issued_active_mask);
   return g_rtcore_completion_queue_reservations.find(key) !=
          g_rtcore_completion_queue_reservations.end();
 }
 
 static bool rtcore_completion_queue_reservation_insert(
     unsigned owner_hw_sid, unsigned warp_id,
-    unsigned long long static_inst_pc) {
+    unsigned long long static_inst_pc, unsigned issued_active_mask) {
   const rtcore_completion_queue_reservation_key key =
       rtcore_make_completion_queue_reservation_key(
-          owner_hw_sid, warp_id, static_inst_pc);
+          owner_hw_sid, warp_id, static_inst_pc, issued_active_mask);
   return g_rtcore_completion_queue_reservations.insert(key).second;
 }
 
 static bool rtcore_completion_queue_reservation_remove(
     unsigned owner_hw_sid, unsigned warp_id,
-    unsigned long long static_inst_pc) {
+    unsigned long long static_inst_pc, unsigned issued_active_mask) {
   const rtcore_completion_queue_reservation_key key =
       rtcore_make_completion_queue_reservation_key(
-          owner_hw_sid, warp_id, static_inst_pc);
+          owner_hw_sid, warp_id, static_inst_pc, issued_active_mask);
   return g_rtcore_completion_queue_reservations.erase(key) != 0;
 }
 
@@ -3104,10 +3110,15 @@ rt_unit::rtcore_make_completion_queue_state_snapshot(
   snapshot.inflight = rtcore_completion_queue_inflight();
   snapshot.reserved = rtcore_completion_queue_reservation_count();
   snapshot.owner_hw_sid = m_sid;
+  snapshot.warp_uid = inst.empty() ? 0 : inst.get_uid();
   snapshot.warp_id = inst.empty() ? 0 : inst.warp_id();
   snapshot.static_inst_pc = inst.pc;
+  snapshot.issued_active_mask =
+      inst.empty() ? 0 : static_cast<unsigned>(
+                            inst.get_warp_active_mask().to_ulong());
   snapshot.has_reservation = rtcore_completion_queue_reservation_contains(
-      snapshot.owner_hw_sid, snapshot.warp_id, snapshot.static_inst_pc);
+      snapshot.owner_hw_sid, snapshot.warp_id,
+      snapshot.static_inst_pc, snapshot.issued_active_mask);
   snapshot.live_plus_reserved = snapshot.inflight + snapshot.reserved;
   snapshot.capacity_enabled = snapshot.capacity != 0;
   snapshot.capacity_available =
@@ -3125,7 +3136,8 @@ void rt_unit::rtcore_apply_completion_queue_state_snapshot(
   if (snapshot.action == RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE) {
     if (snapshot.has_reservation) {
       rtcore_completion_queue_reservation_remove(
-          snapshot.owner_hw_sid, snapshot.warp_id, snapshot.static_inst_pc);
+          snapshot.owner_hw_sid, snapshot.warp_id,
+          snapshot.static_inst_pc, snapshot.issued_active_mask);
     }
     g_rtcore_completion_queue_inflight++;
   } else if (snapshot.action == RTCORE_COMPLETION_QUEUE_ACTION_RETIRE &&
@@ -3136,16 +3148,18 @@ void rt_unit::rtcore_apply_completion_queue_state_snapshot(
 
 bool rt_unit::rtcore_completion_queue_reserve_issue_slot(
     const warp_inst_t &inst, unsigned warp_id, unsigned owner_hw_sid,
-    unsigned long long static_inst_pc) const {
+    unsigned long long static_inst_pc, unsigned issued_active_mask) const {
   rtcore_completion_queue_state_snapshot snapshot =
       rtcore_make_completion_queue_state_snapshot(
           inst, RTCORE_COMPLETION_QUEUE_ACTION_RESERVE);
   snapshot.owner_hw_sid = owner_hw_sid;
   snapshot.warp_id = warp_id;
   snapshot.static_inst_pc = static_inst_pc;
+  snapshot.issued_active_mask = issued_active_mask;
   snapshot.reserved = rtcore_completion_queue_reservation_count();
   snapshot.has_reservation = rtcore_completion_queue_reservation_contains(
-      snapshot.owner_hw_sid, snapshot.warp_id, snapshot.static_inst_pc);
+      snapshot.owner_hw_sid, snapshot.warp_id,
+      snapshot.static_inst_pc, snapshot.issued_active_mask);
   snapshot.live_plus_reserved = snapshot.inflight + snapshot.reserved;
   snapshot.capacity_available =
       !snapshot.submit || !snapshot.capacity_enabled ||
@@ -3156,16 +3170,19 @@ bool rt_unit::rtcore_completion_queue_reserve_issue_slot(
     if (snapshot.submit && snapshot.capacity_enabled &&
         !snapshot.has_reservation) {
       rtcore_completion_queue_reservation_insert(
-          snapshot.owner_hw_sid, snapshot.warp_id, snapshot.static_inst_pc);
+          snapshot.owner_hw_sid, snapshot.warp_id,
+          snapshot.static_inst_pc, snapshot.issued_active_mask);
     }
     return true;
   }
 
   printf("GPGPU-Sim PTX: RT-unit completion-queue-issue-backpressure, "
-         "warp_id=%u, owner_hw_sid=%u, static_inst_pc=%llu, "
+         "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
+         "static_inst_pc=%llu, issued_active_mask=0x%08x, "
          "inflight=%u, reserved=%u, capacity=%u, "
          "capacity_available=0, action=stall\n",
-         snapshot.warp_id, snapshot.owner_hw_sid, snapshot.static_inst_pc,
+         snapshot.warp_uid, snapshot.warp_id, snapshot.owner_hw_sid,
+         snapshot.static_inst_pc, snapshot.issued_active_mask,
          snapshot.inflight, snapshot.reserved, snapshot.capacity);
   fflush(stdout);
   return false;
