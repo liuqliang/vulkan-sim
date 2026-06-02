@@ -9824,12 +9824,37 @@ static const char *rtcore_traversal_source_provider_name(
   }
 }
 
+static bool rtcore_traversal_source_provider_override_unset(
+    const char *value) {
+  return value == NULL || value[0] == '\0' || strcmp(value, "0") == 0;
+}
+
+static rtcore_traversal_source_provider
+rtcore_select_default_traversal_source_provider() {
+  const char *policy =
+      getenv("VULKAN_SIM_RTCORE_TRAVERSAL_DEFAULT_POLICY");
+  if (rtcore_traversal_source_provider_override_unset(policy)) {
+    return RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL;
+  }
+  if (strcmp(policy, "legacy") == 0 ||
+      strcmp(policy, "legacy_functional") == 0) {
+    return RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL;
+  }
+  if (strcmp(policy, "rtcore_custom_existing_traversal") == 0 ||
+      strcmp(policy, "rtcore_backend_existing_traversal") == 0) {
+    return RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_EXISTING_TRAVERSAL;
+  }
+  return RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED;
+}
+
 static rtcore_traversal_source_provider
 rtcore_select_traversal_source_provider() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_TRAVERSAL_SOURCE_PROVIDER");
-  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
-      strcmp(value, "legacy") == 0 ||
+  if (rtcore_traversal_source_provider_override_unset(value)) {
+    return rtcore_select_default_traversal_source_provider();
+  }
+  if (strcmp(value, "legacy") == 0 ||
       strcmp(value, "legacy_functional") == 0) {
     return RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL;
   }
