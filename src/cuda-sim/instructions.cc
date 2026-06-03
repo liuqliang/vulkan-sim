@@ -10091,6 +10091,33 @@ struct rtcore_traversal_source_registry_payload_annotation {
   unsigned bvh_format_version;
 };
 
+struct rtcore_registry_payload_consumption_admission_decision {
+  rtcore_registry_payload_consumption_admission_decision()
+      : valid(false),
+        annotation_valid(false),
+        observed_valid_shadow(false),
+        provider_payload_consumption_enabled(false),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        has_traversable_root_proxy(false),
+        has_bvh_format_profile(false),
+        bvh_format_version(0),
+        admission_allowed(false),
+        default_deny(true) {}
+
+  bool valid;
+  bool annotation_valid;
+  bool observed_valid_shadow;
+  bool provider_payload_consumption_enabled;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  bool has_traversable_root_proxy;
+  bool has_bvh_format_profile;
+  unsigned bvh_format_version;
+  bool admission_allowed;
+  bool default_deny;
+};
+
 struct rtcore_custom_backend_result {
   rtcore_custom_backend_result()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED),
@@ -10190,6 +10217,7 @@ struct rtcore_traversal_source_snapshot {
         provider_accepted(true),
         reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE),
         registry_payload_source_snapshot_annotation(),
+        registry_payload_consumption_admission(),
         has_traversal_data(false),
         initialized_default_miss(false),
         hit_geometry(false) {
@@ -10202,6 +10230,8 @@ struct rtcore_traversal_source_snapshot {
   rtcore_traversal_provider_reject_reason reject_reason;
   rtcore_traversal_source_registry_payload_annotation
       registry_payload_source_snapshot_annotation;
+  rtcore_registry_payload_consumption_admission_decision
+      registry_payload_consumption_admission;
   Traversal_data traversal_snapshot;
   bool has_traversal_data;
   bool initialized_default_miss;
@@ -10891,6 +10921,62 @@ rtcore_copy_registry_payload_response_annotation_to_source_snapshot(
   fflush(stdout);
 }
 
+static void
+rtcore_apply_source_snapshot_registry_payload_consumption_admission_gate(
+    rtcore_traversal_source_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+
+  const rtcore_traversal_source_registry_payload_annotation &annotation =
+      snapshot->registry_payload_source_snapshot_annotation;
+  rtcore_registry_payload_consumption_admission_decision admission;
+  admission.valid = true;
+  admission.annotation_valid = annotation.valid;
+  admission.observed_valid_shadow =
+      annotation.valid && annotation.observed_valid_shadow;
+  admission.provider_payload_consumption_enabled =
+      annotation.valid && annotation.provider_payload_consumption_enabled;
+  admission.has_ray_origin_direction_tmin_tmax =
+      annotation.valid && annotation.has_ray_origin_direction_tmin_tmax;
+  admission.has_ray_flags_cull_mask =
+      annotation.valid && annotation.has_ray_flags_cull_mask;
+  admission.has_traversable_root_proxy =
+      annotation.valid && annotation.has_traversable_root_proxy;
+  admission.has_bvh_format_profile =
+      annotation.valid && annotation.has_bvh_format_profile;
+  admission.bvh_format_version =
+      annotation.valid ? annotation.bvh_format_version : 0;
+  admission.admission_allowed = false;
+  admission.default_deny = true;
+  snapshot->registry_payload_consumption_admission = admission;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "source-snapshot-registry-payload-consumption-admission=1, "
+         "provider=%s, "
+         "registry_payload_consumption_admission_valid=%u, "
+         "registry_payload_consumption_admission_allowed=0, "
+         "registry_payload_consumption_admission_default_deny=%u, "
+         "registry_payload_source_snapshot_annotation_valid=%u, "
+         "registry_payload_shadow_observed=%u, "
+         "provider_payload_consumption_enabled=%u, "
+         "source_snapshot_admission_consumes_traversal_behavior=0, "
+         "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
+         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
+         "bvh_format_version=%u\n",
+         rtcore_traversal_source_provider_name(snapshot->provider),
+         admission.valid ? 1 : 0, admission.default_deny ? 1 : 0,
+         admission.annotation_valid ? 1 : 0,
+         admission.observed_valid_shadow ? 1 : 0,
+         admission.provider_payload_consumption_enabled ? 1 : 0,
+         admission.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         admission.has_ray_flags_cull_mask ? 1 : 0,
+         admission.has_traversable_root_proxy ? 1 : 0,
+         admission.has_bvh_format_profile ? 1 : 0,
+         admission.bvh_format_version);
+  fflush(stdout);
+}
+
 static rtcore_traversal_source_snapshot
 rtcore_make_traversal_source_snapshot_from_provider_response(
     const rtcore_traversal_provider_response &response) {
@@ -10905,6 +10991,8 @@ rtcore_make_traversal_source_snapshot_from_provider_response(
   snapshot.hit_geometry = response.hit_geometry;
   rtcore_copy_registry_payload_response_annotation_to_source_snapshot(
       &snapshot, response);
+  rtcore_apply_source_snapshot_registry_payload_consumption_admission_gate(
+      &snapshot);
   return snapshot;
 }
 
