@@ -10070,6 +10070,27 @@ struct rtcore_traversal_provider_response {
   bool hit_geometry;
 };
 
+struct rtcore_traversal_source_registry_payload_annotation {
+  rtcore_traversal_source_registry_payload_annotation()
+      : valid(false),
+        observed_valid_shadow(false),
+        provider_payload_consumption_enabled(false),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        has_traversable_root_proxy(false),
+        has_bvh_format_profile(false),
+        bvh_format_version(0) {}
+
+  bool valid;
+  bool observed_valid_shadow;
+  bool provider_payload_consumption_enabled;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  bool has_traversable_root_proxy;
+  bool has_bvh_format_profile;
+  unsigned bvh_format_version;
+};
+
 struct rtcore_custom_backend_result {
   rtcore_custom_backend_result()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED),
@@ -10168,6 +10189,7 @@ struct rtcore_traversal_source_snapshot {
         provider_supported(true),
         provider_accepted(true),
         reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE),
+        registry_payload_source_snapshot_annotation(),
         has_traversal_data(false),
         initialized_default_miss(false),
         hit_geometry(false) {
@@ -10178,6 +10200,8 @@ struct rtcore_traversal_source_snapshot {
   bool provider_supported;
   bool provider_accepted;
   rtcore_traversal_provider_reject_reason reject_reason;
+  rtcore_traversal_source_registry_payload_annotation
+      registry_payload_source_snapshot_annotation;
   Traversal_data traversal_snapshot;
   bool has_traversal_data;
   bool initialized_default_miss;
@@ -10804,6 +10828,69 @@ rtcore_invoke_rtcore_provider_bridge(
   return rtcore_invoke_rtcore_provider_bridge(descriptor, NULL);
 }
 
+static void
+rtcore_copy_registry_payload_response_annotation_to_source_snapshot(
+    rtcore_traversal_source_snapshot *snapshot,
+    const rtcore_traversal_provider_response &response) {
+  if (snapshot == NULL ||
+      !response.registry_payload_response_annotation.valid) {
+    return;
+  }
+
+  const rtcore_registry_payload_response_annotation &response_annotation =
+      response.registry_payload_response_annotation;
+  snapshot->registry_payload_source_snapshot_annotation.valid = true;
+  snapshot->registry_payload_source_snapshot_annotation.observed_valid_shadow =
+      response_annotation.observed_valid_shadow;
+  snapshot->registry_payload_source_snapshot_annotation
+          .provider_payload_consumption_enabled =
+      response_annotation.provider_payload_consumption_enabled;
+  snapshot->registry_payload_source_snapshot_annotation
+          .has_ray_origin_direction_tmin_tmax =
+      response_annotation.has_ray_origin_direction_tmin_tmax;
+  snapshot->registry_payload_source_snapshot_annotation.has_ray_flags_cull_mask =
+      response_annotation.has_ray_flags_cull_mask;
+  snapshot->registry_payload_source_snapshot_annotation
+          .has_traversable_root_proxy =
+      response_annotation.has_traversable_root_proxy;
+  snapshot->registry_payload_source_snapshot_annotation.has_bvh_format_profile =
+      response_annotation.has_bvh_format_profile;
+  snapshot->registry_payload_source_snapshot_annotation.bvh_format_version =
+      response_annotation.bvh_format_version;
+
+  const rtcore_traversal_source_registry_payload_annotation &annotation =
+      snapshot->registry_payload_source_snapshot_annotation;
+  const unsigned registry_payload_shadow_observed =
+      annotation.observed_valid_shadow ? 1 : 0;
+  const unsigned provider_payload_consumption_enabled =
+      annotation.provider_payload_consumption_enabled ? 1 : 0;
+  const unsigned has_ray_origin_direction_tmin_tmax =
+      annotation.has_ray_origin_direction_tmin_tmax ? 1 : 0;
+  const unsigned has_ray_flags_cull_mask =
+      annotation.has_ray_flags_cull_mask ? 1 : 0;
+  const unsigned has_traversable_root_proxy =
+      annotation.has_traversable_root_proxy ? 1 : 0;
+  const unsigned has_bvh_format_profile =
+      annotation.has_bvh_format_profile ? 1 : 0;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "traversal-source-registry-payload-annotation, provider=%s, "
+         "traversal-source-registry-payload-annotation=1, "
+         "registry_payload_source_snapshot_annotation_valid=1, "
+         "registry_payload_shadow_observed=%u, "
+         "provider_payload_consumption_enabled=%u, "
+         "source_snapshot_annotation_consumes_traversal_behavior=0, "
+         "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
+         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
+         "bvh_format_version=%u\n",
+         rtcore_traversal_source_provider_name(response.provider),
+         registry_payload_shadow_observed, provider_payload_consumption_enabled,
+         has_ray_origin_direction_tmin_tmax, has_ray_flags_cull_mask,
+         has_traversable_root_proxy, has_bvh_format_profile,
+         annotation.bvh_format_version);
+  fflush(stdout);
+}
+
 static rtcore_traversal_source_snapshot
 rtcore_make_traversal_source_snapshot_from_provider_response(
     const rtcore_traversal_provider_response &response) {
@@ -10816,6 +10903,8 @@ rtcore_make_traversal_source_snapshot_from_provider_response(
   snapshot.has_traversal_data = response.has_traversal_data;
   snapshot.initialized_default_miss = response.initialized_default_miss;
   snapshot.hit_geometry = response.hit_geometry;
+  rtcore_copy_registry_payload_response_annotation_to_source_snapshot(
+      &snapshot, response);
   return snapshot;
 }
 
