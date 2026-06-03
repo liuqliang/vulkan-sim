@@ -10118,14 +10118,47 @@ struct rtcore_registry_payload_consumption_admission_decision {
   bool default_deny;
 };
 
-static bool rtcore_registry_payload_consumption_admission_policy_allows(
+static const char *rtcore_registry_payload_admission_policy_env_name() {
+  return "VULKAN_SIM_RTCORE_REGISTRY_PAYLOAD_ADMISSION_POLICY";
+}
+
+static const char *
+rtcore_registry_payload_consumption_admission_policy_opt_in_source() {
+  const char *value =
+      getenv(rtcore_registry_payload_admission_policy_env_name());
+  return value != NULL && value[0] != '\0'
+             ? rtcore_registry_payload_admission_policy_env_name()
+             : "default-deny";
+}
+
+static bool
+rtcore_registry_payload_consumption_admission_policy_opt_in_enabled(
     const char *boundary_name) {
   (void)boundary_name;
+  const char *value =
+      getenv(rtcore_registry_payload_admission_policy_env_name());
+  if (value == NULL || value[0] == '\0') {
+    return false;
+  }
+  if (strcmp(value, "allow") == 0 || strcmp(value, "enabled") == 0 ||
+      strcmp(value, "1") == 0) {
+    return true;
+  }
   return false;
 }
 
-static bool rtcore_registry_payload_consumption_admission_policy_default_deny() {
+static bool rtcore_registry_payload_consumption_admission_policy_allows(
+    const char *boundary_name) {
+  if (!rtcore_registry_payload_consumption_admission_policy_opt_in_enabled(
+          boundary_name)) {
+    return false;
+  }
   return true;
+}
+
+static bool rtcore_registry_payload_consumption_admission_policy_default_deny() {
+  return !rtcore_registry_payload_consumption_admission_policy_opt_in_enabled(
+      "default-deny");
 }
 
 struct rtcore_custom_backend_result {
@@ -10974,6 +11007,8 @@ rtcore_apply_source_snapshot_registry_payload_consumption_admission_gate(
          "registry_payload_consumption_admission_valid=%u, "
          "registry_payload_consumption_admission_allowed=%u, "
          "registry_payload_consumption_admission_default_deny=%u, "
+         "registry_payload_admission_policy_opt_in_source=%s, "
+         "registry_payload_admission_policy_opt_in_enabled=%u, "
          "registry_payload_source_snapshot_annotation_valid=%u, "
          "registry_payload_shadow_observed=%u, "
          "provider_payload_consumption_enabled=%u, "
@@ -10984,6 +11019,8 @@ rtcore_apply_source_snapshot_registry_payload_consumption_admission_gate(
          rtcore_traversal_source_provider_name(snapshot->provider),
          admission.valid ? 1 : 0, admission.admission_allowed ? 1 : 0,
          admission.default_deny ? 1 : 0,
+         rtcore_registry_payload_consumption_admission_policy_opt_in_source(),
+         admission.admission_allowed ? 1 : 0,
          admission.annotation_valid ? 1 : 0,
          admission.observed_valid_shadow ? 1 : 0,
          admission.provider_payload_consumption_enabled ? 1 : 0,
@@ -11618,6 +11655,8 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          "lane_slot_index=%u, registry_payload_admission_mirror_valid=%u, "
          "registry_payload_admission_mirror_allowed=%u, "
          "registry_payload_admission_mirror_default_deny=%u, "
+         "registry_payload_admission_policy_opt_in_source=%s, "
+         "registry_payload_admission_policy_opt_in_enabled=%u, "
          "registry_payload_shadow_attached=%u, "
          "registry_payload_shadow_observed=%u, "
          "provider_payload_consumption_enabled=0, "
@@ -11629,6 +11668,8 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index, mirror.valid ? 1 : 0,
          mirror.admission_allowed ? 1 : 0, mirror.default_deny ? 1 : 0,
+         rtcore_registry_payload_consumption_admission_policy_opt_in_source(),
+         mirror.admission_allowed ? 1 : 0,
          mirror.has_registry_payload_shadow ? 1 : 0,
          mirror.observed_valid_shadow ? 1 : 0,
          mirror.has_ray_origin_direction_tmin_tmax ? 1 : 0,
