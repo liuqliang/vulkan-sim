@@ -10773,6 +10773,9 @@ static void rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(
 static void rtcore_log_provider_facing_registry_payload_admission_mirror(
     const rtcore_traversal_work_descriptor &descriptor);
 
+static void rtcore_log_provider_payload_consumption_eligibility_shadow(
+    const rtcore_traversal_work_descriptor &descriptor);
+
 static void
 rtcore_annotate_provider_response_with_registry_payload_observation(
     rtcore_traversal_provider_response *response,
@@ -10795,6 +10798,7 @@ rtcore_invoke_rtcore_provider_bridge(
          descriptor.has_registry_payload_shadow ? 1 : 0);
   fflush(stdout);
   rtcore_log_provider_facing_registry_payload_admission_mirror(descriptor);
+  rtcore_log_provider_payload_consumption_eligibility_shadow(descriptor);
   rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(descriptor);
 
   rtcore_traversal_provider_response response;
@@ -11624,6 +11628,62 @@ struct rtcore_provider_facing_registry_payload_admission_mirror {
   bool default_deny;
 };
 
+enum rtcore_provider_payload_consumption_eligibility_shadow_fail_reason {
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_NONE = 0,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_ADMISSION_DISABLED = 1,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_REGISTRY_SHADOW_MISSING = 2,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_FIELD_COVERAGE_INCOMPLETE = 3,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_CONSUMPTION_POLICY_DISABLED =
+      4
+};
+
+static const char *
+rtcore_provider_payload_consumption_eligibility_shadow_fail_reason_name(
+    rtcore_provider_payload_consumption_eligibility_shadow_fail_reason reason) {
+  switch (reason) {
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_NONE:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_NONE";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_ADMISSION_DISABLED:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_ADMISSION_DISABLED";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_REGISTRY_SHADOW_MISSING:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_REGISTRY_SHADOW_MISSING";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_FIELD_COVERAGE_INCOMPLETE:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_FIELD_COVERAGE_INCOMPLETE";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_CONSUMPTION_POLICY_DISABLED:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_CONSUMPTION_POLICY_DISABLED";
+    default:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_UNKNOWN";
+  }
+}
+
+struct rtcore_provider_payload_consumption_eligibility_shadow {
+  rtcore_provider_payload_consumption_eligibility_shadow()
+      : valid(false),
+        admission_allowed(false),
+        has_registry_payload_shadow(false),
+        observed_valid_shadow(false),
+        field_coverage_complete(false),
+        consumption_policy_enabled(false),
+        provider_payload_consumption_enabled(false),
+        fail_reason(
+            RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_ADMISSION_DISABLED) {
+  }
+
+  bool valid;
+  bool admission_allowed;
+  bool has_registry_payload_shadow;
+  bool observed_valid_shadow;
+  bool field_coverage_complete;
+  bool consumption_policy_enabled;
+  bool provider_payload_consumption_enabled;
+  rtcore_provider_payload_consumption_eligibility_shadow_fail_reason
+      fail_reason;
+};
+
+static bool rtcore_provider_payload_consumption_policy_enabled() {
+  return false;
+}
+
 static void rtcore_log_provider_facing_registry_payload_admission_mirror(
     const rtcore_traversal_work_descriptor &descriptor) {
   rtcore_provider_facing_registry_payload_admission_mirror mirror;
@@ -11677,6 +11737,73 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          mirror.has_traversable_root_proxy ? 1 : 0,
          mirror.has_bvh_format_profile ? 1 : 0,
          mirror.bvh_format_version);
+  fflush(stdout);
+}
+
+static void rtcore_log_provider_payload_consumption_eligibility_shadow(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_provider_payload_consumption_eligibility_shadow shadow_decision;
+  shadow_decision.valid = true;
+  shadow_decision.admission_allowed =
+      rtcore_registry_payload_consumption_admission_policy_allows(
+          "provider-payload-consumption-eligibility-shadow");
+  shadow_decision.has_registry_payload_shadow =
+      descriptor.has_registry_payload_shadow;
+  shadow_decision.consumption_policy_enabled =
+      rtcore_provider_payload_consumption_policy_enabled();
+  shadow_decision.provider_payload_consumption_enabled = false;
+
+  if (descriptor.has_registry_payload_shadow &&
+      descriptor.registry_payload_shadow != NULL &&
+      descriptor.registry_payload_shadow->valid) {
+    const rtcore_provider_facing_registry_payload_shadow &shadow =
+        *descriptor.registry_payload_shadow;
+    shadow_decision.observed_valid_shadow = true;
+    shadow_decision.field_coverage_complete =
+        shadow.has_ray_origin_direction_tmin_tmax &&
+        shadow.has_ray_flags_cull_mask &&
+        shadow.has_traversable_root_proxy && shadow.has_bvh_format_profile;
+  }
+
+  if (!shadow_decision.admission_allowed) {
+    shadow_decision.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_ADMISSION_DISABLED;
+  } else if (!shadow_decision.observed_valid_shadow) {
+    shadow_decision.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_REGISTRY_SHADOW_MISSING;
+  } else if (!shadow_decision.field_coverage_complete) {
+    shadow_decision.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_FIELD_COVERAGE_INCOMPLETE;
+  } else if (!shadow_decision.consumption_policy_enabled) {
+    shadow_decision.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_CONSUMPTION_POLICY_DISABLED;
+  } else {
+    shadow_decision.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_NONE;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "provider-payload-consumption-eligibility-shadow=1, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, "
+         "registry_payload_admission_allowed=%u, "
+         "registry_payload_shadow_attached=%u, "
+         "registry_payload_shadow_observed=%u, "
+         "provider_payload_field_coverage_complete=%u, "
+         "provider_payload_consumption_policy_enabled=0, "
+         "provider_payload_consumption_eligible=0, "
+         "provider_payload_consumption_enabled=0, "
+         "provider_payload_consumption_eligibility_fail_reason=%s, "
+         "provider_payload_consumption_eligibility_consumes_traversal_behavior=0\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index,
+         shadow_decision.admission_allowed ? 1 : 0,
+         shadow_decision.has_registry_payload_shadow ? 1 : 0,
+         shadow_decision.observed_valid_shadow ? 1 : 0,
+         shadow_decision.field_coverage_complete ? 1 : 0,
+         rtcore_provider_payload_consumption_eligibility_shadow_fail_reason_name(
+             shadow_decision.fail_reason));
   fflush(stdout);
 }
 
