@@ -11288,24 +11288,83 @@ static void rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
   snapshot->has_bvh_format_version = true;
 }
 
+struct rtcore_pre_provider_decoded_input_publication_map {
+  rtcore_pre_provider_decoded_input_publication_map()
+      : valid(false),
+        has_context_window_owner_seq(false),
+        has_provider_selection_metadata(false),
+        provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        has_traversable_root_proxy(false),
+        has_bvh_format_profile(false) {}
+
+  bool valid;
+  bool has_context_window_owner_seq;
+  bool has_provider_selection_metadata;
+  rtcore_traversal_source_provider provider;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  bool has_traversable_root_proxy;
+  bool has_bvh_format_profile;
+};
+
+static rtcore_pre_provider_decoded_input_publication_map
+rtcore_make_pre_provider_decoded_input_publication_map(
+    const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot,
+    const rtcore_traversal_source_request &request) {
+  rtcore_pre_provider_decoded_input_publication_map publication_map;
+  publication_map.has_context_window_owner_seq =
+      decoded_input_snapshot.has_context_window_owner_seq;
+  publication_map.has_provider_selection_metadata = true;
+  publication_map.provider = request.provider;
+  publication_map.valid = decoded_input_snapshot.valid &&
+                          publication_map.has_context_window_owner_seq &&
+                          publication_map.has_provider_selection_metadata;
+  publication_map.has_ray_origin_direction_tmin_tmax =
+      decoded_input_snapshot.has_ray_origin_direction_tmin_tmax;
+  publication_map.has_ray_flags_cull_mask =
+      decoded_input_snapshot.has_ray_flags_cull_mask;
+  publication_map.has_traversable_root_proxy =
+      decoded_input_snapshot.has_traversable_root_proxy;
+  publication_map.has_bvh_format_profile =
+      decoded_input_snapshot.has_bvh_format_version;
+  return publication_map;
+}
+
 static void
-rtcore_bind_input_provenance_registry_publication_to_decoded_snapshot(
+rtcore_bind_input_provenance_registry_publication_to_pre_provider_decoded_input_publication_map(
     rtcore_input_provenance_registry_publication_snapshot *publication_snapshot,
-    const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot) {
+    const rtcore_pre_provider_decoded_input_publication_map
+        &publication_map) {
   if (publication_snapshot == NULL) {
     return;
   }
   rtcore_input_provenance_registry_entry &entry =
       publication_snapshot->entry;
-  entry.valid = decoded_input_snapshot.valid;
+  entry.valid = publication_map.valid;
   entry.owned_fields.has_ray_origin_direction_tmin_tmax =
-      decoded_input_snapshot.has_ray_origin_direction_tmin_tmax;
+      publication_map.has_ray_origin_direction_tmin_tmax;
   entry.owned_fields.has_ray_flags_cull_mask =
-      decoded_input_snapshot.has_ray_flags_cull_mask;
+      publication_map.has_ray_flags_cull_mask;
   entry.owned_fields.has_traversable_root_proxy =
-      decoded_input_snapshot.has_traversable_root_proxy;
+      publication_map.has_traversable_root_proxy;
   entry.owned_fields.has_bvh_format_profile =
-      decoded_input_snapshot.has_bvh_format_version;
+      publication_map.has_bvh_format_profile;
+}
+
+static rtcore_input_provenance_registry_publication_snapshot
+rtcore_publish_input_provenance_registry_entry_snapshot_from_pre_provider_decoded_input_publication_map(
+    const rtcore_traversal_source_request &request,
+    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot,
+    const rtcore_pre_provider_decoded_input_publication_map
+        &publication_map) {
+  rtcore_input_provenance_registry_publication_snapshot snapshot =
+      rtcore_publish_input_provenance_registry_entry_snapshot(
+          request, owner_seq_snapshot);
+  rtcore_bind_input_provenance_registry_publication_to_pre_provider_decoded_input_publication_map(
+      &snapshot, publication_map);
+  return snapshot;
 }
 
 static rtcore_input_provenance_registry_publication_snapshot
@@ -11313,12 +11372,11 @@ rtcore_publish_input_provenance_registry_entry_snapshot_from_decoded_input(
     const rtcore_traversal_source_request &request,
     const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot,
     const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot) {
-  rtcore_input_provenance_registry_publication_snapshot snapshot =
-      rtcore_publish_input_provenance_registry_entry_snapshot(
-          request, owner_seq_snapshot);
-  rtcore_bind_input_provenance_registry_publication_to_decoded_snapshot(
-      &snapshot, decoded_input_snapshot);
-  return snapshot;
+  rtcore_pre_provider_decoded_input_publication_map publication_map =
+      rtcore_make_pre_provider_decoded_input_publication_map(
+          decoded_input_snapshot, request);
+  return rtcore_publish_input_provenance_registry_entry_snapshot_from_pre_provider_decoded_input_publication_map(
+      request, owner_seq_snapshot, publication_map);
 }
 
 struct rtcore_traversal_completion_event {
