@@ -10848,6 +10848,8 @@ rtcore_make_context_window_owner_seq_snapshot(
   return snapshot;
 }
 
+static const uint32_t RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 1;
+
 struct rtcore_decoded_traversal_input_snapshot {
   rtcore_decoded_traversal_input_snapshot()
       : valid(false),
@@ -10855,6 +10857,8 @@ struct rtcore_decoded_traversal_input_snapshot {
         has_traversable_root_proxy(false),
         traversable_proxy_id(0),
         root_proxy_id(0),
+        has_bvh_format_version(false),
+        bvh_format_version(0),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
         ray_flags(0),
@@ -10871,6 +10875,8 @@ struct rtcore_decoded_traversal_input_snapshot {
   bool has_traversable_root_proxy;
   uint64_t traversable_proxy_id;
   uint64_t root_proxy_id;
+  bool has_bvh_format_version;
+  uint32_t bvh_format_version;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
   float3 ray_origin;
@@ -10941,6 +10947,20 @@ static void rtcore_update_decoded_traversal_input_traversable_root_proxy_snapsho
     return;
   }
   snapshot->has_traversable_root_proxy = true;
+}
+
+static void rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
+    rtcore_decoded_traversal_input_snapshot *snapshot,
+    const rtcore_traversal_source_snapshot &source_snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->has_bvh_format_version = false;
+  if (!source_snapshot.has_traversal_data) {
+    return;
+  }
+  snapshot->bvh_format_version = RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  snapshot->has_bvh_format_version = true;
 }
 
 struct rtcore_traversal_completion_event {
@@ -11156,6 +11176,8 @@ bool rtcore_build_traversal_completion_event(
   rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
       &event->decoded_input_snapshot, source_snapshot);
   rtcore_update_decoded_traversal_input_traversable_root_proxy_snapshot(
+      &event->decoded_input_snapshot, source_snapshot);
+  rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
       &event->decoded_input_snapshot, source_snapshot);
 
   const bool forced_memory_fault =
