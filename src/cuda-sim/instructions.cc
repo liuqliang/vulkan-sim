@@ -10806,6 +10806,48 @@ static bool rtcore_traversal_source_snapshot_has_accepted_payload(
          snapshot.initialized_default_miss;
 }
 
+struct rtcore_context_window_owner_seq_snapshot {
+  rtcore_context_window_owner_seq_snapshot()
+      : valid(false),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        window_generation(0),
+        completion_seq_low(0),
+        resume_seq_low(0),
+        window_tag(0) {}
+
+  bool valid;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+  unsigned window_generation;
+  unsigned completion_seq_low;
+  unsigned resume_seq_low;
+  unsigned window_tag;
+};
+
+static rtcore_context_window_owner_seq_snapshot
+rtcore_make_context_window_owner_seq_snapshot(
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index,
+    const ptx_thread_info::rtcore_current_warp_metadata &warp_metadata,
+    unsigned window_generation, unsigned completion_seq_low,
+    unsigned resume_seq_low, unsigned window_tag) {
+  rtcore_context_window_owner_seq_snapshot snapshot;
+  snapshot.valid = warp_metadata.valid;
+  snapshot.context_ptr = context_ptr;
+  snapshot.handoff_window_base = handoff_window_base;
+  snapshot.lane_slot_index = lane_slot_index;
+  snapshot.warp_metadata = warp_metadata;
+  snapshot.window_generation = window_generation;
+  snapshot.completion_seq_low = completion_seq_low;
+  snapshot.resume_seq_low = resume_seq_low;
+  snapshot.window_tag = window_tag;
+  return snapshot;
+}
+
 struct rtcore_traversal_completion_event {
   rtcore_traversal_completion_event()
       : warp_metadata(),
@@ -10833,6 +10875,7 @@ struct rtcore_traversal_completion_event {
   rtcore_synthetic_handoff_key handoff_key;
   rtcore_symbolic_rt_token_key token_key;
   rtcore_symbolic_rt_token_reservation_key reservation_key;
+  rtcore_context_window_owner_seq_snapshot owner_seq_snapshot;
   unsigned long long context_ptr;
   unsigned long long handoff_window_base;
   unsigned lane_slot_index;
@@ -10968,6 +11011,10 @@ bool rtcore_build_traversal_completion_event(
   event->resume_seq_low = 0;
   event->window_tag =
       rtcore_synthetic_window_tag_for_generation(event->window_generation);
+  event->owner_seq_snapshot = rtcore_make_context_window_owner_seq_snapshot(
+      event->context_ptr, event->handoff_window_base, event->lane_slot_index,
+      event->warp_metadata, event->window_generation,
+      event->completion_seq_low, event->resume_seq_low, event->window_tag);
 
   rtcore_traversal_source_request source_request =
       rtcore_make_traversal_source_request(
