@@ -10646,6 +10646,9 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
       custom_result);
 }
 
+static void rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(
+    const rtcore_traversal_work_descriptor &descriptor);
+
 static rtcore_traversal_provider_response
 rtcore_invoke_rtcore_provider_bridge(
     const rtcore_traversal_work_descriptor &descriptor,
@@ -10662,6 +10665,7 @@ rtcore_invoke_rtcore_provider_bridge(
          descriptor.warp_metadata.active_mask, descriptor.valid ? 1 : 0,
          descriptor.has_registry_payload_shadow ? 1 : 0);
   fflush(stdout);
+  rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(descriptor);
 
   rtcore_traversal_provider_response response;
   switch (descriptor.provider) {
@@ -11648,6 +11652,38 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          shadow.has_bvh_format_profile ? 1 : 0,
          (unsigned long long)shadow.traversable_proxy_id,
          (unsigned long long)shadow.root_proxy_id, shadow.bvh_format_version);
+  fflush(stdout);
+}
+
+static void rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  if (!descriptor.has_registry_payload_shadow ||
+      descriptor.registry_payload_shadow == NULL ||
+      descriptor.provider_payload_consumption_enabled) {
+    return;
+  }
+
+  const rtcore_provider_facing_registry_payload_shadow &shadow =
+      *descriptor.registry_payload_shadow;
+  if (!shadow.valid) {
+    return;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT provider-side-registry-payload-diagnostic, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, provider-side-registry-payload-diagnostic-read=1, "
+         "registry_payload_shadow_attached=1, "
+         "provider_payload_consumption_enabled=0, "
+         "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
+         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
+         "bvh_format_version=%u\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index,
+         shadow.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         shadow.has_ray_flags_cull_mask ? 1 : 0,
+         shadow.has_traversable_root_proxy ? 1 : 0,
+         shadow.has_bvh_format_profile ? 1 : 0, shadow.bvh_format_version);
   fflush(stdout);
 }
 
