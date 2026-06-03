@@ -11203,6 +11203,43 @@ rtcore_fail_closed_on_input_provenance_registry_read_gate_before_provider(
   return true;
 }
 
+static void
+rtcore_log_input_provenance_registry_read_gate_allowed_before_provider(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_input_provenance_registry_read_gate_result
+        &read_gate_result,
+    const rtcore_input_provenance_registry_owned_field_coverage_result
+        &owned_field_coverage_result) {
+  if (!read_gate_result.gate_enabled || !read_gate_result.read_allowed) {
+    return;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT registry-read-gate-allowed (%s:%u), "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, input-provenance-registry-read-gate-allowed=1, "
+         "registry_gate_enabled=1, registry_read_allowed=1, "
+         "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
+         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index,
+         owned_field_coverage_result.observed_fields
+                 .has_ray_origin_direction_tmin_tmax
+             ? 1
+             : 0,
+         owned_field_coverage_result.observed_fields.has_ray_flags_cull_mask ? 1
+                                                                             : 0,
+         owned_field_coverage_result.observed_fields.has_traversable_root_proxy
+             ? 1
+             : 0,
+         owned_field_coverage_result.observed_fields.has_bvh_format_profile ? 1
+                                                                            : 0);
+  fflush(stdout);
+}
+
 static const uint32_t RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 1;
 
 struct rtcore_decoded_traversal_input_snapshot {
@@ -11665,6 +11702,9 @@ bool rtcore_build_traversal_completion_event(
           pI, source_request, registry_read_gate_result)) {
     return false;
   }
+  rtcore_log_input_provenance_registry_read_gate_allowed_before_provider(
+      pI, source_request, registry_read_gate_result,
+      registry_owned_field_coverage_result);
   rtcore_traversal_source_snapshot source_snapshot =
       rtcore_make_traversal_source_snapshot(source_request);
   const bool provider_unsupported = !source_snapshot.provider_supported;
