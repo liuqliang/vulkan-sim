@@ -502,6 +502,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.sbtRecordOffset = sbtRecordOffset;
     traversal_data.sbtRecordStride = sbtRecordStride;
     traversal_data.missIndex = missIndex;
+    traversal_data.rayFlags = rayFlags;
+    traversal_data.cullMask = cullMask;
     traversal_data.Tmin = Tmin;
     traversal_data.Tmax = Tmax;
     traversal_data.rtcore_node_visits = 0;

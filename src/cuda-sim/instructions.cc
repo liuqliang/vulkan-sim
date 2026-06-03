@@ -10853,6 +10853,9 @@ struct rtcore_decoded_traversal_input_snapshot {
       : valid(false),
         has_context_window_owner_seq(false),
         has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        ray_flags(0),
+        cull_mask(0),
         ray_tmin(0.0f),
         ray_tmax(0.0f) {
     memset(&ray_origin, 0, sizeof(ray_origin));
@@ -10863,8 +10866,11 @@ struct rtcore_decoded_traversal_input_snapshot {
   bool has_context_window_owner_seq;
   rtcore_context_window_owner_seq_snapshot context_window_owner_seq;
   bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
   float3 ray_origin;
   float3 ray_direction;
+  uint32_t ray_flags;
+  uint32_t cull_mask;
   float ray_tmin;
   float ray_tmax;
 };
@@ -10894,6 +10900,21 @@ static void rtcore_update_decoded_traversal_input_ray_proxy_snapshot(
   snapshot->ray_tmin = source_snapshot.traversal_snapshot.Tmin;
   snapshot->ray_tmax = source_snapshot.traversal_snapshot.Tmax;
   snapshot->has_ray_origin_direction_tmin_tmax = true;
+}
+
+static void rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
+    rtcore_decoded_traversal_input_snapshot *snapshot,
+    const rtcore_traversal_source_snapshot &source_snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->has_ray_flags_cull_mask = false;
+  if (!source_snapshot.has_traversal_data) {
+    return;
+  }
+  snapshot->ray_flags = source_snapshot.traversal_snapshot.rayFlags;
+  snapshot->cull_mask = source_snapshot.traversal_snapshot.cullMask;
+  snapshot->has_ray_flags_cull_mask = true;
 }
 
 struct rtcore_traversal_completion_event {
@@ -11105,6 +11126,8 @@ bool rtcore_build_traversal_completion_event(
   }
   rtcore_apply_traversal_source_snapshot(event, source_snapshot);
   rtcore_update_decoded_traversal_input_ray_proxy_snapshot(
+      &event->decoded_input_snapshot, source_snapshot);
+  rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
       &event->decoded_input_snapshot, source_snapshot);
 
   const bool forced_memory_fault =
