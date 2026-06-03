@@ -10118,6 +10118,16 @@ struct rtcore_registry_payload_consumption_admission_decision {
   bool default_deny;
 };
 
+static bool rtcore_registry_payload_consumption_admission_policy_allows(
+    const char *boundary_name) {
+  (void)boundary_name;
+  return false;
+}
+
+static bool rtcore_registry_payload_consumption_admission_policy_default_deny() {
+  return true;
+}
+
 struct rtcore_custom_backend_result {
   rtcore_custom_backend_result()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED),
@@ -10951,15 +10961,18 @@ rtcore_apply_source_snapshot_registry_payload_consumption_admission_gate(
       annotation.valid && annotation.has_bvh_format_profile;
   admission.bvh_format_version =
       annotation.valid ? annotation.bvh_format_version : 0;
-  admission.admission_allowed = false;
-  admission.default_deny = true;
+  admission.admission_allowed =
+      rtcore_registry_payload_consumption_admission_policy_allows(
+          "source-snapshot");
+  admission.default_deny =
+      rtcore_registry_payload_consumption_admission_policy_default_deny();
   snapshot->registry_payload_consumption_admission = admission;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "source-snapshot-registry-payload-consumption-admission=1, "
          "provider=%s, "
          "registry_payload_consumption_admission_valid=%u, "
-         "registry_payload_consumption_admission_allowed=0, "
+         "registry_payload_consumption_admission_allowed=%u, "
          "registry_payload_consumption_admission_default_deny=%u, "
          "registry_payload_source_snapshot_annotation_valid=%u, "
          "registry_payload_shadow_observed=%u, "
@@ -10969,7 +10982,8 @@ rtcore_apply_source_snapshot_registry_payload_consumption_admission_gate(
          "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
          "bvh_format_version=%u\n",
          rtcore_traversal_source_provider_name(snapshot->provider),
-         admission.valid ? 1 : 0, admission.default_deny ? 1 : 0,
+         admission.valid ? 1 : 0, admission.admission_allowed ? 1 : 0,
+         admission.default_deny ? 1 : 0,
          admission.annotation_valid ? 1 : 0,
          admission.observed_valid_shadow ? 1 : 0,
          admission.provider_payload_consumption_enabled ? 1 : 0,
@@ -11592,14 +11606,17 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
     mirror.has_bvh_format_profile = shadow.has_bvh_format_profile;
     mirror.bvh_format_version = shadow.bvh_format_version;
   }
-  mirror.admission_allowed = false;
-  mirror.default_deny = true;
+  mirror.admission_allowed =
+      rtcore_registry_payload_consumption_admission_policy_allows(
+          "provider-facing-mirror");
+  mirror.default_deny =
+      rtcore_registry_payload_consumption_admission_policy_default_deny();
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "provider-facing-registry-payload-admission-mirror=1, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, registry_payload_admission_mirror_valid=%u, "
-         "registry_payload_admission_mirror_allowed=0, "
+         "registry_payload_admission_mirror_allowed=%u, "
          "registry_payload_admission_mirror_default_deny=%u, "
          "registry_payload_shadow_attached=%u, "
          "registry_payload_shadow_observed=%u, "
@@ -11611,7 +11628,7 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index, mirror.valid ? 1 : 0,
-         mirror.default_deny ? 1 : 0,
+         mirror.admission_allowed ? 1 : 0, mirror.default_deny ? 1 : 0,
          mirror.has_registry_payload_shadow ? 1 : 0,
          mirror.observed_valid_shadow ? 1 : 0,
          mirror.has_ray_origin_direction_tmin_tmax ? 1 : 0,
