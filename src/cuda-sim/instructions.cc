@@ -10727,6 +10727,9 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
 static void rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(
     const rtcore_traversal_work_descriptor &descriptor);
 
+static void rtcore_log_provider_facing_registry_payload_admission_mirror(
+    const rtcore_traversal_work_descriptor &descriptor);
+
 static void
 rtcore_annotate_provider_response_with_registry_payload_observation(
     rtcore_traversal_provider_response *response,
@@ -10748,6 +10751,7 @@ rtcore_invoke_rtcore_provider_bridge(
          descriptor.warp_metadata.active_mask, descriptor.valid ? 1 : 0,
          descriptor.has_registry_payload_shadow ? 1 : 0);
   fflush(stdout);
+  rtcore_log_provider_facing_registry_payload_admission_mirror(descriptor);
   rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(descriptor);
 
   rtcore_traversal_provider_response response;
@@ -11541,6 +11545,82 @@ struct rtcore_provider_facing_registry_payload_shadow {
   bool has_bvh_format_profile;
   uint32_t bvh_format_version;
 };
+
+struct rtcore_provider_facing_registry_payload_admission_mirror {
+  rtcore_provider_facing_registry_payload_admission_mirror()
+      : valid(false),
+        has_registry_payload_shadow(false),
+        observed_valid_shadow(false),
+        provider_payload_consumption_enabled(false),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        has_traversable_root_proxy(false),
+        has_bvh_format_profile(false),
+        bvh_format_version(0),
+        admission_allowed(false),
+        default_deny(true) {}
+
+  bool valid;
+  bool has_registry_payload_shadow;
+  bool observed_valid_shadow;
+  bool provider_payload_consumption_enabled;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  bool has_traversable_root_proxy;
+  bool has_bvh_format_profile;
+  uint32_t bvh_format_version;
+  bool admission_allowed;
+  bool default_deny;
+};
+
+static void rtcore_log_provider_facing_registry_payload_admission_mirror(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_provider_facing_registry_payload_admission_mirror mirror;
+  mirror.valid = true;
+  mirror.has_registry_payload_shadow = descriptor.has_registry_payload_shadow;
+  mirror.provider_payload_consumption_enabled = false;
+  if (descriptor.has_registry_payload_shadow &&
+      descriptor.registry_payload_shadow != NULL &&
+      descriptor.registry_payload_shadow->valid) {
+    const rtcore_provider_facing_registry_payload_shadow &shadow =
+        *descriptor.registry_payload_shadow;
+    mirror.observed_valid_shadow = true;
+    mirror.has_ray_origin_direction_tmin_tmax =
+        shadow.has_ray_origin_direction_tmin_tmax;
+    mirror.has_ray_flags_cull_mask = shadow.has_ray_flags_cull_mask;
+    mirror.has_traversable_root_proxy = shadow.has_traversable_root_proxy;
+    mirror.has_bvh_format_profile = shadow.has_bvh_format_profile;
+    mirror.bvh_format_version = shadow.bvh_format_version;
+  }
+  mirror.admission_allowed = false;
+  mirror.default_deny = true;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "provider-facing-registry-payload-admission-mirror=1, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, registry_payload_admission_mirror_valid=%u, "
+         "registry_payload_admission_mirror_allowed=0, "
+         "registry_payload_admission_mirror_default_deny=%u, "
+         "registry_payload_shadow_attached=%u, "
+         "registry_payload_shadow_observed=%u, "
+         "provider_payload_consumption_enabled=0, "
+         "provider_admission_mirror_consumes_traversal_behavior=0, "
+         "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
+         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
+         "bvh_format_version=%u\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, mirror.valid ? 1 : 0,
+         mirror.default_deny ? 1 : 0,
+         mirror.has_registry_payload_shadow ? 1 : 0,
+         mirror.observed_valid_shadow ? 1 : 0,
+         mirror.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         mirror.has_ray_flags_cull_mask ? 1 : 0,
+         mirror.has_traversable_root_proxy ? 1 : 0,
+         mirror.has_bvh_format_profile ? 1 : 0,
+         mirror.bvh_format_version);
+  fflush(stdout);
+}
 
 static const uint32_t RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 1;
 
