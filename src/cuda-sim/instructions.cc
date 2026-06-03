@@ -11664,6 +11664,7 @@ struct rtcore_provider_payload_consumption_eligibility_shadow {
         observed_valid_shadow(false),
         field_coverage_complete(false),
         consumption_policy_enabled(false),
+        provider_payload_consumption_eligible(false),
         provider_payload_consumption_enabled(false),
         fail_reason(
             RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_ADMISSION_DISABLED) {
@@ -11675,12 +11676,34 @@ struct rtcore_provider_payload_consumption_eligibility_shadow {
   bool observed_valid_shadow;
   bool field_coverage_complete;
   bool consumption_policy_enabled;
+  bool provider_payload_consumption_eligible;
   bool provider_payload_consumption_enabled;
   rtcore_provider_payload_consumption_eligibility_shadow_fail_reason
       fail_reason;
 };
 
+static const char *rtcore_provider_payload_consumption_policy_env_name() {
+  return "VULKAN_SIM_RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_POLICY";
+}
+
+static const char *rtcore_provider_payload_consumption_policy_source() {
+  const char *value =
+      getenv(rtcore_provider_payload_consumption_policy_env_name());
+  return value != NULL && value[0] != '\0'
+             ? rtcore_provider_payload_consumption_policy_env_name()
+             : "default-disabled";
+}
+
 static bool rtcore_provider_payload_consumption_policy_enabled() {
+  const char *value =
+      getenv(rtcore_provider_payload_consumption_policy_env_name());
+  if (value == NULL || value[0] == '\0') {
+    return false;
+  }
+  if (strcmp(value, "allow") == 0 || strcmp(value, "enabled") == 0 ||
+      strcmp(value, "1") == 0) {
+    return true;
+  }
   return false;
 }
 
@@ -11764,6 +11787,11 @@ static void rtcore_log_provider_payload_consumption_eligibility_shadow(
         shadow.has_ray_flags_cull_mask &&
         shadow.has_traversable_root_proxy && shadow.has_bvh_format_profile;
   }
+  shadow_decision.provider_payload_consumption_eligible =
+      shadow_decision.admission_allowed &&
+      shadow_decision.observed_valid_shadow &&
+      shadow_decision.field_coverage_complete &&
+      shadow_decision.consumption_policy_enabled;
 
   if (!shadow_decision.admission_allowed) {
     shadow_decision.fail_reason =
@@ -11790,8 +11818,9 @@ static void rtcore_log_provider_payload_consumption_eligibility_shadow(
          "registry_payload_shadow_attached=%u, "
          "registry_payload_shadow_observed=%u, "
          "provider_payload_field_coverage_complete=%u, "
-         "provider_payload_consumption_policy_enabled=0, "
-         "provider_payload_consumption_eligible=0, "
+         "provider_payload_consumption_policy_source=%s, "
+         "provider_payload_consumption_policy_enabled=%u, "
+         "provider_payload_consumption_eligible=%u, "
          "provider_payload_consumption_enabled=0, "
          "provider_payload_consumption_eligibility_fail_reason=%s, "
          "provider_payload_consumption_eligibility_consumes_traversal_behavior=0\n",
@@ -11802,6 +11831,9 @@ static void rtcore_log_provider_payload_consumption_eligibility_shadow(
          shadow_decision.has_registry_payload_shadow ? 1 : 0,
          shadow_decision.observed_valid_shadow ? 1 : 0,
          shadow_decision.field_coverage_complete ? 1 : 0,
+         rtcore_provider_payload_consumption_policy_source(),
+         shadow_decision.consumption_policy_enabled ? 1 : 0,
+         shadow_decision.provider_payload_consumption_eligible ? 1 : 0,
          rtcore_provider_payload_consumption_eligibility_shadow_fail_reason_name(
              shadow_decision.fail_reason));
   fflush(stdout);
