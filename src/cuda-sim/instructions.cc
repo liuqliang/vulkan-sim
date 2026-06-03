@@ -11288,6 +11288,39 @@ static void rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
   snapshot->has_bvh_format_version = true;
 }
 
+static void
+rtcore_bind_input_provenance_registry_publication_to_decoded_snapshot(
+    rtcore_input_provenance_registry_publication_snapshot *publication_snapshot,
+    const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot) {
+  if (publication_snapshot == NULL) {
+    return;
+  }
+  rtcore_input_provenance_registry_entry &entry =
+      publication_snapshot->entry;
+  entry.valid = decoded_input_snapshot.valid;
+  entry.owned_fields.has_ray_origin_direction_tmin_tmax =
+      decoded_input_snapshot.has_ray_origin_direction_tmin_tmax;
+  entry.owned_fields.has_ray_flags_cull_mask =
+      decoded_input_snapshot.has_ray_flags_cull_mask;
+  entry.owned_fields.has_traversable_root_proxy =
+      decoded_input_snapshot.has_traversable_root_proxy;
+  entry.owned_fields.has_bvh_format_profile =
+      decoded_input_snapshot.has_bvh_format_version;
+}
+
+static rtcore_input_provenance_registry_publication_snapshot
+rtcore_publish_input_provenance_registry_entry_snapshot_from_decoded_input(
+    const rtcore_traversal_source_request &request,
+    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot,
+    const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot) {
+  rtcore_input_provenance_registry_publication_snapshot snapshot =
+      rtcore_publish_input_provenance_registry_entry_snapshot(
+          request, owner_seq_snapshot);
+  rtcore_bind_input_provenance_registry_publication_to_decoded_snapshot(
+      &snapshot, decoded_input_snapshot);
+  return snapshot;
+}
+
 struct rtcore_traversal_completion_event {
   rtcore_traversal_completion_event()
       : warp_metadata(),
@@ -11464,8 +11497,9 @@ bool rtcore_build_traversal_completion_event(
           pI, thread, event->context_ptr, event->handoff_window_base,
           event->lane_slot_index, &event->warp_metadata);
   rtcore_input_provenance_registry_publication_snapshot registry_publication_snapshot =
-      rtcore_publish_input_provenance_registry_entry_snapshot(
-          source_request, event->owner_seq_snapshot);
+      rtcore_publish_input_provenance_registry_entry_snapshot_from_decoded_input(
+          source_request, event->owner_seq_snapshot,
+          event->decoded_input_snapshot);
   (void)registry_publication_snapshot;
   rtcore_input_provenance_registry_validation_result registry_validation_result =
       rtcore_validate_input_provenance_registry_key_before_provider(
