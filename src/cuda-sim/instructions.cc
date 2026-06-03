@@ -10850,11 +10850,23 @@ rtcore_make_context_window_owner_seq_snapshot(
 
 struct rtcore_decoded_traversal_input_snapshot {
   rtcore_decoded_traversal_input_snapshot()
-      : valid(false), has_context_window_owner_seq(false) {}
+      : valid(false),
+        has_context_window_owner_seq(false),
+        has_ray_origin_direction_tmin_tmax(false),
+        ray_tmin(0.0f),
+        ray_tmax(0.0f) {
+    memset(&ray_origin, 0, sizeof(ray_origin));
+    memset(&ray_direction, 0, sizeof(ray_direction));
+  }
 
   bool valid;
   bool has_context_window_owner_seq;
   rtcore_context_window_owner_seq_snapshot context_window_owner_seq;
+  bool has_ray_origin_direction_tmin_tmax;
+  float3 ray_origin;
+  float3 ray_direction;
+  float ray_tmin;
+  float ray_tmax;
 };
 
 static rtcore_decoded_traversal_input_snapshot
@@ -10865,6 +10877,23 @@ rtcore_make_decoded_traversal_input_snapshot(
   snapshot.has_context_window_owner_seq = owner_seq_snapshot.valid;
   snapshot.context_window_owner_seq = owner_seq_snapshot;
   return snapshot;
+}
+
+static void rtcore_update_decoded_traversal_input_ray_proxy_snapshot(
+    rtcore_decoded_traversal_input_snapshot *snapshot,
+    const rtcore_traversal_source_snapshot &source_snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->has_ray_origin_direction_tmin_tmax = false;
+  if (!source_snapshot.has_traversal_data) {
+    return;
+  }
+  snapshot->ray_origin = source_snapshot.traversal_snapshot.ray_world_origin;
+  snapshot->ray_direction = source_snapshot.traversal_snapshot.ray_world_direction;
+  snapshot->ray_tmin = source_snapshot.traversal_snapshot.Tmin;
+  snapshot->ray_tmax = source_snapshot.traversal_snapshot.Tmax;
+  snapshot->has_ray_origin_direction_tmin_tmax = true;
 }
 
 struct rtcore_traversal_completion_event {
@@ -11075,6 +11104,8 @@ bool rtcore_build_traversal_completion_event(
     return false;
   }
   rtcore_apply_traversal_source_snapshot(event, source_snapshot);
+  rtcore_update_decoded_traversal_input_ray_proxy_snapshot(
+      &event->decoded_input_snapshot, source_snapshot);
 
   const bool forced_memory_fault =
       rtcore_test_memory_fault_publication_enabled();
