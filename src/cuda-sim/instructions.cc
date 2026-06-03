@@ -11101,6 +11101,48 @@ rtcore_validate_input_provenance_registry_owned_field_coverage_before_provider(
   return result;
 }
 
+struct rtcore_input_provenance_registry_read_gate_result {
+  rtcore_input_provenance_registry_read_gate_result()
+      : gate_requested(false),
+        gate_enabled(false),
+        read_allowed(false),
+        fail_reason(RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED) {}
+
+  bool gate_requested;
+  bool gate_enabled;
+  bool read_allowed;
+  rtcore_input_provenance_registry_fail_reason fail_reason;
+};
+
+static rtcore_input_provenance_registry_read_gate_result
+rtcore_gate_input_provenance_registry_read_before_provider(
+    const rtcore_input_provenance_registry_validation_result
+        &key_validation_result,
+    const rtcore_input_provenance_registry_owned_field_coverage_result
+        &owned_field_coverage_result) {
+  rtcore_input_provenance_registry_read_gate_result result;
+  result.gate_requested = true;
+  result.gate_enabled = rtcore_input_provenance_registry_enabled();
+  result.fail_reason = RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED;
+  if (!result.gate_enabled) {
+    return result;
+  }
+
+  if (!key_validation_result.key_matches) {
+    result.fail_reason = RTCORE_INPUT_PROVENANCE_REGISTRY_KEY_MISMATCH;
+    return result;
+  }
+  if (!owned_field_coverage_result.has_required_owned_fields) {
+    result.fail_reason =
+        RTCORE_INPUT_PROVENANCE_REGISTRY_PARTIAL_FIELD_OWNERSHIP;
+    return result;
+  }
+
+  result.read_allowed = true;
+  result.fail_reason = RTCORE_INPUT_PROVENANCE_REGISTRY_FAIL_NONE;
+  return result;
+}
+
 static const uint32_t RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 1;
 
 struct rtcore_decoded_traversal_input_snapshot {
@@ -11404,6 +11446,10 @@ bool rtcore_build_traversal_completion_event(
           rtcore_validate_input_provenance_registry_owned_field_coverage_before_provider(
               source_request, event->owner_seq_snapshot);
   (void)registry_owned_field_coverage_result;
+  rtcore_input_provenance_registry_read_gate_result registry_read_gate_result =
+      rtcore_gate_input_provenance_registry_read_before_provider(
+          registry_validation_result, registry_owned_field_coverage_result);
+  (void)registry_read_gate_result;
   rtcore_traversal_source_snapshot source_snapshot =
       rtcore_make_traversal_source_snapshot(source_request);
   const bool provider_unsupported = !source_snapshot.provider_supported;
