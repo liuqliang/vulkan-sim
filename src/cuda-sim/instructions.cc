@@ -11240,6 +11240,45 @@ rtcore_log_input_provenance_registry_read_gate_allowed_before_provider(
   fflush(stdout);
 }
 
+struct rtcore_provider_facing_registry_payload_shadow {
+  rtcore_provider_facing_registry_payload_shadow()
+      : valid(false),
+        read_gate_allowed(false),
+        provider_consumption_attached(false),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        ray_flags(0),
+        cull_mask(0),
+        ray_tmin(0.0f),
+        ray_tmax(0.0f),
+        has_traversable_root_proxy(false),
+        traversable_proxy_id(0),
+        root_proxy_id(0),
+        has_bvh_format_profile(false),
+        bvh_format_version(0) {
+    memset(&ray_origin, 0, sizeof(ray_origin));
+    memset(&ray_direction, 0, sizeof(ray_direction));
+  }
+
+  bool valid;
+  bool read_gate_allowed;
+  bool provider_consumption_attached;
+  rtcore_input_provenance_registry_key key;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  float3 ray_origin;
+  float3 ray_direction;
+  uint32_t ray_flags;
+  uint32_t cull_mask;
+  float ray_tmin;
+  float ray_tmax;
+  bool has_traversable_root_proxy;
+  uint64_t traversable_proxy_id;
+  uint64_t root_proxy_id;
+  bool has_bvh_format_profile;
+  uint32_t bvh_format_version;
+};
+
 static const uint32_t RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 1;
 
 struct rtcore_decoded_traversal_input_snapshot {
@@ -11500,6 +11539,81 @@ rtcore_publish_input_provenance_registry_entry_snapshot_from_decoded_input(
       request, owner_seq_snapshot, publication_map);
 }
 
+static rtcore_provider_facing_registry_payload_shadow
+rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
+    const rtcore_input_provenance_registry_publication_snapshot
+        &publication_snapshot,
+    const rtcore_input_provenance_registry_read_gate_result &read_gate_result,
+    const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot) {
+  rtcore_provider_facing_registry_payload_shadow shadow;
+  if (!read_gate_result.gate_enabled || !read_gate_result.read_allowed ||
+      !publication_snapshot.entry.valid) {
+    return shadow;
+  }
+
+  shadow.read_gate_allowed = true;
+  shadow.provider_consumption_attached = false;
+  shadow.key = publication_snapshot.entry.key;
+  shadow.has_ray_origin_direction_tmin_tmax =
+      decoded_input_snapshot.has_ray_origin_direction_tmin_tmax &&
+      publication_snapshot.entry.owned_fields
+          .has_ray_origin_direction_tmin_tmax;
+  shadow.has_ray_flags_cull_mask =
+      decoded_input_snapshot.has_ray_flags_cull_mask &&
+      publication_snapshot.entry.owned_fields.has_ray_flags_cull_mask;
+  shadow.has_traversable_root_proxy =
+      decoded_input_snapshot.has_traversable_root_proxy &&
+      publication_snapshot.entry.owned_fields.has_traversable_root_proxy;
+  shadow.has_bvh_format_profile =
+      decoded_input_snapshot.has_bvh_format_version &&
+      publication_snapshot.entry.owned_fields.has_bvh_format_profile;
+  shadow.ray_origin = decoded_input_snapshot.ray_origin;
+  shadow.ray_direction = decoded_input_snapshot.ray_direction;
+  shadow.ray_tmin = decoded_input_snapshot.ray_tmin;
+  shadow.ray_tmax = decoded_input_snapshot.ray_tmax;
+  shadow.ray_flags = decoded_input_snapshot.ray_flags;
+  shadow.cull_mask = decoded_input_snapshot.cull_mask;
+  shadow.traversable_proxy_id = decoded_input_snapshot.traversable_proxy_id;
+  shadow.root_proxy_id = decoded_input_snapshot.root_proxy_id;
+  shadow.bvh_format_version = decoded_input_snapshot.bvh_format_version;
+  shadow.valid = shadow.has_ray_origin_direction_tmin_tmax &&
+                 shadow.has_ray_flags_cull_mask &&
+                 shadow.has_traversable_root_proxy &&
+                 shadow.has_bvh_format_profile;
+  return shadow;
+}
+
+static void
+rtcore_log_provider_facing_registry_payload_shadow_before_provider(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_provider_facing_registry_payload_shadow &shadow) {
+  if (!shadow.valid) {
+    return;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT registry-payload-shadow (%s:%u), "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, provider-facing-registry-payload-shadow=1, "
+         "registry_read_allowed=%u, provider_consumption_attached=0, "
+         "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
+         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
+         "traversable_proxy_id=0x%llx, root_proxy_id=0x%llx, "
+         "bvh_format_version=%u\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index, shadow.read_gate_allowed ? 1 : 0,
+         shadow.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         shadow.has_ray_flags_cull_mask ? 1 : 0,
+         shadow.has_traversable_root_proxy ? 1 : 0,
+         shadow.has_bvh_format_profile ? 1 : 0,
+         (unsigned long long)shadow.traversable_proxy_id,
+         (unsigned long long)shadow.root_proxy_id, shadow.bvh_format_version);
+  fflush(stdout);
+}
+
 struct rtcore_traversal_completion_event {
   rtcore_traversal_completion_event()
       : warp_metadata(),
@@ -11529,6 +11643,7 @@ struct rtcore_traversal_completion_event {
   rtcore_symbolic_rt_token_reservation_key reservation_key;
   rtcore_context_window_owner_seq_snapshot owner_seq_snapshot;
   rtcore_decoded_traversal_input_snapshot decoded_input_snapshot;
+  rtcore_provider_facing_registry_payload_shadow registry_payload_shadow;
   unsigned long long context_ptr;
   unsigned long long handoff_window_base;
   unsigned lane_slot_index;
@@ -11705,6 +11820,13 @@ bool rtcore_build_traversal_completion_event(
   rtcore_log_input_provenance_registry_read_gate_allowed_before_provider(
       pI, source_request, registry_read_gate_result,
       registry_owned_field_coverage_result);
+  // Shadow-only: do not attach this payload to request/descriptor/bridge yet.
+  event->registry_payload_shadow =
+      rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
+          registry_publication_snapshot, registry_read_gate_result,
+          event->decoded_input_snapshot);
+  rtcore_log_provider_facing_registry_payload_shadow_before_provider(
+      pI, source_request, event->registry_payload_shadow);
   rtcore_traversal_source_snapshot source_snapshot =
       rtcore_make_traversal_source_snapshot(source_request);
   const bool provider_unsupported = !source_snapshot.provider_supported;
