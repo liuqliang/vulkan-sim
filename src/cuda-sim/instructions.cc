@@ -10932,6 +10932,20 @@ struct rtcore_input_provenance_registry_entry {
   rtcore_input_provenance_registry_fail_reason fail_reason;
 };
 
+struct rtcore_input_provenance_registry_publication_snapshot {
+  rtcore_input_provenance_registry_publication_snapshot()
+      : publication_requested(false),
+        publication_enabled(false),
+        published(false),
+        fail_reason(RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED) {}
+
+  bool publication_requested;
+  bool publication_enabled;
+  bool published;
+  rtcore_input_provenance_registry_entry entry;
+  rtcore_input_provenance_registry_fail_reason fail_reason;
+};
+
 static bool rtcore_input_provenance_registry_enabled() { return false; }
 
 static rtcore_input_provenance_registry_key
@@ -10963,23 +10977,24 @@ rtcore_make_disabled_input_provenance_registry_entry(
   return entry;
 }
 
-static bool rtcore_try_publish_input_provenance_registry_entry(
+static rtcore_input_provenance_registry_publication_snapshot
+rtcore_publish_input_provenance_registry_entry_snapshot(
     const rtcore_traversal_source_request &request,
-    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot,
-    rtcore_input_provenance_registry_fail_reason *fail_reason) {
-  rtcore_input_provenance_registry_entry entry =
+    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot) {
+  rtcore_input_provenance_registry_publication_snapshot snapshot;
+  snapshot.publication_requested = true;
+  snapshot.publication_enabled = rtcore_input_provenance_registry_enabled();
+  snapshot.entry =
       rtcore_make_disabled_input_provenance_registry_entry(
           request, owner_seq_snapshot);
-  if (fail_reason != NULL) {
-    *fail_reason = entry.fail_reason;
-  }
+  snapshot.fail_reason = snapshot.entry.fail_reason;
   const char *fail_reason_name =
-      rtcore_input_provenance_registry_fail_reason_name(entry.fail_reason);
+      rtcore_input_provenance_registry_fail_reason_name(snapshot.fail_reason);
   (void)fail_reason_name;
-  if (!rtcore_input_provenance_registry_enabled()) {
-    return false;
+  if (!snapshot.publication_enabled) {
+    return snapshot;
   }
-  return false;
+  return snapshot;
 }
 
 struct rtcore_input_provenance_registry_validation_result {
@@ -11014,16 +11029,26 @@ static bool rtcore_input_provenance_registry_keys_match(
 
 static rtcore_input_provenance_registry_validation_result
 rtcore_validate_input_provenance_registry_key_before_provider(
+    const rtcore_input_provenance_registry_publication_snapshot
+        &publication_snapshot,
     const rtcore_traversal_source_request &request,
     const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot) {
   rtcore_input_provenance_registry_validation_result result;
   result.validation_requested = true;
-  result.validation_enabled = rtcore_input_provenance_registry_enabled();
+  result.validation_enabled = publication_snapshot.publication_enabled;
   result.expected_key =
       rtcore_make_input_provenance_registry_key(request, owner_seq_snapshot);
-  result.observed_key = result.expected_key;
-  result.fail_reason = RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED;
+  result.observed_key = publication_snapshot.entry.key;
+  result.fail_reason = publication_snapshot.fail_reason;
   if (!result.validation_enabled) {
+    return result;
+  }
+  if (!publication_snapshot.entry.valid) {
+    result.fail_reason =
+        publication_snapshot.fail_reason !=
+                RTCORE_INPUT_PROVENANCE_REGISTRY_FAIL_NONE
+            ? publication_snapshot.fail_reason
+            : RTCORE_INPUT_PROVENANCE_REGISTRY_MISSING_PROVENANCE;
     return result;
   }
 
@@ -11075,19 +11100,24 @@ static bool rtcore_input_provenance_registry_owned_fields_cover_required_inputs(
 
 static rtcore_input_provenance_registry_owned_field_coverage_result
 rtcore_validate_input_provenance_registry_owned_field_coverage_before_provider(
-    const rtcore_traversal_source_request &request,
-    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot) {
+    const rtcore_input_provenance_registry_publication_snapshot
+        &publication_snapshot) {
   rtcore_input_provenance_registry_owned_field_coverage_result result;
   result.coverage_requested = true;
-  result.coverage_enabled = rtcore_input_provenance_registry_enabled();
+  result.coverage_enabled = publication_snapshot.publication_enabled;
   result.required_fields =
       rtcore_make_required_input_provenance_registry_owned_fields();
-  rtcore_input_provenance_registry_entry entry =
-      rtcore_make_disabled_input_provenance_registry_entry(
-          request, owner_seq_snapshot);
-  result.observed_fields = entry.owned_fields;
-  result.fail_reason = RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED;
+  result.observed_fields = publication_snapshot.entry.owned_fields;
+  result.fail_reason = publication_snapshot.fail_reason;
   if (!result.coverage_enabled) {
+    return result;
+  }
+  if (!publication_snapshot.entry.valid) {
+    result.fail_reason =
+        publication_snapshot.fail_reason !=
+                RTCORE_INPUT_PROVENANCE_REGISTRY_FAIL_NONE
+            ? publication_snapshot.fail_reason
+            : RTCORE_INPUT_PROVENANCE_REGISTRY_MISSING_PROVENANCE;
     return result;
   }
 
@@ -11433,18 +11463,19 @@ bool rtcore_build_traversal_completion_event(
       rtcore_make_traversal_source_request(
           pI, thread, event->context_ptr, event->handoff_window_base,
           event->lane_slot_index, &event->warp_metadata);
-  rtcore_input_provenance_registry_fail_reason registry_fail_reason =
-      RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED;
-  (void)rtcore_try_publish_input_provenance_registry_entry(
-      source_request, event->owner_seq_snapshot, &registry_fail_reason);
+  rtcore_input_provenance_registry_publication_snapshot registry_publication_snapshot =
+      rtcore_publish_input_provenance_registry_entry_snapshot(
+          source_request, event->owner_seq_snapshot);
+  (void)registry_publication_snapshot;
   rtcore_input_provenance_registry_validation_result registry_validation_result =
       rtcore_validate_input_provenance_registry_key_before_provider(
-          source_request, event->owner_seq_snapshot);
+          registry_publication_snapshot, source_request,
+          event->owner_seq_snapshot);
   (void)registry_validation_result;
   rtcore_input_provenance_registry_owned_field_coverage_result
       registry_owned_field_coverage_result =
           rtcore_validate_input_provenance_registry_owned_field_coverage_before_provider(
-              source_request, event->owner_seq_snapshot);
+              registry_publication_snapshot);
   (void)registry_owned_field_coverage_result;
   rtcore_input_provenance_registry_read_gate_result registry_read_gate_result =
       rtcore_gate_input_provenance_registry_read_before_provider(
