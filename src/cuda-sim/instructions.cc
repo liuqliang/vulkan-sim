@@ -11318,6 +11318,60 @@ static void rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
   snapshot->has_bvh_format_version = true;
 }
 
+struct rtcore_pre_provider_traversal_data_snapshot {
+  rtcore_pre_provider_traversal_data_snapshot() : valid(false) {
+    memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
+  }
+
+  bool valid;
+  Traversal_data traversal_snapshot;
+};
+
+static rtcore_pre_provider_traversal_data_snapshot
+rtcore_make_pre_provider_traversal_data_snapshot(
+    const rtcore_traversal_source_request &request) {
+  rtcore_pre_provider_traversal_data_snapshot snapshot;
+  if (request.thread == NULL || request.thread->RT_thread_data == NULL ||
+      request.thread->RT_thread_data->traversal_data.empty()) {
+    return snapshot;
+  }
+
+  memory_space *mem = request.thread->get_global_memory();
+  Traversal_data *device_traversal_data =
+      request.thread->RT_thread_data->traversal_data.back();
+  mem->read((mem_addr_t)device_traversal_data,
+            sizeof(snapshot.traversal_snapshot),
+            &snapshot.traversal_snapshot);
+  snapshot.valid = true;
+  return snapshot;
+}
+
+static void
+rtcore_update_decoded_traversal_input_from_pre_provider_traversal_data_snapshot(
+    rtcore_decoded_traversal_input_snapshot *decoded_input_snapshot,
+    const rtcore_pre_provider_traversal_data_snapshot
+        &pre_provider_traversal_data_snapshot) {
+  if (decoded_input_snapshot == NULL ||
+      !pre_provider_traversal_data_snapshot.valid) {
+    return;
+  }
+
+  // Provider-facing source request, work descriptor, and provider bridge
+  // payloads remain unchanged; this only publishes input-field availability.
+  rtcore_traversal_source_snapshot source_snapshot;
+  source_snapshot.has_traversal_data = true;
+  source_snapshot.traversal_snapshot =
+      pre_provider_traversal_data_snapshot.traversal_snapshot;
+  rtcore_update_decoded_traversal_input_ray_proxy_snapshot(
+      decoded_input_snapshot, source_snapshot);
+  rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
+      decoded_input_snapshot, source_snapshot);
+  rtcore_update_decoded_traversal_input_traversable_root_proxy_snapshot(
+      decoded_input_snapshot, source_snapshot);
+  rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
+      decoded_input_snapshot, source_snapshot);
+}
+
 struct rtcore_pre_provider_decoded_input_publication_map {
   rtcore_pre_provider_decoded_input_publication_map()
       : valid(false),
@@ -11584,6 +11638,11 @@ bool rtcore_build_traversal_completion_event(
       rtcore_make_traversal_source_request(
           pI, thread, event->context_ptr, event->handoff_window_base,
           event->lane_slot_index, &event->warp_metadata);
+  rtcore_pre_provider_traversal_data_snapshot
+      pre_provider_traversal_data_snapshot =
+          rtcore_make_pre_provider_traversal_data_snapshot(source_request);
+  rtcore_update_decoded_traversal_input_from_pre_provider_traversal_data_snapshot(
+      &event->decoded_input_snapshot, pre_provider_traversal_data_snapshot);
   rtcore_input_provenance_registry_publication_snapshot registry_publication_snapshot =
       rtcore_publish_input_provenance_registry_entry_snapshot_from_decoded_input(
           source_request, event->owner_seq_snapshot,
