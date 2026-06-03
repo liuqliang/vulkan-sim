@@ -10946,7 +10946,11 @@ struct rtcore_input_provenance_registry_publication_snapshot {
   rtcore_input_provenance_registry_fail_reason fail_reason;
 };
 
-static bool rtcore_input_provenance_registry_enabled() { return false; }
+static bool rtcore_input_provenance_registry_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_INPUT_PROVENANCE_REGISTRY_ENABLE");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
 
 static rtcore_input_provenance_registry_key
 rtcore_make_input_provenance_registry_key(
@@ -11171,6 +11175,32 @@ rtcore_gate_input_provenance_registry_read_before_provider(
   result.read_allowed = true;
   result.fail_reason = RTCORE_INPUT_PROVENANCE_REGISTRY_FAIL_NONE;
   return result;
+}
+
+static bool
+rtcore_fail_closed_on_input_provenance_registry_read_gate_before_provider(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_input_provenance_registry_read_gate_result
+        &read_gate_result) {
+  if (!read_gate_result.gate_enabled || read_gate_result.read_allowed) {
+    return false;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=%s, provider=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "input-provenance-registry-read-gate-fail-closed=1, "
+         "registry_gate_enabled=1, registry_read_allowed=0\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0,
+         rtcore_input_provenance_registry_fail_reason_name(
+             read_gate_result.fail_reason),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index);
+  fflush(stdout);
+  return true;
 }
 
 static const uint32_t RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 1;
@@ -11572,7 +11602,10 @@ bool rtcore_build_traversal_completion_event(
   rtcore_input_provenance_registry_read_gate_result registry_read_gate_result =
       rtcore_gate_input_provenance_registry_read_before_provider(
           registry_validation_result, registry_owned_field_coverage_result);
-  (void)registry_read_gate_result;
+  if (rtcore_fail_closed_on_input_provenance_registry_read_gate_before_provider(
+          pI, source_request, registry_read_gate_result)) {
+    return false;
+  }
   rtcore_traversal_source_snapshot source_snapshot =
       rtcore_make_traversal_source_snapshot(source_request);
   const bool provider_unsupported = !source_snapshot.provider_supported;
