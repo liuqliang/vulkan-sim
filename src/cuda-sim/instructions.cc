@@ -10982,6 +10982,59 @@ static bool rtcore_try_publish_input_provenance_registry_entry(
   return false;
 }
 
+struct rtcore_input_provenance_registry_validation_result {
+  rtcore_input_provenance_registry_validation_result()
+      : validation_requested(false),
+        validation_enabled(false),
+        key_matches(false),
+        fail_reason(RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED) {}
+
+  bool validation_requested;
+  bool validation_enabled;
+  bool key_matches;
+  rtcore_input_provenance_registry_key expected_key;
+  rtcore_input_provenance_registry_key observed_key;
+  rtcore_input_provenance_registry_fail_reason fail_reason;
+};
+
+static bool rtcore_input_provenance_registry_keys_match(
+    const rtcore_input_provenance_registry_key &expected,
+    const rtcore_input_provenance_registry_key &observed) {
+  return expected.context_ptr == observed.context_ptr &&
+         expected.handoff_window_base == observed.handoff_window_base &&
+         expected.lane_slot_index == observed.lane_slot_index &&
+         expected.window_generation == observed.window_generation &&
+         expected.completion_seq_low == observed.completion_seq_low &&
+         expected.resume_seq_low == observed.resume_seq_low &&
+         expected.window_tag == observed.window_tag &&
+         expected.owner_hw_sid == observed.owner_hw_sid &&
+         expected.active_mask == observed.active_mask &&
+         expected.static_inst_uid == observed.static_inst_uid;
+}
+
+static rtcore_input_provenance_registry_validation_result
+rtcore_validate_input_provenance_registry_key_before_provider(
+    const rtcore_traversal_source_request &request,
+    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot) {
+  rtcore_input_provenance_registry_validation_result result;
+  result.validation_requested = true;
+  result.validation_enabled = rtcore_input_provenance_registry_enabled();
+  result.expected_key =
+      rtcore_make_input_provenance_registry_key(request, owner_seq_snapshot);
+  result.observed_key = result.expected_key;
+  result.fail_reason = RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED;
+  if (!result.validation_enabled) {
+    return result;
+  }
+
+  result.key_matches = rtcore_input_provenance_registry_keys_match(
+      result.expected_key, result.observed_key);
+  result.fail_reason = result.key_matches
+                           ? RTCORE_INPUT_PROVENANCE_REGISTRY_FAIL_NONE
+                           : RTCORE_INPUT_PROVENANCE_REGISTRY_KEY_MISMATCH;
+  return result;
+}
+
 static const uint32_t RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 1;
 
 struct rtcore_decoded_traversal_input_snapshot {
@@ -11276,6 +11329,10 @@ bool rtcore_build_traversal_completion_event(
       RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED;
   (void)rtcore_try_publish_input_provenance_registry_entry(
       source_request, event->owner_seq_snapshot, &registry_fail_reason);
+  rtcore_input_provenance_registry_validation_result registry_validation_result =
+      rtcore_validate_input_provenance_registry_key_before_provider(
+          source_request, event->owner_seq_snapshot);
+  (void)registry_validation_result;
   rtcore_traversal_source_snapshot source_snapshot =
       rtcore_make_traversal_source_snapshot(source_request);
   const bool provider_unsupported = !source_snapshot.provider_supported;
