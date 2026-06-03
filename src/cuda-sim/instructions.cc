@@ -11035,6 +11035,72 @@ rtcore_validate_input_provenance_registry_key_before_provider(
   return result;
 }
 
+struct rtcore_input_provenance_registry_owned_field_coverage_result {
+  rtcore_input_provenance_registry_owned_field_coverage_result()
+      : coverage_requested(false),
+        coverage_enabled(false),
+        has_required_owned_fields(false),
+        fail_reason(RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED) {}
+
+  bool coverage_requested;
+  bool coverage_enabled;
+  bool has_required_owned_fields;
+  rtcore_input_provenance_registry_owned_fields required_fields;
+  rtcore_input_provenance_registry_owned_fields observed_fields;
+  rtcore_input_provenance_registry_fail_reason fail_reason;
+};
+
+static rtcore_input_provenance_registry_owned_fields
+rtcore_make_required_input_provenance_registry_owned_fields() {
+  rtcore_input_provenance_registry_owned_fields required;
+  required.has_ray_origin_direction_tmin_tmax = true;
+  required.has_ray_flags_cull_mask = true;
+  required.has_traversable_root_proxy = true;
+  required.has_bvh_format_profile = true;
+  return required;
+}
+
+static bool rtcore_input_provenance_registry_owned_fields_cover_required_inputs(
+    const rtcore_input_provenance_registry_owned_fields &observed,
+    const rtcore_input_provenance_registry_owned_fields &required) {
+  return (!required.has_ray_origin_direction_tmin_tmax ||
+          observed.has_ray_origin_direction_tmin_tmax) &&
+         (!required.has_ray_flags_cull_mask ||
+          observed.has_ray_flags_cull_mask) &&
+         (!required.has_traversable_root_proxy ||
+          observed.has_traversable_root_proxy) &&
+         (!required.has_bvh_format_profile ||
+          observed.has_bvh_format_profile);
+}
+
+static rtcore_input_provenance_registry_owned_field_coverage_result
+rtcore_validate_input_provenance_registry_owned_field_coverage_before_provider(
+    const rtcore_traversal_source_request &request,
+    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot) {
+  rtcore_input_provenance_registry_owned_field_coverage_result result;
+  result.coverage_requested = true;
+  result.coverage_enabled = rtcore_input_provenance_registry_enabled();
+  result.required_fields =
+      rtcore_make_required_input_provenance_registry_owned_fields();
+  rtcore_input_provenance_registry_entry entry =
+      rtcore_make_disabled_input_provenance_registry_entry(
+          request, owner_seq_snapshot);
+  result.observed_fields = entry.owned_fields;
+  result.fail_reason = RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED;
+  if (!result.coverage_enabled) {
+    return result;
+  }
+
+  result.has_required_owned_fields =
+      rtcore_input_provenance_registry_owned_fields_cover_required_inputs(
+          result.observed_fields, result.required_fields);
+  result.fail_reason =
+      result.has_required_owned_fields
+          ? RTCORE_INPUT_PROVENANCE_REGISTRY_FAIL_NONE
+          : RTCORE_INPUT_PROVENANCE_REGISTRY_PARTIAL_FIELD_OWNERSHIP;
+  return result;
+}
+
 static const uint32_t RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 1;
 
 struct rtcore_decoded_traversal_input_snapshot {
@@ -11333,6 +11399,11 @@ bool rtcore_build_traversal_completion_event(
       rtcore_validate_input_provenance_registry_key_before_provider(
           source_request, event->owner_seq_snapshot);
   (void)registry_validation_result;
+  rtcore_input_provenance_registry_owned_field_coverage_result
+      registry_owned_field_coverage_result =
+          rtcore_validate_input_provenance_registry_owned_field_coverage_before_provider(
+              source_request, event->owner_seq_snapshot);
+  (void)registry_owned_field_coverage_result;
   rtcore_traversal_source_snapshot source_snapshot =
       rtcore_make_traversal_source_snapshot(source_request);
   const bool provider_unsupported = !source_snapshot.provider_supported;
