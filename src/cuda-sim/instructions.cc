@@ -9954,13 +9954,18 @@ rtcore_make_traversal_source_request(
   return request;
 }
 
+struct rtcore_provider_facing_registry_payload_shadow;
+
 struct rtcore_traversal_work_descriptor {
   rtcore_traversal_work_descriptor()
       : valid(false),
         provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
         context_ptr(0),
         handoff_window_base(0),
-        lane_slot_index(0) {}
+        lane_slot_index(0),
+        has_registry_payload_shadow(false),
+        provider_payload_consumption_enabled(false),
+        registry_payload_shadow(NULL) {}
 
   bool valid;
   rtcore_traversal_source_provider provider;
@@ -9968,11 +9973,15 @@ struct rtcore_traversal_work_descriptor {
   unsigned long long handoff_window_base;
   unsigned lane_slot_index;
   ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+  bool has_registry_payload_shadow;
+  bool provider_payload_consumption_enabled;
+  const rtcore_provider_facing_registry_payload_shadow *registry_payload_shadow;
 };
 
 static rtcore_traversal_work_descriptor
 rtcore_make_traversal_work_descriptor(
-    const rtcore_traversal_source_request &request) {
+    const rtcore_traversal_source_request &request,
+    const rtcore_provider_facing_registry_payload_shadow *registry_payload_shadow) {
   rtcore_traversal_work_descriptor descriptor;
   descriptor.valid = true;
   descriptor.provider = request.provider;
@@ -9980,7 +9989,16 @@ rtcore_make_traversal_work_descriptor(
   descriptor.handoff_window_base = request.handoff_window_base;
   descriptor.lane_slot_index = request.lane_slot_index;
   descriptor.warp_metadata = request.warp_metadata;
+  descriptor.has_registry_payload_shadow = registry_payload_shadow != NULL;
+  descriptor.provider_payload_consumption_enabled = false;
+  descriptor.registry_payload_shadow = registry_payload_shadow;
   return descriptor;
+}
+
+static rtcore_traversal_work_descriptor
+rtcore_make_traversal_work_descriptor(
+    const rtcore_traversal_source_request &request) {
+  return rtcore_make_traversal_work_descriptor(request, NULL);
 }
 
 enum rtcore_traversal_provider_reject_reason {
@@ -10635,11 +10653,14 @@ rtcore_invoke_rtcore_provider_bridge(
   printf("GPGPU-Sim PTX: RT_SUBMIT rtcore-provider-bridge-invoke, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
-         "descriptor_valid=%u, rtcore-provider-bridge-invoked=1\n",
+         "descriptor_valid=%u, registry_payload_shadow_attached=%u, "
+         "provider_payload_consumption_enabled=0, "
+         "rtcore-provider-bridge-invoked=1\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
-         descriptor.warp_metadata.active_mask, descriptor.valid ? 1 : 0);
+         descriptor.warp_metadata.active_mask, descriptor.valid ? 1 : 0,
+         descriptor.has_registry_payload_shadow ? 1 : 0);
   fflush(stdout);
 
   rtcore_traversal_provider_response response;
@@ -10762,13 +10783,15 @@ rtcore_make_unsupported_traversal_provider_response(
 
 static rtcore_traversal_provider_response
 rtcore_make_traversal_provider_response(
-    const rtcore_traversal_source_request &request) {
+    const rtcore_traversal_source_request &request,
+    const rtcore_provider_facing_registry_payload_shadow *registry_payload_shadow) {
   switch (request.provider) {
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL:
       return rtcore_make_legacy_functional_traversal_provider_response(request);
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_EXISTING_TRAVERSAL: {
       rtcore_traversal_work_descriptor descriptor =
-          rtcore_make_traversal_work_descriptor(request);
+          rtcore_make_traversal_work_descriptor(request,
+                                                registry_payload_shadow);
       return rtcore_invoke_rtcore_provider_bridge(descriptor, &request);
     }
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_STUB:
@@ -10783,7 +10806,8 @@ rtcore_make_traversal_provider_response(
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_STATS_MISS:
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_LANE_STATS_MISS: {
       rtcore_traversal_work_descriptor descriptor =
-          rtcore_make_traversal_work_descriptor(request);
+          rtcore_make_traversal_work_descriptor(request,
+                                                registry_payload_shadow);
       return rtcore_invoke_rtcore_provider_bridge(descriptor);
     }
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED:
@@ -10792,12 +10816,25 @@ rtcore_make_traversal_provider_response(
   }
 }
 
+static rtcore_traversal_provider_response
+rtcore_make_traversal_provider_response(
+    const rtcore_traversal_source_request &request) {
+  return rtcore_make_traversal_provider_response(request, NULL);
+}
+
+static rtcore_traversal_source_snapshot
+rtcore_make_traversal_source_snapshot(
+    const rtcore_traversal_source_request &request,
+    const rtcore_provider_facing_registry_payload_shadow *registry_payload_shadow) {
+  rtcore_traversal_provider_response response =
+      rtcore_make_traversal_provider_response(request, registry_payload_shadow);
+  return rtcore_make_traversal_source_snapshot_from_provider_response(response);
+}
+
 static rtcore_traversal_source_snapshot
 rtcore_make_traversal_source_snapshot(
     const rtcore_traversal_source_request &request) {
-  rtcore_traversal_provider_response response =
-      rtcore_make_traversal_provider_response(request);
-  return rtcore_make_traversal_source_snapshot_from_provider_response(response);
+  return rtcore_make_traversal_source_snapshot(request, NULL);
 }
 
 static bool rtcore_traversal_source_snapshot_has_accepted_payload(
@@ -11827,8 +11864,13 @@ bool rtcore_build_traversal_completion_event(
           event->decoded_input_snapshot);
   rtcore_log_provider_facing_registry_payload_shadow_before_provider(
       pI, source_request, event->registry_payload_shadow);
+  const rtcore_provider_facing_registry_payload_shadow
+      *registry_payload_shadow_sidecar =
+          event->registry_payload_shadow.valid ? &event->registry_payload_shadow
+                                               : NULL;
   rtcore_traversal_source_snapshot source_snapshot =
-      rtcore_make_traversal_source_snapshot(source_request);
+      rtcore_make_traversal_source_snapshot(source_request,
+                                            registry_payload_shadow_sidecar);
   const bool provider_unsupported = !source_snapshot.provider_supported;
   const bool provider_rejected =
       source_snapshot.provider_supported && !source_snapshot.provider_accepted;
