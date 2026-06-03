@@ -10852,6 +10852,9 @@ struct rtcore_decoded_traversal_input_snapshot {
   rtcore_decoded_traversal_input_snapshot()
       : valid(false),
         has_context_window_owner_seq(false),
+        has_traversable_root_proxy(false),
+        traversable_proxy_id(0),
+        root_proxy_id(0),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
         ray_flags(0),
@@ -10865,6 +10868,9 @@ struct rtcore_decoded_traversal_input_snapshot {
   bool valid;
   bool has_context_window_owner_seq;
   rtcore_context_window_owner_seq_snapshot context_window_owner_seq;
+  bool has_traversable_root_proxy;
+  uint64_t traversable_proxy_id;
+  uint64_t root_proxy_id;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
   float3 ray_origin;
@@ -10915,6 +10921,26 @@ static void rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
   snapshot->ray_flags = source_snapshot.traversal_snapshot.rayFlags;
   snapshot->cull_mask = source_snapshot.traversal_snapshot.cullMask;
   snapshot->has_ray_flags_cull_mask = true;
+}
+
+static void rtcore_update_decoded_traversal_input_traversable_root_proxy_snapshot(
+    rtcore_decoded_traversal_input_snapshot *snapshot,
+    const rtcore_traversal_source_snapshot &source_snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->has_traversable_root_proxy = false;
+  if (!source_snapshot.has_traversal_data) {
+    return;
+  }
+  snapshot->traversable_proxy_id =
+      source_snapshot.traversal_snapshot.rtcore_traversable_proxy_id;
+  snapshot->root_proxy_id =
+      source_snapshot.traversal_snapshot.rtcore_root_proxy_id;
+  if (snapshot->traversable_proxy_id == 0 || snapshot->root_proxy_id == 0) {
+    return;
+  }
+  snapshot->has_traversable_root_proxy = true;
 }
 
 struct rtcore_traversal_completion_event {
@@ -11128,6 +11154,8 @@ bool rtcore_build_traversal_completion_event(
   rtcore_update_decoded_traversal_input_ray_proxy_snapshot(
       &event->decoded_input_snapshot, source_snapshot);
   rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
+      &event->decoded_input_snapshot, source_snapshot);
+  rtcore_update_decoded_traversal_input_traversable_root_proxy_snapshot(
       &event->decoded_input_snapshot, source_snapshot);
 
   const bool forced_memory_fault =

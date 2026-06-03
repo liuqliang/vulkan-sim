@@ -428,6 +428,42 @@ bool debugTraversal = false;
 bool found_AS = false;
 VkAccelerationStructureKHR topLevelAS_first = NULL;
 
+static uint64_t g_rtcore_next_proxy_id = 1;
+static std::map<std::pair<uint64_t, uint64_t>, uint64_t>
+    g_rtcore_traversable_proxy_ids;
+static std::map<std::pair<uint64_t, uint64_t>, uint64_t>
+    g_rtcore_root_proxy_ids;
+
+static uint64_t rtcore_get_or_create_proxy_id(
+    std::map<std::pair<uint64_t, uint64_t>, uint64_t> *registry,
+    uint64_t key0, uint64_t key1)
+{
+    std::pair<uint64_t, uint64_t> key = std::make_pair(key0, key1);
+    std::map<std::pair<uint64_t, uint64_t>, uint64_t>::iterator it =
+        registry->find(key);
+    if (it != registry->end())
+        return it->second;
+
+    uint64_t proxy_id = g_rtcore_next_proxy_id++;
+    (*registry)[key] = proxy_id;
+    return proxy_id;
+}
+
+static uint64_t rtcore_get_or_create_traversable_proxy_id(
+    VkAccelerationStructureKHR top_level_as)
+{
+    return rtcore_get_or_create_proxy_id(&g_rtcore_traversable_proxy_ids,
+                                         (uint64_t)top_level_as, 0);
+}
+
+static uint64_t rtcore_get_or_create_root_proxy_id(
+    VkAccelerationStructureKHR top_level_as, uint64_t root_node_offset)
+{
+    return rtcore_get_or_create_proxy_id(&g_rtcore_root_proxy_ids,
+                                         (uint64_t)top_level_as,
+                                         root_node_offset);
+}
+
 void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 				   uint rayFlags,
                    uint cullMask,
@@ -506,6 +542,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.cullMask = cullMask;
     traversal_data.Tmin = Tmin;
     traversal_data.Tmax = Tmax;
+    traversal_data.rtcore_traversable_proxy_id = 0;
+    traversal_data.rtcore_root_proxy_id = 0;
     traversal_data.rtcore_node_visits = 0;
     traversal_data.rtcore_primitive_tests = 0;
 
@@ -560,6 +598,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
 
     uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
+    traversal_data.rtcore_traversable_proxy_id =
+        rtcore_get_or_create_traversable_proxy_id(_topLevelAS);
+    traversal_data.rtcore_root_proxy_id =
+        rtcore_get_or_create_root_proxy_id(_topLevelAS,
+                                           topBVH.RootNodeOffset);
 
     // Get min/max
     if (!ctx->func_sim->g_rt_world_set) {
