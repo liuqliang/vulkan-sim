@@ -10059,6 +10059,34 @@ rtcore_make_traversal_work_descriptor(
   return rtcore_make_traversal_work_descriptor(request, NULL);
 }
 
+struct rtcore_provider_payload_backend_input_snapshot {
+  rtcore_provider_payload_backend_input_snapshot()
+      : valid(false),
+        provider_payload_consumption_enabled(false),
+        consumed_input_view() {}
+
+  bool valid;
+  bool provider_payload_consumption_enabled;
+  rtcore_provider_payload_consumed_input_view consumed_input_view;
+};
+
+static rtcore_provider_payload_backend_input_snapshot
+rtcore_make_provider_payload_backend_input_snapshot(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_provider_payload_backend_input_snapshot snapshot;
+  snapshot.provider_payload_consumption_enabled =
+      descriptor.provider_payload_consumption_enabled;
+  if (!descriptor.provider_payload_consumption_enabled ||
+      !descriptor.has_provider_payload_consumed_input ||
+      !descriptor.provider_payload_consumed_input.valid) {
+    return snapshot;
+  }
+
+  snapshot.valid = true;
+  snapshot.consumed_input_view = descriptor.provider_payload_consumed_input;
+  return snapshot;
+}
+
 enum rtcore_traversal_provider_reject_reason {
   RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE = 0,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED = 1,
@@ -10230,7 +10258,9 @@ struct rtcore_custom_backend_result {
         hit_geometry(false),
         context_ptr(0),
         handoff_window_base(0),
-        lane_slot_index(0) {
+        lane_slot_index(0),
+        has_provider_payload_backend_input_snapshot(false),
+        provider_payload_backend_input_snapshot() {
     memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
   }
 
@@ -10246,6 +10276,9 @@ struct rtcore_custom_backend_result {
   unsigned long long handoff_window_base;
   unsigned lane_slot_index;
   ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+  bool has_provider_payload_backend_input_snapshot;
+  rtcore_provider_payload_backend_input_snapshot
+      provider_payload_backend_input_snapshot;
 };
 
 static rtcore_traversal_provider_response
@@ -10562,7 +10595,55 @@ rtcore_make_custom_rtcore_backend_result_base(
   result.handoff_window_base = descriptor.handoff_window_base;
   result.lane_slot_index = descriptor.lane_slot_index;
   result.warp_metadata = descriptor.warp_metadata;
+  result.provider_payload_backend_input_snapshot =
+      rtcore_make_provider_payload_backend_input_snapshot(descriptor);
+  result.has_provider_payload_backend_input_snapshot =
+      result.provider_payload_backend_input_snapshot.valid;
   return result;
+}
+
+static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
+    const rtcore_custom_backend_result &result) {
+  if (!result.has_provider_payload_backend_input_snapshot ||
+      !result.provider_payload_backend_input_snapshot.valid) {
+    return;
+  }
+
+  const rtcore_provider_payload_consumed_input_view &view =
+      result.provider_payload_backend_input_snapshot.consumed_input_view;
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "custom-rtcore-backend-provider-payload-consumed-input, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "custom-rtcore-backend-provider-payload-consumed-input-snapshot=1, "
+         "provider_payload_consumption_enabled=%u, "
+         "provider_payload_backend_input_source=registry_payload_shadow, "
+         "has_ray_origin_direction_tmin_tmax=%u, "
+         "ray_origin=(%f,%f,%f), ray_direction=(%f,%f,%f), "
+         "ray_tmin=%f, ray_tmax=%f, "
+         "has_ray_flags_cull_mask=%u, ray_flags=%u, cull_mask=%u, "
+         "has_traversable_root_proxy=%u, traversable_proxy_id=0x%llx, "
+         "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
+         "bvh_format_version=%u, "
+         "custom_backend_provider_payload_consumed_input_snapshot_consumes_traversal_behavior=0\n",
+         rtcore_traversal_source_provider_name(result.provider),
+         result.context_ptr, result.handoff_window_base,
+         result.lane_slot_index, result.warp_metadata.warp_uid,
+         result.warp_metadata.active_mask,
+         result.provider_payload_backend_input_snapshot
+                 .provider_payload_consumption_enabled
+             ? 1
+             : 0,
+         view.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         view.ray_origin.x, view.ray_origin.y, view.ray_origin.z,
+         view.ray_direction.x, view.ray_direction.y, view.ray_direction.z,
+         view.ray_tmin, view.ray_tmax,
+         view.has_ray_flags_cull_mask ? 1 : 0, view.ray_flags,
+         view.cull_mask, view.has_traversable_root_proxy ? 1 : 0,
+         (unsigned long long)view.traversable_proxy_id,
+         (unsigned long long)view.root_proxy_id,
+         view.has_bvh_format_profile ? 1 : 0, view.bvh_format_version);
+  fflush(stdout);
 }
 
 static rtcore_custom_backend_result
@@ -10809,6 +10890,7 @@ rtcore_make_custom_rtcore_existing_traversal_backend_result(
          result.traversal_snapshot.rtcore_node_visits,
          result.traversal_snapshot.rtcore_primitive_tests);
   fflush(stdout);
+  rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(result);
   return result;
 }
 
