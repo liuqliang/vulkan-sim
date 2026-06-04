@@ -7159,22 +7159,56 @@ static std::map<ptx_thread_info *,
 static unsigned long long
     g_rtcore_trace_invocation_publication_source_next_seq = 0;
 
-static bool rtcore_forward_sideband_path_enabled() {
-  const char *value = getenv("VULKAN_SIM_RTCORE_FORWARD_SIDEBAND_PATH");
+static bool rtcore_env_flag_enabled(const char *name) {
+  const char *value = getenv(name);
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool rtcore_path_mode_is(const char *mode, const char *value) {
+  return mode != NULL && strcmp(mode, value) == 0;
+}
+
+static bool rtcore_legacy_trace_ray_path_enabled() {
+  const char *mode = getenv("VULKAN_SIM_RTCORE_PATH_MODE");
+  if (mode != NULL && mode[0] != '\0') {
+    if (rtcore_path_mode_is(mode, "legacy") ||
+        rtcore_path_mode_is(mode, "trace_ray") ||
+        rtcore_path_mode_is(mode, "trace-ray") ||
+        rtcore_path_mode_is(mode, "trace_ray_only") ||
+        rtcore_path_mode_is(mode, "trace-ray-only")) {
+      return true;
+    }
+    if (rtcore_path_mode_is(mode, "custom") ||
+        rtcore_path_mode_is(mode, "forward") ||
+        rtcore_path_mode_is(mode, "forward_sideband") ||
+        rtcore_path_mode_is(mode, "forward-sideband") ||
+        rtcore_path_mode_is(mode, "sideband")) {
+      return false;
+    }
+  }
+  return rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_LEGACY_TRACE_RAY_PATH");
+}
+
+static bool rtcore_forward_sideband_path_enabled() {
+  return !rtcore_legacy_trace_ray_path_enabled();
 }
 
 static bool rtcore_trace_invocation_publication_source_enabled() {
-  const char *value =
-      getenv("VULKAN_SIM_RTCORE_TRACE_INVOCATION_PUBLICATION_SOURCE");
-  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+  if (rtcore_legacy_trace_ray_path_enabled()) {
+    return false;
+  }
+  return rtcore_env_flag_enabled(
+      "VULKAN_SIM_RTCORE_TRACE_INVOCATION_PUBLICATION_SOURCE");
 }
 
 static bool rtcore_compiler_driver_publication_source_enabled() {
-  const char *value =
-      getenv("VULKAN_SIM_RTCORE_COMPILER_DRIVER_PUBLICATION_SOURCE");
+  if (rtcore_legacy_trace_ray_path_enabled()) {
+    return false;
+  }
   return rtcore_forward_sideband_path_enabled() ||
-         (value != NULL && value[0] != '\0' && strcmp(value, "0") != 0);
+         rtcore_env_flag_enabled(
+             "VULKAN_SIM_RTCORE_COMPILER_DRIVER_PUBLICATION_SOURCE") ||
+         rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_FORWARD_SIDEBAND_PATH");
 }
 
 static bool
@@ -13373,10 +13407,13 @@ struct rtcore_launch_context_input_publication_record {
 };
 
 static bool rtcore_launch_context_input_publication_bridge_enabled() {
-  const char *value =
-      getenv("VULKAN_SIM_RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_BRIDGE");
+  if (rtcore_legacy_trace_ray_path_enabled()) {
+    return false;
+  }
   return rtcore_forward_sideband_path_enabled() ||
-         (value != NULL && value[0] != '\0' && strcmp(value, "0") != 0);
+         rtcore_env_flag_enabled(
+             "VULKAN_SIM_RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_BRIDGE") ||
+         rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_FORWARD_SIDEBAND_PATH");
 }
 
 enum rtcore_launch_context_input_publication_failpoint {
