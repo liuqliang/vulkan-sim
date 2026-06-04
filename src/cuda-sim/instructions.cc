@@ -7172,6 +7172,12 @@ static bool rtcore_compiler_driver_publication_source_enabled() {
 }
 
 static bool
+rtcore_trace_invocation_publication_source_fallback_enabled() {
+  return rtcore_trace_invocation_publication_source_enabled() &&
+         !rtcore_compiler_driver_publication_source_enabled();
+}
+
+static bool
 rtcore_compiler_driver_publication_source_failpoint_corrupt_context_window_key() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_COMPILER_DRIVER_PUBLICATION_SOURCE_FAILPOINT");
@@ -7208,7 +7214,17 @@ static void rtcore_publish_trace_invocation_publication_source_shadow(
     uint32_t ray_flags, uint32_t cull_mask, uint32_t sbt_record_offset,
     uint32_t sbt_record_stride, uint32_t miss_index, float3 ray_origin,
     float ray_tmin, float3 ray_direction, float ray_tmax) {
-  if (!rtcore_trace_invocation_publication_source_enabled() ||
+  if (rtcore_trace_invocation_publication_source_enabled() &&
+      rtcore_compiler_driver_publication_source_enabled()) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "compiler-driver-publication-source-policy-suppressed-trace-shadow "
+           "(%s:%u), source=trace_ray_impl, "
+           "preferred_source=compiler_driver_publication_sideband\n",
+           pI->source_file(), pI->source_line());
+    fflush(stdout);
+    return;
+  }
+  if (!rtcore_trace_invocation_publication_source_fallback_enabled() ||
       thread == NULL) {
     return;
   }
