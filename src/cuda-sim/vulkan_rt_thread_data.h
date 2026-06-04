@@ -55,6 +55,8 @@ typedef struct Traversal_data {
     uint32_t sbtRecordOffset;
     uint32_t sbtRecordStride;
     uint32_t missIndex;
+    uint64_t rtcore_trace_input_top_level_as;
+    uint32_t rtcore_trace_input_has_top_level_as;
     uint64_t rtcore_traversable_proxy_id;
     uint64_t rtcore_root_proxy_id;
     uint32_t rtcore_node_visits;

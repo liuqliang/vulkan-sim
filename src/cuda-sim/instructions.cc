@@ -10206,6 +10206,11 @@ struct rtcore_provider_payload_consumed_input_view {
         cull_mask(0),
         ray_tmin(0.0f),
         ray_tmax(0.0f),
+        has_launch_context_input(false),
+        bridge_trace_replay_top_level_as(0),
+        sbt_record_offset(0),
+        sbt_record_stride(0),
+        miss_index(0),
         has_traversable_root_proxy(false),
         traversable_proxy_id(0),
         root_proxy_id(0),
@@ -10225,6 +10230,11 @@ struct rtcore_provider_payload_consumed_input_view {
   uint32_t cull_mask;
   float ray_tmin;
   float ray_tmax;
+  bool has_launch_context_input;
+  uint64_t bridge_trace_replay_top_level_as;
+  uint32_t sbt_record_offset;
+  uint32_t sbt_record_stride;
+  uint32_t miss_index;
   bool has_traversable_root_proxy;
   uint64_t traversable_proxy_id;
   uint64_t root_proxy_id;
@@ -10360,6 +10370,7 @@ struct rtcore_registry_payload_response_annotation {
         provider_payload_consumption_enabled(false),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
         has_traversable_root_proxy(false),
         has_bvh_format_profile(false),
         bvh_format_version(0) {}
@@ -10369,6 +10380,7 @@ struct rtcore_registry_payload_response_annotation {
   bool provider_payload_consumption_enabled;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
   bool has_traversable_root_proxy;
   bool has_bvh_format_profile;
   unsigned bvh_format_version;
@@ -10426,6 +10438,7 @@ struct rtcore_traversal_source_registry_payload_annotation {
         provider_payload_consumption_enabled(false),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
         has_traversable_root_proxy(false),
         has_bvh_format_profile(false),
         bvh_format_version(0) {}
@@ -10435,6 +10448,7 @@ struct rtcore_traversal_source_registry_payload_annotation {
   bool provider_payload_consumption_enabled;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
   bool has_traversable_root_proxy;
   bool has_bvh_format_profile;
   unsigned bvh_format_version;
@@ -10465,6 +10479,7 @@ struct rtcore_registry_payload_consumption_admission_decision {
         provider_payload_consumption_enabled(false),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
         has_traversable_root_proxy(false),
         has_bvh_format_profile(false),
         bvh_format_version(0),
@@ -10477,6 +10492,7 @@ struct rtcore_registry_payload_consumption_admission_decision {
   bool provider_payload_consumption_enabled;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
   bool has_traversable_root_proxy;
   bool has_bvh_format_profile;
   unsigned bvh_format_version;
@@ -11040,10 +11056,15 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "custom-rtcore-backend-provider-payload-consumed-input-snapshot=1, "
          "provider_payload_consumption_enabled=%u, "
          "provider_payload_backend_input_source=registry_payload_shadow, "
+         "rtcore-provider-payload-launch-context-input=1, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "ray_origin=(%f,%f,%f), ray_direction=(%f,%f,%f), "
          "ray_tmin=%f, ray_tmax=%f, "
          "has_ray_flags_cull_mask=%u, ray_flags=%u, cull_mask=%u, "
+         "has_launch_context_input=%u, "
+         "provider_payload_launch_context_input_source=shadow_context_acquire, "
+         "bridge_trace_replay_top_level_as=0x%llx, "
+         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "has_traversable_root_proxy=%u, traversable_proxy_id=0x%llx, "
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_version=%u, "
@@ -11061,7 +11082,10 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          view.ray_direction.x, view.ray_direction.y, view.ray_direction.z,
          view.ray_tmin, view.ray_tmax,
          view.has_ray_flags_cull_mask ? 1 : 0, view.ray_flags,
-         view.cull_mask, view.has_traversable_root_proxy ? 1 : 0,
+         view.cull_mask, view.has_launch_context_input ? 1 : 0,
+         (unsigned long long)view.bridge_trace_replay_top_level_as,
+         view.sbt_record_offset, view.sbt_record_stride, view.miss_index,
+         view.has_traversable_root_proxy ? 1 : 0,
          (unsigned long long)view.traversable_proxy_id,
          (unsigned long long)view.root_proxy_id,
          view.has_bvh_format_profile ? 1 : 0, view.bvh_format_version);
@@ -11499,6 +11523,9 @@ rtcore_copy_registry_payload_response_annotation_to_source_snapshot(
   snapshot->registry_payload_source_snapshot_annotation.has_ray_flags_cull_mask =
       response_annotation.has_ray_flags_cull_mask;
   snapshot->registry_payload_source_snapshot_annotation
+          .has_launch_context_input =
+      response_annotation.has_launch_context_input;
+  snapshot->registry_payload_source_snapshot_annotation
           .has_traversable_root_proxy =
       response_annotation.has_traversable_root_proxy;
   snapshot->registry_payload_source_snapshot_annotation.has_bvh_format_profile =
@@ -11516,6 +11543,8 @@ rtcore_copy_registry_payload_response_annotation_to_source_snapshot(
       annotation.has_ray_origin_direction_tmin_tmax ? 1 : 0;
   const unsigned has_ray_flags_cull_mask =
       annotation.has_ray_flags_cull_mask ? 1 : 0;
+  const unsigned has_launch_context_input =
+      annotation.has_launch_context_input ? 1 : 0;
   const unsigned has_traversable_root_proxy =
       annotation.has_traversable_root_proxy ? 1 : 0;
   const unsigned has_bvh_format_profile =
@@ -11529,12 +11558,13 @@ rtcore_copy_registry_payload_response_annotation_to_source_snapshot(
          "provider_payload_consumption_enabled=%u, "
          "source_snapshot_annotation_consumes_traversal_behavior=0, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
-         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
-         "bvh_format_version=%u\n",
+         "has_launch_context_input=%u, has_traversable_root_proxy=%u, "
+         "has_bvh_format_profile=%u, bvh_format_version=%u\n",
          rtcore_traversal_source_provider_name(response.provider),
          registry_payload_shadow_observed, provider_payload_consumption_enabled,
          has_ray_origin_direction_tmin_tmax, has_ray_flags_cull_mask,
-         has_traversable_root_proxy, has_bvh_format_profile,
+         has_launch_context_input, has_traversable_root_proxy,
+         has_bvh_format_profile,
          annotation.bvh_format_version);
   fflush(stdout);
 }
@@ -11603,6 +11633,8 @@ rtcore_apply_source_snapshot_registry_payload_consumption_admission_gate(
       annotation.valid && annotation.has_ray_origin_direction_tmin_tmax;
   admission.has_ray_flags_cull_mask =
       annotation.valid && annotation.has_ray_flags_cull_mask;
+  admission.has_launch_context_input =
+      annotation.valid && annotation.has_launch_context_input;
   admission.has_traversable_root_proxy =
       annotation.valid && annotation.has_traversable_root_proxy;
   admission.has_bvh_format_profile =
@@ -11629,8 +11661,8 @@ rtcore_apply_source_snapshot_registry_payload_consumption_admission_gate(
          "provider_payload_consumption_enabled=%u, "
          "source_snapshot_admission_consumes_traversal_behavior=0, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
-         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
-         "bvh_format_version=%u\n",
+         "has_launch_context_input=%u, has_traversable_root_proxy=%u, "
+         "has_bvh_format_profile=%u, bvh_format_version=%u\n",
          rtcore_traversal_source_provider_name(snapshot->provider),
          admission.valid ? 1 : 0, admission.admission_allowed ? 1 : 0,
          admission.default_deny ? 1 : 0,
@@ -11641,6 +11673,7 @@ rtcore_apply_source_snapshot_registry_payload_consumption_admission_gate(
          admission.provider_payload_consumption_enabled ? 1 : 0,
          admission.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          admission.has_ray_flags_cull_mask ? 1 : 0,
+         admission.has_launch_context_input ? 1 : 0,
          admission.has_traversable_root_proxy ? 1 : 0,
          admission.has_bvh_format_profile ? 1 : 0,
          admission.bvh_format_version);
@@ -11847,11 +11880,13 @@ struct rtcore_input_provenance_registry_owned_fields {
   rtcore_input_provenance_registry_owned_fields()
       : has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
         has_traversable_root_proxy(false),
         has_bvh_format_profile(false) {}
 
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
   bool has_traversable_root_proxy;
   bool has_bvh_format_profile;
 };
@@ -12019,6 +12054,7 @@ rtcore_make_required_input_provenance_registry_owned_fields() {
   rtcore_input_provenance_registry_owned_fields required;
   required.has_ray_origin_direction_tmin_tmax = true;
   required.has_ray_flags_cull_mask = true;
+  required.has_launch_context_input = true;
   required.has_traversable_root_proxy = true;
   required.has_bvh_format_profile = true;
   return required;
@@ -12031,6 +12067,8 @@ static bool rtcore_input_provenance_registry_owned_fields_cover_required_inputs(
           observed.has_ray_origin_direction_tmin_tmax) &&
          (!required.has_ray_flags_cull_mask ||
           observed.has_ray_flags_cull_mask) &&
+         (!required.has_launch_context_input ||
+          observed.has_launch_context_input) &&
          (!required.has_traversable_root_proxy ||
           observed.has_traversable_root_proxy) &&
          (!required.has_bvh_format_profile ||
@@ -12155,7 +12193,8 @@ rtcore_log_input_provenance_registry_read_gate_allowed_before_provider(
          "lane_slot_index=%u, input-provenance-registry-read-gate-allowed=1, "
          "registry_gate_enabled=1, registry_read_allowed=1, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
-         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u\n",
+         "has_launch_context_input=%u, has_traversable_root_proxy=%u, "
+         "has_bvh_format_profile=%u\n",
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0,
          rtcore_traversal_source_provider_name(source_request.provider),
@@ -12167,6 +12206,8 @@ rtcore_log_input_provenance_registry_read_gate_allowed_before_provider(
              : 0,
          owned_field_coverage_result.observed_fields.has_ray_flags_cull_mask ? 1
                                                                              : 0,
+         owned_field_coverage_result.observed_fields.has_launch_context_input ? 1
+                                                                              : 0,
          owned_field_coverage_result.observed_fields.has_traversable_root_proxy
              ? 1
              : 0,
@@ -12186,6 +12227,11 @@ struct rtcore_provider_facing_registry_payload_shadow {
         cull_mask(0),
         ray_tmin(0.0f),
         ray_tmax(0.0f),
+        has_launch_context_input(false),
+        bridge_trace_replay_top_level_as(0),
+        sbt_record_offset(0),
+        sbt_record_stride(0),
+        miss_index(0),
         has_traversable_root_proxy(false),
         traversable_proxy_id(0),
         root_proxy_id(0),
@@ -12207,6 +12253,11 @@ struct rtcore_provider_facing_registry_payload_shadow {
   uint32_t cull_mask;
   float ray_tmin;
   float ray_tmax;
+  bool has_launch_context_input;
+  uint64_t bridge_trace_replay_top_level_as;
+  uint32_t sbt_record_offset;
+  uint32_t sbt_record_stride;
+  uint32_t miss_index;
   bool has_traversable_root_proxy;
   uint64_t traversable_proxy_id;
   uint64_t root_proxy_id;
@@ -12222,6 +12273,7 @@ struct rtcore_provider_facing_registry_payload_admission_mirror {
         provider_payload_consumption_enabled(false),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
         has_traversable_root_proxy(false),
         has_bvh_format_profile(false),
         bvh_format_version(0),
@@ -12234,6 +12286,7 @@ struct rtcore_provider_facing_registry_payload_admission_mirror {
   bool provider_payload_consumption_enabled;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
   bool has_traversable_root_proxy;
   bool has_bvh_format_profile;
   uint32_t bvh_format_version;
@@ -12328,6 +12381,7 @@ static bool rtcore_provider_payload_shadow_has_complete_field_coverage(
   }
   return registry_payload_shadow->has_ray_origin_direction_tmin_tmax &&
          registry_payload_shadow->has_ray_flags_cull_mask &&
+         registry_payload_shadow->has_launch_context_input &&
          registry_payload_shadow->has_traversable_root_proxy &&
          registry_payload_shadow->has_bvh_format_profile;
 }
@@ -12379,6 +12433,13 @@ rtcore_make_provider_payload_consumed_input_view(
   view.ray_tmax = registry_payload_shadow->ray_tmax;
   view.ray_flags = registry_payload_shadow->ray_flags;
   view.cull_mask = registry_payload_shadow->cull_mask;
+  view.has_launch_context_input =
+      registry_payload_shadow->has_launch_context_input;
+  view.bridge_trace_replay_top_level_as =
+      registry_payload_shadow->bridge_trace_replay_top_level_as;
+  view.sbt_record_offset = registry_payload_shadow->sbt_record_offset;
+  view.sbt_record_stride = registry_payload_shadow->sbt_record_stride;
+  view.miss_index = registry_payload_shadow->miss_index;
   view.has_traversable_root_proxy =
       registry_payload_shadow->has_traversable_root_proxy;
   view.traversable_proxy_id = registry_payload_shadow->traversable_proxy_id;
@@ -12405,6 +12466,7 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
     mirror.has_ray_origin_direction_tmin_tmax =
         shadow.has_ray_origin_direction_tmin_tmax;
     mirror.has_ray_flags_cull_mask = shadow.has_ray_flags_cull_mask;
+    mirror.has_launch_context_input = shadow.has_launch_context_input;
     mirror.has_traversable_root_proxy = shadow.has_traversable_root_proxy;
     mirror.has_bvh_format_profile = shadow.has_bvh_format_profile;
     mirror.bvh_format_version = shadow.bvh_format_version;
@@ -12428,8 +12490,8 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          "provider_payload_consumption_enabled=%u, "
          "provider_admission_mirror_consumes_traversal_behavior=0, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
-         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
-         "bvh_format_version=%u\n",
+         "has_launch_context_input=%u, has_traversable_root_proxy=%u, "
+         "has_bvh_format_profile=%u, bvh_format_version=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index, mirror.valid ? 1 : 0,
@@ -12441,6 +12503,7 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          mirror.provider_payload_consumption_enabled ? 1 : 0,
          mirror.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          mirror.has_ray_flags_cull_mask ? 1 : 0,
+         mirror.has_launch_context_input ? 1 : 0,
          mirror.has_traversable_root_proxy ? 1 : 0,
          mirror.has_bvh_format_profile ? 1 : 0,
          mirror.bvh_format_version);
@@ -12536,8 +12599,13 @@ struct rtcore_decoded_traversal_input_snapshot {
         bvh_format_version(0),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
         ray_flags(0),
         cull_mask(0),
+        bridge_trace_replay_top_level_as(0),
+        sbt_record_offset(0),
+        sbt_record_stride(0),
+        miss_index(0),
         ray_tmin(0.0f),
         ray_tmax(0.0f) {
     memset(&ray_origin, 0, sizeof(ray_origin));
@@ -12554,10 +12622,15 @@ struct rtcore_decoded_traversal_input_snapshot {
   uint32_t bvh_format_version;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
   float3 ray_origin;
   float3 ray_direction;
   uint32_t ray_flags;
   uint32_t cull_mask;
+  uint64_t bridge_trace_replay_top_level_as;
+  uint32_t sbt_record_offset;
+  uint32_t sbt_record_stride;
+  uint32_t miss_index;
   float ray_tmin;
   float ray_tmax;
 };
@@ -12602,6 +12675,28 @@ static void rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
   snapshot->ray_flags = source_snapshot.traversal_snapshot.rayFlags;
   snapshot->cull_mask = source_snapshot.traversal_snapshot.cullMask;
   snapshot->has_ray_flags_cull_mask = true;
+}
+
+static void rtcore_update_decoded_traversal_input_launch_context_snapshot(
+    rtcore_decoded_traversal_input_snapshot *snapshot,
+    const rtcore_traversal_source_snapshot &source_snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->has_launch_context_input = false;
+  if (!source_snapshot.has_traversal_data ||
+      source_snapshot.traversal_snapshot.rtcore_trace_input_has_top_level_as ==
+          0) {
+    return;
+  }
+  snapshot->bridge_trace_replay_top_level_as =
+      source_snapshot.traversal_snapshot.rtcore_trace_input_top_level_as;
+  snapshot->sbt_record_offset =
+      source_snapshot.traversal_snapshot.sbtRecordOffset;
+  snapshot->sbt_record_stride =
+      source_snapshot.traversal_snapshot.sbtRecordStride;
+  snapshot->miss_index = source_snapshot.traversal_snapshot.missIndex;
+  snapshot->has_launch_context_input = true;
 }
 
 static void rtcore_update_decoded_traversal_input_traversable_root_proxy_snapshot(
@@ -12686,6 +12781,8 @@ rtcore_update_decoded_traversal_input_from_pre_provider_traversal_data_snapshot(
       decoded_input_snapshot, source_snapshot);
   rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
       decoded_input_snapshot, source_snapshot);
+  rtcore_update_decoded_traversal_input_launch_context_snapshot(
+      decoded_input_snapshot, source_snapshot);
   rtcore_update_decoded_traversal_input_traversable_root_proxy_snapshot(
       decoded_input_snapshot, source_snapshot);
   rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
@@ -12700,6 +12797,7 @@ struct rtcore_pre_provider_decoded_input_publication_map {
         provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
         has_traversable_root_proxy(false),
         has_bvh_format_profile(false) {}
 
@@ -12709,6 +12807,7 @@ struct rtcore_pre_provider_decoded_input_publication_map {
   rtcore_traversal_source_provider provider;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
   bool has_traversable_root_proxy;
   bool has_bvh_format_profile;
 };
@@ -12729,6 +12828,8 @@ rtcore_make_pre_provider_decoded_input_publication_map(
       decoded_input_snapshot.has_ray_origin_direction_tmin_tmax;
   publication_map.has_ray_flags_cull_mask =
       decoded_input_snapshot.has_ray_flags_cull_mask;
+  publication_map.has_launch_context_input =
+      decoded_input_snapshot.has_launch_context_input;
   publication_map.has_traversable_root_proxy =
       decoded_input_snapshot.has_traversable_root_proxy;
   publication_map.has_bvh_format_profile =
@@ -12751,6 +12852,8 @@ rtcore_bind_input_provenance_registry_publication_to_pre_provider_decoded_input_
       publication_map.has_ray_origin_direction_tmin_tmax;
   entry.owned_fields.has_ray_flags_cull_mask =
       publication_map.has_ray_flags_cull_mask;
+  entry.owned_fields.has_launch_context_input =
+      publication_map.has_launch_context_input;
   entry.owned_fields.has_traversable_root_proxy =
       publication_map.has_traversable_root_proxy;
   entry.owned_fields.has_bvh_format_profile =
@@ -12805,6 +12908,9 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
   shadow.has_ray_flags_cull_mask =
       decoded_input_snapshot.has_ray_flags_cull_mask &&
       publication_snapshot.entry.owned_fields.has_ray_flags_cull_mask;
+  shadow.has_launch_context_input =
+      decoded_input_snapshot.has_launch_context_input &&
+      publication_snapshot.entry.owned_fields.has_launch_context_input;
   shadow.has_traversable_root_proxy =
       decoded_input_snapshot.has_traversable_root_proxy &&
       publication_snapshot.entry.owned_fields.has_traversable_root_proxy;
@@ -12817,11 +12923,17 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
   shadow.ray_tmax = decoded_input_snapshot.ray_tmax;
   shadow.ray_flags = decoded_input_snapshot.ray_flags;
   shadow.cull_mask = decoded_input_snapshot.cull_mask;
+  shadow.bridge_trace_replay_top_level_as =
+      decoded_input_snapshot.bridge_trace_replay_top_level_as;
+  shadow.sbt_record_offset = decoded_input_snapshot.sbt_record_offset;
+  shadow.sbt_record_stride = decoded_input_snapshot.sbt_record_stride;
+  shadow.miss_index = decoded_input_snapshot.miss_index;
   shadow.traversable_proxy_id = decoded_input_snapshot.traversable_proxy_id;
   shadow.root_proxy_id = decoded_input_snapshot.root_proxy_id;
   shadow.bvh_format_version = decoded_input_snapshot.bvh_format_version;
   shadow.valid = shadow.has_ray_origin_direction_tmin_tmax &&
                  shadow.has_ray_flags_cull_mask &&
+                 shadow.has_launch_context_input &&
                  shadow.has_traversable_root_proxy &&
                  shadow.has_bvh_format_profile;
   return shadow;
@@ -12841,6 +12953,10 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          "lane_slot_index=%u, provider-facing-registry-payload-shadow=1, "
          "registry_read_allowed=%u, provider_consumption_attached=0, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
+         "has_launch_context_input=%u, "
+         "provider_payload_launch_context_input_source=shadow_context_acquire, "
+         "bridge_trace_replay_top_level_as=0x%llx, "
+         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
          "traversable_proxy_id=0x%llx, root_proxy_id=0x%llx, "
          "bvh_format_version=%u\n",
@@ -12851,6 +12967,10 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          source_request.lane_slot_index, shadow.read_gate_allowed ? 1 : 0,
          shadow.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          shadow.has_ray_flags_cull_mask ? 1 : 0,
+         shadow.has_launch_context_input ? 1 : 0,
+         (unsigned long long)shadow.bridge_trace_replay_top_level_as,
+         shadow.sbt_record_offset, shadow.sbt_record_stride,
+         shadow.miss_index,
          shadow.has_traversable_root_proxy ? 1 : 0,
          shadow.has_bvh_format_profile ? 1 : 0,
          (unsigned long long)shadow.traversable_proxy_id,
@@ -12878,6 +12998,8 @@ static void rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(
          "registry_payload_shadow_attached=1, "
          "provider_payload_consumption_enabled=0, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
+         "has_launch_context_input=%u, bridge_trace_replay_top_level_as=0x%llx, "
+         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
          "bvh_format_version=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
@@ -12885,6 +13007,10 @@ static void rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(
          descriptor.lane_slot_index,
          shadow.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          shadow.has_ray_flags_cull_mask ? 1 : 0,
+         shadow.has_launch_context_input ? 1 : 0,
+         (unsigned long long)shadow.bridge_trace_replay_top_level_as,
+         shadow.sbt_record_offset, shadow.sbt_record_stride,
+         shadow.miss_index,
          shadow.has_traversable_root_proxy ? 1 : 0,
          shadow.has_bvh_format_profile ? 1 : 0, shadow.bvh_format_version);
   fflush(stdout);
@@ -12905,10 +13031,15 @@ static void rtcore_log_provider_payload_consumed_input_view(
          "lane_slot_index=%u, provider-payload-consumed-input-view=1, "
          "provider_payload_consumption_enabled=1, "
          "provider_payload_consumption_source=registry_payload_shadow, "
+         "rtcore-provider-payload-launch-context-input=1, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "ray_origin=(%f,%f,%f), ray_direction=(%f,%f,%f), "
          "ray_tmin=%f, ray_tmax=%f, "
          "has_ray_flags_cull_mask=%u, ray_flags=%u, cull_mask=%u, "
+         "has_launch_context_input=%u, "
+         "provider_payload_launch_context_input_source=shadow_context_acquire, "
+         "bridge_trace_replay_top_level_as=0x%llx, "
+         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "has_traversable_root_proxy=%u, traversable_proxy_id=0x%llx, "
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_version=%u, "
@@ -12921,7 +13052,10 @@ static void rtcore_log_provider_payload_consumed_input_view(
          view.ray_direction.x, view.ray_direction.y, view.ray_direction.z,
          view.ray_tmin, view.ray_tmax,
          view.has_ray_flags_cull_mask ? 1 : 0, view.ray_flags,
-         view.cull_mask, view.has_traversable_root_proxy ? 1 : 0,
+         view.cull_mask, view.has_launch_context_input ? 1 : 0,
+         (unsigned long long)view.bridge_trace_replay_top_level_as,
+         view.sbt_record_offset, view.sbt_record_stride, view.miss_index,
+         view.has_traversable_root_proxy ? 1 : 0,
          (unsigned long long)view.traversable_proxy_id,
          (unsigned long long)view.root_proxy_id,
          view.has_bvh_format_profile ? 1 : 0, view.bvh_format_version);
@@ -12957,6 +13091,7 @@ rtcore_annotate_provider_response_with_registry_payload_observation(
   annotation.has_ray_origin_direction_tmin_tmax =
       shadow.has_ray_origin_direction_tmin_tmax;
   annotation.has_ray_flags_cull_mask = shadow.has_ray_flags_cull_mask;
+  annotation.has_launch_context_input = shadow.has_launch_context_input;
   annotation.has_traversable_root_proxy = shadow.has_traversable_root_proxy;
   annotation.has_bvh_format_profile = shadow.has_bvh_format_profile;
   annotation.bvh_format_version = shadow.bvh_format_version;
@@ -12970,14 +13105,15 @@ rtcore_annotate_provider_response_with_registry_payload_observation(
          "provider_payload_consumption_enabled=%u, "
          "response_annotation_consumes_traversal_behavior=0, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
-         "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
-         "bvh_format_version=%u\n",
+         "has_launch_context_input=%u, has_traversable_root_proxy=%u, "
+         "has_bvh_format_profile=%u, bvh_format_version=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index,
          annotation.provider_payload_consumption_enabled ? 1 : 0,
          annotation.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          annotation.has_ray_flags_cull_mask ? 1 : 0,
+         annotation.has_launch_context_input ? 1 : 0,
          annotation.has_traversable_root_proxy ? 1 : 0,
          annotation.has_bvh_format_profile ? 1 : 0,
          annotation.bvh_format_version);
@@ -13371,6 +13507,8 @@ bool rtcore_build_traversal_completion_event(
   rtcore_update_decoded_traversal_input_ray_proxy_snapshot(
       &event->decoded_input_snapshot, source_snapshot);
   rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
+      &event->decoded_input_snapshot, source_snapshot);
+  rtcore_update_decoded_traversal_input_launch_context_snapshot(
       &event->decoded_input_snapshot, source_snapshot);
   rtcore_update_decoded_traversal_input_traversable_root_proxy_snapshot(
       &event->decoded_input_snapshot, source_snapshot);

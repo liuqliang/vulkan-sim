@@ -481,6 +481,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
     //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
 
+    VkAccelerationStructureKHR rtcore_trace_input_top_level_as = _topLevelAS;
+
     if (dump_trace && !dumped) 
     {
         dump_AS(VulkanRayTracing::descriptorSet, _topLevelAS);
@@ -540,6 +542,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.missIndex = missIndex;
     traversal_data.rayFlags = rayFlags;
     traversal_data.cullMask = cullMask;
+    traversal_data.rtcore_trace_input_top_level_as = (uint64_t)rtcore_trace_input_top_level_as;
+    traversal_data.rtcore_trace_input_has_top_level_as =
+        rtcore_trace_input_top_level_as != NULL ? 1 : 0;
     traversal_data.Tmin = Tmin;
     traversal_data.Tmax = Tmax;
     traversal_data.rtcore_traversable_proxy_id = 0;
