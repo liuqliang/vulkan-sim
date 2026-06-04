@@ -7164,11 +7164,45 @@ static bool rtcore_env_flag_enabled(const char *name) {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
-static bool rtcore_path_mode_is(const char *mode, const char *value) {
-  return mode != NULL && strcmp(mode, value) == 0;
+enum rtcore_path_mode_policy {
+  RTCORE_PATH_MODE_POLICY_CUSTOM = 0,
+  RTCORE_PATH_MODE_POLICY_LEGACY,
+  RTCORE_PATH_MODE_POLICY_INVALID,
+};
+
+static char rtcore_ascii_lower(char value) {
+  return value >= 'A' && value <= 'Z' ? value - 'A' + 'a' : value;
 }
 
-static bool rtcore_legacy_trace_ray_path_enabled() {
+static bool rtcore_path_mode_is(const char *mode, const char *value) {
+  if (mode == NULL || value == NULL) {
+    return false;
+  }
+  while (*mode != '\0' && *value != '\0') {
+    if (rtcore_ascii_lower(*mode) != rtcore_ascii_lower(*value)) {
+      return false;
+    }
+    ++mode;
+    ++value;
+  }
+  return *mode == '\0' && *value == '\0';
+}
+
+static const char *rtcore_path_mode_raw_value() {
+  const char *mode = getenv("VULKAN_SIM_RTCORE_PATH_MODE");
+  return mode == NULL ? "" : mode;
+}
+
+static bool rtcore_path_mode_compat_custom_enabled() {
+  return rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_SYMBOLIC_SUBMIT") ||
+         rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_FORWARD_SIDEBAND_PATH") ||
+         rtcore_env_flag_enabled(
+             "VULKAN_SIM_RTCORE_COMPILER_DRIVER_PUBLICATION_SOURCE") ||
+         rtcore_env_flag_enabled(
+             "VULKAN_SIM_RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_BRIDGE");
+}
+
+static rtcore_path_mode_policy rtcore_get_path_mode_policy() {
   const char *mode = getenv("VULKAN_SIM_RTCORE_PATH_MODE");
   if (mode != NULL && mode[0] != '\0') {
     if (rtcore_path_mode_is(mode, "legacy") ||
@@ -7176,25 +7210,55 @@ static bool rtcore_legacy_trace_ray_path_enabled() {
         rtcore_path_mode_is(mode, "trace-ray") ||
         rtcore_path_mode_is(mode, "trace_ray_only") ||
         rtcore_path_mode_is(mode, "trace-ray-only")) {
-      return true;
+      return RTCORE_PATH_MODE_POLICY_LEGACY;
     }
     if (rtcore_path_mode_is(mode, "custom") ||
         rtcore_path_mode_is(mode, "forward") ||
         rtcore_path_mode_is(mode, "forward_sideband") ||
         rtcore_path_mode_is(mode, "forward-sideband") ||
         rtcore_path_mode_is(mode, "sideband")) {
-      return false;
+      return RTCORE_PATH_MODE_POLICY_CUSTOM;
     }
+    return RTCORE_PATH_MODE_POLICY_INVALID;
   }
-  return rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_LEGACY_TRACE_RAY_PATH");
+  if (rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_LEGACY_TRACE_RAY_PATH")) {
+    return RTCORE_PATH_MODE_POLICY_LEGACY;
+  }
+  if (rtcore_path_mode_compat_custom_enabled()) {
+    return RTCORE_PATH_MODE_POLICY_CUSTOM;
+  }
+  return RTCORE_PATH_MODE_POLICY_CUSTOM;
+}
+
+static bool rtcore_path_mode_policy_legacy_path_enabled(
+    rtcore_path_mode_policy policy) {
+  return policy == RTCORE_PATH_MODE_POLICY_LEGACY;
+}
+
+static bool rtcore_path_mode_policy_enables_custom_path(
+    rtcore_path_mode_policy policy) {
+  return policy == RTCORE_PATH_MODE_POLICY_CUSTOM;
+}
+
+static bool rtcore_path_mode_policy_is_invalid(
+    rtcore_path_mode_policy policy) {
+  return policy == RTCORE_PATH_MODE_POLICY_INVALID;
+}
+
+static bool rtcore_legacy_trace_ray_path_enabled() {
+  return rtcore_path_mode_policy_legacy_path_enabled(
+      rtcore_get_path_mode_policy());
 }
 
 static bool rtcore_forward_sideband_path_enabled() {
-  return !rtcore_legacy_trace_ray_path_enabled();
+  return rtcore_path_mode_policy_enables_custom_path(
+      rtcore_get_path_mode_policy());
 }
 
 static bool rtcore_trace_invocation_publication_source_enabled() {
-  if (rtcore_legacy_trace_ray_path_enabled()) {
+  const rtcore_path_mode_policy policy = rtcore_get_path_mode_policy();
+  if (rtcore_path_mode_policy_legacy_path_enabled(policy) ||
+      rtcore_path_mode_policy_is_invalid(policy)) {
     return false;
   }
   return rtcore_env_flag_enabled(
@@ -7202,13 +7266,24 @@ static bool rtcore_trace_invocation_publication_source_enabled() {
 }
 
 static bool rtcore_compiler_driver_publication_source_enabled() {
-  if (rtcore_legacy_trace_ray_path_enabled()) {
+  const rtcore_path_mode_policy policy = rtcore_get_path_mode_policy();
+  if (rtcore_path_mode_policy_legacy_path_enabled(policy) ||
+      rtcore_path_mode_policy_is_invalid(policy)) {
     return false;
   }
-  return rtcore_forward_sideband_path_enabled() ||
-         rtcore_env_flag_enabled(
-             "VULKAN_SIM_RTCORE_COMPILER_DRIVER_PUBLICATION_SOURCE") ||
-         rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_FORWARD_SIDEBAND_PATH");
+  return rtcore_path_mode_policy_enables_custom_path(policy);
+}
+
+static bool rtcore_fail_closed_on_invalid_path_mode(const ptx_instruction *pI) {
+  if (!rtcore_path_mode_policy_is_invalid(rtcore_get_path_mode_policy())) {
+    return false;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "invalid VULKAN_SIM_RTCORE_PATH_MODE=%s\n",
+         pI->source_file(), pI->source_line(), rtcore_path_mode_raw_value());
+  fflush(stdout);
+  inst_not_implemented(pI);
+  return true;
 }
 
 static bool
@@ -13407,13 +13482,12 @@ struct rtcore_launch_context_input_publication_record {
 };
 
 static bool rtcore_launch_context_input_publication_bridge_enabled() {
-  if (rtcore_legacy_trace_ray_path_enabled()) {
+  const rtcore_path_mode_policy policy = rtcore_get_path_mode_policy();
+  if (rtcore_path_mode_policy_legacy_path_enabled(policy) ||
+      rtcore_path_mode_policy_is_invalid(policy)) {
     return false;
   }
-  return rtcore_forward_sideband_path_enabled() ||
-         rtcore_env_flag_enabled(
-             "VULKAN_SIM_RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_BRIDGE") ||
-         rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_FORWARD_SIDEBAND_PATH");
+  return rtcore_path_mode_policy_enables_custom_path(policy);
 }
 
 enum rtcore_launch_context_input_publication_failpoint {
@@ -14634,6 +14708,10 @@ void rtcore_traversal_completion_adapter_publish(
 
 void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   assert(pI->get_num_operands() == 3);
+  if (rtcore_fail_closed_on_invalid_path_mode(pI)) {
+    return;
+  }
+
   const operand_info &result = pI->operand_lookup(0);
   const operand_info &context_ptr = pI->operand_lookup(1);
   const operand_info &handoff_window_base = pI->operand_lookup(2);
