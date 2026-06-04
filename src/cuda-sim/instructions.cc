@@ -7103,6 +7103,104 @@ void load_deref_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   inst_not_implemented(pI);
 }
 
+struct rtcore_trace_invocation_publication_source_shadow {
+  rtcore_trace_invocation_publication_source_shadow()
+      : valid(false),
+        thread(NULL),
+        top_level_as(0),
+        has_top_level_as(false),
+        ray_tmin(0.0f),
+        ray_tmax(0.0f),
+        ray_flags(0),
+        cull_mask(0),
+        sbt_record_offset(0),
+        sbt_record_stride(0),
+        miss_index(0) {
+    memset(&ray_origin, 0, sizeof(ray_origin));
+    memset(&ray_direction, 0, sizeof(ray_direction));
+  }
+
+  bool valid;
+  ptx_thread_info *thread;
+  uint64_t top_level_as;
+  bool has_top_level_as;
+  float3 ray_origin;
+  float3 ray_direction;
+  float ray_tmin;
+  float ray_tmax;
+  uint32_t ray_flags;
+  uint32_t cull_mask;
+  uint32_t sbt_record_offset;
+  uint32_t sbt_record_stride;
+  uint32_t miss_index;
+};
+
+static std::map<ptx_thread_info *,
+                rtcore_trace_invocation_publication_source_shadow>
+    g_rtcore_trace_invocation_publication_source_shadow;
+
+static bool rtcore_trace_invocation_publication_source_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TRACE_INVOCATION_PUBLICATION_SOURCE");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static void rtcore_publish_trace_invocation_publication_source_shadow(
+    const ptx_instruction *pI, ptx_thread_info *thread, uint64_t top_level_as,
+    uint32_t ray_flags, uint32_t cull_mask, uint32_t sbt_record_offset,
+    uint32_t sbt_record_stride, uint32_t miss_index, float3 ray_origin,
+    float ray_tmin, float3 ray_direction, float ray_tmax) {
+  if (!rtcore_trace_invocation_publication_source_enabled() ||
+      thread == NULL) {
+    return;
+  }
+
+  rtcore_trace_invocation_publication_source_shadow shadow;
+  shadow.valid = true;
+  shadow.thread = thread;
+  shadow.top_level_as = top_level_as;
+  shadow.has_top_level_as = top_level_as != 0;
+  shadow.ray_origin = ray_origin;
+  shadow.ray_direction = ray_direction;
+  shadow.ray_tmin = ray_tmin;
+  shadow.ray_tmax = ray_tmax;
+  shadow.ray_flags = ray_flags;
+  shadow.cull_mask = cull_mask;
+  shadow.sbt_record_offset = sbt_record_offset;
+  shadow.sbt_record_stride = sbt_record_stride;
+  shadow.miss_index = miss_index;
+  g_rtcore_trace_invocation_publication_source_shadow[thread] = shadow;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "trace-invocation-publication-source-shadow (%s:%u), "
+         "source=trace_ray_impl, top_level_as=0x%llx, "
+         "has_top_level_as=%u, ray_flags=%u, cull_mask=%u, "
+         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u\n",
+         pI->source_file(), pI->source_line(),
+         (unsigned long long)shadow.top_level_as,
+         shadow.has_top_level_as ? 1 : 0, shadow.ray_flags,
+         shadow.cull_mask, shadow.sbt_record_offset,
+         shadow.sbt_record_stride, shadow.miss_index);
+  fflush(stdout);
+}
+
+static bool rtcore_consume_trace_invocation_publication_source_shadow(
+    ptx_thread_info *thread,
+    rtcore_trace_invocation_publication_source_shadow *out_shadow) {
+  if (thread == NULL || out_shadow == NULL) {
+    return false;
+  }
+  std::map<ptx_thread_info *,
+           rtcore_trace_invocation_publication_source_shadow>::iterator found =
+      g_rtcore_trace_invocation_publication_source_shadow.find(thread);
+  if (found == g_rtcore_trace_invocation_publication_source_shadow.end()) {
+    return false;
+  }
+  *out_shadow = found->second;
+  g_rtcore_trace_invocation_publication_source_shadow.erase(found);
+  return out_shadow->valid && out_shadow->thread == thread;
+}
+
 void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
@@ -7204,10 +7302,16 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   // thread->dump_regs(stdout);
 
+  float3 ray_origin = {originX, originY, originZ};
+  float3 ray_direction = {directionX, directionY, directionZ};
+  rtcore_publish_trace_invocation_publication_source_shadow(
+      pI, thread, (uint64_t)_topLevelAS, rayFlags, cullMask, sbtRecordOffset,
+      sbtRecordStride, missIndex, ray_origin, Tmin, ray_direction, Tmax);
+
   VulkanRayTracing::traceRay(_topLevelAS, rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex,
-                   {originX, originY, originZ},
+                   ray_origin,
                    Tmin,
-                   {directionX, directionY, directionZ},
+                   ray_direction,
                    Tmax,
                    NULL,
                    pI,
@@ -13087,8 +13191,38 @@ rtcore_make_launch_context_input_publication_record(
   record.handoff_window_base = request.handoff_window_base;
   record.lane_slot_index = request.lane_slot_index;
   record.owner_seq_snapshot = owner_seq_snapshot;
-  if (!record.publication_enabled || !owner_seq_snapshot.valid ||
-      !pre_provider_traversal_data_snapshot.valid) {
+  if (!record.publication_enabled || !owner_seq_snapshot.valid) {
+    return record;
+  }
+
+  if (rtcore_trace_invocation_publication_source_enabled()) {
+    record.source = "trace_invocation_publication_source_shadow";
+    rtcore_trace_invocation_publication_source_shadow source_shadow;
+    if (!rtcore_consume_trace_invocation_publication_source_shadow(
+            request.thread, &source_shadow)) {
+      return record;
+    }
+    record.ray_origin = source_shadow.ray_origin;
+    record.ray_direction = source_shadow.ray_direction;
+    record.ray_tmin = source_shadow.ray_tmin;
+    record.ray_tmax = source_shadow.ray_tmax;
+    record.has_ray_origin_direction_tmin_tmax = true;
+    record.ray_flags = source_shadow.ray_flags;
+    record.cull_mask = source_shadow.cull_mask;
+    record.has_ray_flags_cull_mask = true;
+    record.bridge_trace_replay_top_level_as = source_shadow.top_level_as;
+    record.sbt_record_offset = source_shadow.sbt_record_offset;
+    record.sbt_record_stride = source_shadow.sbt_record_stride;
+    record.miss_index = source_shadow.miss_index;
+    record.has_launch_context_input = source_shadow.has_top_level_as;
+    rtcore_apply_launch_context_input_publication_failpoint(request.pI, &record);
+    record.valid = record.has_ray_origin_direction_tmin_tmax &&
+                   record.has_ray_flags_cull_mask &&
+                   record.has_launch_context_input;
+    return record;
+  }
+
+  if (!pre_provider_traversal_data_snapshot.valid) {
     return record;
   }
 
