@@ -9956,6 +9956,52 @@ rtcore_make_traversal_source_request(
 
 struct rtcore_provider_facing_registry_payload_shadow;
 
+struct rtcore_provider_payload_consumed_input_view {
+  rtcore_provider_payload_consumed_input_view()
+      : valid(false),
+        from_registry_payload_shadow(false),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        ray_flags(0),
+        cull_mask(0),
+        ray_tmin(0.0f),
+        ray_tmax(0.0f),
+        has_traversable_root_proxy(false),
+        traversable_proxy_id(0),
+        root_proxy_id(0),
+        has_bvh_format_profile(false),
+        bvh_format_version(0) {
+    memset(&ray_origin, 0, sizeof(ray_origin));
+    memset(&ray_direction, 0, sizeof(ray_direction));
+  }
+
+  bool valid;
+  bool from_registry_payload_shadow;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  float3 ray_origin;
+  float3 ray_direction;
+  uint32_t ray_flags;
+  uint32_t cull_mask;
+  float ray_tmin;
+  float ray_tmax;
+  bool has_traversable_root_proxy;
+  uint64_t traversable_proxy_id;
+  uint64_t root_proxy_id;
+  bool has_bvh_format_profile;
+  uint32_t bvh_format_version;
+};
+
+static bool rtcore_provider_payload_consumption_effective_enabled(
+    const rtcore_provider_facing_registry_payload_shadow
+        *registry_payload_shadow);
+
+static rtcore_provider_payload_consumed_input_view
+rtcore_make_provider_payload_consumed_input_view(
+    const rtcore_provider_facing_registry_payload_shadow
+        *registry_payload_shadow,
+    bool provider_payload_consumption_enabled);
+
 struct rtcore_traversal_work_descriptor {
   rtcore_traversal_work_descriptor()
       : valid(false),
@@ -9965,6 +10011,8 @@ struct rtcore_traversal_work_descriptor {
         lane_slot_index(0),
         has_registry_payload_shadow(false),
         provider_payload_consumption_enabled(false),
+        has_provider_payload_consumed_input(false),
+        provider_payload_consumed_input(),
         registry_payload_shadow(NULL) {}
 
   bool valid;
@@ -9975,6 +10023,8 @@ struct rtcore_traversal_work_descriptor {
   ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
   bool has_registry_payload_shadow;
   bool provider_payload_consumption_enabled;
+  bool has_provider_payload_consumed_input;
+  rtcore_provider_payload_consumed_input_view provider_payload_consumed_input;
   const rtcore_provider_facing_registry_payload_shadow *registry_payload_shadow;
 };
 
@@ -9990,7 +10040,15 @@ rtcore_make_traversal_work_descriptor(
   descriptor.lane_slot_index = request.lane_slot_index;
   descriptor.warp_metadata = request.warp_metadata;
   descriptor.has_registry_payload_shadow = registry_payload_shadow != NULL;
-  descriptor.provider_payload_consumption_enabled = false;
+  descriptor.provider_payload_consumption_enabled =
+      rtcore_provider_payload_consumption_effective_enabled(
+          registry_payload_shadow);
+  descriptor.has_provider_payload_consumed_input =
+      descriptor.provider_payload_consumption_enabled;
+  descriptor.provider_payload_consumed_input =
+      rtcore_make_provider_payload_consumed_input_view(
+          registry_payload_shadow,
+          descriptor.provider_payload_consumption_enabled);
   descriptor.registry_payload_shadow = registry_payload_shadow;
   return descriptor;
 }
@@ -10770,6 +10828,9 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
 static void rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(
     const rtcore_traversal_work_descriptor &descriptor);
 
+static void rtcore_log_provider_payload_consumed_input_view(
+    const rtcore_traversal_work_descriptor &descriptor);
+
 static void rtcore_log_provider_facing_registry_payload_admission_mirror(
     const rtcore_traversal_work_descriptor &descriptor);
 
@@ -10789,16 +10850,18 @@ rtcore_invoke_rtcore_provider_bridge(
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
          "descriptor_valid=%u, registry_payload_shadow_attached=%u, "
-         "provider_payload_consumption_enabled=0, "
+         "provider_payload_consumption_enabled=%u, "
          "rtcore-provider-bridge-invoked=1\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
          descriptor.warp_metadata.active_mask, descriptor.valid ? 1 : 0,
-         descriptor.has_registry_payload_shadow ? 1 : 0);
+         descriptor.has_registry_payload_shadow ? 1 : 0,
+         descriptor.provider_payload_consumption_enabled ? 1 : 0);
   fflush(stdout);
   rtcore_log_provider_facing_registry_payload_admission_mirror(descriptor);
   rtcore_log_provider_payload_consumption_eligibility_shadow(descriptor);
+  rtcore_log_provider_payload_consumed_input_view(descriptor);
   rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(descriptor);
 
   rtcore_traversal_provider_response response;
@@ -11707,12 +11770,82 @@ static bool rtcore_provider_payload_consumption_policy_enabled() {
   return false;
 }
 
+static bool rtcore_provider_payload_shadow_has_complete_field_coverage(
+    const rtcore_provider_facing_registry_payload_shadow
+        *registry_payload_shadow) {
+  if (registry_payload_shadow == NULL || !registry_payload_shadow->valid) {
+    return false;
+  }
+  return registry_payload_shadow->has_ray_origin_direction_tmin_tmax &&
+         registry_payload_shadow->has_ray_flags_cull_mask &&
+         registry_payload_shadow->has_traversable_root_proxy &&
+         registry_payload_shadow->has_bvh_format_profile;
+}
+
+static bool rtcore_provider_payload_consumption_effective_enabled(
+    const rtcore_provider_facing_registry_payload_shadow
+        *registry_payload_shadow) {
+  if (!rtcore_registry_payload_consumption_admission_policy_allows(
+          "provider-payload-consumption-effective")) {
+    return false;
+  }
+  if (!rtcore_provider_payload_consumption_policy_enabled()) {
+    return false;
+  }
+  if (registry_payload_shadow == NULL || !registry_payload_shadow->valid) {
+    return false;
+  }
+  if (!rtcore_provider_payload_shadow_has_complete_field_coverage(
+          registry_payload_shadow)) {
+    return false;
+  }
+  return true;
+}
+
+static rtcore_provider_payload_consumed_input_view
+rtcore_make_provider_payload_consumed_input_view(
+    const rtcore_provider_facing_registry_payload_shadow
+        *registry_payload_shadow,
+    bool provider_payload_consumption_enabled) {
+  rtcore_provider_payload_consumed_input_view view;
+  if (!provider_payload_consumption_enabled ||
+      registry_payload_shadow == NULL || !registry_payload_shadow->valid) {
+    return view;
+  }
+  if (!rtcore_provider_payload_shadow_has_complete_field_coverage(
+          registry_payload_shadow)) {
+    return view;
+  }
+
+  view.valid = true;
+  view.from_registry_payload_shadow = true;
+  view.has_ray_origin_direction_tmin_tmax =
+      registry_payload_shadow->has_ray_origin_direction_tmin_tmax;
+  view.has_ray_flags_cull_mask =
+      registry_payload_shadow->has_ray_flags_cull_mask;
+  view.ray_origin = registry_payload_shadow->ray_origin;
+  view.ray_direction = registry_payload_shadow->ray_direction;
+  view.ray_tmin = registry_payload_shadow->ray_tmin;
+  view.ray_tmax = registry_payload_shadow->ray_tmax;
+  view.ray_flags = registry_payload_shadow->ray_flags;
+  view.cull_mask = registry_payload_shadow->cull_mask;
+  view.has_traversable_root_proxy =
+      registry_payload_shadow->has_traversable_root_proxy;
+  view.traversable_proxy_id = registry_payload_shadow->traversable_proxy_id;
+  view.root_proxy_id = registry_payload_shadow->root_proxy_id;
+  view.has_bvh_format_profile =
+      registry_payload_shadow->has_bvh_format_profile;
+  view.bvh_format_version = registry_payload_shadow->bvh_format_version;
+  return view;
+}
+
 static void rtcore_log_provider_facing_registry_payload_admission_mirror(
     const rtcore_traversal_work_descriptor &descriptor) {
   rtcore_provider_facing_registry_payload_admission_mirror mirror;
   mirror.valid = true;
   mirror.has_registry_payload_shadow = descriptor.has_registry_payload_shadow;
-  mirror.provider_payload_consumption_enabled = false;
+  mirror.provider_payload_consumption_enabled =
+      descriptor.provider_payload_consumption_enabled;
   if (descriptor.has_registry_payload_shadow &&
       descriptor.registry_payload_shadow != NULL &&
       descriptor.registry_payload_shadow->valid) {
@@ -11742,7 +11875,7 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          "registry_payload_admission_policy_opt_in_enabled=%u, "
          "registry_payload_shadow_attached=%u, "
          "registry_payload_shadow_observed=%u, "
-         "provider_payload_consumption_enabled=0, "
+         "provider_payload_consumption_enabled=%u, "
          "provider_admission_mirror_consumes_traversal_behavior=0, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
          "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
@@ -11755,6 +11888,7 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          mirror.admission_allowed ? 1 : 0,
          mirror.has_registry_payload_shadow ? 1 : 0,
          mirror.observed_valid_shadow ? 1 : 0,
+         mirror.provider_payload_consumption_enabled ? 1 : 0,
          mirror.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          mirror.has_ray_flags_cull_mask ? 1 : 0,
          mirror.has_traversable_root_proxy ? 1 : 0,
@@ -11774,7 +11908,8 @@ static void rtcore_log_provider_payload_consumption_eligibility_shadow(
       descriptor.has_registry_payload_shadow;
   shadow_decision.consumption_policy_enabled =
       rtcore_provider_payload_consumption_policy_enabled();
-  shadow_decision.provider_payload_consumption_enabled = false;
+  shadow_decision.provider_payload_consumption_enabled =
+      descriptor.provider_payload_consumption_enabled;
 
   if (descriptor.has_registry_payload_shadow &&
       descriptor.registry_payload_shadow != NULL &&
@@ -11783,9 +11918,7 @@ static void rtcore_log_provider_payload_consumption_eligibility_shadow(
         *descriptor.registry_payload_shadow;
     shadow_decision.observed_valid_shadow = true;
     shadow_decision.field_coverage_complete =
-        shadow.has_ray_origin_direction_tmin_tmax &&
-        shadow.has_ray_flags_cull_mask &&
-        shadow.has_traversable_root_proxy && shadow.has_bvh_format_profile;
+        rtcore_provider_payload_shadow_has_complete_field_coverage(&shadow);
   }
   shadow_decision.provider_payload_consumption_eligible =
       shadow_decision.admission_allowed &&
@@ -11821,7 +11954,7 @@ static void rtcore_log_provider_payload_consumption_eligibility_shadow(
          "provider_payload_consumption_policy_source=%s, "
          "provider_payload_consumption_policy_enabled=%u, "
          "provider_payload_consumption_eligible=%u, "
-         "provider_payload_consumption_enabled=0, "
+         "provider_payload_consumption_enabled=%u, "
          "provider_payload_consumption_eligibility_fail_reason=%s, "
          "provider_payload_consumption_eligibility_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
@@ -11834,6 +11967,7 @@ static void rtcore_log_provider_payload_consumption_eligibility_shadow(
          rtcore_provider_payload_consumption_policy_source(),
          shadow_decision.consumption_policy_enabled ? 1 : 0,
          shadow_decision.provider_payload_consumption_eligible ? 1 : 0,
+         shadow_decision.provider_payload_consumption_enabled ? 1 : 0,
          rtcore_provider_payload_consumption_eligibility_shadow_fail_reason_name(
              shadow_decision.fail_reason));
   fflush(stdout);
@@ -12206,6 +12340,44 @@ static void rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(
   fflush(stdout);
 }
 
+static void rtcore_log_provider_payload_consumed_input_view(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  if (!descriptor.provider_payload_consumption_enabled ||
+      !descriptor.has_provider_payload_consumed_input ||
+      !descriptor.provider_payload_consumed_input.valid) {
+    return;
+  }
+
+  const rtcore_provider_payload_consumed_input_view &view =
+      descriptor.provider_payload_consumed_input;
+  printf("GPGPU-Sim PTX: RT_SUBMIT provider-payload-consumed-input, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, provider-payload-consumed-input-view=1, "
+         "provider_payload_consumption_enabled=1, "
+         "provider_payload_consumption_source=registry_payload_shadow, "
+         "has_ray_origin_direction_tmin_tmax=%u, "
+         "ray_origin=(%f,%f,%f), ray_direction=(%f,%f,%f), "
+         "ray_tmin=%f, ray_tmax=%f, "
+         "has_ray_flags_cull_mask=%u, ray_flags=%u, cull_mask=%u, "
+         "has_traversable_root_proxy=%u, traversable_proxy_id=0x%llx, "
+         "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
+         "bvh_format_version=%u, "
+         "provider_payload_consumed_input_consumes_traversal_behavior=0\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index,
+         view.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         view.ray_origin.x, view.ray_origin.y, view.ray_origin.z,
+         view.ray_direction.x, view.ray_direction.y, view.ray_direction.z,
+         view.ray_tmin, view.ray_tmax,
+         view.has_ray_flags_cull_mask ? 1 : 0, view.ray_flags,
+         view.cull_mask, view.has_traversable_root_proxy ? 1 : 0,
+         (unsigned long long)view.traversable_proxy_id,
+         (unsigned long long)view.root_proxy_id,
+         view.has_bvh_format_profile ? 1 : 0, view.bvh_format_version);
+  fflush(stdout);
+}
+
 static void
 rtcore_annotate_provider_response_with_registry_payload_observation(
     rtcore_traversal_provider_response *response,
@@ -12220,8 +12392,7 @@ rtcore_annotate_provider_response_with_registry_payload_observation(
       descriptor.provider_payload_consumption_enabled;
 
   if (!descriptor.has_registry_payload_shadow ||
-      descriptor.registry_payload_shadow == NULL ||
-      descriptor.provider_payload_consumption_enabled) {
+      descriptor.registry_payload_shadow == NULL) {
     return;
   }
 
@@ -12246,7 +12417,7 @@ rtcore_annotate_provider_response_with_registry_payload_observation(
          "lane_slot_index=%u, provider-response-registry-payload-annotation=1, "
          "registry_payload_response_annotation_valid=1, "
          "registry_payload_shadow_observed=1, "
-         "provider_payload_consumption_enabled=0, "
+         "provider_payload_consumption_enabled=%u, "
          "response_annotation_consumes_traversal_behavior=0, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
          "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
@@ -12254,6 +12425,7 @@ rtcore_annotate_provider_response_with_registry_payload_observation(
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index,
+         annotation.provider_payload_consumption_enabled ? 1 : 0,
          annotation.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          annotation.has_ray_flags_cull_mask ? 1 : 0,
          annotation.has_traversable_root_proxy ? 1 : 0,
