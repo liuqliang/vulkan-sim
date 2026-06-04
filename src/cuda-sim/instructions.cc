@@ -7107,6 +7107,11 @@ struct rtcore_trace_invocation_publication_source_shadow {
   rtcore_trace_invocation_publication_source_shadow()
       : valid(false),
         thread(NULL),
+        source_publication_seq(0),
+        owner_hw_tid(0),
+        owner_hw_wid(0),
+        owner_hw_sid(0),
+        owner_tuple_match(false),
         top_level_as(0),
         has_top_level_as(false),
         ray_tmin(0.0f),
@@ -7122,6 +7127,11 @@ struct rtcore_trace_invocation_publication_source_shadow {
 
   bool valid;
   ptx_thread_info *thread;
+  unsigned long long source_publication_seq;
+  unsigned owner_hw_tid;
+  unsigned owner_hw_wid;
+  unsigned owner_hw_sid;
+  bool owner_tuple_match;
   uint64_t top_level_as;
   bool has_top_level_as;
   float3 ray_origin;
@@ -7138,11 +7148,24 @@ struct rtcore_trace_invocation_publication_source_shadow {
 static std::map<ptx_thread_info *,
                 rtcore_trace_invocation_publication_source_shadow>
     g_rtcore_trace_invocation_publication_source_shadow;
+static unsigned long long
+    g_rtcore_trace_invocation_publication_source_next_seq = 0;
 
 static bool rtcore_trace_invocation_publication_source_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_TRACE_INVOCATION_PUBLICATION_SOURCE");
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool rtcore_trace_invocation_publication_source_owner_tuple_matches(
+    ptx_thread_info *thread,
+    const rtcore_trace_invocation_publication_source_shadow &shadow) {
+  if (thread == NULL) {
+    return false;
+  }
+  return shadow.owner_hw_tid == thread->get_hw_tid() &&
+         shadow.owner_hw_wid == thread->get_hw_wid() &&
+         shadow.owner_hw_sid == thread->get_hw_sid();
 }
 
 static bool
@@ -7177,6 +7200,12 @@ static void rtcore_publish_trace_invocation_publication_source_shadow(
   rtcore_trace_invocation_publication_source_shadow shadow;
   shadow.valid = true;
   shadow.thread = thread;
+  shadow.source_publication_seq =
+      ++g_rtcore_trace_invocation_publication_source_next_seq;
+  shadow.owner_hw_tid = thread->get_hw_tid();
+  shadow.owner_hw_wid = thread->get_hw_wid();
+  shadow.owner_hw_sid = thread->get_hw_sid();
+  shadow.owner_tuple_match = true;
   shadow.top_level_as = top_level_as;
   shadow.has_top_level_as = top_level_as != 0;
   shadow.ray_origin = ray_origin;
@@ -7194,12 +7223,16 @@ static void rtcore_publish_trace_invocation_publication_source_shadow(
          "trace-invocation-publication-source-shadow (%s:%u), "
          "source=trace_ray_impl, top_level_as=0x%llx, "
          "has_top_level_as=%u, ray_flags=%u, cull_mask=%u, "
-         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u\n",
+         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
+         "source_publication_seq=%llu, owner_hw_tid=%u, "
+         "owner_hw_wid=%u, owner_hw_sid=%u\n",
          pI->source_file(), pI->source_line(),
          (unsigned long long)shadow.top_level_as,
          shadow.has_top_level_as ? 1 : 0, shadow.ray_flags,
          shadow.cull_mask, shadow.sbt_record_offset,
-         shadow.sbt_record_stride, shadow.miss_index);
+         shadow.sbt_record_stride, shadow.miss_index,
+         shadow.source_publication_seq, shadow.owner_hw_tid,
+         shadow.owner_hw_wid, shadow.owner_hw_sid);
   fflush(stdout);
 }
 
@@ -7217,7 +7250,11 @@ static bool rtcore_consume_trace_invocation_publication_source_shadow(
   }
   *out_shadow = found->second;
   g_rtcore_trace_invocation_publication_source_shadow.erase(found);
-  return out_shadow->valid && out_shadow->thread == thread;
+  out_shadow->owner_tuple_match =
+      rtcore_trace_invocation_publication_source_owner_tuple_matches(
+          thread, *out_shadow);
+  return out_shadow->valid && out_shadow->thread == thread &&
+         out_shadow->owner_tuple_match;
 }
 
 void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -13072,6 +13109,8 @@ struct rtcore_launch_context_input_publication_record {
         handoff_window_base(0),
         lane_slot_index(0),
         source("trace_ray_operand_shadow"),
+        source_publication_seq(0),
+        source_owner_tuple_match(false),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
         has_launch_context_input(false),
@@ -13094,6 +13133,8 @@ struct rtcore_launch_context_input_publication_record {
   unsigned lane_slot_index;
   rtcore_context_window_owner_seq_snapshot owner_seq_snapshot;
   const char *source;
+  unsigned long long source_publication_seq;
+  bool source_owner_tuple_match;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
   bool has_launch_context_input;
@@ -13221,6 +13262,8 @@ rtcore_make_launch_context_input_publication_record(
             request.thread, &source_shadow)) {
       return record;
     }
+    record.source_publication_seq = source_shadow.source_publication_seq;
+    record.source_owner_tuple_match = source_shadow.owner_tuple_match;
     record.ray_origin = source_shadow.ray_origin;
     record.ray_direction = source_shadow.ray_direction;
     record.ray_tmin = source_shadow.ray_tmin;
@@ -13286,6 +13329,7 @@ static void rtcore_log_launch_context_input_publication_record(
          "launch-context-input-publication-bridge (%s:%u), "
          "source=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, valid=%u, "
+         "source_publication_seq=%llu, source_owner_tuple_match=%u, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "has_ray_flags_cull_mask=%u, has_launch_context_input=%u, "
          "ray_flags=%u, cull_mask=%u, bridge_trace_replay_top_level_as=0x%llx, "
@@ -13293,6 +13337,8 @@ static void rtcore_log_launch_context_input_publication_record(
          pI->source_file(), pI->source_line(), record.source,
          record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.valid ? 1 : 0,
+         record.source_publication_seq,
+         record.source_owner_tuple_match ? 1 : 0,
          record.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          record.has_ray_flags_cull_mask ? 1 : 0,
          record.has_launch_context_input ? 1 : 0, record.ray_flags,
@@ -13314,12 +13360,15 @@ static bool rtcore_fail_closed_on_launch_context_input_publication_record(
          "reason=LAUNCH_CONTEXT_INPUT_PUBLICATION_PARTIAL, "
          "source=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, valid=%u, owner_seq_valid=%u, "
+         "source_publication_seq=%llu, source_owner_tuple_match=%u, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "has_ray_flags_cull_mask=%u, has_launch_context_input=%u\n",
          pI->source_file(), pI->source_line(), record.source,
          record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.valid ? 1 : 0,
          record.owner_seq_snapshot.valid ? 1 : 0,
+         record.source_publication_seq,
+         record.source_owner_tuple_match ? 1 : 0,
          record.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          record.has_ray_flags_cull_mask ? 1 : 0,
          record.has_launch_context_input ? 1 : 0);
