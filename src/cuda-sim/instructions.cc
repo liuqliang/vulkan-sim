@@ -7145,6 +7145,13 @@ static bool rtcore_trace_invocation_publication_source_enabled() {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool
+rtcore_trace_invocation_publication_source_failpoint_drop_publish() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TRACE_INVOCATION_PUBLICATION_SOURCE_FAILPOINT");
+  return value != NULL && strcmp(value, "drop_publish") == 0;
+}
+
 static void rtcore_publish_trace_invocation_publication_source_shadow(
     const ptx_instruction *pI, ptx_thread_info *thread, uint64_t top_level_as,
     uint32_t ray_flags, uint32_t cull_mask, uint32_t sbt_record_offset,
@@ -7152,6 +7159,18 @@ static void rtcore_publish_trace_invocation_publication_source_shadow(
     float ray_tmin, float3 ray_direction, float ray_tmax) {
   if (!rtcore_trace_invocation_publication_source_enabled() ||
       thread == NULL) {
+    return;
+  }
+  if (rtcore_trace_invocation_publication_source_failpoint_drop_publish()) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "trace-invocation-publication-source-drop-publish (%s:%u), "
+           "source=trace_ray_impl, top_level_as=0x%llx, ray_flags=%u, "
+           "cull_mask=%u, sbt_record_offset=%u, sbt_record_stride=%u, "
+           "miss_index=%u\n",
+           pI->source_file(), pI->source_line(),
+           (unsigned long long)top_level_as, ray_flags, cull_mask,
+           sbt_record_offset, sbt_record_stride, miss_index);
+    fflush(stdout);
     return;
   }
 
