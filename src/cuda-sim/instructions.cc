@@ -7241,7 +7241,10 @@ struct rtcore_adapter_completion_record {
         completed_lane_mask(0),
         static_inst_uid(0),
         max_node_visits(0),
-        max_primitive_tests(0) {}
+        max_primitive_tests(0),
+        provider_backend_input_completion_record_annotation(),
+        provider_backend_input_completion_record_observed_lane_mask(0),
+        provider_backend_input_completion_record_aggregate_mismatch(false) {}
 
   bool valid;
   unsigned warp_uid;
@@ -7252,6 +7255,10 @@ struct rtcore_adapter_completion_record {
   unsigned static_inst_uid;
   unsigned max_node_visits;
   unsigned max_primitive_tests;
+  rtcore_traversal_completion_provider_backend_input_annotation
+      provider_backend_input_completion_record_annotation;
+  unsigned provider_backend_input_completion_record_observed_lane_mask;
+  bool provider_backend_input_completion_record_aggregate_mismatch;
 };
 
 struct rtcore_adapter_completion_publication {
@@ -7291,6 +7298,15 @@ struct rtcore_adapter_completion_claim_status {
         static_inst_uid(0),
         max_node_visits(0),
         max_primitive_tests(0),
+        provider_backend_input_claim_annotation_valid(false),
+        provider_backend_input_claim_observed_lane_mask(0),
+        provider_backend_input_claim_all_completed_lanes_observed(false),
+        provider_backend_input_claim_aggregate_mismatch(false),
+        provider_payload_consumption_enabled(false),
+        backend_input_snapshot_required(false),
+        has_provider_payload_backend_input_snapshot(false),
+        provider_payload_backend_input_snapshot_valid(false),
+        provider_payload_backend_input_snapshot_accepted(false),
         reject_reason("missing_record") {}
 
   bool found;
@@ -7302,6 +7318,15 @@ struct rtcore_adapter_completion_claim_status {
   unsigned static_inst_uid;
   unsigned max_node_visits;
   unsigned max_primitive_tests;
+  bool provider_backend_input_claim_annotation_valid;
+  unsigned provider_backend_input_claim_observed_lane_mask;
+  bool provider_backend_input_claim_all_completed_lanes_observed;
+  bool provider_backend_input_claim_aggregate_mismatch;
+  bool provider_payload_consumption_enabled;
+  bool backend_input_snapshot_required;
+  bool has_provider_payload_backend_input_snapshot;
+  bool provider_payload_backend_input_snapshot_valid;
+  bool provider_payload_backend_input_snapshot_accepted;
   const char *reject_reason;
 };
 
@@ -7397,6 +7422,47 @@ rtcore_make_adapter_completion_publication_from_pending(
   return publication;
 }
 
+static bool rtcore_backend_input_completion_annotation_values_match(
+    const rtcore_traversal_completion_provider_backend_input_annotation &lhs,
+    const rtcore_traversal_completion_provider_backend_input_annotation &rhs) {
+  return lhs.provider_payload_consumption_enabled ==
+             rhs.provider_payload_consumption_enabled &&
+         lhs.backend_input_snapshot_required ==
+             rhs.backend_input_snapshot_required &&
+         lhs.has_provider_payload_backend_input_snapshot ==
+             rhs.has_provider_payload_backend_input_snapshot &&
+         lhs.provider_payload_backend_input_snapshot_valid ==
+             rhs.provider_payload_backend_input_snapshot_valid &&
+         lhs.provider_payload_backend_input_snapshot_accepted ==
+             rhs.provider_payload_backend_input_snapshot_accepted;
+}
+
+static void
+rtcore_record_backend_input_completion_publication_annotation(
+    rtcore_adapter_completion_record *record,
+    const rtcore_adapter_completion_publication &publication) {
+  if (record == NULL ||
+      !publication.provider_backend_input_completion_publication_annotation
+           .valid) {
+    return;
+  }
+
+  const rtcore_traversal_completion_provider_backend_input_annotation
+      &publication_annotation =
+          publication.provider_backend_input_completion_publication_annotation;
+  rtcore_traversal_completion_provider_backend_input_annotation
+      &record_annotation =
+          record->provider_backend_input_completion_record_annotation;
+  if (!record_annotation.valid) {
+    record_annotation = publication_annotation;
+  } else if (!rtcore_backend_input_completion_annotation_values_match(
+                 record_annotation, publication_annotation)) {
+    record->provider_backend_input_completion_record_aggregate_mismatch = true;
+  }
+  record->provider_backend_input_completion_record_observed_lane_mask |=
+      publication.lane_thread_mask;
+}
+
 static bool rtcore_publish_adapter_completion_record(
     const rtcore_adapter_completion_publication &publication) {
   const bool valid_lane = publication.lane_slot_index < 32;
@@ -7427,6 +7493,8 @@ static bool rtcore_publish_adapter_completion_record(
     if (publication.primitive_tests > record.max_primitive_tests) {
       record.max_primitive_tests = publication.primitive_tests;
     }
+    rtcore_record_backend_input_completion_publication_annotation(
+        &record, publication);
   }
   const bool accepted = valid_lane && lane_active && metadata_matches;
   const rtcore_traversal_completion_provider_backend_input_annotation
@@ -7581,6 +7649,29 @@ static rtcore_adapter_completion_claim_status rtcore_query_adapter_completion_st
   status.static_inst_uid = record.static_inst_uid;
   status.max_node_visits = record.max_node_visits;
   status.max_primitive_tests = record.max_primitive_tests;
+  const rtcore_traversal_completion_provider_backend_input_annotation
+      &backend_input_annotation =
+          record.provider_backend_input_completion_record_annotation;
+  status.provider_backend_input_claim_annotation_valid =
+      backend_input_annotation.valid;
+  status.provider_backend_input_claim_observed_lane_mask =
+      record.provider_backend_input_completion_record_observed_lane_mask;
+  status.provider_backend_input_claim_all_completed_lanes_observed =
+      record.completed_lane_mask != 0 &&
+      (record.provider_backend_input_completion_record_observed_lane_mask &
+       record.completed_lane_mask) == record.completed_lane_mask;
+  status.provider_backend_input_claim_aggregate_mismatch =
+      record.provider_backend_input_completion_record_aggregate_mismatch;
+  status.provider_payload_consumption_enabled =
+      backend_input_annotation.provider_payload_consumption_enabled;
+  status.backend_input_snapshot_required =
+      backend_input_annotation.backend_input_snapshot_required;
+  status.has_provider_payload_backend_input_snapshot =
+      backend_input_annotation.has_provider_payload_backend_input_snapshot;
+  status.provider_payload_backend_input_snapshot_valid =
+      backend_input_annotation.provider_payload_backend_input_snapshot_valid;
+  status.provider_payload_backend_input_snapshot_accepted =
+      backend_input_annotation.provider_payload_backend_input_snapshot_accepted;
   status.metadata_match =
       record.valid && record.warp_uid == warp_uid &&
       record.warp_id == warp_id && record.owner_hw_sid == owner_hw_sid;
@@ -7613,6 +7704,24 @@ static void rtcore_fill_adapter_completion_claim_snapshot(
   snapshot->static_inst_uid = status.static_inst_uid;
   snapshot->max_node_visits = status.max_node_visits;
   snapshot->max_primitive_tests = status.max_primitive_tests;
+  snapshot->provider_backend_input_claim_annotation_valid =
+      status.provider_backend_input_claim_annotation_valid;
+  snapshot->provider_backend_input_claim_observed_lane_mask =
+      status.provider_backend_input_claim_observed_lane_mask;
+  snapshot->provider_backend_input_claim_all_completed_lanes_observed =
+      status.provider_backend_input_claim_all_completed_lanes_observed;
+  snapshot->provider_backend_input_claim_aggregate_mismatch =
+      status.provider_backend_input_claim_aggregate_mismatch;
+  snapshot->provider_payload_consumption_enabled =
+      status.provider_payload_consumption_enabled;
+  snapshot->backend_input_snapshot_required =
+      status.backend_input_snapshot_required;
+  snapshot->has_provider_payload_backend_input_snapshot =
+      status.has_provider_payload_backend_input_snapshot;
+  snapshot->provider_payload_backend_input_snapshot_valid =
+      status.provider_payload_backend_input_snapshot_valid;
+  snapshot->provider_payload_backend_input_snapshot_accepted =
+      status.provider_payload_backend_input_snapshot_accepted;
   snapshot->reject_reason = status.reject_reason;
 }
 
@@ -7629,12 +7738,33 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
            "active_mask=0x%08x, completed_lane_mask=0x%08x, "
            "static_inst_uid=%u, max_node_visits=%u, "
            "max_primitive_tests=%u, metadata_match=%u, lanes_complete=%u, "
-           "accepted=%u, reject_reason=%s\n",
+           "accepted=%u, reject_reason=%s, "
+           "adapter-completion-provider-backend-input-claim-annotation=1, "
+           "provider_backend_input_claim_annotation_valid=%u, "
+           "provider_backend_input_claim_observed_lane_mask=0x%08x, "
+           "provider_backend_input_claim_all_completed_lanes_observed=%u, "
+           "provider_backend_input_claim_aggregate_mismatch=%u, "
+           "provider_payload_consumption_enabled=%u, "
+           "backend_input_snapshot_required=%u, "
+           "has_provider_payload_backend_input_snapshot=%u, "
+           "provider_payload_backend_input_snapshot_valid=%u, "
+           "provider_payload_backend_input_snapshot_accepted=%u, "
+           "adapter_completion_claim_backend_input_annotation_consumes_readiness_behavior=0\n",
            warp_uid, warp_id, owner_hw_sid, status.active_mask,
            status.completed_lane_mask, status.static_inst_uid,
            status.max_node_visits, status.max_primitive_tests,
            status.metadata_match ? 1 : 0, status.lanes_complete ? 1 : 0,
-           status.accepted ? 1 : 0, status.reject_reason);
+           status.accepted ? 1 : 0, status.reject_reason,
+           status.provider_backend_input_claim_annotation_valid ? 1 : 0,
+           status.provider_backend_input_claim_observed_lane_mask,
+           status.provider_backend_input_claim_all_completed_lanes_observed ? 1
+                                                                            : 0,
+           status.provider_backend_input_claim_aggregate_mismatch ? 1 : 0,
+           status.provider_payload_consumption_enabled ? 1 : 0,
+           status.backend_input_snapshot_required ? 1 : 0,
+           status.has_provider_payload_backend_input_snapshot ? 1 : 0,
+           status.provider_payload_backend_input_snapshot_valid ? 1 : 0,
+           status.provider_payload_backend_input_snapshot_accepted ? 1 : 0);
     fflush(stdout);
     return false;
   }
@@ -7648,12 +7778,33 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
          "active_mask=0x%08x, completed_lane_mask=0x%08x, "
          "static_inst_uid=%u, max_node_visits=%u, "
          "max_primitive_tests=%u, metadata_match=%u, lanes_complete=%u, "
-         "accepted=%u, reject_reason=%s\n",
+         "accepted=%u, reject_reason=%s, "
+         "adapter-completion-provider-backend-input-claim-annotation=1, "
+         "provider_backend_input_claim_annotation_valid=%u, "
+         "provider_backend_input_claim_observed_lane_mask=0x%08x, "
+         "provider_backend_input_claim_all_completed_lanes_observed=%u, "
+         "provider_backend_input_claim_aggregate_mismatch=%u, "
+         "provider_payload_consumption_enabled=%u, "
+         "backend_input_snapshot_required=%u, "
+         "has_provider_payload_backend_input_snapshot=%u, "
+         "provider_payload_backend_input_snapshot_valid=%u, "
+         "provider_payload_backend_input_snapshot_accepted=%u, "
+         "adapter_completion_claim_backend_input_annotation_consumes_readiness_behavior=0\n",
          warp_uid, warp_id, owner_hw_sid, status.active_mask,
          status.completed_lane_mask, status.static_inst_uid,
          status.max_node_visits, status.max_primitive_tests,
          status.metadata_match ? 1 : 0, status.lanes_complete ? 1 : 0,
-         status.accepted ? 1 : 0, status.reject_reason);
+         status.accepted ? 1 : 0, status.reject_reason,
+         status.provider_backend_input_claim_annotation_valid ? 1 : 0,
+         status.provider_backend_input_claim_observed_lane_mask,
+         status.provider_backend_input_claim_all_completed_lanes_observed ? 1
+                                                                          : 0,
+         status.provider_backend_input_claim_aggregate_mismatch ? 1 : 0,
+         status.provider_payload_consumption_enabled ? 1 : 0,
+         status.backend_input_snapshot_required ? 1 : 0,
+         status.has_provider_payload_backend_input_snapshot ? 1 : 0,
+         status.provider_payload_backend_input_snapshot_valid ? 1 : 0,
+         status.provider_payload_backend_input_snapshot_accepted ? 1 : 0);
   fflush(stdout);
   return status.accepted;
 }

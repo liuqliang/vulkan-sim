@@ -1289,6 +1289,15 @@ struct rtcore_adapter_completion_claim_snapshot {
         static_inst_uid(0),
         max_node_visits(0),
         max_primitive_tests(0),
+        provider_backend_input_claim_annotation_valid(false),
+        provider_backend_input_claim_observed_lane_mask(0),
+        provider_backend_input_claim_all_completed_lanes_observed(false),
+        provider_backend_input_claim_aggregate_mismatch(false),
+        provider_payload_consumption_enabled(false),
+        backend_input_snapshot_required(false),
+        has_provider_payload_backend_input_snapshot(false),
+        provider_payload_backend_input_snapshot_valid(false),
+        provider_payload_backend_input_snapshot_accepted(false),
         reject_reason("missing_record") {}
 
   bool found;
@@ -1300,6 +1309,15 @@ struct rtcore_adapter_completion_claim_snapshot {
   unsigned static_inst_uid;
   unsigned max_node_visits;
   unsigned max_primitive_tests;
+  bool provider_backend_input_claim_annotation_valid;
+  unsigned provider_backend_input_claim_observed_lane_mask;
+  bool provider_backend_input_claim_all_completed_lanes_observed;
+  bool provider_backend_input_claim_aggregate_mismatch;
+  bool provider_payload_consumption_enabled;
+  bool backend_input_snapshot_required;
+  bool has_provider_payload_backend_input_snapshot;
+  bool provider_payload_backend_input_snapshot_valid;
+  bool provider_payload_backend_input_snapshot_accepted;
   const char *reject_reason;
 };
 
