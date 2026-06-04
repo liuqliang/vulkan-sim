@@ -7356,6 +7356,17 @@ static bool rtcore_test_adapter_claim_failure_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool
+rtcore_test_provider_backend_input_claim_aggregate_mismatch_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_TEST_PROVIDER_BACKEND_INPUT_CLAIM_AGGREGATE_MISMATCH");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool
+    g_rtcore_test_provider_backend_input_claim_aggregate_mismatch_injected =
+        false;
+
 struct rtcore_pending_traversal_completion {
   rtcore_pending_traversal_completion()
       : valid(false),
@@ -7438,6 +7449,32 @@ static bool rtcore_backend_input_completion_annotation_values_match(
 }
 
 static void
+rtcore_maybe_perturb_backend_input_completion_publication_annotation_for_claim_test(
+    rtcore_adapter_completion_record *record,
+    rtcore_traversal_completion_provider_backend_input_annotation *annotation,
+    const rtcore_adapter_completion_publication &publication) {
+  if (record == NULL || annotation == NULL || !annotation->valid ||
+      !record->provider_backend_input_completion_record_annotation.valid ||
+      g_rtcore_test_provider_backend_input_claim_aggregate_mismatch_injected ||
+      !rtcore_test_provider_backend_input_claim_aggregate_mismatch_enabled()) {
+    return;
+  }
+
+  annotation->provider_payload_backend_input_snapshot_accepted =
+      !annotation->provider_payload_backend_input_snapshot_accepted;
+  g_rtcore_test_provider_backend_input_claim_aggregate_mismatch_injected = true;
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "provider-backend-input-claim-aggregate-mismatch-test, "
+         "warp_uid=%u, lane_slot_index=%u, lane_thread_mask=0x%08x, "
+         "provider-backend-input-claim-aggregate-mismatch-test=1, "
+         "provider_payload_backend_input_snapshot_accepted=%u\n",
+         publication.warp_uid, publication.lane_slot_index,
+         publication.lane_thread_mask,
+         annotation->provider_payload_backend_input_snapshot_accepted ? 1 : 0);
+  fflush(stdout);
+}
+
+static void
 rtcore_record_backend_input_completion_publication_annotation(
     rtcore_adapter_completion_record *record,
     const rtcore_adapter_completion_publication &publication) {
@@ -7451,12 +7488,16 @@ rtcore_record_backend_input_completion_publication_annotation(
       &publication_annotation =
           publication.provider_backend_input_completion_publication_annotation;
   rtcore_traversal_completion_provider_backend_input_annotation
+      aggregate_annotation = publication_annotation;
+  rtcore_maybe_perturb_backend_input_completion_publication_annotation_for_claim_test(
+      record, &aggregate_annotation, publication);
+  rtcore_traversal_completion_provider_backend_input_annotation
       &record_annotation =
           record->provider_backend_input_completion_record_annotation;
   if (!record_annotation.valid) {
-    record_annotation = publication_annotation;
+    record_annotation = aggregate_annotation;
   } else if (!rtcore_backend_input_completion_annotation_values_match(
-                 record_annotation, publication_annotation)) {
+                 record_annotation, aggregate_annotation)) {
     record->provider_backend_input_completion_record_aggregate_mismatch = true;
   }
   record->provider_backend_input_completion_record_observed_lane_mask |=
