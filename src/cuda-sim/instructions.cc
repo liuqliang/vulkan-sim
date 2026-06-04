@@ -10091,7 +10091,8 @@ enum rtcore_traversal_provider_reject_reason {
   RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE = 0,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED = 1,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED = 2,
-  RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING = 3
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING = 3,
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING = 4
 };
 
 static const char *rtcore_traversal_provider_reject_reason_name(
@@ -10099,6 +10100,8 @@ static const char *rtcore_traversal_provider_reject_reason_name(
   switch (reason) {
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING:
       return "RTCORE_TRAVERSAL_PROVIDER_ACCEPTED_PAYLOAD_MISSING";
+    case RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING:
+      return "RTCORE_TRAVERSAL_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED:
       return "RTCORE_TRAVERSAL_PROVIDER_WORK_DESCRIPTOR_REJECTED";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED:
@@ -10281,6 +10284,30 @@ struct rtcore_custom_backend_result {
       provider_payload_backend_input_snapshot;
 };
 
+static bool
+rtcore_custom_backend_result_requires_provider_payload_backend_input_snapshot(
+    const rtcore_custom_backend_result &custom_result) {
+  return custom_result.provider_payload_backend_input_snapshot
+      .provider_payload_consumption_enabled;
+}
+
+static bool
+rtcore_custom_backend_result_missing_required_provider_payload_backend_input_snapshot(
+    const rtcore_custom_backend_result &custom_result) {
+  return custom_result.supported && custom_result.accepted &&
+         rtcore_custom_backend_result_requires_provider_payload_backend_input_snapshot(
+             custom_result) &&
+         (!custom_result.has_provider_payload_backend_input_snapshot ||
+          !custom_result.provider_payload_backend_input_snapshot.valid);
+}
+
+static bool rtcore_custom_backend_result_accepted_payload_missing(
+    const rtcore_custom_backend_result &custom_result) {
+  return custom_result.supported && custom_result.accepted &&
+         !custom_result.has_traversal_data &&
+         !custom_result.initialized_default_miss;
+}
+
 static rtcore_traversal_provider_response
 rtcore_make_provider_response_from_custom_rtcore_backend_result(
     const rtcore_custom_backend_result &custom_result) {
@@ -10293,11 +10320,41 @@ rtcore_make_provider_response_from_custom_rtcore_backend_result(
   response.has_traversal_data = custom_result.has_traversal_data;
   response.initialized_default_miss = custom_result.initialized_default_miss;
   response.hit_geometry = custom_result.hit_geometry;
+  const bool provider_payload_backend_input_missing =
+      rtcore_custom_backend_result_missing_required_provider_payload_backend_input_snapshot(
+          custom_result);
   const bool accepted_payload_missing =
-      custom_result.supported && custom_result.accepted &&
-      !custom_result.has_traversal_data &&
-      !custom_result.initialized_default_miss;
-  if (accepted_payload_missing) {
+      rtcore_custom_backend_result_accepted_payload_missing(custom_result);
+  if (provider_payload_backend_input_missing) {
+    response.provider_accepted = false;
+    response.reject_reason =
+        RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING;
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "custom-rtcore-backend-provider-payload-input-missing, "
+           "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+           "custom-rtcore-backend-provider-payload-input-missing=1, "
+           "provider_supported=%u, provider_accepted=%u, reject_reason=%s, "
+           "provider_payload_consumption_enabled=%u, "
+           "has_provider_payload_backend_input_snapshot=%u, "
+           "provider_payload_backend_input_snapshot_valid=%u\n",
+           rtcore_traversal_source_provider_name(custom_result.provider),
+           custom_result.context_ptr, custom_result.handoff_window_base,
+           custom_result.lane_slot_index,
+           custom_result.warp_metadata.warp_uid,
+           custom_result.warp_metadata.active_mask,
+           response.provider_supported ? 1 : 0,
+           custom_result.accepted ? 1 : 0,
+           rtcore_traversal_provider_reject_reason_name(
+               response.reject_reason),
+           custom_result.provider_payload_backend_input_snapshot
+                   .provider_payload_consumption_enabled
+               ? 1
+               : 0,
+           custom_result.has_provider_payload_backend_input_snapshot ? 1 : 0,
+           custom_result.provider_payload_backend_input_snapshot.valid ? 1 : 0);
+    fflush(stdout);
+  } else if (accepted_payload_missing) {
     response.provider_accepted = false;
     response.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING;
     printf("GPGPU-Sim PTX: RT_SUBMIT custom-rtcore-backend-payload-missing, "
@@ -10586,6 +10643,12 @@ rtcore_make_rtcore_lane_stats_miss_traversal_provider_response(
   return response;
 }
 
+static bool rtcore_test_drop_provider_payload_backend_input_snapshot_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_TEST_DROP_PROVIDER_PAYLOAD_BACKEND_INPUT_SNAPSHOT");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 static rtcore_custom_backend_result
 rtcore_make_custom_rtcore_backend_result_base(
     const rtcore_traversal_work_descriptor &descriptor) {
@@ -10599,6 +10662,23 @@ rtcore_make_custom_rtcore_backend_result_base(
       rtcore_make_provider_payload_backend_input_snapshot(descriptor);
   result.has_provider_payload_backend_input_snapshot =
       result.provider_payload_backend_input_snapshot.valid;
+  if (rtcore_test_drop_provider_payload_backend_input_snapshot_enabled() &&
+      result.provider_payload_backend_input_snapshot
+          .provider_payload_consumption_enabled) {
+    result.has_provider_payload_backend_input_snapshot = false;
+    result.provider_payload_backend_input_snapshot.valid = false;
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "custom-rtcore-backend-provider-payload-input-drop-test, "
+           "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+           "custom-rtcore-backend-provider-payload-input-drop-test=1, "
+           "provider_payload_consumption_enabled=1\n",
+           rtcore_traversal_source_provider_name(result.provider),
+           result.context_ptr, result.handoff_window_base,
+           result.lane_slot_index, result.warp_metadata.warp_uid,
+           result.warp_metadata.active_mask);
+    fflush(stdout);
+  }
   return result;
 }
 
