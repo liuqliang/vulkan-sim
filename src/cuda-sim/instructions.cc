@@ -7159,6 +7159,11 @@ static std::map<ptx_thread_info *,
 static unsigned long long
     g_rtcore_trace_invocation_publication_source_next_seq = 0;
 
+static bool rtcore_forward_sideband_path_enabled() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_FORWARD_SIDEBAND_PATH");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 static bool rtcore_trace_invocation_publication_source_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_TRACE_INVOCATION_PUBLICATION_SOURCE");
@@ -7168,7 +7173,8 @@ static bool rtcore_trace_invocation_publication_source_enabled() {
 static bool rtcore_compiler_driver_publication_source_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_COMPILER_DRIVER_PUBLICATION_SOURCE");
-  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+  return rtcore_forward_sideband_path_enabled() ||
+         (value != NULL && value[0] != '\0' && strcmp(value, "0") != 0);
 }
 
 static bool
@@ -13369,7 +13375,8 @@ struct rtcore_launch_context_input_publication_record {
 static bool rtcore_launch_context_input_publication_bridge_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_BRIDGE");
-  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+  return rtcore_forward_sideband_path_enabled() ||
+         (value != NULL && value[0] != '\0' && strcmp(value, "0") != 0);
 }
 
 enum rtcore_launch_context_input_publication_failpoint {
