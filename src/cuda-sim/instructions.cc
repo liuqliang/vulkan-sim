@@ -7171,6 +7171,13 @@ static bool rtcore_compiler_driver_publication_source_enabled() {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool
+rtcore_compiler_driver_publication_source_failpoint_corrupt_context_window_key() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_COMPILER_DRIVER_PUBLICATION_SOURCE_FAILPOINT");
+  return value != NULL && strcmp(value, "corrupt_context_window_key") == 0;
+}
+
 static bool rtcore_trace_invocation_publication_source_owner_tuple_matches(
     ptx_thread_info *thread,
     const rtcore_trace_invocation_publication_source_shadow &shadow) {
@@ -7329,6 +7336,24 @@ static void rtcore_publish_trace_context_publication_source_shadow(
   shadow.sbt_record_offset = sbt_record_offset;
   shadow.sbt_record_stride = sbt_record_stride;
   shadow.miss_index = miss_index;
+  if (rtcore_compiler_driver_publication_source_failpoint_corrupt_context_window_key()) {
+    unsigned long long expected_context_ptr = shadow.context_ptr;
+    unsigned long long expected_handoff_window_base = shadow.handoff_window_base;
+    shadow.context_ptr = shadow.context_ptr + 64;
+    shadow.handoff_window_base = shadow.handoff_window_base + 128;
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "compiler-driver-publication-source-context-window-mismatch "
+           "(%s:%u), source=compiler_driver_publication_sideband, "
+           "source_publication_seq=%llu, "
+           "expected_context_ptr=0x%llx, expected_handoff_window_base=0x%llx, "
+           "published_context_ptr=0x%llx, "
+           "published_handoff_window_base=0x%llx\n",
+           pI->source_file(), pI->source_line(),
+           shadow.source_publication_seq, expected_context_ptr,
+           expected_handoff_window_base, shadow.context_ptr,
+           shadow.handoff_window_base);
+    fflush(stdout);
+  }
   g_rtcore_trace_invocation_publication_source_shadow[thread] = shadow;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
