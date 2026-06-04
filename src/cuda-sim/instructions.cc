@@ -12992,6 +12992,88 @@ static bool rtcore_launch_context_input_publication_bridge_enabled() {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+enum rtcore_launch_context_input_publication_failpoint {
+  RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_NONE = 0,
+  RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_ORIGIN_DIRECTION_TMIN_TMAX,
+  RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_FLAGS_CULL_MASK,
+  RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_LAUNCH_CONTEXT_INPUT,
+};
+
+static rtcore_launch_context_input_publication_failpoint
+rtcore_launch_context_input_publication_failpoint_mode() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT");
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "none") == 0) {
+    return RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "drop_ray_origin_direction_tmin_tmax") == 0) {
+    return RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_ORIGIN_DIRECTION_TMIN_TMAX;
+  }
+  if (strcmp(value, "drop_ray_flags_cull_mask") == 0) {
+    return RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_FLAGS_CULL_MASK;
+  }
+  if (strcmp(value, "drop_launch_context_input") == 0) {
+    return RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_LAUNCH_CONTEXT_INPUT;
+  }
+  return RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_NONE;
+}
+
+static const char *rtcore_launch_context_input_publication_failpoint_name(
+    rtcore_launch_context_input_publication_failpoint mode) {
+  switch (mode) {
+    case RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_ORIGIN_DIRECTION_TMIN_TMAX:
+      return "drop_ray_origin_direction_tmin_tmax";
+    case RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_FLAGS_CULL_MASK:
+      return "drop_ray_flags_cull_mask";
+    case RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_LAUNCH_CONTEXT_INPUT:
+      return "drop_launch_context_input";
+    case RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void rtcore_apply_launch_context_input_publication_failpoint(
+    const ptx_instruction *pI,
+    rtcore_launch_context_input_publication_record *record) {
+  if (record == NULL || !record->publication_enabled) {
+    return;
+  }
+  rtcore_launch_context_input_publication_failpoint mode =
+      rtcore_launch_context_input_publication_failpoint_mode();
+  if (mode == RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_NONE) {
+    return;
+  }
+
+  if (mode ==
+      RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_ORIGIN_DIRECTION_TMIN_TMAX) {
+    record->has_ray_origin_direction_tmin_tmax = false;
+  } else if (mode ==
+             RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_FLAGS_CULL_MASK) {
+    record->has_ray_flags_cull_mask = false;
+  } else if (mode ==
+             RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_LAUNCH_CONTEXT_INPUT) {
+    record->has_launch_context_input = false;
+  }
+  record->valid = false;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "launch-context-input-publication-failpoint (%s:%u), "
+         "mode=%s, source=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "has_ray_origin_direction_tmin_tmax=%u, "
+         "has_ray_flags_cull_mask=%u, has_launch_context_input=%u\n",
+         pI->source_file(), pI->source_line(),
+         rtcore_launch_context_input_publication_failpoint_name(mode),
+         record->source, record->context_ptr, record->handoff_window_base,
+         record->lane_slot_index,
+         record->has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         record->has_ray_flags_cull_mask ? 1 : 0,
+         record->has_launch_context_input ? 1 : 0);
+  fflush(stdout);
+}
+
 static rtcore_launch_context_input_publication_record
 rtcore_make_launch_context_input_publication_record(
     const rtcore_traversal_source_request &request,
@@ -13027,6 +13109,7 @@ rtcore_make_launch_context_input_publication_record(
   record.miss_index = traversal.missIndex;
   record.has_launch_context_input =
       traversal.rtcore_trace_input_has_top_level_as != 0;
+  rtcore_apply_launch_context_input_publication_failpoint(request.pI, &record);
   record.valid = record.has_ray_origin_direction_tmin_tmax &&
                  record.has_ray_flags_cull_mask &&
                  record.has_launch_context_input;
