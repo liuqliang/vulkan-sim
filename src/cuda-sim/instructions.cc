@@ -7112,6 +7112,10 @@ struct rtcore_trace_invocation_publication_source_shadow {
         owner_hw_wid(0),
         owner_hw_sid(0),
         owner_tuple_match(false),
+        source("trace_ray_impl"),
+        has_context_window_owner_key(false),
+        context_ptr(0),
+        handoff_window_base(0),
         top_level_as(0),
         has_top_level_as(false),
         ray_tmin(0.0f),
@@ -7132,6 +7136,10 @@ struct rtcore_trace_invocation_publication_source_shadow {
   unsigned owner_hw_wid;
   unsigned owner_hw_sid;
   bool owner_tuple_match;
+  const char *source;
+  bool has_context_window_owner_key;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
   uint64_t top_level_as;
   bool has_top_level_as;
   float3 ray_origin;
@@ -7154,6 +7162,12 @@ static unsigned long long
 static bool rtcore_trace_invocation_publication_source_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_TRACE_INVOCATION_PUBLICATION_SOURCE");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool rtcore_compiler_driver_publication_source_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_COMPILER_DRIVER_PUBLICATION_SOURCE");
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
@@ -7278,6 +7292,140 @@ static bool rtcore_consume_trace_invocation_publication_source_shadow(
           thread, *out_shadow);
   return out_shadow->valid && out_shadow->thread == thread &&
          out_shadow->owner_tuple_match;
+}
+
+static void rtcore_publish_trace_context_publication_source_shadow(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    uint64_t top_level_as, uint32_t ray_flags, uint32_t cull_mask,
+    uint32_t sbt_record_offset, uint32_t sbt_record_stride,
+    uint32_t miss_index, float3 ray_origin, float ray_tmin,
+    float3 ray_direction, float ray_tmax) {
+  if (!rtcore_compiler_driver_publication_source_enabled() || thread == NULL) {
+    return;
+  }
+
+  rtcore_trace_invocation_publication_source_shadow shadow;
+  shadow.valid = true;
+  shadow.thread = thread;
+  shadow.source_publication_seq =
+      ++g_rtcore_trace_invocation_publication_source_next_seq;
+  shadow.owner_hw_tid = thread->get_hw_tid();
+  shadow.owner_hw_wid = thread->get_hw_wid();
+  shadow.owner_hw_sid = thread->get_hw_sid();
+  shadow.owner_tuple_match = true;
+  shadow.source = "compiler_driver_publication_sideband";
+  shadow.has_context_window_owner_key = true;
+  shadow.context_ptr = context_ptr;
+  shadow.handoff_window_base = handoff_window_base;
+  shadow.top_level_as = top_level_as;
+  shadow.has_top_level_as = top_level_as != 0;
+  shadow.ray_origin = ray_origin;
+  shadow.ray_direction = ray_direction;
+  shadow.ray_tmin = ray_tmin;
+  shadow.ray_tmax = ray_tmax;
+  shadow.ray_flags = ray_flags;
+  shadow.cull_mask = cull_mask;
+  shadow.sbt_record_offset = sbt_record_offset;
+  shadow.sbt_record_stride = sbt_record_stride;
+  shadow.miss_index = miss_index;
+  g_rtcore_trace_invocation_publication_source_shadow[thread] = shadow;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "rt-publish-trace-context-publication-source (%s:%u), "
+         "source=compiler_driver_publication_sideband, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "top_level_as=0x%llx, has_top_level_as=%u, "
+         "ray_flags=%u, cull_mask=%u, sbt_record_offset=%u, "
+         "sbt_record_stride=%u, miss_index=%u, "
+         "source_publication_seq=%llu, owner_hw_tid=%u, "
+         "owner_hw_wid=%u, owner_hw_sid=%u\n",
+         pI->source_file(), pI->source_line(), context_ptr,
+         handoff_window_base, (unsigned long long)shadow.top_level_as,
+         shadow.has_top_level_as ? 1 : 0, shadow.ray_flags,
+         shadow.cull_mask, shadow.sbt_record_offset,
+         shadow.sbt_record_stride, shadow.miss_index,
+         shadow.source_publication_seq, shadow.owner_hw_tid,
+         shadow.owner_hw_wid, shadow.owner_hw_sid);
+  fflush(stdout);
+}
+
+void rt_publish_trace_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(pI->get_num_operands() == 16);
+
+  const operand_info &context_ptr = pI->operand_lookup(0);
+  ptx_reg_t context_ptr_data =
+      thread->get_operand_value(context_ptr, context_ptr, B64_TYPE, thread, 1);
+
+  const operand_info &handoff_window_base = pI->operand_lookup(1);
+  ptx_reg_t handoff_window_base_data = thread->get_operand_value(
+      handoff_window_base, handoff_window_base, B64_TYPE, thread, 1);
+
+  const operand_info &topLevelAS = pI->operand_lookup(2);
+  ptx_reg_t topLevelAS_data =
+      thread->get_operand_value(topLevelAS, topLevelAS, B64_TYPE, thread, 1);
+
+  const operand_info &rayFlags = pI->operand_lookup(3);
+  ptx_reg_t rayFlags_data =
+      thread->get_operand_value(rayFlags, rayFlags, U32_TYPE, thread, 1);
+
+  const operand_info &cullMask = pI->operand_lookup(4);
+  ptx_reg_t cullMask_data =
+      thread->get_operand_value(cullMask, cullMask, U32_TYPE, thread, 1);
+
+  const operand_info &sbtRecordOffset = pI->operand_lookup(5);
+  ptx_reg_t sbtRecordOffset_data = thread->get_operand_value(
+      sbtRecordOffset, sbtRecordOffset, U32_TYPE, thread, 1);
+
+  const operand_info &sbtRecordStride = pI->operand_lookup(6);
+  ptx_reg_t sbtRecordStride_data = thread->get_operand_value(
+      sbtRecordStride, sbtRecordStride, U32_TYPE, thread, 1);
+
+  const operand_info &missIndex = pI->operand_lookup(7);
+  ptx_reg_t missIndex_data =
+      thread->get_operand_value(missIndex, missIndex, U32_TYPE, thread, 1);
+
+  const operand_info &originX = pI->operand_lookup(8);
+  ptx_reg_t originX_data =
+      thread->get_operand_value(originX, originX, F32_TYPE, thread, 1);
+
+  const operand_info &originY = pI->operand_lookup(9);
+  ptx_reg_t originY_data =
+      thread->get_operand_value(originY, originY, F32_TYPE, thread, 1);
+
+  const operand_info &originZ = pI->operand_lookup(10);
+  ptx_reg_t originZ_data =
+      thread->get_operand_value(originZ, originZ, F32_TYPE, thread, 1);
+
+  const operand_info &Tmin = pI->operand_lookup(11);
+  ptx_reg_t Tmin_data =
+      thread->get_operand_value(Tmin, Tmin, F32_TYPE, thread, 1);
+
+  const operand_info &directionX = pI->operand_lookup(12);
+  ptx_reg_t directionX_data =
+      thread->get_operand_value(directionX, directionX, F32_TYPE, thread, 1);
+
+  const operand_info &directionY = pI->operand_lookup(13);
+  ptx_reg_t directionY_data =
+      thread->get_operand_value(directionY, directionY, F32_TYPE, thread, 1);
+
+  const operand_info &directionZ = pI->operand_lookup(14);
+  ptx_reg_t directionZ_data =
+      thread->get_operand_value(directionZ, directionZ, F32_TYPE, thread, 1);
+
+  const operand_info &Tmax = pI->operand_lookup(15);
+  ptx_reg_t Tmax_data =
+      thread->get_operand_value(Tmax, Tmax, F32_TYPE, thread, 1);
+
+  float3 ray_origin = {originX_data.f32, originY_data.f32, originZ_data.f32};
+  float3 ray_direction = {directionX_data.f32, directionY_data.f32,
+                          directionZ_data.f32};
+  rtcore_publish_trace_context_publication_source_shadow(
+      pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
+      (uint64_t)topLevelAS_data.u64, rayFlags_data.u32, cullMask_data.u32,
+      sbtRecordOffset_data.u32, sbtRecordStride_data.u32,
+      missIndex_data.u32, ray_origin, Tmin_data.f32, ray_direction,
+      Tmax_data.f32);
 }
 
 void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -13134,6 +13282,8 @@ struct rtcore_launch_context_input_publication_record {
         source("trace_ray_operand_shadow"),
         source_publication_seq(0),
         source_owner_tuple_match(false),
+        has_source_context_window_key(false),
+        source_context_window_match(true),
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
         has_launch_context_input(false),
@@ -13158,6 +13308,8 @@ struct rtcore_launch_context_input_publication_record {
   const char *source;
   unsigned long long source_publication_seq;
   bool source_owner_tuple_match;
+  bool has_source_context_window_key;
+  bool source_context_window_match;
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
   bool has_launch_context_input;
@@ -13249,12 +13401,16 @@ static void rtcore_apply_launch_context_input_publication_failpoint(
          "launch-context-input-publication-failpoint (%s:%u), "
          "mode=%s, source=%s, context_ptr=0x%llx, "
          "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "has_source_context_window_key=%u, "
+         "source_context_window_match=%u, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "has_ray_flags_cull_mask=%u, has_launch_context_input=%u\n",
          pI->source_file(), pI->source_line(),
          rtcore_launch_context_input_publication_failpoint_name(mode),
          record->source, record->context_ptr, record->handoff_window_base,
          record->lane_slot_index,
+         record->has_source_context_window_key ? 1 : 0,
+         record->source_context_window_match ? 1 : 0,
          record->has_ray_origin_direction_tmin_tmax ? 1 : 0,
          record->has_ray_flags_cull_mask ? 1 : 0,
          record->has_launch_context_input ? 1 : 0);
@@ -13278,15 +13434,27 @@ rtcore_make_launch_context_input_publication_record(
     return record;
   }
 
-  if (rtcore_trace_invocation_publication_source_enabled()) {
-    record.source = "trace_invocation_publication_source_shadow";
+  if (rtcore_trace_invocation_publication_source_enabled() ||
+      rtcore_compiler_driver_publication_source_enabled()) {
+    record.source = rtcore_compiler_driver_publication_source_enabled()
+                        ? "compiler_driver_publication_sideband"
+                        : "trace_invocation_publication_source_shadow";
     rtcore_trace_invocation_publication_source_shadow source_shadow;
     if (!rtcore_consume_trace_invocation_publication_source_shadow(
             request.thread, &source_shadow)) {
       return record;
     }
+    record.source = source_shadow.source;
     record.source_publication_seq = source_shadow.source_publication_seq;
     record.source_owner_tuple_match = source_shadow.owner_tuple_match;
+    record.has_source_context_window_key = source_shadow.has_context_window_owner_key;
+    record.source_context_window_match =
+        !source_shadow.has_context_window_owner_key ||
+        (source_shadow.context_ptr == request.context_ptr &&
+         source_shadow.handoff_window_base == request.handoff_window_base);
+    if (!record.source_context_window_match) {
+      return record;
+    }
     record.ray_origin = source_shadow.ray_origin;
     record.ray_direction = source_shadow.ray_direction;
     record.ray_tmin = source_shadow.ray_tmin;
@@ -13303,7 +13471,9 @@ rtcore_make_launch_context_input_publication_record(
     rtcore_apply_launch_context_input_publication_failpoint(request.pI, &record);
     record.valid = record.has_ray_origin_direction_tmin_tmax &&
                    record.has_ray_flags_cull_mask &&
-                   record.has_launch_context_input;
+                   record.has_launch_context_input &&
+                   record.source_owner_tuple_match &&
+                   record.source_context_window_match;
     return record;
   }
 
@@ -13339,7 +13509,7 @@ static bool rtcore_launch_context_input_publication_record_is_complete(
     const rtcore_launch_context_input_publication_record &record) {
   return record.valid && record.has_ray_origin_direction_tmin_tmax &&
          record.has_ray_flags_cull_mask && record.has_launch_context_input &&
-         record.owner_seq_snapshot.valid;
+         record.owner_seq_snapshot.valid && record.source_context_window_match;
 }
 
 static void rtcore_log_launch_context_input_publication_record(
@@ -13353,6 +13523,8 @@ static void rtcore_log_launch_context_input_publication_record(
          "source=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, valid=%u, "
          "source_publication_seq=%llu, source_owner_tuple_match=%u, "
+         "has_source_context_window_key=%u, "
+         "source_context_window_match=%u, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "has_ray_flags_cull_mask=%u, has_launch_context_input=%u, "
          "ray_flags=%u, cull_mask=%u, bridge_trace_replay_top_level_as=0x%llx, "
@@ -13362,6 +13534,8 @@ static void rtcore_log_launch_context_input_publication_record(
          record.lane_slot_index, record.valid ? 1 : 0,
          record.source_publication_seq,
          record.source_owner_tuple_match ? 1 : 0,
+         record.has_source_context_window_key ? 1 : 0,
+         record.source_context_window_match ? 1 : 0,
          record.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          record.has_ray_flags_cull_mask ? 1 : 0,
          record.has_launch_context_input ? 1 : 0, record.ray_flags,
@@ -13384,6 +13558,8 @@ static bool rtcore_fail_closed_on_launch_context_input_publication_record(
          "source=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, valid=%u, owner_seq_valid=%u, "
          "source_publication_seq=%llu, source_owner_tuple_match=%u, "
+         "has_source_context_window_key=%u, "
+         "source_context_window_match=%u, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "has_ray_flags_cull_mask=%u, has_launch_context_input=%u\n",
          pI->source_file(), pI->source_line(), record.source,
@@ -13392,6 +13568,8 @@ static bool rtcore_fail_closed_on_launch_context_input_publication_record(
          record.owner_seq_snapshot.valid ? 1 : 0,
          record.source_publication_seq,
          record.source_owner_tuple_match ? 1 : 0,
+         record.has_source_context_window_key ? 1 : 0,
+         record.source_context_window_match ? 1 : 0,
          record.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          record.has_ray_flags_cull_mask ? 1 : 0,
          record.has_launch_context_input ? 1 : 0);

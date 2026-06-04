@@ -138,6 +138,7 @@ OP_DEF(LD_RAY_LAUNCH_ID_OP,load_ray_launch_id_impl,"load_ray_launch_id",0,1)
 
 // Ray tracing ops
 OP_DEF(TRACE_RAY_OP,trace_ray_impl,"trace_ray",0,12)
+OP_DEF(RT_PUBLISH_TRACE_CONTEXT_OP,rt_publish_trace_context_impl,"rt_publish_trace_context",0,12)
 OP_DEF(END_TRACE_RAY_OP,end_trace_ray_impl,"end_trace_ray",0,11)
 OP_DEF(RT_SUBMIT_OP,rt_submit_impl,"rt_submit",0,12)
 OP_DEF(RT_RETIRE_CONTEXT_OP,rt_retire_context_impl,"rt_retire_context",0,12)

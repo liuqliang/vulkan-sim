@@ -182,6 +182,7 @@ deref_struct    TC; yylval->int_value = DEREF_STRUCT_OP; return OPCODE;
 deref_array TC; yylval->int_value = DEREF_ARRAY_OP; return OPCODE;
 load_deref  TC; yylval->int_value = LD_DEREF_OP; return OPCODE;
 trace_ray   TC; yylval->int_value = TRACE_RAY_OP; return OPCODE;
+rt_publish_trace_context   TC; yylval->int_value = RT_PUBLISH_TRACE_CONTEXT_OP; return OPCODE;
 end_trace_ray   TC; yylval->int_value = END_TRACE_RAY_OP; return OPCODE;
 rt_submit   TC; yylval->int_value = RT_SUBMIT_OP; return OPCODE;
 rt_retire_context   TC; yylval->int_value = RT_RETIRE_CONTEXT_OP; return OPCODE;
