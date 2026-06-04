@@ -8399,6 +8399,98 @@ const unsigned long long RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BASE =
     0x30000000ull;
 const unsigned long long RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BYTES =
     0x10000000ull;
+const char *RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENV =
+    "VULKAN_SIM_RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD";
+const char *RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV =
+    "VULKAN_SIM_RTCORE_DRIVER_RUNTIME_CONTEXT_BASE";
+const char *RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV =
+    "VULKAN_SIM_RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE";
+
+enum rtcore_driver_runtime_handle_scaffold_mode {
+  RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED = 0,
+  RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENABLED,
+  RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_INVALID
+};
+
+rtcore_driver_runtime_handle_scaffold_mode
+rtcore_driver_runtime_handle_scaffold_mode_from_env() {
+  const char *value = getenv(RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENV);
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      rtcore_path_mode_is(value, "false") || rtcore_path_mode_is(value, "off") ||
+      rtcore_path_mode_is(value, "no")) {
+    return RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED;
+  }
+  if (strcmp(value, "1") == 0 || rtcore_path_mode_is(value, "true") ||
+      rtcore_path_mode_is(value, "on") || rtcore_path_mode_is(value, "yes")) {
+    return RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENABLED;
+  }
+  return RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_INVALID;
+}
+
+bool rtcore_driver_runtime_handle_scaffold_enabled() {
+  return rtcore_driver_runtime_handle_scaffold_mode_from_env() ==
+         RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENABLED;
+}
+
+bool rtcore_driver_runtime_parse_u64_env(const char *name,
+                                         unsigned long long *value) {
+  const char *raw_value = getenv(name);
+  if (raw_value == NULL || raw_value[0] == '\0') {
+    return false;
+  }
+  char *end = NULL;
+  const unsigned long long parsed = strtoull(raw_value, &end, 0);
+  if (end == raw_value || *end != '\0') {
+    return false;
+  }
+  *value = parsed;
+  return true;
+}
+
+bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
+    const ptx_instruction *pI, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned lane_slot_index) {
+  const rtcore_driver_runtime_handle_scaffold_mode mode =
+      rtcore_driver_runtime_handle_scaffold_mode_from_env();
+  if (mode == RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED) {
+    return false;
+  }
+
+  unsigned long long driver_context_base = 0;
+  unsigned long long driver_handoff_base = 0;
+  const bool invalid_flag =
+      mode == RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_INVALID;
+  const bool has_context_base = rtcore_driver_runtime_parse_u64_env(
+      RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV, &driver_context_base);
+  const bool has_handoff_base = rtcore_driver_runtime_parse_u64_env(
+      RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV, &driver_handoff_base);
+  const bool context_matches =
+      has_context_base && context_ptr >= driver_context_base &&
+      ((context_ptr - driver_context_base) % RTCORE_CONTEXT_BYTES_PER_LANE) == 0;
+  const bool handoff_matches =
+      has_handoff_base && handoff_window_base >= driver_handoff_base &&
+      ((handoff_window_base - driver_handoff_base) %
+       RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP) == 0 &&
+      (handoff_window_base % RTCORE_HANDOFF_WINDOW_ALIGNMENT) == 0;
+
+  if (!invalid_flag && has_context_base && has_handoff_base &&
+      context_matches && handoff_matches) {
+    return false;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "driver-runtime-handle-scaffold, "
+         "mode_valid=%u, has_context_base=%u, has_handoff_base=%u, "
+         "context_matches=%u, handoff_matches=%u, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u\n",
+         pI->source_file(), pI->source_line(), invalid_flag ? 0 : 1,
+         has_context_base ? 1 : 0, has_handoff_base ? 1 : 0,
+         context_matches ? 1 : 0, handoff_matches ? 1 : 0, context_ptr,
+         handoff_window_base, lane_slot_index);
+  fflush(stdout);
+  inst_not_implemented(pI);
+  return true;
+}
 
 enum rtcore_handoff_window_class {
   RTCORE_HANDOFF_WINDOW_CLASS_SHARED_WORKGROUP,
@@ -14721,6 +14813,12 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t handoff_window_base_data = thread->get_operand_value(
       handoff_window_base, handoff_window_base, B64_TYPE, thread, 1);
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
+
+  if (rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
+          pI, context_ptr_data.u64, handoff_window_base_data.u64,
+          lane_slot_index)) {
+    return;
+  }
 
   if (!rtcore_submit_operands_are_valid(context_ptr_data.u64,
                                         handoff_window_base_data.u64)) {
