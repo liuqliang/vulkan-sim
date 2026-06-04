@@ -7214,6 +7214,23 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                    thread);
 }
 
+struct rtcore_traversal_completion_provider_backend_input_annotation {
+  rtcore_traversal_completion_provider_backend_input_annotation()
+      : valid(false),
+        provider_payload_consumption_enabled(false),
+        backend_input_snapshot_required(false),
+        has_provider_payload_backend_input_snapshot(false),
+        provider_payload_backend_input_snapshot_valid(false),
+        provider_payload_backend_input_snapshot_accepted(false) {}
+
+  bool valid;
+  bool provider_payload_consumption_enabled;
+  bool backend_input_snapshot_required;
+  bool has_provider_payload_backend_input_snapshot;
+  bool provider_payload_backend_input_snapshot_valid;
+  bool provider_payload_backend_input_snapshot_accepted;
+};
+
 struct rtcore_adapter_completion_record {
   rtcore_adapter_completion_record()
       : valid(false),
@@ -7247,7 +7264,8 @@ struct rtcore_adapter_completion_publication {
         lane_slot_index(0),
         lane_thread_mask(0),
         node_visits(0),
-        primitive_tests(0) {}
+        primitive_tests(0),
+        provider_backend_input_completion_publication_annotation() {}
 
   unsigned warp_uid;
   unsigned warp_id;
@@ -7258,6 +7276,8 @@ struct rtcore_adapter_completion_publication {
   unsigned lane_thread_mask;
   unsigned node_visits;
   unsigned primitive_tests;
+  rtcore_traversal_completion_provider_backend_input_annotation
+      provider_backend_input_completion_publication_annotation;
 };
 
 struct rtcore_adapter_completion_claim_status {
@@ -7328,7 +7348,8 @@ struct rtcore_pending_traversal_completion {
         completion_seq_low(0),
         resume_seq_low(0),
         window_tag(0),
-        reason(0) {
+        reason(0),
+        provider_backend_input_pending_completion_annotation() {
     memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
   }
 
@@ -7349,6 +7370,8 @@ struct rtcore_pending_traversal_completion {
   unsigned window_tag;
   unsigned reason;
   Traversal_data traversal_snapshot;
+  rtcore_traversal_completion_provider_backend_input_annotation
+      provider_backend_input_pending_completion_annotation;
 };
 
 static std::map<std::pair<unsigned, unsigned>,
@@ -7369,6 +7392,8 @@ rtcore_make_adapter_completion_publication_from_pending(
   publication.node_visits = record.traversal_snapshot.rtcore_node_visits;
   publication.primitive_tests =
       record.traversal_snapshot.rtcore_primitive_tests;
+  publication.provider_backend_input_completion_publication_annotation =
+      record.provider_backend_input_pending_completion_annotation;
   return publication;
 }
 
@@ -7404,20 +7429,43 @@ static bool rtcore_publish_adapter_completion_record(
     }
   }
   const bool accepted = valid_lane && lane_active && metadata_matches;
+  const rtcore_traversal_completion_provider_backend_input_annotation
+      &backend_input_annotation =
+          publication.provider_backend_input_completion_publication_annotation;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT adapter-completion-publish, "
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, active_mask=0x%08x, "
          "completed_lane_mask=0x%08x, static_inst_uid=%u, "
          "lane_slot_index=%u, lane_thread_mask=0x%08x, "
          "node_visits=%u, primitive_tests=%u, max_node_visits=%u, "
-         "max_primitive_tests=%u, accepted=%u\n",
+         "max_primitive_tests=%u, accepted=%u, "
+         "adapter-completion-provider-backend-input-annotation=1, "
+         "provider_backend_input_completion_publication_annotation_valid=%u, "
+         "provider_payload_consumption_enabled=%u, "
+         "backend_input_snapshot_required=%u, "
+         "has_provider_payload_backend_input_snapshot=%u, "
+         "provider_payload_backend_input_snapshot_valid=%u, "
+         "provider_payload_backend_input_snapshot_accepted=%u, "
+         "adapter_completion_backend_input_annotation_consumes_completion_behavior=0\n",
          publication.warp_uid, publication.warp_id, publication.owner_hw_sid,
          publication.active_mask, record.completed_lane_mask,
          publication.static_inst_uid, publication.lane_slot_index,
          publication.lane_thread_mask, publication.node_visits,
          publication.primitive_tests,
          record.max_node_visits, record.max_primitive_tests,
-         accepted ? 1 : 0);
+         accepted ? 1 : 0,
+         backend_input_annotation.valid ? 1 : 0,
+         backend_input_annotation.provider_payload_consumption_enabled ? 1 : 0,
+         backend_input_annotation.backend_input_snapshot_required ? 1 : 0,
+         backend_input_annotation.has_provider_payload_backend_input_snapshot ? 1
+                                                                        : 0,
+         backend_input_annotation.provider_payload_backend_input_snapshot_valid
+             ? 1
+             : 0,
+         backend_input_annotation
+                 .provider_payload_backend_input_snapshot_accepted
+             ? 1
+             : 0);
   fflush(stdout);
   return accepted;
 }
@@ -12757,6 +12805,7 @@ struct rtcore_traversal_completion_event {
         reason(0),
         completion_flags(0),
         result_word(0),
+        provider_backend_input_completion_event_annotation(),
         has_traversal_data(false),
         hit_geometry(false) {
     memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
@@ -12784,10 +12833,60 @@ struct rtcore_traversal_completion_event {
   unsigned reason;
   unsigned completion_flags;
   unsigned result_word;
+  rtcore_traversal_completion_provider_backend_input_annotation
+      provider_backend_input_completion_event_annotation;
   rtcore_synthetic_handoff_header header;
   bool has_traversal_data;
   bool hit_geometry;
 };
+
+static void
+rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
+    rtcore_traversal_completion_event *event,
+    const rtcore_traversal_source_snapshot &snapshot) {
+  if (event == NULL ||
+      !snapshot.provider_backend_input_source_snapshot_annotation.valid) {
+    return;
+  }
+
+  const rtcore_traversal_source_provider_backend_input_annotation
+      &source_annotation =
+          snapshot.provider_backend_input_source_snapshot_annotation;
+  rtcore_traversal_completion_provider_backend_input_annotation &annotation =
+      event->provider_backend_input_completion_event_annotation;
+  annotation.valid = true;
+  annotation.provider_payload_consumption_enabled =
+      source_annotation.provider_payload_consumption_enabled;
+  annotation.backend_input_snapshot_required =
+      source_annotation.backend_input_snapshot_required;
+  annotation.has_provider_payload_backend_input_snapshot =
+      source_annotation.has_provider_payload_backend_input_snapshot;
+  annotation.provider_payload_backend_input_snapshot_valid =
+      source_annotation.provider_payload_backend_input_snapshot_valid;
+  annotation.provider_payload_backend_input_snapshot_accepted =
+      source_annotation.provider_payload_backend_input_snapshot_accepted;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "traversal-completion-provider-backend-input-annotation, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, "
+         "traversal-completion-provider-backend-input-annotation=1, "
+         "provider_backend_input_completion_event_annotation_valid=1, "
+         "provider_payload_consumption_enabled=%u, "
+         "backend_input_snapshot_required=%u, "
+         "has_provider_payload_backend_input_snapshot=%u, "
+         "provider_payload_backend_input_snapshot_valid=%u, "
+         "provider_payload_backend_input_snapshot_accepted=%u, "
+         "completion_event_backend_input_annotation_consumes_traversal_behavior=0\n",
+         event->context_ptr, event->handoff_window_base,
+         event->lane_slot_index,
+         annotation.provider_payload_consumption_enabled ? 1 : 0,
+         annotation.backend_input_snapshot_required ? 1 : 0,
+         annotation.has_provider_payload_backend_input_snapshot ? 1 : 0,
+         annotation.provider_payload_backend_input_snapshot_valid ? 1 : 0,
+         annotation.provider_payload_backend_input_snapshot_accepted ? 1 : 0);
+  fflush(stdout);
+}
 
 static void rtcore_apply_traversal_source_snapshot(
     rtcore_traversal_completion_event *event,
@@ -12798,6 +12897,35 @@ static void rtcore_apply_traversal_source_snapshot(
   event->has_traversal_data = snapshot.has_traversal_data;
   event->traversal_snapshot = snapshot.traversal_snapshot;
   event->hit_geometry = snapshot.hit_geometry;
+  rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
+      event, snapshot);
+}
+
+static void
+rtcore_copy_completion_backend_input_annotation_to_pending(
+    rtcore_pending_traversal_completion *record,
+    const rtcore_traversal_completion_event &event) {
+  if (record == NULL ||
+      !event.provider_backend_input_completion_event_annotation.valid) {
+    return;
+  }
+
+  const rtcore_traversal_completion_provider_backend_input_annotation
+      &event_annotation =
+          event.provider_backend_input_completion_event_annotation;
+  rtcore_traversal_completion_provider_backend_input_annotation &annotation =
+      record->provider_backend_input_pending_completion_annotation;
+  annotation.valid = true;
+  annotation.provider_payload_consumption_enabled =
+      event_annotation.provider_payload_consumption_enabled;
+  annotation.backend_input_snapshot_required =
+      event_annotation.backend_input_snapshot_required;
+  annotation.has_provider_payload_backend_input_snapshot =
+      event_annotation.has_provider_payload_backend_input_snapshot;
+  annotation.provider_payload_backend_input_snapshot_valid =
+      event_annotation.provider_payload_backend_input_snapshot_valid;
+  annotation.provider_payload_backend_input_snapshot_accepted =
+      event_annotation.provider_payload_backend_input_snapshot_accepted;
 }
 
 rtcore_pending_traversal_completion
@@ -12822,7 +12950,35 @@ rtcore_make_pending_traversal_completion_from_event(
   record.window_tag = event.window_tag;
   record.reason = event.reason;
   record.traversal_snapshot = event.traversal_snapshot;
+  rtcore_copy_completion_backend_input_annotation_to_pending(&record, event);
   return record;
+}
+
+static void
+rtcore_copy_completion_backend_input_annotation_to_publication(
+    rtcore_adapter_completion_publication *publication,
+    const rtcore_traversal_completion_event &event) {
+  if (publication == NULL ||
+      !event.provider_backend_input_completion_event_annotation.valid) {
+    return;
+  }
+
+  const rtcore_traversal_completion_provider_backend_input_annotation
+      &event_annotation =
+          event.provider_backend_input_completion_event_annotation;
+  rtcore_traversal_completion_provider_backend_input_annotation &annotation =
+      publication->provider_backend_input_completion_publication_annotation;
+  annotation.valid = true;
+  annotation.provider_payload_consumption_enabled =
+      event_annotation.provider_payload_consumption_enabled;
+  annotation.backend_input_snapshot_required =
+      event_annotation.backend_input_snapshot_required;
+  annotation.has_provider_payload_backend_input_snapshot =
+      event_annotation.has_provider_payload_backend_input_snapshot;
+  annotation.provider_payload_backend_input_snapshot_valid =
+      event_annotation.provider_payload_backend_input_snapshot_valid;
+  annotation.provider_payload_backend_input_snapshot_accepted =
+      event_annotation.provider_payload_backend_input_snapshot_accepted;
 }
 
 rtcore_adapter_completion_publication
@@ -12840,6 +12996,8 @@ rtcore_make_adapter_completion_publication_from_event(
   publication.node_visits = event.traversal_snapshot.rtcore_node_visits;
   publication.primitive_tests =
       event.traversal_snapshot.rtcore_primitive_tests;
+  rtcore_copy_completion_backend_input_annotation_to_publication(&publication,
+                                                                event);
   return publication;
 }
 
@@ -12860,19 +13018,42 @@ static bool rtcore_enqueue_pending_traversal_completion(
   const std::pair<unsigned, unsigned> key =
       std::make_pair(record.warp_uid, record.lane_slot_index);
   g_rtcore_pending_traversal_completions[key] = record;
+  const rtcore_traversal_completion_provider_backend_input_annotation
+      &backend_input_annotation =
+          record.provider_backend_input_pending_completion_annotation;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT delayed-completion-enqueue, "
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, active_mask=0x%08x, "
          "static_inst_uid=%u, lane_slot_index=%u, "
          "lane_thread_mask=0x%08x, context_ptr=0x%llx, "
          "handoff_window_base=0x%llx, result=0x%08x, "
-         "completion_seq=%u, resume_seq=%u, window_tag=%u, reason=%u\n",
+         "completion_seq=%u, resume_seq=%u, window_tag=%u, reason=%u, "
+         "delayed-completion-provider-backend-input-annotation=1, "
+         "provider_backend_input_pending_completion_annotation_valid=%u, "
+         "provider_payload_consumption_enabled=%u, "
+         "backend_input_snapshot_required=%u, "
+         "has_provider_payload_backend_input_snapshot=%u, "
+         "provider_payload_backend_input_snapshot_valid=%u, "
+         "provider_payload_backend_input_snapshot_accepted=%u, "
+         "delayed_completion_backend_input_annotation_consumes_completion_behavior=0\n",
          record.warp_uid, record.warp_id, record.owner_hw_sid,
          record.active_mask, record.static_inst_uid,
          record.lane_slot_index, record.lane_thread_mask,
          record.context_ptr, record.handoff_window_base,
          record.result_word, record.completion_seq_low,
-         record.resume_seq_low, record.window_tag, record.reason);
+         record.resume_seq_low, record.window_tag, record.reason,
+         backend_input_annotation.valid ? 1 : 0,
+         backend_input_annotation.provider_payload_consumption_enabled ? 1 : 0,
+         backend_input_annotation.backend_input_snapshot_required ? 1 : 0,
+         backend_input_annotation.has_provider_payload_backend_input_snapshot ? 1
+                                                                        : 0,
+         backend_input_annotation.provider_payload_backend_input_snapshot_valid
+             ? 1
+             : 0,
+         backend_input_annotation
+                 .provider_payload_backend_input_snapshot_accepted
+             ? 1
+             : 0);
   fflush(stdout);
   return true;
 }
