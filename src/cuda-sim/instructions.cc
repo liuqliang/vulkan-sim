@@ -7175,6 +7175,13 @@ rtcore_trace_invocation_publication_source_failpoint_drop_publish() {
   return value != NULL && strcmp(value, "drop_publish") == 0;
 }
 
+static bool
+rtcore_trace_invocation_publication_source_failpoint_corrupt_owner_tuple() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_TRACE_INVOCATION_PUBLICATION_SOURCE_FAILPOINT");
+  return value != NULL && strcmp(value, "corrupt_owner_tuple") == 0;
+}
+
 static void rtcore_publish_trace_invocation_publication_source_shadow(
     const ptx_instruction *pI, ptx_thread_info *thread, uint64_t top_level_as,
     uint32_t ray_flags, uint32_t cull_mask, uint32_t sbt_record_offset,
@@ -7217,6 +7224,22 @@ static void rtcore_publish_trace_invocation_publication_source_shadow(
   shadow.sbt_record_offset = sbt_record_offset;
   shadow.sbt_record_stride = sbt_record_stride;
   shadow.miss_index = miss_index;
+  if (rtcore_trace_invocation_publication_source_failpoint_corrupt_owner_tuple()) {
+    unsigned expected_owner_hw_sid = shadow.owner_hw_sid;
+    shadow.owner_hw_sid = shadow.owner_hw_sid + 1;
+    shadow.owner_tuple_match = false;
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "trace-invocation-publication-source-owner-mismatch (%s:%u), "
+           "source=trace_ray_impl, source_publication_seq=%llu, "
+           "expected_owner_hw_tid=%u, expected_owner_hw_wid=%u, "
+           "expected_owner_hw_sid=%u, owner_hw_tid=%u, owner_hw_wid=%u, "
+           "owner_hw_sid=%u\n",
+           pI->source_file(), pI->source_line(),
+           shadow.source_publication_seq, shadow.owner_hw_tid,
+           shadow.owner_hw_wid, expected_owner_hw_sid,
+           shadow.owner_hw_tid, shadow.owner_hw_wid, shadow.owner_hw_sid);
+    fflush(stdout);
+  }
   g_rtcore_trace_invocation_publication_source_shadow[thread] = shadow;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
