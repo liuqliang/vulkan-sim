@@ -12941,6 +12941,183 @@ rtcore_make_pre_provider_traversal_data_snapshot(
   return snapshot;
 }
 
+struct rtcore_launch_context_input_publication_record {
+  rtcore_launch_context_input_publication_record()
+      : publication_enabled(false),
+        valid(false),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        source("trace_ray_operand_shadow"),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
+        ray_flags(0),
+        cull_mask(0),
+        bridge_trace_replay_top_level_as(0),
+        sbt_record_offset(0),
+        sbt_record_stride(0),
+        miss_index(0),
+        ray_tmin(0.0f),
+        ray_tmax(0.0f) {
+    memset(&ray_origin, 0, sizeof(ray_origin));
+    memset(&ray_direction, 0, sizeof(ray_direction));
+  }
+
+  bool publication_enabled;
+  bool valid;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  rtcore_context_window_owner_seq_snapshot owner_seq_snapshot;
+  const char *source;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
+  float3 ray_origin;
+  float3 ray_direction;
+  uint32_t ray_flags;
+  uint32_t cull_mask;
+  uint64_t bridge_trace_replay_top_level_as;
+  uint32_t sbt_record_offset;
+  uint32_t sbt_record_stride;
+  uint32_t miss_index;
+  float ray_tmin;
+  float ray_tmax;
+};
+
+static bool rtcore_launch_context_input_publication_bridge_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_BRIDGE");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static rtcore_launch_context_input_publication_record
+rtcore_make_launch_context_input_publication_record(
+    const rtcore_traversal_source_request &request,
+    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot,
+    const rtcore_pre_provider_traversal_data_snapshot
+        &pre_provider_traversal_data_snapshot) {
+  rtcore_launch_context_input_publication_record record;
+  record.publication_enabled =
+      rtcore_launch_context_input_publication_bridge_enabled();
+  record.context_ptr = request.context_ptr;
+  record.handoff_window_base = request.handoff_window_base;
+  record.lane_slot_index = request.lane_slot_index;
+  record.owner_seq_snapshot = owner_seq_snapshot;
+  if (!record.publication_enabled || !owner_seq_snapshot.valid ||
+      !pre_provider_traversal_data_snapshot.valid) {
+    return record;
+  }
+
+  const Traversal_data &traversal =
+      pre_provider_traversal_data_snapshot.traversal_snapshot;
+  record.ray_origin = traversal.ray_world_origin;
+  record.ray_direction = traversal.ray_world_direction;
+  record.ray_tmin = traversal.Tmin;
+  record.ray_tmax = traversal.Tmax;
+  record.has_ray_origin_direction_tmin_tmax = true;
+  record.ray_flags = traversal.rayFlags;
+  record.cull_mask = traversal.cullMask;
+  record.has_ray_flags_cull_mask = true;
+  record.bridge_trace_replay_top_level_as =
+      traversal.rtcore_trace_input_top_level_as;
+  record.sbt_record_offset = traversal.sbtRecordOffset;
+  record.sbt_record_stride = traversal.sbtRecordStride;
+  record.miss_index = traversal.missIndex;
+  record.has_launch_context_input =
+      traversal.rtcore_trace_input_has_top_level_as != 0;
+  record.valid = record.has_ray_origin_direction_tmin_tmax &&
+                 record.has_ray_flags_cull_mask &&
+                 record.has_launch_context_input;
+  return record;
+}
+
+static bool rtcore_launch_context_input_publication_record_is_complete(
+    const rtcore_launch_context_input_publication_record &record) {
+  return record.valid && record.has_ray_origin_direction_tmin_tmax &&
+         record.has_ray_flags_cull_mask && record.has_launch_context_input &&
+         record.owner_seq_snapshot.valid;
+}
+
+static void rtcore_log_launch_context_input_publication_record(
+    const ptx_instruction *pI,
+    const rtcore_launch_context_input_publication_record &record) {
+  if (!record.publication_enabled) {
+    return;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "launch-context-input-publication-bridge (%s:%u), "
+         "source=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, valid=%u, "
+         "has_ray_origin_direction_tmin_tmax=%u, "
+         "has_ray_flags_cull_mask=%u, has_launch_context_input=%u, "
+         "ray_flags=%u, cull_mask=%u, bridge_trace_replay_top_level_as=0x%llx, "
+         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u\n",
+         pI->source_file(), pI->source_line(), record.source,
+         record.context_ptr, record.handoff_window_base,
+         record.lane_slot_index, record.valid ? 1 : 0,
+         record.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         record.has_ray_flags_cull_mask ? 1 : 0,
+         record.has_launch_context_input ? 1 : 0, record.ray_flags,
+         record.cull_mask,
+         (unsigned long long)record.bridge_trace_replay_top_level_as,
+         record.sbt_record_offset, record.sbt_record_stride,
+         record.miss_index);
+  fflush(stdout);
+}
+
+static bool rtcore_fail_closed_on_launch_context_input_publication_record(
+    const ptx_instruction *pI,
+    const rtcore_launch_context_input_publication_record &record) {
+  if (!record.publication_enabled ||
+      rtcore_launch_context_input_publication_record_is_complete(record)) {
+    return false;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=LAUNCH_CONTEXT_INPUT_PUBLICATION_PARTIAL, "
+         "source=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, valid=%u, owner_seq_valid=%u, "
+         "has_ray_origin_direction_tmin_tmax=%u, "
+         "has_ray_flags_cull_mask=%u, has_launch_context_input=%u\n",
+         pI->source_file(), pI->source_line(), record.source,
+         record.context_ptr, record.handoff_window_base,
+         record.lane_slot_index, record.valid ? 1 : 0,
+         record.owner_seq_snapshot.valid ? 1 : 0,
+         record.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         record.has_ray_flags_cull_mask ? 1 : 0,
+         record.has_launch_context_input ? 1 : 0);
+  fflush(stdout);
+  return true;
+}
+
+static void
+rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
+    rtcore_decoded_traversal_input_snapshot *decoded_input_snapshot,
+    const rtcore_launch_context_input_publication_record &record) {
+  if (decoded_input_snapshot == NULL ||
+      !rtcore_launch_context_input_publication_record_is_complete(record)) {
+    return;
+  }
+  decoded_input_snapshot->ray_origin = record.ray_origin;
+  decoded_input_snapshot->ray_direction = record.ray_direction;
+  decoded_input_snapshot->ray_tmin = record.ray_tmin;
+  decoded_input_snapshot->ray_tmax = record.ray_tmax;
+  decoded_input_snapshot->has_ray_origin_direction_tmin_tmax =
+      record.has_ray_origin_direction_tmin_tmax;
+  decoded_input_snapshot->ray_flags = record.ray_flags;
+  decoded_input_snapshot->cull_mask = record.cull_mask;
+  decoded_input_snapshot->has_ray_flags_cull_mask =
+      record.has_ray_flags_cull_mask;
+  decoded_input_snapshot->bridge_trace_replay_top_level_as =
+      record.bridge_trace_replay_top_level_as;
+  decoded_input_snapshot->sbt_record_offset = record.sbt_record_offset;
+  decoded_input_snapshot->sbt_record_stride = record.sbt_record_stride;
+  decoded_input_snapshot->miss_index = record.miss_index;
+  decoded_input_snapshot->has_launch_context_input =
+      record.has_launch_context_input;
+}
+
 static void
 rtcore_update_decoded_traversal_input_from_pre_provider_traversal_data_snapshot(
     rtcore_decoded_traversal_input_snapshot *decoded_input_snapshot,
@@ -13612,8 +13789,25 @@ bool rtcore_build_traversal_completion_event(
   rtcore_pre_provider_traversal_data_snapshot
       pre_provider_traversal_data_snapshot =
           rtcore_make_pre_provider_traversal_data_snapshot(source_request);
-  rtcore_update_decoded_traversal_input_from_pre_provider_traversal_data_snapshot(
-      &event->decoded_input_snapshot, pre_provider_traversal_data_snapshot);
+  rtcore_launch_context_input_publication_record
+      launch_context_input_publication_record =
+          rtcore_make_launch_context_input_publication_record(
+              source_request, event->owner_seq_snapshot,
+              pre_provider_traversal_data_snapshot);
+  if (launch_context_input_publication_record.publication_enabled) {
+    if (rtcore_fail_closed_on_launch_context_input_publication_record(
+            pI, launch_context_input_publication_record)) {
+      return false;
+    }
+    rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
+        &event->decoded_input_snapshot,
+        launch_context_input_publication_record);
+    rtcore_log_launch_context_input_publication_record(
+        pI, launch_context_input_publication_record);
+  } else {
+    rtcore_update_decoded_traversal_input_from_pre_provider_traversal_data_snapshot(
+        &event->decoded_input_snapshot, pre_provider_traversal_data_snapshot);
+  }
   rtcore_input_provenance_registry_publication_snapshot registry_publication_snapshot =
       rtcore_publish_input_provenance_registry_entry_snapshot_from_decoded_input(
           source_request, event->owner_seq_snapshot,
