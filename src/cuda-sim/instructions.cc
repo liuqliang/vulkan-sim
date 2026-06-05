@@ -14533,6 +14533,242 @@ rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
   decoded_input_snapshot->launch_context_input_owner = publication_owner;
 }
 
+struct rtcore_default_compiler_driver_publication_route_record {
+  rtcore_default_compiler_driver_publication_route_record()
+      : publication_enabled(false),
+        valid(false),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        route_source("disabled"),
+        compiler_fields_source("unavailable"),
+        runtime_context_window_source("unavailable"),
+        proxy_fields_source("unavailable"),
+        source_publication_seq(0),
+        source_owner_tuple_match(false),
+        has_source_context_window_key(false),
+        source_context_window_match(false),
+        context_window_owner_seq_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        traversable_root_proxy_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        compiler_fields_complete(false),
+        runtime_context_window_complete(false),
+        proxy_fields_complete(false),
+        provider_consumption_policy_enabled(false),
+        provider_consumption_default_disabled(true) {}
+
+  bool publication_enabled;
+  bool valid;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  const char *route_source;
+  const char *compiler_fields_source;
+  const char *runtime_context_window_source;
+  const char *proxy_fields_source;
+  unsigned long long source_publication_seq;
+  bool source_owner_tuple_match;
+  bool has_source_context_window_key;
+  bool source_context_window_match;
+  rtcore_decoded_input_field_owner_class context_window_owner_seq_owner;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
+  rtcore_decoded_input_field_owner_class traversable_root_proxy_owner;
+  rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
+  bool compiler_fields_complete;
+  bool runtime_context_window_complete;
+  bool proxy_fields_complete;
+  bool provider_consumption_policy_enabled;
+  bool provider_consumption_default_disabled;
+};
+
+static rtcore_default_compiler_driver_publication_route_record
+rtcore_make_default_compiler_driver_publication_route_record(
+    const rtcore_launch_context_input_publication_record
+        &launch_context_input_publication_record,
+    const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot) {
+  rtcore_default_compiler_driver_publication_route_record record;
+  record.publication_enabled =
+      rtcore_compiler_driver_publication_source_enabled() &&
+      launch_context_input_publication_record.publication_enabled;
+  record.context_ptr = launch_context_input_publication_record.context_ptr;
+  record.handoff_window_base =
+      launch_context_input_publication_record.handoff_window_base;
+  record.lane_slot_index =
+      launch_context_input_publication_record.lane_slot_index;
+  record.route_source = record.publication_enabled
+                            ? launch_context_input_publication_record.source
+                            : "disabled";
+  record.source_publication_seq =
+      launch_context_input_publication_record.source_publication_seq;
+  record.source_owner_tuple_match =
+      launch_context_input_publication_record.source_owner_tuple_match;
+  record.has_source_context_window_key =
+      launch_context_input_publication_record.has_source_context_window_key;
+  record.source_context_window_match =
+      launch_context_input_publication_record.source_context_window_match;
+  record.context_window_owner_seq_owner =
+      decoded_input_snapshot.context_window_owner_seq_owner;
+  record.ray_origin_direction_tmin_tmax_owner =
+      decoded_input_snapshot.ray_origin_direction_tmin_tmax_owner;
+  record.ray_flags_cull_mask_owner =
+      decoded_input_snapshot.ray_flags_cull_mask_owner;
+  record.launch_context_input_owner =
+      decoded_input_snapshot.launch_context_input_owner;
+  record.traversable_root_proxy_owner =
+      decoded_input_snapshot.traversable_root_proxy_owner;
+  record.bvh_format_profile_owner =
+      decoded_input_snapshot.bvh_format_profile_owner;
+  record.provider_consumption_policy_enabled =
+      rtcore_provider_payload_consumption_policy_enabled();
+  record.provider_consumption_default_disabled =
+      !record.provider_consumption_policy_enabled;
+
+  if (!record.publication_enabled) {
+    return record;
+  }
+
+  const bool compiler_driver_source =
+      strcmp(record.route_source, "compiler_driver_publication_sideband") == 0;
+  record.compiler_fields_source =
+      compiler_driver_source ? "compiler_driver_publication_sideband"
+                             : "unexpected_source";
+  record.runtime_context_window_source = "driver_runtime";
+  record.proxy_fields_source = "simulator_proxy";
+  record.compiler_fields_complete =
+      compiler_driver_source &&
+      decoded_input_snapshot.has_ray_origin_direction_tmin_tmax &&
+      decoded_input_snapshot.ray_origin_direction_tmin_tmax_owner ==
+          RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION &&
+      decoded_input_snapshot.has_ray_flags_cull_mask &&
+      decoded_input_snapshot.ray_flags_cull_mask_owner ==
+          RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION &&
+      decoded_input_snapshot.has_launch_context_input &&
+      decoded_input_snapshot.launch_context_input_owner ==
+          RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION &&
+      launch_context_input_publication_record.valid &&
+      launch_context_input_publication_record.source_owner_tuple_match &&
+      launch_context_input_publication_record.has_source_context_window_key &&
+      launch_context_input_publication_record.source_context_window_match;
+  record.runtime_context_window_complete =
+      decoded_input_snapshot.valid &&
+      decoded_input_snapshot.has_context_window_owner_seq &&
+      decoded_input_snapshot.context_window_owner_seq_owner ==
+          RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME &&
+      decoded_input_snapshot.context_window_owner_seq.valid &&
+      decoded_input_snapshot.context_window_owner_seq.context_ptr ==
+          launch_context_input_publication_record.context_ptr &&
+      decoded_input_snapshot.context_window_owner_seq.handoff_window_base ==
+          launch_context_input_publication_record.handoff_window_base &&
+      decoded_input_snapshot.context_window_owner_seq.lane_slot_index ==
+          launch_context_input_publication_record.lane_slot_index;
+  record.proxy_fields_complete =
+      decoded_input_snapshot.has_traversable_root_proxy &&
+      decoded_input_snapshot.traversable_root_proxy_owner ==
+          RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY &&
+      decoded_input_snapshot.has_bvh_format_version &&
+      decoded_input_snapshot.bvh_format_profile_owner ==
+          RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
+  record.valid = record.compiler_fields_complete &&
+                 record.runtime_context_window_complete &&
+                 record.proxy_fields_complete;
+  return record;
+}
+
+static bool
+rtcore_default_compiler_driver_publication_route_record_is_complete(
+    const rtcore_default_compiler_driver_publication_route_record &record) {
+  return !record.publication_enabled || record.valid;
+}
+
+static void rtcore_log_default_compiler_driver_publication_route_record(
+    const ptx_instruction *pI,
+    const rtcore_default_compiler_driver_publication_route_record &record) {
+  if (!record.publication_enabled) {
+    return;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "default-compiler-driver-publication-route (%s:%u), "
+         "default_publication_route=1, valid=%u, "
+         "route_source=%s, compiler_fields_source=%s, "
+         "runtime_context_window_source=%s, proxy_fields_source=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, source_publication_seq=%llu, "
+         "source_owner_tuple_match=%u, has_source_context_window_key=%u, "
+         "source_context_window_match=%u, "
+         "context_window_owner_seq_owner=%s, "
+         "ray_origin_direction_tmin_tmax_owner=%s, "
+         "ray_flags_cull_mask_owner=%s, launch_context_input_owner=%s, "
+         "traversable_root_proxy_owner=%s, bvh_format_profile_owner=%s, "
+         "compiler_fields_complete=%u, "
+         "runtime_context_window_complete=%u, proxy_fields_complete=%u, "
+         "provider_consumption_policy_enabled=%u, "
+         "provider_consumption_default_disabled=%u\n",
+         pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
+         record.route_source, record.compiler_fields_source,
+         record.runtime_context_window_source, record.proxy_fields_source,
+         record.context_ptr, record.handoff_window_base,
+         record.lane_slot_index, record.source_publication_seq,
+         record.source_owner_tuple_match ? 1 : 0,
+         record.has_source_context_window_key ? 1 : 0,
+         record.source_context_window_match ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             record.context_window_owner_seq_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             record.ray_origin_direction_tmin_tmax_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             record.ray_flags_cull_mask_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             record.launch_context_input_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             record.traversable_root_proxy_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             record.bvh_format_profile_owner),
+         record.compiler_fields_complete ? 1 : 0,
+         record.runtime_context_window_complete ? 1 : 0,
+         record.proxy_fields_complete ? 1 : 0,
+         record.provider_consumption_policy_enabled ? 1 : 0,
+         record.provider_consumption_default_disabled ? 1 : 0);
+  fflush(stdout);
+}
+
+static bool
+rtcore_fail_closed_on_default_compiler_driver_publication_route_record(
+    const ptx_instruction *pI,
+    const rtcore_default_compiler_driver_publication_route_record &record) {
+  if (rtcore_default_compiler_driver_publication_route_record_is_complete(
+          record)) {
+    return false;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=DEFAULT_COMPILER_DRIVER_PUBLICATION_ROUTE_PARTIAL, "
+         "legacy_partial_marker=LAUNCH_CONTEXT_INPUT_PUBLICATION_PARTIAL, "
+         "default_publication_route=1, valid=%u, route_source=%s, "
+         "compiler_fields_complete=%u, runtime_context_window_complete=%u, "
+         "proxy_fields_complete=%u, provider_consumption_default_disabled=%u, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, source_publication_seq=%llu, "
+         "source_owner_tuple_match=%u, has_source_context_window_key=%u, "
+         "source_context_window_match=%u\n",
+         pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
+         record.route_source, record.compiler_fields_complete ? 1 : 0,
+         record.runtime_context_window_complete ? 1 : 0,
+         record.proxy_fields_complete ? 1 : 0,
+         record.provider_consumption_default_disabled ? 1 : 0,
+         record.context_ptr, record.handoff_window_base,
+         record.lane_slot_index, record.source_publication_seq,
+         record.source_owner_tuple_match ? 1 : 0,
+         record.has_source_context_window_key ? 1 : 0,
+         record.source_context_window_match ? 1 : 0);
+  fflush(stdout);
+  return true;
+}
+
 static void
 rtcore_update_decoded_traversal_input_from_pre_provider_traversal_data_snapshot(
     rtcore_decoded_traversal_input_snapshot *decoded_input_snapshot,
@@ -15349,17 +15585,27 @@ bool rtcore_build_traversal_completion_event(
               source_request, event->owner_seq_snapshot,
               pre_provider_traversal_data_snapshot);
   if (launch_context_input_publication_record.publication_enabled) {
-    if (rtcore_fail_closed_on_launch_context_input_publication_record(
-            pI, launch_context_input_publication_record)) {
-      return false;
+    if (rtcore_launch_context_input_publication_record_is_complete(
+            launch_context_input_publication_record)) {
+      rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
+          &event->decoded_input_snapshot,
+          launch_context_input_publication_record);
+      rtcore_update_decoded_traversal_input_proxy_profile_from_pre_provider_snapshot(
+          &event->decoded_input_snapshot, pre_provider_traversal_data_snapshot);
     }
-    rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
-        &event->decoded_input_snapshot,
-        launch_context_input_publication_record);
-    rtcore_update_decoded_traversal_input_proxy_profile_from_pre_provider_snapshot(
-        &event->decoded_input_snapshot, pre_provider_traversal_data_snapshot);
     rtcore_log_launch_context_input_publication_record(
         pI, launch_context_input_publication_record);
+    rtcore_default_compiler_driver_publication_route_record
+        default_publication_route_record =
+            rtcore_make_default_compiler_driver_publication_route_record(
+                launch_context_input_publication_record,
+                event->decoded_input_snapshot);
+    rtcore_log_default_compiler_driver_publication_route_record(
+        pI, default_publication_route_record);
+    if (rtcore_fail_closed_on_default_compiler_driver_publication_route_record(
+            pI, default_publication_route_record)) {
+      return false;
+    }
   } else {
     rtcore_update_decoded_traversal_input_from_pre_provider_traversal_data_snapshot(
         &event->decoded_input_snapshot, pre_provider_traversal_data_snapshot);
