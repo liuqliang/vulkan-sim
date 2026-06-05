@@ -3224,9 +3224,23 @@ bool rt_unit::rtcore_completion_queue_has_capacity(
   return false;
 }
 
+bool rt_unit::rtcore_existing_backend_latency_resource_binding_enabled() const {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_EXISTING_BACKEND_LATENCY_RESOURCE_BINDING");
+  if (value == NULL || *value == '\0') {
+    return true;
+  }
+  return strcmp(value, "0") != 0 && strcmp(value, "false") != 0 &&
+         strcmp(value, "off") != 0 && strcmp(value, "no") != 0;
+}
+
 bool rt_unit::rtcore_stats_completion_latency_enabled() const {
   const char *value = getenv("VULKAN_SIM_RTCORE_STATS_COMPLETION_LATENCY");
-  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  if (value == NULL || *value == '\0') {
+    return rtcore_existing_backend_latency_resource_binding_enabled();
+  }
+  return strcmp(value, "0") != 0 && strcmp(value, "false") != 0 &&
+         strcmp(value, "off") != 0 && strcmp(value, "no") != 0;
 }
 
 unsigned rt_unit::rtcore_stats_latency_base() const {
@@ -3280,6 +3294,15 @@ unsigned rt_unit::rtcore_stats_primitive_cost() const {
   return (unsigned)parsed;
 }
 
+static unsigned rtcore_count_active_mask_lanes(unsigned active_mask) {
+  unsigned count = 0;
+  while (active_mask != 0) {
+    count += active_mask & 1u;
+    active_mask >>= 1;
+  }
+  return count;
+}
+
 rt_unit::rtcore_completion_timing_snapshot
 rt_unit::rtcore_make_completion_timing_snapshot(
     const rtcore_synthetic_completion_event &event) const {
@@ -3293,6 +3316,17 @@ rt_unit::rtcore_make_completion_timing_snapshot(
       snapshot.stats_mode ? rtcore_stats_primitive_cost() : 0;
   snapshot.adapter_max_node_visits = event.adapter_max_node_visits;
   snapshot.adapter_max_primitive_tests = event.adapter_max_primitive_tests;
+  snapshot.active_lane_count =
+      rtcore_count_active_mask_lanes(event.issued_active_mask);
+  snapshot.traversal_stack_entries_per_active_lane_demand =
+      snapshot.adapter_max_node_visits;
+  const unsigned long long traversal_stack_entries_per_warp_demand =
+      (unsigned long long)snapshot.active_lane_count *
+      snapshot.traversal_stack_entries_per_active_lane_demand;
+  snapshot.traversal_stack_entries_per_warp_demand =
+      traversal_stack_entries_per_warp_demand > UINT_MAX
+          ? UINT_MAX
+          : (unsigned)traversal_stack_entries_per_warp_demand;
   unsigned long long stats_latency = snapshot.fixed_latency;
   if (snapshot.stats_mode) {
     stats_latency +=
@@ -3312,7 +3346,10 @@ rt_unit::rtcore_make_completion_timing_snapshot(
          "warp_uid=%u, warp_id=%u, mode=%s, fixed_latency=%u, "
          "stats_latency=%u, node_cost=%u, primitive_cost=%u, "
          "max_node_visits=%u, max_primitive_tests=%u, "
-         "completion_latency=%u, enqueue_cycle=%llu, ready_cycle=%llu\n",
+         "completion_latency=%u, enqueue_cycle=%llu, ready_cycle=%llu, "
+         "active_lanes=%u, "
+         "traversal_stack_entries_per_active_lane_demand=%u, "
+         "traversal_stack_entries_per_warp_demand=%u\n",
          event.warp_uid, event.warp_id,
          snapshot.stats_mode ? "stats" : "fixed",
          snapshot.fixed_latency, snapshot.completion_latency,
@@ -3320,7 +3357,31 @@ rt_unit::rtcore_make_completion_timing_snapshot(
          snapshot.adapter_max_node_visits,
          snapshot.adapter_max_primitive_tests,
          snapshot.completion_latency, snapshot.enqueue_cycle,
-         snapshot.ready_cycle);
+         snapshot.ready_cycle, snapshot.active_lane_count,
+         snapshot.traversal_stack_entries_per_active_lane_demand,
+         snapshot.traversal_stack_entries_per_warp_demand);
+  fflush(stdout);
+
+  if (rtcore_existing_backend_latency_resource_binding_enabled()) {
+    printf("GPGPU-Sim PTX: RT-unit existing-backend-latency-resource-binding, "
+           "warp_uid=%u, warp_id=%u, "
+           "source=existing_vulkan_sim_traversal_intersection_backend, "
+           "existing_backend_stats_bound=1, "
+           "completion_latency_resource_accounting_bound=1, "
+           "claims_new_hardware_bvh_engine=0, "
+           "active_lanes=%u, max_node_visits=%u, "
+           "max_primitive_tests=%u, completion_latency=%u, "
+           "node_cost=%u, primitive_cost=%u, "
+           "traversal_stack_entries_per_active_lane_demand=%u, "
+           "traversal_stack_entries_per_warp_demand=%u\n",
+           event.warp_uid, event.warp_id, snapshot.active_lane_count,
+           snapshot.adapter_max_node_visits,
+           snapshot.adapter_max_primitive_tests,
+           snapshot.completion_latency, snapshot.node_cost,
+           snapshot.primitive_cost,
+           snapshot.traversal_stack_entries_per_active_lane_demand,
+           snapshot.traversal_stack_entries_per_warp_demand);
+  }
   fflush(stdout);
   return snapshot;
 }

@@ -1506,6 +1506,9 @@ class rt_unit : public pipelined_simd_unit {
               primitive_cost(0),
               adapter_max_node_visits(0),
               adapter_max_primitive_tests(0),
+              active_lane_count(0),
+              traversal_stack_entries_per_active_lane_demand(0),
+              traversal_stack_entries_per_warp_demand(0),
               completion_latency(0),
               enqueue_cycle(0),
               ready_cycle(0) {}
@@ -1516,6 +1519,9 @@ class rt_unit : public pipelined_simd_unit {
         unsigned primitive_cost;
         unsigned adapter_max_node_visits;
         unsigned adapter_max_primitive_tests;
+        unsigned active_lane_count;
+        unsigned traversal_stack_entries_per_active_lane_demand;
+        unsigned traversal_stack_entries_per_warp_demand;
         unsigned completion_latency;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
@@ -1532,6 +1538,7 @@ class rt_unit : public pipelined_simd_unit {
       void rtcore_record_completion_queue_enqueue(const warp_inst_t &inst);
       void rtcore_record_completion_queue_retire(const warp_inst_t &inst);
       bool rtcore_completion_queue_has_capacity(const warp_inst_t &inst) const;
+      bool rtcore_existing_backend_latency_resource_binding_enabled() const;
       bool rtcore_stats_completion_latency_enabled() const;
       unsigned rtcore_stats_latency_base() const;
       unsigned rtcore_stats_node_cost() const;
