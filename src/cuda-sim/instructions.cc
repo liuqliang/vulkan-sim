@@ -12766,6 +12766,9 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
 static void rtcore_log_provider_payload_consumption_eligibility_shadow(
     const rtcore_traversal_work_descriptor &descriptor);
 
+static void rtcore_log_provider_payload_consumption_preflight_record(
+    const rtcore_traversal_work_descriptor &descriptor);
+
 static void
 rtcore_annotate_provider_response_with_registry_payload_observation(
     rtcore_traversal_provider_response *response,
@@ -12794,6 +12797,7 @@ rtcore_invoke_rtcore_provider_bridge(
   fflush(stdout);
   rtcore_log_provider_facing_registry_payload_admission_mirror(descriptor);
   rtcore_log_provider_payload_consumption_eligibility_shadow(descriptor);
+  rtcore_log_provider_payload_consumption_preflight_record(descriptor);
   rtcore_log_provider_decoded_input_observation(descriptor);
   rtcore_log_provider_payload_consumed_input_view(descriptor);
   rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(descriptor);
@@ -13736,6 +13740,76 @@ struct rtcore_provider_facing_registry_payload_admission_mirror {
   bool default_deny;
 };
 
+enum rtcore_provider_payload_consumption_preflight_fail_reason {
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NONE = 0,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NOT_DEFAULT_CUSTOM_PATH = 1,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_ADMISSION_DISABLED = 2,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_CONSUMPTION_POLICY_DISABLED = 3,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_REGISTRY_SHADOW_MISSING = 4,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_FIELD_COVERAGE_INCOMPLETE = 5,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_OWNER_LIFETIME_BLOCKED = 6,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_PARITY_EVIDENCE_MISSING = 7,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_RESOURCE_EVIDENCE_MISSING = 8
+};
+
+static const char *
+rtcore_provider_payload_consumption_preflight_fail_reason_name(
+    rtcore_provider_payload_consumption_preflight_fail_reason reason) {
+  switch (reason) {
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NONE:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NONE";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NOT_DEFAULT_CUSTOM_PATH:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NOT_DEFAULT_CUSTOM_PATH";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_ADMISSION_DISABLED:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_ADMISSION_DISABLED";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_CONSUMPTION_POLICY_DISABLED:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_CONSUMPTION_POLICY_DISABLED";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_REGISTRY_SHADOW_MISSING:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_REGISTRY_SHADOW_MISSING";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_FIELD_COVERAGE_INCOMPLETE:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_FIELD_COVERAGE_INCOMPLETE";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_OWNER_LIFETIME_BLOCKED:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_OWNER_LIFETIME_BLOCKED";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_PARITY_EVIDENCE_MISSING:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_PARITY_EVIDENCE_MISSING";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_RESOURCE_EVIDENCE_MISSING:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_RESOURCE_EVIDENCE_MISSING";
+    default:
+      return "RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_UNKNOWN";
+  }
+}
+
+struct rtcore_provider_payload_consumption_preflight_record {
+  rtcore_provider_payload_consumption_preflight_record()
+      : valid(false),
+        default_custom_path(false),
+        admission_allowed(false),
+        has_registry_payload_shadow(false),
+        observed_valid_shadow(false),
+        field_coverage_complete(false),
+        owner_lifetime_ok(false),
+        consumption_policy_enabled(false),
+        parity_evidence_available(false),
+        resource_evidence_available(false),
+        provider_payload_consumption_preflight_passed(false),
+        fail_reason(
+            RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NOT_DEFAULT_CUSTOM_PATH) {
+  }
+
+  bool valid;
+  bool default_custom_path;
+  bool admission_allowed;
+  bool has_registry_payload_shadow;
+  bool observed_valid_shadow;
+  bool field_coverage_complete;
+  bool owner_lifetime_ok;
+  bool consumption_policy_enabled;
+  bool parity_evidence_available;
+  bool resource_evidence_available;
+  bool provider_payload_consumption_preflight_passed;
+  rtcore_provider_payload_consumption_preflight_fail_reason fail_reason;
+};
+
 enum rtcore_provider_payload_consumption_eligibility_shadow_fail_reason {
   RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_NONE = 0,
   RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_ADMISSION_DISABLED = 1,
@@ -13815,6 +13889,53 @@ static bool rtcore_provider_payload_consumption_policy_enabled() {
   return false;
 }
 
+static const char *
+rtcore_provider_payload_consumption_parity_evidence_env_name() {
+  return "VULKAN_SIM_RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PARITY_EVIDENCE";
+}
+
+static const char *
+rtcore_provider_payload_consumption_resource_evidence_env_name() {
+  return "VULKAN_SIM_RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_RESOURCE_EVIDENCE";
+}
+
+static bool rtcore_provider_payload_consumption_evidence_available(
+    const char *env_name) {
+  const char *value = getenv(env_name);
+  if (value == NULL || value[0] == '\0') {
+    return false;
+  }
+  return strcmp(value, "1") == 0 || rtcore_path_mode_is(value, "true") ||
+         rtcore_path_mode_is(value, "allow") ||
+         rtcore_path_mode_is(value, "allowed") ||
+         rtcore_path_mode_is(value, "available") ||
+         rtcore_path_mode_is(value, "passed");
+}
+
+static bool rtcore_provider_payload_consumption_parity_evidence_available() {
+  return rtcore_provider_payload_consumption_evidence_available(
+      rtcore_provider_payload_consumption_parity_evidence_env_name());
+}
+
+static bool rtcore_provider_payload_consumption_resource_evidence_available() {
+  return rtcore_provider_payload_consumption_evidence_available(
+      rtcore_provider_payload_consumption_resource_evidence_env_name());
+}
+
+static bool rtcore_provider_payload_consumption_default_custom_path() {
+  if (!rtcore_path_mode_policy_enables_custom_path(
+          rtcore_get_path_mode_policy())) {
+    return false;
+  }
+  const char *provider_override =
+      getenv("VULKAN_SIM_RTCORE_TRAVERSAL_SOURCE_PROVIDER");
+  if (!rtcore_traversal_source_provider_override_unset(provider_override)) {
+    return false;
+  }
+  return rtcore_select_default_traversal_source_provider() ==
+         RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_EXISTING_TRAVERSAL;
+}
+
 static bool rtcore_provider_payload_shadow_has_complete_field_coverage(
     const rtcore_provider_facing_registry_payload_shadow
         *registry_payload_shadow) {
@@ -13826,6 +13947,73 @@ static bool rtcore_provider_payload_shadow_has_complete_field_coverage(
          registry_payload_shadow->has_launch_context_input &&
          registry_payload_shadow->has_traversable_root_proxy &&
          registry_payload_shadow->has_bvh_format_profile;
+}
+
+static rtcore_provider_payload_consumption_preflight_record
+rtcore_make_provider_payload_consumption_preflight_record(
+    const rtcore_provider_facing_registry_payload_shadow
+        *registry_payload_shadow) {
+  rtcore_provider_payload_consumption_preflight_record preflight;
+  preflight.valid = true;
+  preflight.default_custom_path =
+      rtcore_provider_payload_consumption_default_custom_path();
+  preflight.admission_allowed =
+      rtcore_registry_payload_consumption_admission_policy_allows(
+          "provider-payload-consumption-opt-in-preflight");
+  preflight.has_registry_payload_shadow = registry_payload_shadow != NULL;
+  preflight.consumption_policy_enabled =
+      rtcore_provider_payload_consumption_policy_enabled();
+  preflight.parity_evidence_available =
+      rtcore_provider_payload_consumption_parity_evidence_available();
+  preflight.resource_evidence_available =
+      rtcore_provider_payload_consumption_resource_evidence_available();
+
+  if (registry_payload_shadow != NULL && registry_payload_shadow->valid) {
+    preflight.observed_valid_shadow = true;
+    preflight.field_coverage_complete =
+        rtcore_provider_payload_shadow_has_complete_field_coverage(
+            registry_payload_shadow);
+    preflight.owner_lifetime_ok =
+        registry_payload_shadow
+            ->provider_consumed_input_fields_all_owned_with_lifetime;
+  }
+
+  preflight.provider_payload_consumption_preflight_passed =
+      preflight.default_custom_path && preflight.admission_allowed &&
+      preflight.consumption_policy_enabled &&
+      preflight.observed_valid_shadow && preflight.field_coverage_complete &&
+      preflight.owner_lifetime_ok && preflight.parity_evidence_available &&
+      preflight.resource_evidence_available;
+
+  if (!preflight.default_custom_path) {
+    preflight.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NOT_DEFAULT_CUSTOM_PATH;
+  } else if (!preflight.admission_allowed) {
+    preflight.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_ADMISSION_DISABLED;
+  } else if (!preflight.consumption_policy_enabled) {
+    preflight.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_CONSUMPTION_POLICY_DISABLED;
+  } else if (!preflight.observed_valid_shadow) {
+    preflight.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_REGISTRY_SHADOW_MISSING;
+  } else if (!preflight.field_coverage_complete) {
+    preflight.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_FIELD_COVERAGE_INCOMPLETE;
+  } else if (!preflight.owner_lifetime_ok) {
+    preflight.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_OWNER_LIFETIME_BLOCKED;
+  } else if (!preflight.parity_evidence_available) {
+    preflight.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_PARITY_EVIDENCE_MISSING;
+  } else if (!preflight.resource_evidence_available) {
+    preflight.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_RESOURCE_EVIDENCE_MISSING;
+  } else {
+    preflight.fail_reason =
+        RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NONE;
+  }
+  return preflight;
 }
 
 static rtcore_provider_decoded_input_observation
@@ -13884,25 +14072,10 @@ rtcore_make_provider_decoded_input_observation(
 static bool rtcore_provider_payload_consumption_effective_enabled(
     const rtcore_provider_facing_registry_payload_shadow
         *registry_payload_shadow) {
-  if (!rtcore_registry_payload_consumption_admission_policy_allows(
-          "provider-payload-consumption-effective")) {
-    return false;
-  }
-  if (!rtcore_provider_payload_consumption_policy_enabled()) {
-    return false;
-  }
-  if (registry_payload_shadow == NULL || !registry_payload_shadow->valid) {
-    return false;
-  }
-  if (!rtcore_provider_payload_shadow_has_complete_field_coverage(
-          registry_payload_shadow)) {
-    return false;
-  }
-  if (!registry_payload_shadow
-           ->provider_consumed_input_fields_all_owned_with_lifetime) {
-    return false;
-  }
-  return true;
+  const rtcore_provider_payload_consumption_preflight_record preflight =
+      rtcore_make_provider_payload_consumption_preflight_record(
+          registry_payload_shadow);
+  return preflight.provider_payload_consumption_preflight_passed;
 }
 
 static rtcore_provider_payload_consumed_input_view
@@ -14095,6 +14268,51 @@ static void rtcore_log_provider_payload_consumption_eligibility_shadow(
          shadow_decision.provider_payload_consumption_enabled ? 1 : 0,
          rtcore_provider_payload_consumption_eligibility_shadow_fail_reason_name(
              shadow_decision.fail_reason));
+  fflush(stdout);
+}
+
+static void rtcore_log_provider_payload_consumption_preflight_record(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  const rtcore_provider_payload_consumption_preflight_record preflight =
+      rtcore_make_provider_payload_consumption_preflight_record(
+          descriptor.registry_payload_shadow);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "provider-payload-consumption-opt-in-preflight=1, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, "
+         "provider_payload_consumption_preflight_valid=%u, "
+         "provider_payload_consumption_default_custom_path=%u, "
+         "registry_payload_admission_allowed=%u, "
+         "registry_payload_shadow_attached=%u, "
+         "registry_payload_shadow_observed=%u, "
+         "provider_payload_field_coverage_complete=%u, "
+         "provider_payload_consumption_owner_lifetime_ok=%u, "
+         "provider_payload_consumption_policy_source=%s, "
+         "provider_payload_consumption_policy_enabled=%u, "
+         "provider_payload_consumption_parity_evidence_available=%u, "
+         "provider_payload_consumption_resource_evidence_available=%u, "
+         "provider_payload_consumption_preflight_passed=%u, "
+         "provider_payload_consumption_enabled=%u, "
+         "provider_payload_consumption_preflight_fail_reason=%s, "
+         "provider_payload_consumption_preflight_consumes_traversal_behavior=0\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, preflight.valid ? 1 : 0,
+         preflight.default_custom_path ? 1 : 0,
+         preflight.admission_allowed ? 1 : 0,
+         preflight.has_registry_payload_shadow ? 1 : 0,
+         preflight.observed_valid_shadow ? 1 : 0,
+         preflight.field_coverage_complete ? 1 : 0,
+         preflight.owner_lifetime_ok ? 1 : 0,
+         rtcore_provider_payload_consumption_policy_source(),
+         preflight.consumption_policy_enabled ? 1 : 0,
+         preflight.parity_evidence_available ? 1 : 0,
+         preflight.resource_evidence_available ? 1 : 0,
+         preflight.provider_payload_consumption_preflight_passed ? 1 : 0,
+         descriptor.provider_payload_consumption_enabled ? 1 : 0,
+         rtcore_provider_payload_consumption_preflight_fail_reason_name(
+             preflight.fail_reason));
   fflush(stdout);
 }
 
