@@ -11900,7 +11900,9 @@ struct rtcore_custom_backend_result {
         handoff_window_base(0),
         lane_slot_index(0),
         has_provider_payload_backend_input_snapshot(false),
-        provider_payload_backend_input_snapshot() {
+        provider_payload_backend_input_snapshot(),
+        existing_traversal_input_replay_requested(false),
+        existing_traversal_request_replay_live_input_match(false) {
     memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
   }
 
@@ -11919,6 +11921,8 @@ struct rtcore_custom_backend_result {
   bool has_provider_payload_backend_input_snapshot;
   rtcore_provider_payload_backend_input_snapshot
       provider_payload_backend_input_snapshot;
+  bool existing_traversal_input_replay_requested;
+  bool existing_traversal_request_replay_live_input_match;
 };
 
 static bool
@@ -11943,6 +11947,121 @@ static bool rtcore_custom_backend_result_accepted_payload_missing(
   return custom_result.supported && custom_result.accepted &&
          !custom_result.has_traversal_data &&
          !custom_result.initialized_default_miss;
+}
+
+struct rtcore_provider_backend_input_consumption_route_record {
+  rtcore_provider_backend_input_consumption_route_record()
+      : valid(false),
+        provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        provider_payload_consumption_enabled(false),
+        backend_input_snapshot_required(false),
+        has_provider_payload_backend_input_snapshot(false),
+        provider_payload_backend_input_snapshot_valid(false),
+        provider_payload_backend_input_snapshot_accepted(false),
+        existing_traversal_input_replay_requested(false),
+        existing_traversal_request_replay_live_input_match(false),
+        provider_backend_input_consumption_route_passed(false),
+        reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED) {}
+
+  bool valid;
+  rtcore_traversal_source_provider provider;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+  bool provider_payload_consumption_enabled;
+  bool backend_input_snapshot_required;
+  bool has_provider_payload_backend_input_snapshot;
+  bool provider_payload_backend_input_snapshot_valid;
+  bool provider_payload_backend_input_snapshot_accepted;
+  bool existing_traversal_input_replay_requested;
+  bool existing_traversal_request_replay_live_input_match;
+  bool provider_backend_input_consumption_route_passed;
+  rtcore_traversal_provider_reject_reason reject_reason;
+};
+
+static rtcore_provider_backend_input_consumption_route_record
+rtcore_make_provider_backend_input_consumption_route_record(
+    const rtcore_custom_backend_result &custom_result,
+    const rtcore_traversal_provider_response &response) {
+  rtcore_provider_backend_input_consumption_route_record record;
+  record.provider = custom_result.provider;
+  record.context_ptr = custom_result.context_ptr;
+  record.handoff_window_base = custom_result.handoff_window_base;
+  record.lane_slot_index = custom_result.lane_slot_index;
+  record.warp_metadata = custom_result.warp_metadata;
+  record.provider_payload_consumption_enabled =
+      custom_result.provider_payload_backend_input_snapshot
+          .provider_payload_consumption_enabled;
+  record.valid = record.provider_payload_consumption_enabled;
+  record.backend_input_snapshot_required =
+      rtcore_custom_backend_result_requires_provider_payload_backend_input_snapshot(
+          custom_result);
+  record.has_provider_payload_backend_input_snapshot =
+      custom_result.has_provider_payload_backend_input_snapshot;
+  record.provider_payload_backend_input_snapshot_valid =
+      custom_result.provider_payload_backend_input_snapshot.valid;
+  record.provider_payload_backend_input_snapshot_accepted =
+      response.provider_backend_input_response_annotation
+          .provider_payload_backend_input_snapshot_accepted;
+  record.existing_traversal_input_replay_requested =
+      custom_result.existing_traversal_input_replay_requested;
+  record.existing_traversal_request_replay_live_input_match =
+      custom_result.existing_traversal_request_replay_live_input_match;
+  record.reject_reason = response.reject_reason;
+  record.provider_backend_input_consumption_route_passed =
+      response.provider_supported && response.provider_accepted &&
+      response.reject_reason == RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE &&
+      record.backend_input_snapshot_required &&
+      record.has_provider_payload_backend_input_snapshot &&
+      record.provider_payload_backend_input_snapshot_valid &&
+      record.provider_payload_backend_input_snapshot_accepted &&
+      (!record.existing_traversal_input_replay_requested ||
+       record.existing_traversal_request_replay_live_input_match);
+  return record;
+}
+
+static void rtcore_log_provider_backend_input_consumption_route_record(
+    const rtcore_custom_backend_result &custom_result,
+    const rtcore_traversal_provider_response &response) {
+  const rtcore_provider_backend_input_consumption_route_record record =
+      rtcore_make_provider_backend_input_consumption_route_record(custom_result,
+                                                                 response);
+  if (!record.valid) {
+    return;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "provider-backend-input-consumption-route=1, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "provider_payload_consumption_enabled=%u, "
+         "backend_input_snapshot_required=%u, "
+         "has_provider_payload_backend_input_snapshot=%u, "
+         "provider_payload_backend_input_snapshot_valid=%u, "
+         "provider_payload_backend_input_snapshot_accepted=%u, "
+         "existing_traversal_input_replay_requested=%u, "
+         "existing_traversal_request_replay_live_input_match=%u, "
+         "provider_backend_input_consumption_route_passed=%u, "
+         "reject_reason=%s, existing_traversal_backend_reused=1, "
+         "claims_new_hardware_bvh_engine=0\n",
+         rtcore_traversal_source_provider_name(record.provider),
+         record.context_ptr, record.handoff_window_base,
+         record.lane_slot_index, record.warp_metadata.warp_uid,
+         record.warp_metadata.active_mask,
+         record.provider_payload_consumption_enabled ? 1 : 0,
+         record.backend_input_snapshot_required ? 1 : 0,
+         record.has_provider_payload_backend_input_snapshot ? 1 : 0,
+         record.provider_payload_backend_input_snapshot_valid ? 1 : 0,
+         record.provider_payload_backend_input_snapshot_accepted ? 1 : 0,
+         record.existing_traversal_input_replay_requested ? 1 : 0,
+         record.existing_traversal_request_replay_live_input_match ? 1 : 0,
+         record.provider_backend_input_consumption_route_passed ? 1 : 0,
+         rtcore_traversal_provider_reject_reason_name(record.reject_reason));
+  fflush(stdout);
 }
 
 static void
@@ -12064,6 +12183,8 @@ rtcore_make_provider_response_from_custom_rtcore_backend_result(
   }
   rtcore_annotate_provider_response_with_backend_input_snapshot_result(
       &response, custom_result);
+  rtcore_log_provider_backend_input_consumption_route_record(custom_result,
+                                                             response);
   const rtcore_provider_backend_input_response_annotation
       &backend_input_annotation =
           response.provider_backend_input_response_annotation;
@@ -12692,6 +12813,8 @@ rtcore_make_custom_rtcore_existing_traversal_replay_missing_response(
   custom_result.supported = true;
   custom_result.accepted = true;
   custom_result.reject_reason = RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE;
+  custom_result.existing_traversal_input_replay_requested = true;
+  custom_result.existing_traversal_request_replay_live_input_match = false;
   custom_result.has_provider_payload_backend_input_snapshot = false;
   custom_result.provider_payload_backend_input_snapshot.valid = false;
   printf("GPGPU-Sim PTX: RT_SUBMIT "
@@ -12722,10 +12845,14 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
     return rtcore_make_custom_rtcore_existing_traversal_replay_missing_response(
         descriptor, "provider_backend_input_snapshot_replay_request_missing");
   }
+  const bool existing_traversal_input_replay_requested =
+      effective_request.from_provider_backend_input_snapshot;
+  bool existing_traversal_request_replay_live_input_match =
+      !existing_traversal_input_replay_requested;
   rtcore_traversal_provider_response existing_response =
       rtcore_make_legacy_functional_traversal_provider_response(effective_request);
-  if (effective_request.from_provider_backend_input_snapshot) {
-    const bool live_input_match =
+  if (existing_traversal_input_replay_requested) {
+    existing_traversal_request_replay_live_input_match =
         rtcore_existing_traversal_replay_request_matches_response_input(
             effective_request, existing_response);
     printf("GPGPU-Sim PTX: RT_SUBMIT "
@@ -12737,9 +12864,10 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
            rtcore_traversal_source_provider_name(descriptor.provider),
            descriptor.context_ptr, descriptor.handoff_window_base,
            descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
-           descriptor.warp_metadata.active_mask, live_input_match ? 1 : 0);
+           descriptor.warp_metadata.active_mask,
+           existing_traversal_request_replay_live_input_match ? 1 : 0);
     fflush(stdout);
-    if (!live_input_match) {
+    if (!existing_traversal_request_replay_live_input_match) {
       return rtcore_make_custom_rtcore_existing_traversal_replay_missing_response(
           descriptor, "provider_backend_input_snapshot_live_input_mismatch");
     }
@@ -12747,6 +12875,10 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
   rtcore_custom_backend_result custom_result =
       rtcore_make_custom_rtcore_existing_traversal_backend_result(
           descriptor, existing_response);
+  custom_result.existing_traversal_input_replay_requested =
+      existing_traversal_input_replay_requested;
+  custom_result.existing_traversal_request_replay_live_input_match =
+      existing_traversal_request_replay_live_input_match;
   return rtcore_make_provider_response_from_custom_rtcore_backend_result(
       custom_result);
 }
