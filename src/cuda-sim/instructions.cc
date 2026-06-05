@@ -8415,6 +8415,8 @@ const unsigned RTCORE_FAULT_PAYLOAD_MAGIC = 0x46544c54;
 const unsigned RTCORE_FAULT_CODE_TRANSLATION = 1;
 const unsigned RTCORE_MAX_LANES_PER_WARP = 32;
 const unsigned RTCORE_CONTEXT_BYTES_PER_LANE = 0x280;
+const unsigned RTCORE_CONTEXT_BYTES_PER_FULL_WARP =
+    RTCORE_MAX_LANES_PER_WARP * RTCORE_CONTEXT_BYTES_PER_LANE;
 const unsigned RTCORE_HANDOFF_WINDOW_WORDS_PER_LANE = 32;
 const unsigned RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE = 128;
 const unsigned RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP =
@@ -8514,69 +8516,254 @@ bool rtcore_driver_runtime_resolve_u64_env(const char *name,
   return true;
 }
 
+struct rtcore_runtime_context_window_allocation_record {
+  rtcore_runtime_context_window_allocation_record()
+      : enabled(false),
+        invalid_flag(false),
+        valid(false),
+        has_context_base(false),
+        has_handoff_base(false),
+        explicit_context_base(false),
+        explicit_handoff_base(false),
+        enabled_by_default(false),
+        context_matches(false),
+        handoff_matches(false),
+        context_window_index_valid(false),
+        handoff_window_index_valid(false),
+        indices_match(false),
+        ownership_source(RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT),
+        context_base(0),
+        handoff_base(0),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        context_lane_slot_index(0),
+        context_window_index(0),
+        handoff_window_index(0),
+        owner_generation(0),
+        capacity_lane_slots(RTCORE_MAX_LANES_PER_WARP),
+        context_allocation_bytes(RTCORE_CONTEXT_BYTES_PER_FULL_WARP),
+        handoff_allocation_bytes(RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP) {}
+
+  bool enabled;
+  bool invalid_flag;
+  bool valid;
+  bool has_context_base;
+  bool has_handoff_base;
+  bool explicit_context_base;
+  bool explicit_handoff_base;
+  bool enabled_by_default;
+  bool context_matches;
+  bool handoff_matches;
+  bool context_window_index_valid;
+  bool handoff_window_index_valid;
+  bool indices_match;
+  const char *ownership_source;
+  unsigned long long context_base;
+  unsigned long long handoff_base;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  unsigned context_lane_slot_index;
+  unsigned long long context_window_index;
+  unsigned long long handoff_window_index;
+  unsigned owner_generation;
+  unsigned capacity_lane_slots;
+  unsigned context_allocation_bytes;
+  unsigned handoff_allocation_bytes;
+};
+
+static rtcore_runtime_context_window_allocation_record
+rtcore_make_runtime_context_window_allocation_record(
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index) {
+  rtcore_runtime_context_window_allocation_record record;
+  const rtcore_driver_runtime_handle_scaffold_mode mode =
+      rtcore_driver_runtime_handle_scaffold_mode_from_env();
+  record.enabled = mode != RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED;
+  record.invalid_flag = mode == RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_INVALID;
+  record.context_ptr = context_ptr;
+  record.handoff_window_base = handoff_window_base;
+  record.lane_slot_index = lane_slot_index;
+  if (!record.enabled) {
+    return record;
+  }
+
+  record.has_context_base = rtcore_driver_runtime_resolve_u64_env(
+      RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV,
+      RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE, &record.context_base,
+      &record.explicit_context_base);
+  record.has_handoff_base = rtcore_driver_runtime_resolve_u64_env(
+      RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV,
+      RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE, &record.handoff_base,
+      &record.explicit_handoff_base);
+  const bool explicit_source =
+      record.explicit_context_base || record.explicit_handoff_base;
+  record.enabled_by_default = !explicit_source;
+  record.ownership_source =
+      explicit_source ? RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_EXPLICIT
+                      : RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT;
+
+  if (record.has_context_base && context_ptr >= record.context_base) {
+    const unsigned long long context_offset = context_ptr - record.context_base;
+    record.context_matches =
+        (context_offset % RTCORE_CONTEXT_BYTES_PER_LANE) == 0;
+    if (record.context_matches) {
+      const unsigned long long context_lane_index =
+          context_offset / RTCORE_CONTEXT_BYTES_PER_LANE;
+      record.context_lane_slot_index =
+          (unsigned)(context_lane_index % RTCORE_MAX_LANES_PER_WARP);
+      record.context_window_index =
+          context_lane_index / RTCORE_MAX_LANES_PER_WARP;
+      record.context_window_index_valid = true;
+    }
+  }
+
+  if (record.has_handoff_base &&
+      handoff_window_base >= record.handoff_base) {
+    const unsigned long long handoff_offset =
+        handoff_window_base - record.handoff_base;
+    record.handoff_matches =
+        (handoff_offset % RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP) == 0 &&
+        (handoff_window_base % RTCORE_HANDOFF_WINDOW_ALIGNMENT) == 0;
+    if (record.handoff_matches) {
+      record.handoff_window_index =
+          handoff_offset / RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP;
+      record.handoff_window_index_valid = true;
+    }
+  }
+
+  record.indices_match = record.context_window_index_valid &&
+                         record.handoff_window_index_valid &&
+                         record.context_window_index ==
+                             record.handoff_window_index;
+  record.owner_generation =
+      record.indices_match ? (unsigned)(record.context_window_index + 1) : 0;
+  record.valid = !record.invalid_flag && record.has_context_base &&
+                 record.has_handoff_base && record.context_matches &&
+                 record.handoff_matches && record.indices_match &&
+                 record.owner_generation != 0;
+  return record;
+}
+
+static bool rtcore_runtime_context_window_allocation_record_is_accepted(
+    const rtcore_runtime_context_window_allocation_record &record) {
+  return !record.enabled || record.valid;
+}
+
+static void rtcore_log_runtime_context_window_allocation_record(
+    const ptx_instruction *pI,
+    const rtcore_runtime_context_window_allocation_record &record) {
+  if (!record.enabled) {
+    return;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "runtime-context-window-allocation-record (%s:%u), "
+         "runtime_allocation_record=1, valid=%u, %s, enabled_by_default=%u, "
+         "explicit_context_base=%u, explicit_handoff_base=%u, "
+         "context_matches=%u, handoff_matches=%u, indices_match=%u, "
+         "context_base=0x%llx, handoff_base=0x%llx, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, context_lane_slot_index=%u, "
+         "context_window_index=%llu, handoff_window_index=%llu, "
+         "owner_generation=%u, capacity_lane_slots=%u, "
+         "context_allocation_bytes=%u, handoff_allocation_bytes=%u, "
+         "allocation_state=live\n",
+         pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
+         record.ownership_source, record.enabled_by_default ? 1 : 0,
+         record.explicit_context_base ? 1 : 0,
+         record.explicit_handoff_base ? 1 : 0,
+         record.context_matches ? 1 : 0, record.handoff_matches ? 1 : 0,
+         record.indices_match ? 1 : 0, record.context_base,
+         record.handoff_base, record.context_ptr, record.handoff_window_base,
+         record.lane_slot_index, record.context_lane_slot_index,
+         record.context_window_index, record.handoff_window_index,
+         record.owner_generation, record.capacity_lane_slots,
+         record.context_allocation_bytes, record.handoff_allocation_bytes);
+  fflush(stdout);
+}
+
+static void rtcore_log_runtime_context_window_allocation_retire(
+    const ptx_instruction *pI,
+    const rtcore_runtime_context_window_allocation_record &record,
+    bool released_window, bool released_token, size_t remaining_windows,
+    size_t remaining_tokens, size_t remaining_allocator_live) {
+  if (!record.enabled) {
+    return;
+  }
+  const char *retire_free_status =
+      (record.valid && released_window && released_token) ? "retired"
+                                                         : "partial";
+  printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT "
+         "runtime-context-window-allocation-retire (%s:%u), "
+         "runtime_allocation_record=1, valid=%u, %s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, context_window_index=%llu, "
+         "handoff_window_index=%llu, owner_generation=%u, "
+         "capacity_lane_slots=%u, released_window=%u, released_token=%u, "
+         "remaining_windows=%zu, remaining_tokens=%zu, "
+         "remaining_allocator_live=%zu, retire_free_status=%s\n",
+         pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
+         record.ownership_source, record.context_ptr,
+         record.handoff_window_base, record.lane_slot_index,
+         record.context_window_index, record.handoff_window_index,
+         record.owner_generation, record.capacity_lane_slots,
+         released_window ? 1 : 0, released_token ? 1 : 0, remaining_windows,
+         remaining_tokens, remaining_allocator_live, retire_free_status);
+  fflush(stdout);
+}
+
 bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
     const ptx_instruction *pI, unsigned long long context_ptr,
     unsigned long long handoff_window_base, unsigned lane_slot_index) {
-  const rtcore_driver_runtime_handle_scaffold_mode mode =
-      rtcore_driver_runtime_handle_scaffold_mode_from_env();
-  if (mode == RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED) {
+  const rtcore_runtime_context_window_allocation_record allocation_record =
+      rtcore_make_runtime_context_window_allocation_record(
+          context_ptr, handoff_window_base, lane_slot_index);
+  if (!allocation_record.enabled) {
     return false;
   }
 
-  unsigned long long driver_context_base = 0;
-  unsigned long long driver_handoff_base = 0;
-  bool explicit_context_base = false;
-  bool explicit_handoff_base = false;
-  const bool invalid_flag =
-      mode == RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_INVALID;
-  const bool has_context_base = rtcore_driver_runtime_resolve_u64_env(
-      RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV,
-      RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE, &driver_context_base,
-      &explicit_context_base);
-  const bool has_handoff_base = rtcore_driver_runtime_resolve_u64_env(
-      RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV,
-      RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE, &driver_handoff_base,
-      &explicit_handoff_base);
-  const bool context_matches =
-      has_context_base && context_ptr >= driver_context_base &&
-      ((context_ptr - driver_context_base) % RTCORE_CONTEXT_BYTES_PER_LANE) == 0;
-  const bool handoff_matches =
-      has_handoff_base && handoff_window_base >= driver_handoff_base &&
-      ((handoff_window_base - driver_handoff_base) %
-       RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP) == 0 &&
-      (handoff_window_base % RTCORE_HANDOFF_WINDOW_ALIGNMENT) == 0;
-
-  if (!invalid_flag && has_context_base && has_handoff_base &&
-      context_matches && handoff_matches) {
-    const bool explicit_source = explicit_context_base || explicit_handoff_base;
-    const char *ownership_source =
-        explicit_source ? RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_EXPLICIT
-                        : RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT;
+  if (rtcore_runtime_context_window_allocation_record_is_accepted(
+          allocation_record)) {
+    rtcore_log_runtime_context_window_allocation_record(pI, allocation_record);
     printf("GPGPU-Sim PTX: RT_SUBMIT driver-runtime-handle-ownership "
            "(%s:%u), %s, enabled_by_default=%u, "
            "explicit_context_base=%u, explicit_handoff_base=%u, "
            "context_base=0x%llx, handoff_base=0x%llx, "
            "context_matches=%u, handoff_matches=%u, context_ptr=0x%llx, "
-           "handoff_window_base=0x%llx, lane_slot_index=%u\n",
-           pI->source_file(), pI->source_line(), ownership_source,
-           explicit_source ? 0 : 1, explicit_context_base ? 1 : 0,
-           explicit_handoff_base ? 1 : 0, driver_context_base,
-           driver_handoff_base, context_matches ? 1 : 0,
-           handoff_matches ? 1 : 0, context_ptr, handoff_window_base,
-           lane_slot_index);
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "runtime_allocation_record=1, owner_generation=%u\n",
+           pI->source_file(), pI->source_line(),
+           allocation_record.ownership_source,
+           allocation_record.enabled_by_default ? 1 : 0,
+           allocation_record.explicit_context_base ? 1 : 0,
+           allocation_record.explicit_handoff_base ? 1 : 0,
+           allocation_record.context_base, allocation_record.handoff_base,
+           allocation_record.context_matches ? 1 : 0,
+           allocation_record.handoff_matches ? 1 : 0, context_ptr,
+           handoff_window_base, lane_slot_index,
+           allocation_record.owner_generation);
     fflush(stdout);
     return false;
   }
 
+  rtcore_log_runtime_context_window_allocation_record(pI, allocation_record);
   printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
          "driver-runtime-handle-scaffold, "
          "mode_valid=%u, has_context_base=%u, has_handoff_base=%u, "
-         "context_matches=%u, handoff_matches=%u, context_ptr=0x%llx, "
-         "handoff_window_base=0x%llx, lane_slot_index=%u\n",
-         pI->source_file(), pI->source_line(), invalid_flag ? 0 : 1,
-         has_context_base ? 1 : 0, has_handoff_base ? 1 : 0,
-         context_matches ? 1 : 0, handoff_matches ? 1 : 0, context_ptr,
-         handoff_window_base, lane_slot_index);
+         "context_matches=%u, handoff_matches=%u, indices_match=%u, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, runtime_allocation_record=1, "
+         "owner_generation=%u\n",
+         pI->source_file(), pI->source_line(),
+         allocation_record.invalid_flag ? 0 : 1,
+         allocation_record.has_context_base ? 1 : 0,
+         allocation_record.has_handoff_base ? 1 : 0,
+         allocation_record.context_matches ? 1 : 0,
+         allocation_record.handoff_matches ? 1 : 0,
+         allocation_record.indices_match ? 1 : 0, context_ptr,
+         handoff_window_base, lane_slot_index,
+         allocation_record.owner_generation);
   fflush(stdout);
   inst_not_implemented(pI);
   return true;
@@ -15577,6 +15764,9 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
       tracked_window &&
       rtcore_synthetic_owner_tuple_matches(*window, key, context_ptr_data.u64,
                                            pI, thread);
+  const rtcore_runtime_context_window_allocation_record allocation_record =
+      rtcore_make_runtime_context_window_allocation_record(
+          context_ptr_data.u64, handoff_window_base_data.u64, lane_slot_index);
   const bool token_can_retire =
       operands_are_valid && retire_metadata_valid && tracked_window &&
       matching_context && owner_tuple_matches &&
@@ -15604,6 +15794,10 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   // is deferred until a warp-level allocator exists.
   const bool released_window = rtcore_release_synthetic_handoff_window(key);
   const bool released_token = rtcore_release_symbolic_rt_token(token_key);
+  rtcore_log_runtime_context_window_allocation_retire(
+      pI, allocation_record, released_window, released_token,
+      rtcore_synthetic_handoff_window_count(), rtcore_symbolic_rt_token_count(),
+      rtcore_symbolic_rt_token_allocator_live_count());
   printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT synthetic-retire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, owner_tuple_match=%u, released=%u, "
