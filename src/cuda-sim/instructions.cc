@@ -8444,6 +8444,22 @@ const char *RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT =
     "source=default_runtime_owned";
 const char *RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_EXPLICIT =
     "source=explicit_env";
+const char *RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BRIDGE =
+    "source=driver_runtime_handle_bridge";
+const char *RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BOOTSTRAP_COMPAT =
+    "source=bootstrap_compat_scaffold";
+const char *RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_LEGACY_OPT_OUT =
+    "source=legacy_opt_out";
+const char *RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BRIDGE =
+    "driver_runtime_handle_bridge";
+const char *RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BOOTSTRAP_COMPAT =
+    "bootstrap_compat_scaffold";
+const char *RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_LEGACY_OPT_OUT =
+    "legacy_opt_out";
+const char *RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_INVALID =
+    "invalid";
+const char *RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_ENV =
+    "VULKAN_SIM_RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE";
 const char *RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENV =
     "VULKAN_SIM_RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD";
 const char *RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV =
@@ -8478,6 +8494,94 @@ bool rtcore_driver_runtime_handle_scaffold_enabled() {
   return rtcore_driver_runtime_handle_scaffold_mode_from_env() ==
          RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENABLED;
 }
+
+enum rtcore_driver_runtime_handle_bridge_mode {
+  RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_DRIVER_RUNTIME = 0,
+  RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_BOOTSTRAP_COMPAT,
+  RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_LEGACY_OPT_OUT,
+  RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_INVALID
+};
+
+rtcore_driver_runtime_handle_bridge_mode
+rtcore_driver_runtime_handle_bridge_mode_from_env() {
+  const char *value = getenv(RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_ENV);
+  if (value == NULL || value[0] == '\0') {
+    const rtcore_driver_runtime_handle_scaffold_mode scaffold_mode =
+        rtcore_driver_runtime_handle_scaffold_mode_from_env();
+    if (scaffold_mode == RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED) {
+      return RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_BOOTSTRAP_COMPAT;
+    }
+    if (scaffold_mode == RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_INVALID) {
+      return RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_INVALID;
+    }
+    return RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_DRIVER_RUNTIME;
+  }
+  if (strcmp(value, "1") == 0 || rtcore_path_mode_is(value, "true") ||
+      rtcore_path_mode_is(value, "on") || rtcore_path_mode_is(value, "yes") ||
+      rtcore_path_mode_is(value, "default") ||
+      rtcore_path_mode_is(value, "driver_runtime") ||
+      rtcore_path_mode_is(value, "driver-runtime") ||
+      rtcore_path_mode_is(value, "driver_runtime_handle_bridge") ||
+      rtcore_path_mode_is(value, "driver-runtime-handle-bridge") ||
+      rtcore_path_mode_is(value, "bridge")) {
+    return RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_DRIVER_RUNTIME;
+  }
+  if (rtcore_path_mode_is(value, "bootstrap") ||
+      rtcore_path_mode_is(value, "bootstrap_compat") ||
+      rtcore_path_mode_is(value, "bootstrap-compat") ||
+      rtcore_path_mode_is(value, "scaffold") ||
+      rtcore_path_mode_is(value, "compat")) {
+    return RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_BOOTSTRAP_COMPAT;
+  }
+  if (strcmp(value, "0") == 0 || rtcore_path_mode_is(value, "false") ||
+      rtcore_path_mode_is(value, "off") || rtcore_path_mode_is(value, "no") ||
+      rtcore_path_mode_is(value, "legacy") ||
+      rtcore_path_mode_is(value, "legacy_opt_out")) {
+    return RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_LEGACY_OPT_OUT;
+  }
+  return RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_INVALID;
+}
+
+struct rtcore_driver_runtime_handle_bridge_record {
+  rtcore_driver_runtime_handle_bridge_record()
+      : enabled(false),
+        invalid_mode(false),
+        valid(false),
+        bridge_owned(false),
+        bootstrap_compat(false),
+        legacy_opt_out(false),
+        has_context_base(false),
+        has_handoff_base(false),
+        explicit_context_base(false),
+        explicit_handoff_base(false),
+        enabled_by_default(false),
+        handle_bridge_source(RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BRIDGE),
+        ownership_source(RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BRIDGE),
+        context_base(0),
+        handoff_base(0),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0) {}
+
+  bool enabled;
+  bool invalid_mode;
+  bool valid;
+  bool bridge_owned;
+  bool bootstrap_compat;
+  bool legacy_opt_out;
+  bool has_context_base;
+  bool has_handoff_base;
+  bool explicit_context_base;
+  bool explicit_handoff_base;
+  bool enabled_by_default;
+  const char *handle_bridge_source;
+  const char *ownership_source;
+  unsigned long long context_base;
+  unsigned long long handoff_base;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+};
 
 bool rtcore_driver_runtime_parse_u64_env(const char *name,
                                          unsigned long long *value) {
@@ -8514,6 +8618,98 @@ bool rtcore_driver_runtime_resolve_u64_env(const char *name,
   *value = parsed;
   *explicit_value = true;
   return true;
+}
+
+static rtcore_driver_runtime_handle_bridge_record
+rtcore_make_driver_runtime_handle_bridge_record(
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index) {
+  rtcore_driver_runtime_handle_bridge_record record;
+  const rtcore_driver_runtime_handle_bridge_mode mode =
+      rtcore_driver_runtime_handle_bridge_mode_from_env();
+  record.context_ptr = context_ptr;
+  record.handoff_window_base = handoff_window_base;
+  record.lane_slot_index = lane_slot_index;
+  record.invalid_mode = mode == RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_INVALID;
+  record.bridge_owned =
+      mode == RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_DRIVER_RUNTIME;
+  record.bootstrap_compat =
+      mode == RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_BOOTSTRAP_COMPAT;
+  record.legacy_opt_out =
+      mode == RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_LEGACY_OPT_OUT;
+  record.enabled = !record.legacy_opt_out;
+
+  if (record.invalid_mode) {
+    record.enabled = true;
+    record.handle_bridge_source =
+        RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_INVALID;
+    record.ownership_source = RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT;
+    return record;
+  }
+  if (record.legacy_opt_out) {
+    record.valid = true;
+    record.handle_bridge_source =
+        RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_LEGACY_OPT_OUT;
+    record.ownership_source =
+        RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_LEGACY_OPT_OUT;
+    return record;
+  }
+  if (record.bootstrap_compat) {
+    record.has_context_base = true;
+    record.has_handoff_base = true;
+    record.context_base = RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE;
+    record.handoff_base = RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE;
+    record.enabled_by_default = false;
+    record.handle_bridge_source =
+        RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BOOTSTRAP_COMPAT;
+    record.ownership_source =
+        RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BOOTSTRAP_COMPAT;
+    record.valid = true;
+    return record;
+  }
+
+  record.has_context_base = rtcore_driver_runtime_resolve_u64_env(
+      RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV,
+      RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE, &record.context_base,
+      &record.explicit_context_base);
+  record.has_handoff_base = rtcore_driver_runtime_resolve_u64_env(
+      RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV,
+      RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE, &record.handoff_base,
+      &record.explicit_handoff_base);
+  const bool explicit_source =
+      record.explicit_context_base || record.explicit_handoff_base;
+  record.enabled_by_default = !explicit_source;
+  record.handle_bridge_source =
+      RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BRIDGE;
+  record.ownership_source =
+      explicit_source ? RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_EXPLICIT
+                      : RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BRIDGE;
+  record.valid =
+      record.has_context_base && record.has_handoff_base && !record.invalid_mode;
+  return record;
+}
+
+static void rtcore_log_driver_runtime_handle_bridge_record(
+    const ptx_instruction *pI,
+    const rtcore_driver_runtime_handle_bridge_record &record) {
+  printf("GPGPU-Sim PTX: RT_SUBMIT driver-runtime-handle-bridge (%s:%u), "
+         "handle_bridge_record=1, valid=%u, handle_bridge_source=%s, %s, "
+         "bridge_owned=%u, bootstrap_compat=%u, legacy_opt_out=%u, "
+         "runtime_allocation_record=1, enabled=%u, mode_valid=%u, "
+         "enabled_by_default=%u, explicit_context_base=%u, "
+         "explicit_handoff_base=%u, context_base=0x%llx, "
+         "handoff_base=0x%llx, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u\n",
+         pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
+         record.handle_bridge_source, record.ownership_source,
+         record.bridge_owned ? 1 : 0, record.bootstrap_compat ? 1 : 0,
+         record.legacy_opt_out ? 1 : 0, record.enabled ? 1 : 0,
+         record.invalid_mode ? 0 : 1, record.enabled_by_default ? 1 : 0,
+         record.explicit_context_base ? 1 : 0,
+         record.explicit_handoff_base ? 1 : 0, record.context_base,
+         record.handoff_base, record.context_ptr, record.handoff_window_base,
+         record.lane_slot_index);
+  fflush(stdout);
 }
 
 struct rtcore_runtime_context_window_allocation_record {
@@ -8574,38 +8770,29 @@ struct rtcore_runtime_context_window_allocation_record {
 };
 
 static rtcore_runtime_context_window_allocation_record
-rtcore_make_runtime_context_window_allocation_record(
-    unsigned long long context_ptr, unsigned long long handoff_window_base,
-    unsigned lane_slot_index) {
+rtcore_make_runtime_context_window_allocation_record_from_bridge(
+    const rtcore_driver_runtime_handle_bridge_record &bridge_record) {
   rtcore_runtime_context_window_allocation_record record;
-  const rtcore_driver_runtime_handle_scaffold_mode mode =
-      rtcore_driver_runtime_handle_scaffold_mode_from_env();
-  record.enabled = mode != RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED;
-  record.invalid_flag = mode == RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_INVALID;
-  record.context_ptr = context_ptr;
-  record.handoff_window_base = handoff_window_base;
-  record.lane_slot_index = lane_slot_index;
+  record.enabled = bridge_record.enabled;
+  record.invalid_flag = bridge_record.invalid_mode || !bridge_record.valid;
+  record.context_ptr = bridge_record.context_ptr;
+  record.handoff_window_base = bridge_record.handoff_window_base;
+  record.lane_slot_index = bridge_record.lane_slot_index;
+  record.has_context_base = bridge_record.has_context_base;
+  record.has_handoff_base = bridge_record.has_handoff_base;
+  record.explicit_context_base = bridge_record.explicit_context_base;
+  record.explicit_handoff_base = bridge_record.explicit_handoff_base;
+  record.enabled_by_default = bridge_record.enabled_by_default;
+  record.ownership_source = bridge_record.ownership_source;
+  record.context_base = bridge_record.context_base;
+  record.handoff_base = bridge_record.handoff_base;
   if (!record.enabled) {
     return record;
   }
 
-  record.has_context_base = rtcore_driver_runtime_resolve_u64_env(
-      RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV,
-      RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE, &record.context_base,
-      &record.explicit_context_base);
-  record.has_handoff_base = rtcore_driver_runtime_resolve_u64_env(
-      RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV,
-      RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE, &record.handoff_base,
-      &record.explicit_handoff_base);
-  const bool explicit_source =
-      record.explicit_context_base || record.explicit_handoff_base;
-  record.enabled_by_default = !explicit_source;
-  record.ownership_source =
-      explicit_source ? RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_EXPLICIT
-                      : RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT;
-
-  if (record.has_context_base && context_ptr >= record.context_base) {
-    const unsigned long long context_offset = context_ptr - record.context_base;
+  if (record.has_context_base && record.context_ptr >= record.context_base) {
+    const unsigned long long context_offset =
+        record.context_ptr - record.context_base;
     record.context_matches =
         (context_offset % RTCORE_CONTEXT_BYTES_PER_LANE) == 0;
     if (record.context_matches) {
@@ -8620,12 +8807,12 @@ rtcore_make_runtime_context_window_allocation_record(
   }
 
   if (record.has_handoff_base &&
-      handoff_window_base >= record.handoff_base) {
+      record.handoff_window_base >= record.handoff_base) {
     const unsigned long long handoff_offset =
-        handoff_window_base - record.handoff_base;
+        record.handoff_window_base - record.handoff_base;
     record.handoff_matches =
         (handoff_offset % RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP) == 0 &&
-        (handoff_window_base % RTCORE_HANDOFF_WINDOW_ALIGNMENT) == 0;
+        (record.handoff_window_base % RTCORE_HANDOFF_WINDOW_ALIGNMENT) == 0;
     if (record.handoff_matches) {
       record.handoff_window_index =
           handoff_offset / RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP;
@@ -8639,11 +8826,23 @@ rtcore_make_runtime_context_window_allocation_record(
                              record.handoff_window_index;
   record.owner_generation =
       record.indices_match ? (unsigned)(record.context_window_index + 1) : 0;
-  record.valid = !record.invalid_flag && record.has_context_base &&
+  record.valid = !record.invalid_flag && bridge_record.valid &&
+                 record.has_context_base &&
                  record.has_handoff_base && record.context_matches &&
                  record.handoff_matches && record.indices_match &&
                  record.owner_generation != 0;
   return record;
+}
+
+static rtcore_runtime_context_window_allocation_record
+rtcore_make_runtime_context_window_allocation_record(
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index) {
+  const rtcore_driver_runtime_handle_bridge_record bridge_record =
+      rtcore_make_driver_runtime_handle_bridge_record(
+          context_ptr, handoff_window_base, lane_slot_index);
+  return rtcore_make_runtime_context_window_allocation_record_from_bridge(
+      bridge_record);
 }
 
 static bool rtcore_runtime_context_window_allocation_record_is_accepted(
@@ -8716,9 +8915,13 @@ static void rtcore_log_runtime_context_window_allocation_retire(
 bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
     const ptx_instruction *pI, unsigned long long context_ptr,
     unsigned long long handoff_window_base, unsigned lane_slot_index) {
-  const rtcore_runtime_context_window_allocation_record allocation_record =
-      rtcore_make_runtime_context_window_allocation_record(
+  const rtcore_driver_runtime_handle_bridge_record bridge_record =
+      rtcore_make_driver_runtime_handle_bridge_record(
           context_ptr, handoff_window_base, lane_slot_index);
+  rtcore_log_driver_runtime_handle_bridge_record(pI, bridge_record);
+  const rtcore_runtime_context_window_allocation_record allocation_record =
+      rtcore_make_runtime_context_window_allocation_record_from_bridge(
+          bridge_record);
   if (!allocation_record.enabled) {
     return false;
   }
