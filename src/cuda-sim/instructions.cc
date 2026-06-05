@@ -13942,6 +13942,61 @@ struct rtcore_provider_payload_consumption_preflight_record {
   rtcore_provider_payload_consumption_preflight_fail_reason fail_reason;
 };
 
+struct rtcore_provider_payload_consumption_runtime_evidence_record {
+  rtcore_provider_payload_consumption_runtime_evidence_record()
+      : valid(false),
+        default_custom_path(false),
+        admission_allowed(false),
+        has_registry_payload_shadow(false),
+        observed_valid_shadow(false),
+        field_coverage_complete(false),
+        owner_lifetime_ok(false),
+        consumption_policy_enabled(false),
+        existing_traversal_backend_available(false),
+        runtime_parity_evidence_available(false),
+        runtime_token_resource_model_available(false),
+        runtime_handoff_slot_model_available(false),
+        runtime_traversal_stack_model_available(false),
+        runtime_resident_warp_model_available(false),
+        runtime_issue_side_resource_evidence_available(false),
+        runtime_completion_queue_evidence_deferred(true),
+        runtime_resource_evidence_available(false),
+        runtime_evidence_complete(false),
+        runtime_evidence_gates_preflight(false),
+        preflight_uses_runtime_evidence(false),
+        provider_payload_consumption_enabled(false),
+        resident_rt_warps(0),
+        token_limited_warps(0),
+        handoff_window_limited_warps(0),
+        traversal_stack_limited_warps(0) {}
+
+  bool valid;
+  bool default_custom_path;
+  bool admission_allowed;
+  bool has_registry_payload_shadow;
+  bool observed_valid_shadow;
+  bool field_coverage_complete;
+  bool owner_lifetime_ok;
+  bool consumption_policy_enabled;
+  bool existing_traversal_backend_available;
+  bool runtime_parity_evidence_available;
+  bool runtime_token_resource_model_available;
+  bool runtime_handoff_slot_model_available;
+  bool runtime_traversal_stack_model_available;
+  bool runtime_resident_warp_model_available;
+  bool runtime_issue_side_resource_evidence_available;
+  bool runtime_completion_queue_evidence_deferred;
+  bool runtime_resource_evidence_available;
+  bool runtime_evidence_complete;
+  bool runtime_evidence_gates_preflight;
+  bool preflight_uses_runtime_evidence;
+  bool provider_payload_consumption_enabled;
+  unsigned resident_rt_warps;
+  unsigned token_limited_warps;
+  unsigned handoff_window_limited_warps;
+  unsigned traversal_stack_limited_warps;
+};
+
 enum rtcore_provider_payload_consumption_eligibility_shadow_fail_reason {
   RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_NONE = 0,
   RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_ELIGIBILITY_ADMISSION_DISABLED = 1,
@@ -14079,6 +14134,136 @@ static bool rtcore_provider_payload_shadow_has_complete_field_coverage(
          registry_payload_shadow->has_launch_context_input &&
          registry_payload_shadow->has_traversable_root_proxy &&
          registry_payload_shadow->has_bvh_format_profile;
+}
+
+static bool
+rtcore_provider_payload_consumption_existing_traversal_backend_available() {
+  return rtcore_select_default_traversal_source_provider() ==
+         RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_EXISTING_TRAVERSAL;
+}
+
+static rtcore_provider_payload_consumption_runtime_evidence_record
+rtcore_make_provider_payload_consumption_runtime_evidence_record(
+    const rtcore_provider_facing_registry_payload_shadow
+        *registry_payload_shadow,
+    bool provider_payload_consumption_enabled) {
+  rtcore_provider_payload_consumption_runtime_evidence_record record;
+  record.valid = true;
+  record.default_custom_path =
+      rtcore_provider_payload_consumption_default_custom_path();
+  record.admission_allowed =
+      rtcore_registry_payload_consumption_admission_policy_allows(
+          "provider-payload-consumption-runtime-evidence-shadow");
+  record.has_registry_payload_shadow = registry_payload_shadow != NULL;
+  record.consumption_policy_enabled =
+      rtcore_provider_payload_consumption_policy_enabled();
+  record.existing_traversal_backend_available =
+      rtcore_provider_payload_consumption_existing_traversal_backend_available();
+  record.provider_payload_consumption_enabled =
+      provider_payload_consumption_enabled;
+
+  if (registry_payload_shadow != NULL && registry_payload_shadow->valid) {
+    record.observed_valid_shadow = true;
+    record.field_coverage_complete =
+        rtcore_provider_payload_shadow_has_complete_field_coverage(
+            registry_payload_shadow);
+    record.owner_lifetime_ok =
+        registry_payload_shadow
+            ->provider_consumed_input_fields_all_owned_with_lifetime;
+  }
+
+  const rtcore_symbolic_resource_profile resource_profile =
+      rtcore_get_symbolic_resource_profile();
+  record.resident_rt_warps = resource_profile.resident_rt_warps;
+  record.token_limited_warps = resource_profile.token_limited_warps;
+  record.handoff_window_limited_warps =
+      resource_profile.handoff_window_limited_warps;
+  record.traversal_stack_limited_warps =
+      resource_profile.traversal_stack_limited_warps;
+  record.runtime_token_resource_model_available =
+      resource_profile.token_limited_warps != 0;
+  record.runtime_handoff_slot_model_available =
+      resource_profile.handoff_window_limited_warps != 0;
+  record.runtime_traversal_stack_model_available =
+      resource_profile.traversal_stack_limited_warps != 0;
+  record.runtime_resident_warp_model_available =
+      resource_profile.resident_rt_warps != 0;
+  record.runtime_issue_side_resource_evidence_available =
+      record.runtime_token_resource_model_available &&
+      record.runtime_handoff_slot_model_available &&
+      record.runtime_traversal_stack_model_available &&
+      record.runtime_resident_warp_model_available;
+  record.runtime_resource_evidence_available =
+      record.runtime_issue_side_resource_evidence_available;
+  record.runtime_parity_evidence_available =
+      record.default_custom_path && record.existing_traversal_backend_available &&
+      record.observed_valid_shadow && record.field_coverage_complete &&
+      record.owner_lifetime_ok;
+  record.runtime_evidence_complete =
+      record.runtime_parity_evidence_available &&
+      record.runtime_resource_evidence_available;
+  return record;
+}
+
+static void rtcore_log_provider_payload_consumption_runtime_evidence_record(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  const rtcore_provider_payload_consumption_runtime_evidence_record record =
+      rtcore_make_provider_payload_consumption_runtime_evidence_record(
+          descriptor.registry_payload_shadow,
+          descriptor.provider_payload_consumption_enabled);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "provider-payload-consumption-runtime-evidence=1, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, "
+         "provider_payload_consumption_runtime_evidence_valid=%u, "
+         "provider_payload_consumption_default_custom_path=%u, "
+         "registry_payload_admission_allowed=%u, "
+         "registry_payload_shadow_attached=%u, "
+         "registry_payload_shadow_observed=%u, "
+         "provider_payload_field_coverage_complete=%u, "
+         "provider_payload_consumption_owner_lifetime_ok=%u, "
+         "provider_payload_consumption_policy_enabled=%u, "
+         "provider_payload_consumption_existing_traversal_backend_available=%u, "
+         "provider_payload_consumption_runtime_parity_evidence_available=%u, "
+         "provider_payload_consumption_runtime_token_resource_model_available=%u, "
+         "provider_payload_consumption_runtime_handoff_slot_model_available=%u, "
+         "provider_payload_consumption_runtime_traversal_stack_model_available=%u, "
+         "provider_payload_consumption_runtime_resident_warp_model_available=%u, "
+         "provider_payload_consumption_runtime_issue_side_resource_evidence_available=%u, "
+         "provider_payload_consumption_runtime_completion_queue_evidence_deferred=%u, "
+         "provider_payload_consumption_runtime_resource_evidence_available=%u, "
+         "provider_payload_consumption_runtime_evidence_complete=%u, "
+         "provider_payload_consumption_runtime_evidence_gates_preflight=0, "
+         "provider_payload_consumption_preflight_uses_runtime_evidence=0, "
+         "provider_payload_consumption_enabled=%u, "
+         "resident_rt_warps=%u, token_limited_warps=%u, "
+         "handoff_window_limited_warps=%u, traversal_stack_limited_warps=%u\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, record.valid ? 1 : 0,
+         record.default_custom_path ? 1 : 0,
+         record.admission_allowed ? 1 : 0,
+         record.has_registry_payload_shadow ? 1 : 0,
+         record.observed_valid_shadow ? 1 : 0,
+         record.field_coverage_complete ? 1 : 0,
+         record.owner_lifetime_ok ? 1 : 0,
+         record.consumption_policy_enabled ? 1 : 0,
+         record.existing_traversal_backend_available ? 1 : 0,
+         record.runtime_parity_evidence_available ? 1 : 0,
+         record.runtime_token_resource_model_available ? 1 : 0,
+         record.runtime_handoff_slot_model_available ? 1 : 0,
+         record.runtime_traversal_stack_model_available ? 1 : 0,
+         record.runtime_resident_warp_model_available ? 1 : 0,
+         record.runtime_issue_side_resource_evidence_available ? 1 : 0,
+         record.runtime_completion_queue_evidence_deferred ? 1 : 0,
+         record.runtime_resource_evidence_available ? 1 : 0,
+         record.runtime_evidence_complete ? 1 : 0,
+         record.provider_payload_consumption_enabled ? 1 : 0,
+         record.resident_rt_warps, record.token_limited_warps,
+         record.handoff_window_limited_warps,
+         record.traversal_stack_limited_warps);
+  fflush(stdout);
 }
 
 static rtcore_provider_payload_consumption_preflight_record
@@ -14405,6 +14590,7 @@ static void rtcore_log_provider_payload_consumption_eligibility_shadow(
 
 static void rtcore_log_provider_payload_consumption_preflight_record(
     const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_log_provider_payload_consumption_runtime_evidence_record(descriptor);
   const rtcore_provider_payload_consumption_preflight_record preflight =
       rtcore_make_provider_payload_consumption_preflight_record(
           descriptor.registry_payload_shadow);
