@@ -10894,26 +10894,90 @@ rtcore_make_traversal_source_request(
 
 struct rtcore_provider_facing_registry_payload_shadow;
 
+enum rtcore_decoded_input_field_owner_class {
+  RTCORE_DECODED_INPUT_OWNER_FORBIDDEN = 0,
+  RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME,
+  RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION,
+  RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY,
+};
+
+static const char *rtcore_decoded_input_field_owner_class_name(
+    rtcore_decoded_input_field_owner_class owner) {
+  switch (owner) {
+    case RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME:
+      return "driver_runtime";
+    case RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION:
+      return "compiler_driver_publication";
+    case RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY:
+      return "simulator_proxy";
+    case RTCORE_DECODED_INPUT_OWNER_FORBIDDEN:
+    default:
+      return "forbidden";
+  }
+}
+
+static bool rtcore_decoded_input_field_owner_has_lifetime(
+    rtcore_decoded_input_field_owner_class owner) {
+  return owner == RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME ||
+         owner == RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION ||
+         owner == RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
+}
+
+static bool rtcore_decoded_input_fields_all_owned_with_lifetime(
+    bool has_ray_origin_direction_tmin_tmax,
+    rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner,
+    bool has_ray_flags_cull_mask,
+    rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner,
+    bool has_launch_context_input,
+    rtcore_decoded_input_field_owner_class launch_context_input_owner,
+    bool has_traversable_root_proxy,
+    rtcore_decoded_input_field_owner_class traversable_root_proxy_owner,
+    bool has_bvh_format_profile,
+    rtcore_decoded_input_field_owner_class bvh_format_profile_owner) {
+  return has_ray_origin_direction_tmin_tmax &&
+         rtcore_decoded_input_field_owner_has_lifetime(
+             ray_origin_direction_tmin_tmax_owner) &&
+         has_ray_flags_cull_mask &&
+         rtcore_decoded_input_field_owner_has_lifetime(
+             ray_flags_cull_mask_owner) &&
+         has_launch_context_input &&
+         rtcore_decoded_input_field_owner_has_lifetime(
+             launch_context_input_owner) &&
+         has_traversable_root_proxy &&
+         rtcore_decoded_input_field_owner_has_lifetime(
+             traversable_root_proxy_owner) &&
+         has_bvh_format_profile &&
+         rtcore_decoded_input_field_owner_has_lifetime(
+             bvh_format_profile_owner);
+}
+
 struct rtcore_provider_payload_consumed_input_view {
   rtcore_provider_payload_consumed_input_view()
       : valid(false),
         from_registry_payload_shadow(false),
         has_ray_origin_direction_tmin_tmax(false),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_ray_flags_cull_mask(false),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         ray_flags(0),
         cull_mask(0),
         ray_tmin(0.0f),
         ray_tmax(0.0f),
         has_launch_context_input(false),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bridge_trace_replay_top_level_as(0),
         sbt_record_offset(0),
         sbt_record_stride(0),
         miss_index(0),
         has_traversable_root_proxy(false),
+        traversable_root_proxy_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         traversable_proxy_id(0),
         root_proxy_id(0),
         has_bvh_format_profile(false),
-        bvh_format_version(0) {
+        bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        bvh_format_version(0),
+        provider_consumed_input_fields_all_owned_with_lifetime(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
     memset(&ray_direction, 0, sizeof(ray_direction));
   }
@@ -10921,7 +10985,9 @@ struct rtcore_provider_payload_consumed_input_view {
   bool valid;
   bool from_registry_payload_shadow;
   bool has_ray_origin_direction_tmin_tmax;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
   bool has_ray_flags_cull_mask;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   float3 ray_origin;
   float3 ray_direction;
   uint32_t ray_flags;
@@ -10929,15 +10995,19 @@ struct rtcore_provider_payload_consumed_input_view {
   float ray_tmin;
   float ray_tmax;
   bool has_launch_context_input;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
   uint64_t bridge_trace_replay_top_level_as;
   uint32_t sbt_record_offset;
   uint32_t sbt_record_stride;
   uint32_t miss_index;
   bool has_traversable_root_proxy;
+  rtcore_decoded_input_field_owner_class traversable_root_proxy_owner;
   uint64_t traversable_proxy_id;
   uint64_t root_proxy_id;
   bool has_bvh_format_profile;
+  rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   uint32_t bvh_format_version;
+  bool provider_consumed_input_fields_all_owned_with_lifetime;
 };
 
 struct rtcore_provider_decoded_input_observation {
@@ -10945,21 +11015,29 @@ struct rtcore_provider_decoded_input_observation {
       : valid(false),
         from_registry_payload_shadow(false),
         has_ray_origin_direction_tmin_tmax(false),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_ray_flags_cull_mask(false),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         ray_flags(0),
         cull_mask(0),
         ray_tmin(0.0f),
         ray_tmax(0.0f),
         has_launch_context_input(false),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bridge_trace_replay_top_level_as(0),
         sbt_record_offset(0),
         sbt_record_stride(0),
         miss_index(0),
         has_traversable_root_proxy(false),
+        traversable_root_proxy_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         traversable_proxy_id(0),
         root_proxy_id(0),
         has_bvh_format_profile(false),
-        bvh_format_version(0) {
+        bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        bvh_format_version(0),
+        provider_consumed_input_fields_all_owned_with_lifetime(false),
+        provider_payload_consumption_owner_lifetime_blocked(true) {
     memset(&ray_origin, 0, sizeof(ray_origin));
     memset(&ray_direction, 0, sizeof(ray_direction));
   }
@@ -10967,7 +11045,9 @@ struct rtcore_provider_decoded_input_observation {
   bool valid;
   bool from_registry_payload_shadow;
   bool has_ray_origin_direction_tmin_tmax;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
   bool has_ray_flags_cull_mask;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   float3 ray_origin;
   float3 ray_direction;
   uint32_t ray_flags;
@@ -10975,15 +11055,20 @@ struct rtcore_provider_decoded_input_observation {
   float ray_tmin;
   float ray_tmax;
   bool has_launch_context_input;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
   uint64_t bridge_trace_replay_top_level_as;
   uint32_t sbt_record_offset;
   uint32_t sbt_record_stride;
   uint32_t miss_index;
   bool has_traversable_root_proxy;
+  rtcore_decoded_input_field_owner_class traversable_root_proxy_owner;
   uint64_t traversable_proxy_id;
   uint64_t root_proxy_id;
   bool has_bvh_format_profile;
+  rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   uint32_t bvh_format_version;
+  bool provider_consumed_input_fields_all_owned_with_lifetime;
+  bool provider_payload_consumption_owner_lifetime_blocked;
 };
 
 static bool rtcore_provider_payload_consumption_effective_enabled(
@@ -13176,21 +13261,28 @@ struct rtcore_provider_facing_registry_payload_shadow {
         read_gate_allowed(false),
         provider_consumption_attached(false),
         has_ray_origin_direction_tmin_tmax(false),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_ray_flags_cull_mask(false),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         ray_flags(0),
         cull_mask(0),
         ray_tmin(0.0f),
         ray_tmax(0.0f),
         has_launch_context_input(false),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bridge_trace_replay_top_level_as(0),
         sbt_record_offset(0),
         sbt_record_stride(0),
         miss_index(0),
         has_traversable_root_proxy(false),
+        traversable_root_proxy_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         traversable_proxy_id(0),
         root_proxy_id(0),
         has_bvh_format_profile(false),
-        bvh_format_version(0) {
+        bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        bvh_format_version(0),
+        provider_consumed_input_fields_all_owned_with_lifetime(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
     memset(&ray_direction, 0, sizeof(ray_direction));
   }
@@ -13200,7 +13292,9 @@ struct rtcore_provider_facing_registry_payload_shadow {
   bool provider_consumption_attached;
   rtcore_input_provenance_registry_key key;
   bool has_ray_origin_direction_tmin_tmax;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
   bool has_ray_flags_cull_mask;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   float3 ray_origin;
   float3 ray_direction;
   uint32_t ray_flags;
@@ -13208,15 +13302,19 @@ struct rtcore_provider_facing_registry_payload_shadow {
   float ray_tmin;
   float ray_tmax;
   bool has_launch_context_input;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
   uint64_t bridge_trace_replay_top_level_as;
   uint32_t sbt_record_offset;
   uint32_t sbt_record_stride;
   uint32_t miss_index;
   bool has_traversable_root_proxy;
+  rtcore_decoded_input_field_owner_class traversable_root_proxy_owner;
   uint64_t traversable_proxy_id;
   uint64_t root_proxy_id;
   bool has_bvh_format_profile;
+  rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   uint32_t bvh_format_version;
+  bool provider_consumed_input_fields_all_owned_with_lifetime;
 };
 
 struct rtcore_provider_facing_registry_payload_admission_mirror {
@@ -13353,8 +13451,12 @@ rtcore_make_provider_decoded_input_observation(
   observation.from_registry_payload_shadow = true;
   observation.has_ray_origin_direction_tmin_tmax =
       registry_payload_shadow->has_ray_origin_direction_tmin_tmax;
+  observation.ray_origin_direction_tmin_tmax_owner =
+      registry_payload_shadow->ray_origin_direction_tmin_tmax_owner;
   observation.has_ray_flags_cull_mask =
       registry_payload_shadow->has_ray_flags_cull_mask;
+  observation.ray_flags_cull_mask_owner =
+      registry_payload_shadow->ray_flags_cull_mask_owner;
   observation.ray_origin = registry_payload_shadow->ray_origin;
   observation.ray_direction = registry_payload_shadow->ray_direction;
   observation.ray_tmin = registry_payload_shadow->ray_tmin;
@@ -13363,6 +13465,8 @@ rtcore_make_provider_decoded_input_observation(
   observation.cull_mask = registry_payload_shadow->cull_mask;
   observation.has_launch_context_input =
       registry_payload_shadow->has_launch_context_input;
+  observation.launch_context_input_owner =
+      registry_payload_shadow->launch_context_input_owner;
   observation.bridge_trace_replay_top_level_as =
       registry_payload_shadow->bridge_trace_replay_top_level_as;
   observation.sbt_record_offset = registry_payload_shadow->sbt_record_offset;
@@ -13370,11 +13474,20 @@ rtcore_make_provider_decoded_input_observation(
   observation.miss_index = registry_payload_shadow->miss_index;
   observation.has_traversable_root_proxy =
       registry_payload_shadow->has_traversable_root_proxy;
+  observation.traversable_root_proxy_owner =
+      registry_payload_shadow->traversable_root_proxy_owner;
   observation.traversable_proxy_id = registry_payload_shadow->traversable_proxy_id;
   observation.root_proxy_id = registry_payload_shadow->root_proxy_id;
   observation.has_bvh_format_profile =
       registry_payload_shadow->has_bvh_format_profile;
+  observation.bvh_format_profile_owner =
+      registry_payload_shadow->bvh_format_profile_owner;
   observation.bvh_format_version = registry_payload_shadow->bvh_format_version;
+  observation.provider_consumed_input_fields_all_owned_with_lifetime =
+      registry_payload_shadow
+          ->provider_consumed_input_fields_all_owned_with_lifetime;
+  observation.provider_payload_consumption_owner_lifetime_blocked =
+      !observation.provider_consumed_input_fields_all_owned_with_lifetime;
   return observation;
 }
 
@@ -13393,6 +13506,10 @@ static bool rtcore_provider_payload_consumption_effective_enabled(
   }
   if (!rtcore_provider_payload_shadow_has_complete_field_coverage(
           registry_payload_shadow)) {
+    return false;
+  }
+  if (!registry_payload_shadow
+           ->provider_consumed_input_fields_all_owned_with_lifetime) {
     return false;
   }
   return true;
@@ -13417,8 +13534,12 @@ rtcore_make_provider_payload_consumed_input_view(
   view.from_registry_payload_shadow = true;
   view.has_ray_origin_direction_tmin_tmax =
       registry_payload_shadow->has_ray_origin_direction_tmin_tmax;
+  view.ray_origin_direction_tmin_tmax_owner =
+      registry_payload_shadow->ray_origin_direction_tmin_tmax_owner;
   view.has_ray_flags_cull_mask =
       registry_payload_shadow->has_ray_flags_cull_mask;
+  view.ray_flags_cull_mask_owner =
+      registry_payload_shadow->ray_flags_cull_mask_owner;
   view.ray_origin = registry_payload_shadow->ray_origin;
   view.ray_direction = registry_payload_shadow->ray_direction;
   view.ray_tmin = registry_payload_shadow->ray_tmin;
@@ -13427,6 +13548,8 @@ rtcore_make_provider_payload_consumed_input_view(
   view.cull_mask = registry_payload_shadow->cull_mask;
   view.has_launch_context_input =
       registry_payload_shadow->has_launch_context_input;
+  view.launch_context_input_owner =
+      registry_payload_shadow->launch_context_input_owner;
   view.bridge_trace_replay_top_level_as =
       registry_payload_shadow->bridge_trace_replay_top_level_as;
   view.sbt_record_offset = registry_payload_shadow->sbt_record_offset;
@@ -13434,11 +13557,18 @@ rtcore_make_provider_payload_consumed_input_view(
   view.miss_index = registry_payload_shadow->miss_index;
   view.has_traversable_root_proxy =
       registry_payload_shadow->has_traversable_root_proxy;
+  view.traversable_root_proxy_owner =
+      registry_payload_shadow->traversable_root_proxy_owner;
   view.traversable_proxy_id = registry_payload_shadow->traversable_proxy_id;
   view.root_proxy_id = registry_payload_shadow->root_proxy_id;
   view.has_bvh_format_profile =
       registry_payload_shadow->has_bvh_format_profile;
+  view.bvh_format_profile_owner =
+      registry_payload_shadow->bvh_format_profile_owner;
   view.bvh_format_version = registry_payload_shadow->bvh_format_version;
+  view.provider_consumed_input_fields_all_owned_with_lifetime =
+      registry_payload_shadow
+          ->provider_consumed_input_fields_all_owned_with_lifetime;
   return view;
 }
 
@@ -13584,14 +13714,21 @@ struct rtcore_decoded_traversal_input_snapshot {
   rtcore_decoded_traversal_input_snapshot()
       : valid(false),
         has_context_window_owner_seq(false),
+        context_window_owner_seq_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_traversable_root_proxy(false),
+        traversable_root_proxy_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         traversable_proxy_id(0),
         root_proxy_id(0),
         has_bvh_format_version(false),
+        bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bvh_format_version(0),
         has_ray_origin_direction_tmin_tmax(false),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_ray_flags_cull_mask(false),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_launch_context_input(false),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         ray_flags(0),
         cull_mask(0),
         bridge_trace_replay_top_level_as(0),
@@ -13606,15 +13743,21 @@ struct rtcore_decoded_traversal_input_snapshot {
 
   bool valid;
   bool has_context_window_owner_seq;
+  rtcore_decoded_input_field_owner_class context_window_owner_seq_owner;
   rtcore_context_window_owner_seq_snapshot context_window_owner_seq;
   bool has_traversable_root_proxy;
+  rtcore_decoded_input_field_owner_class traversable_root_proxy_owner;
   uint64_t traversable_proxy_id;
   uint64_t root_proxy_id;
   bool has_bvh_format_version;
+  rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   uint32_t bvh_format_version;
   bool has_ray_origin_direction_tmin_tmax;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
   bool has_ray_flags_cull_mask;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   bool has_launch_context_input;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
   float3 ray_origin;
   float3 ray_direction;
   uint32_t ray_flags;
@@ -13633,8 +13776,37 @@ rtcore_make_decoded_traversal_input_snapshot(
   rtcore_decoded_traversal_input_snapshot snapshot;
   snapshot.valid = owner_seq_snapshot.valid;
   snapshot.has_context_window_owner_seq = owner_seq_snapshot.valid;
+  snapshot.context_window_owner_seq_owner =
+      owner_seq_snapshot.valid ? RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME
+                               : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   snapshot.context_window_owner_seq = owner_seq_snapshot;
   return snapshot;
+}
+
+static rtcore_decoded_input_field_owner_class
+rtcore_decoded_input_owner_from_publication_source(const char *source) {
+  if (source != NULL &&
+      strcmp(source, "compiler_driver_publication_sideband") == 0) {
+    return RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION;
+  }
+  if (source != NULL &&
+      (strcmp(source, "trace_invocation_publication_source_shadow") == 0 ||
+       strcmp(source, "trace_ray_impl") == 0)) {
+    return RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
+  }
+  return RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+}
+
+static bool rtcore_decoded_input_snapshot_all_fields_owned_with_lifetime(
+    const rtcore_decoded_traversal_input_snapshot &snapshot) {
+  return rtcore_decoded_input_fields_all_owned_with_lifetime(
+      snapshot.has_ray_origin_direction_tmin_tmax,
+      snapshot.ray_origin_direction_tmin_tmax_owner,
+      snapshot.has_ray_flags_cull_mask, snapshot.ray_flags_cull_mask_owner,
+      snapshot.has_launch_context_input, snapshot.launch_context_input_owner,
+      snapshot.has_traversable_root_proxy,
+      snapshot.traversable_root_proxy_owner, snapshot.has_bvh_format_version,
+      snapshot.bvh_format_profile_owner);
 }
 
 static rtcore_provider_decoded_input_observation
@@ -13649,8 +13821,12 @@ rtcore_make_provider_decoded_input_observation(
   observation.from_registry_payload_shadow = false;
   observation.has_ray_origin_direction_tmin_tmax =
       decoded_input_snapshot.has_ray_origin_direction_tmin_tmax;
+  observation.ray_origin_direction_tmin_tmax_owner =
+      decoded_input_snapshot.ray_origin_direction_tmin_tmax_owner;
   observation.has_ray_flags_cull_mask =
       decoded_input_snapshot.has_ray_flags_cull_mask;
+  observation.ray_flags_cull_mask_owner =
+      decoded_input_snapshot.ray_flags_cull_mask_owner;
   observation.ray_origin = decoded_input_snapshot.ray_origin;
   observation.ray_direction = decoded_input_snapshot.ray_direction;
   observation.ray_tmin = decoded_input_snapshot.ray_tmin;
@@ -13659,6 +13835,8 @@ rtcore_make_provider_decoded_input_observation(
   observation.cull_mask = decoded_input_snapshot.cull_mask;
   observation.has_launch_context_input =
       decoded_input_snapshot.has_launch_context_input;
+  observation.launch_context_input_owner =
+      decoded_input_snapshot.launch_context_input_owner;
   observation.bridge_trace_replay_top_level_as =
       decoded_input_snapshot.bridge_trace_replay_top_level_as;
   observation.sbt_record_offset = decoded_input_snapshot.sbt_record_offset;
@@ -13666,12 +13844,21 @@ rtcore_make_provider_decoded_input_observation(
   observation.miss_index = decoded_input_snapshot.miss_index;
   observation.has_traversable_root_proxy =
       decoded_input_snapshot.has_traversable_root_proxy;
+  observation.traversable_root_proxy_owner =
+      decoded_input_snapshot.traversable_root_proxy_owner;
   observation.traversable_proxy_id =
       decoded_input_snapshot.traversable_proxy_id;
   observation.root_proxy_id = decoded_input_snapshot.root_proxy_id;
   observation.has_bvh_format_profile =
       decoded_input_snapshot.has_bvh_format_version;
+  observation.bvh_format_profile_owner =
+      decoded_input_snapshot.bvh_format_profile_owner;
   observation.bvh_format_version = decoded_input_snapshot.bvh_format_version;
+  observation.provider_consumed_input_fields_all_owned_with_lifetime =
+      rtcore_decoded_input_snapshot_all_fields_owned_with_lifetime(
+          decoded_input_snapshot);
+  observation.provider_payload_consumption_owner_lifetime_blocked =
+      !observation.provider_consumed_input_fields_all_owned_with_lifetime;
   return observation;
 }
 
@@ -13682,6 +13869,8 @@ static void rtcore_update_decoded_traversal_input_ray_proxy_snapshot(
     return;
   }
   snapshot->has_ray_origin_direction_tmin_tmax = false;
+  snapshot->ray_origin_direction_tmin_tmax_owner =
+      RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   if (!source_snapshot.has_traversal_data) {
     return;
   }
@@ -13690,6 +13879,8 @@ static void rtcore_update_decoded_traversal_input_ray_proxy_snapshot(
   snapshot->ray_tmin = source_snapshot.traversal_snapshot.Tmin;
   snapshot->ray_tmax = source_snapshot.traversal_snapshot.Tmax;
   snapshot->has_ray_origin_direction_tmin_tmax = true;
+  snapshot->ray_origin_direction_tmin_tmax_owner =
+      RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
 }
 
 static void rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
@@ -13699,12 +13890,15 @@ static void rtcore_update_decoded_traversal_input_flags_mask_proxy_snapshot(
     return;
   }
   snapshot->has_ray_flags_cull_mask = false;
+  snapshot->ray_flags_cull_mask_owner = RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   if (!source_snapshot.has_traversal_data) {
     return;
   }
   snapshot->ray_flags = source_snapshot.traversal_snapshot.rayFlags;
   snapshot->cull_mask = source_snapshot.traversal_snapshot.cullMask;
   snapshot->has_ray_flags_cull_mask = true;
+  snapshot->ray_flags_cull_mask_owner =
+      RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
 }
 
 static void rtcore_update_decoded_traversal_input_launch_context_snapshot(
@@ -13714,6 +13908,7 @@ static void rtcore_update_decoded_traversal_input_launch_context_snapshot(
     return;
   }
   snapshot->has_launch_context_input = false;
+  snapshot->launch_context_input_owner = RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   if (!source_snapshot.has_traversal_data ||
       source_snapshot.traversal_snapshot.rtcore_trace_input_has_top_level_as ==
           0) {
@@ -13727,6 +13922,8 @@ static void rtcore_update_decoded_traversal_input_launch_context_snapshot(
       source_snapshot.traversal_snapshot.sbtRecordStride;
   snapshot->miss_index = source_snapshot.traversal_snapshot.missIndex;
   snapshot->has_launch_context_input = true;
+  snapshot->launch_context_input_owner =
+      RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
 }
 
 static void rtcore_update_decoded_traversal_input_traversable_root_proxy_snapshot(
@@ -13736,6 +13933,8 @@ static void rtcore_update_decoded_traversal_input_traversable_root_proxy_snapsho
     return;
   }
   snapshot->has_traversable_root_proxy = false;
+  snapshot->traversable_root_proxy_owner =
+      RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   if (!source_snapshot.has_traversal_data) {
     return;
   }
@@ -13747,6 +13946,8 @@ static void rtcore_update_decoded_traversal_input_traversable_root_proxy_snapsho
     return;
   }
   snapshot->has_traversable_root_proxy = true;
+  snapshot->traversable_root_proxy_owner =
+      RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
 }
 
 static void rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
@@ -13756,11 +13957,14 @@ static void rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
     return;
   }
   snapshot->has_bvh_format_version = false;
+  snapshot->bvh_format_profile_owner = RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   if (!source_snapshot.has_traversal_data) {
     return;
   }
   snapshot->bvh_format_version = RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
   snapshot->has_bvh_format_version = true;
+  snapshot->bvh_format_profile_owner =
+      RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
 }
 
 struct rtcore_pre_provider_traversal_data_snapshot {
@@ -14117,16 +14321,21 @@ rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
       !rtcore_launch_context_input_publication_record_is_complete(record)) {
     return;
   }
+  const rtcore_decoded_input_field_owner_class publication_owner =
+      rtcore_decoded_input_owner_from_publication_source(record.source);
   decoded_input_snapshot->ray_origin = record.ray_origin;
   decoded_input_snapshot->ray_direction = record.ray_direction;
   decoded_input_snapshot->ray_tmin = record.ray_tmin;
   decoded_input_snapshot->ray_tmax = record.ray_tmax;
   decoded_input_snapshot->has_ray_origin_direction_tmin_tmax =
       record.has_ray_origin_direction_tmin_tmax;
+  decoded_input_snapshot->ray_origin_direction_tmin_tmax_owner =
+      publication_owner;
   decoded_input_snapshot->ray_flags = record.ray_flags;
   decoded_input_snapshot->cull_mask = record.cull_mask;
   decoded_input_snapshot->has_ray_flags_cull_mask =
       record.has_ray_flags_cull_mask;
+  decoded_input_snapshot->ray_flags_cull_mask_owner = publication_owner;
   decoded_input_snapshot->bridge_trace_replay_top_level_as =
       record.bridge_trace_replay_top_level_as;
   decoded_input_snapshot->sbt_record_offset = record.sbt_record_offset;
@@ -14134,6 +14343,7 @@ rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
   decoded_input_snapshot->miss_index = record.miss_index;
   decoded_input_snapshot->has_launch_context_input =
       record.has_launch_context_input;
+  decoded_input_snapshot->launch_context_input_owner = publication_owner;
 }
 
 static void
@@ -14300,18 +14510,38 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
       decoded_input_snapshot.has_ray_origin_direction_tmin_tmax &&
       publication_snapshot.entry.owned_fields
           .has_ray_origin_direction_tmin_tmax;
+  shadow.ray_origin_direction_tmin_tmax_owner =
+      shadow.has_ray_origin_direction_tmin_tmax
+          ? decoded_input_snapshot.ray_origin_direction_tmin_tmax_owner
+          : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   shadow.has_ray_flags_cull_mask =
       decoded_input_snapshot.has_ray_flags_cull_mask &&
       publication_snapshot.entry.owned_fields.has_ray_flags_cull_mask;
+  shadow.ray_flags_cull_mask_owner =
+      shadow.has_ray_flags_cull_mask
+          ? decoded_input_snapshot.ray_flags_cull_mask_owner
+          : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   shadow.has_launch_context_input =
       decoded_input_snapshot.has_launch_context_input &&
       publication_snapshot.entry.owned_fields.has_launch_context_input;
+  shadow.launch_context_input_owner =
+      shadow.has_launch_context_input
+          ? decoded_input_snapshot.launch_context_input_owner
+          : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   shadow.has_traversable_root_proxy =
       decoded_input_snapshot.has_traversable_root_proxy &&
       publication_snapshot.entry.owned_fields.has_traversable_root_proxy;
+  shadow.traversable_root_proxy_owner =
+      shadow.has_traversable_root_proxy
+          ? decoded_input_snapshot.traversable_root_proxy_owner
+          : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   shadow.has_bvh_format_profile =
       decoded_input_snapshot.has_bvh_format_version &&
       publication_snapshot.entry.owned_fields.has_bvh_format_profile;
+  shadow.bvh_format_profile_owner =
+      shadow.has_bvh_format_profile
+          ? decoded_input_snapshot.bvh_format_profile_owner
+          : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   shadow.ray_origin = decoded_input_snapshot.ray_origin;
   shadow.ray_direction = decoded_input_snapshot.ray_direction;
   shadow.ray_tmin = decoded_input_snapshot.ray_tmin;
@@ -14331,6 +14561,15 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
                  shadow.has_launch_context_input &&
                  shadow.has_traversable_root_proxy &&
                  shadow.has_bvh_format_profile;
+  shadow.provider_consumed_input_fields_all_owned_with_lifetime =
+      rtcore_decoded_input_fields_all_owned_with_lifetime(
+          shadow.has_ray_origin_direction_tmin_tmax,
+          shadow.ray_origin_direction_tmin_tmax_owner,
+          shadow.has_ray_flags_cull_mask, shadow.ray_flags_cull_mask_owner,
+          shadow.has_launch_context_input, shadow.launch_context_input_owner,
+          shadow.has_traversable_root_proxy,
+          shadow.traversable_root_proxy_owner,
+          shadow.has_bvh_format_profile, shadow.bvh_format_profile_owner);
   return shadow;
 }
 
@@ -14386,18 +14625,25 @@ static void rtcore_log_provider_decoded_input_observation(
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, provider_decoded_input_observed=1, "
          "provider_decoded_input_source=%s, "
+         "provider_decoded_input_owner_classification=1, "
          "provider_payload_consumption_enabled=%u, "
          "has_ray_origin_direction_tmin_tmax=%u, "
+         "ray_origin_direction_tmin_tmax_owner=%s, "
          "ray_origin=(%f,%f,%f), ray_direction=(%f,%f,%f), "
          "ray_tmin=%f, ray_tmax=%f, "
-         "has_ray_flags_cull_mask=%u, ray_flags=%u, cull_mask=%u, "
+         "has_ray_flags_cull_mask=%u, ray_flags_cull_mask_owner=%s, "
+         "ray_flags=%u, cull_mask=%u, "
          "has_launch_context_input=%u, "
+         "launch_context_input_owner=%s, "
          "provider_decoded_input_launch_context_source=shadow_context_acquire, "
          "bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
-         "has_traversable_root_proxy=%u, traversable_proxy_id=0x%llx, "
+         "has_traversable_root_proxy=%u, traversable_root_proxy_owner=%s, "
+         "traversable_proxy_id=0x%llx, "
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
-         "bvh_format_version=%u, "
+         "bvh_format_profile_owner=%s, bvh_format_version=%u, "
+         "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
+         "provider_payload_consumption_owner_lifetime_blocked=%u, "
          "provider_decoded_input_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
@@ -14406,21 +14652,35 @@ static void rtcore_log_provider_decoded_input_observation(
                                                   : "event_local_decoded_snapshot",
          descriptor.provider_payload_consumption_enabled ? 1 : 0,
          observation.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             observation.ray_origin_direction_tmin_tmax_owner),
          observation.ray_origin.x, observation.ray_origin.y,
          observation.ray_origin.z, observation.ray_direction.x,
          observation.ray_direction.y, observation.ray_direction.z,
          observation.ray_tmin, observation.ray_tmax,
          observation.has_ray_flags_cull_mask ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             observation.ray_flags_cull_mask_owner),
          observation.ray_flags, observation.cull_mask,
          observation.has_launch_context_input ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             observation.launch_context_input_owner),
          (unsigned long long)observation.bridge_trace_replay_top_level_as,
          observation.sbt_record_offset, observation.sbt_record_stride,
          observation.miss_index,
          observation.has_traversable_root_proxy ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             observation.traversable_root_proxy_owner),
          (unsigned long long)observation.traversable_proxy_id,
          (unsigned long long)observation.root_proxy_id,
          observation.has_bvh_format_profile ? 1 : 0,
-         observation.bvh_format_version);
+         rtcore_decoded_input_field_owner_class_name(
+             observation.bvh_format_profile_owner),
+         observation.bvh_format_version,
+         observation.provider_consumed_input_fields_all_owned_with_lifetime ? 1
+                                                                           : 0,
+         observation.provider_payload_consumption_owner_lifetime_blocked ? 1
+                                                                         : 0);
   fflush(stdout);
 }
 
@@ -14479,32 +14739,50 @@ static void rtcore_log_provider_payload_consumed_input_view(
          "provider_payload_consumption_source=registry_payload_shadow, "
          "rtcore-provider-payload-launch-context-input=1, "
          "has_ray_origin_direction_tmin_tmax=%u, "
+         "ray_origin_direction_tmin_tmax_owner=%s, "
          "ray_origin=(%f,%f,%f), ray_direction=(%f,%f,%f), "
          "ray_tmin=%f, ray_tmax=%f, "
-         "has_ray_flags_cull_mask=%u, ray_flags=%u, cull_mask=%u, "
+         "has_ray_flags_cull_mask=%u, ray_flags_cull_mask_owner=%s, "
+         "ray_flags=%u, cull_mask=%u, "
          "has_launch_context_input=%u, "
+         "launch_context_input_owner=%s, "
          "provider_payload_launch_context_input_source=shadow_context_acquire, "
          "bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
-         "has_traversable_root_proxy=%u, traversable_proxy_id=0x%llx, "
+         "has_traversable_root_proxy=%u, traversable_root_proxy_owner=%s, "
+         "traversable_proxy_id=0x%llx, "
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
-         "bvh_format_version=%u, "
+         "bvh_format_profile_owner=%s, bvh_format_version=%u, "
+         "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
          "provider_payload_consumed_input_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index,
          view.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             view.ray_origin_direction_tmin_tmax_owner),
          view.ray_origin.x, view.ray_origin.y, view.ray_origin.z,
          view.ray_direction.x, view.ray_direction.y, view.ray_direction.z,
          view.ray_tmin, view.ray_tmax,
-         view.has_ray_flags_cull_mask ? 1 : 0, view.ray_flags,
-         view.cull_mask, view.has_launch_context_input ? 1 : 0,
+         view.has_ray_flags_cull_mask ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             view.ray_flags_cull_mask_owner),
+         view.ray_flags, view.cull_mask,
+         view.has_launch_context_input ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             view.launch_context_input_owner),
          (unsigned long long)view.bridge_trace_replay_top_level_as,
          view.sbt_record_offset, view.sbt_record_stride, view.miss_index,
          view.has_traversable_root_proxy ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             view.traversable_root_proxy_owner),
          (unsigned long long)view.traversable_proxy_id,
          (unsigned long long)view.root_proxy_id,
-         view.has_bvh_format_profile ? 1 : 0, view.bvh_format_version);
+         view.has_bvh_format_profile ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             view.bvh_format_profile_owner),
+         view.bvh_format_version,
+         view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0);
   fflush(stdout);
 }
 
