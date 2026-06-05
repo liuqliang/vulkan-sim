@@ -8434,6 +8434,14 @@ const unsigned long long RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BASE =
     0x30000000ull;
 const unsigned long long RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BYTES =
     0x10000000ull;
+const unsigned long long RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE =
+    0x10000000ull;
+const unsigned long long RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE =
+    RTCORE_SHARED_HANDOFF_WINDOW_BASE;
+const char *RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT =
+    "source=default_runtime_owned";
+const char *RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_EXPLICIT =
+    "source=explicit_env";
 const char *RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENV =
     "VULKAN_SIM_RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD";
 const char *RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV =
@@ -8450,9 +8458,11 @@ enum rtcore_driver_runtime_handle_scaffold_mode {
 rtcore_driver_runtime_handle_scaffold_mode
 rtcore_driver_runtime_handle_scaffold_mode_from_env() {
   const char *value = getenv(RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENV);
-  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
-      rtcore_path_mode_is(value, "false") || rtcore_path_mode_is(value, "off") ||
-      rtcore_path_mode_is(value, "no")) {
+  if (value == NULL || value[0] == '\0') {
+    return RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_ENABLED;
+  }
+  if (strcmp(value, "0") == 0 || rtcore_path_mode_is(value, "false") ||
+      rtcore_path_mode_is(value, "off") || rtcore_path_mode_is(value, "no")) {
     return RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED;
   }
   if (strcmp(value, "1") == 0 || rtcore_path_mode_is(value, "true") ||
@@ -8482,6 +8492,28 @@ bool rtcore_driver_runtime_parse_u64_env(const char *name,
   return true;
 }
 
+bool rtcore_driver_runtime_resolve_u64_env(const char *name,
+                                           unsigned long long fallback,
+                                           unsigned long long *value,
+                                           bool *explicit_value) {
+  const char *raw_value = getenv(name);
+  if (raw_value == NULL || raw_value[0] == '\0') {
+    *value = fallback;
+    *explicit_value = false;
+    return true;
+  }
+  char *end = NULL;
+  const unsigned long long parsed = strtoull(raw_value, &end, 0);
+  if (end == raw_value || *end != '\0') {
+    *value = 0;
+    *explicit_value = true;
+    return false;
+  }
+  *value = parsed;
+  *explicit_value = true;
+  return true;
+}
+
 bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
     const ptx_instruction *pI, unsigned long long context_ptr,
     unsigned long long handoff_window_base, unsigned lane_slot_index) {
@@ -8493,12 +8525,18 @@ bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
 
   unsigned long long driver_context_base = 0;
   unsigned long long driver_handoff_base = 0;
+  bool explicit_context_base = false;
+  bool explicit_handoff_base = false;
   const bool invalid_flag =
       mode == RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_INVALID;
-  const bool has_context_base = rtcore_driver_runtime_parse_u64_env(
-      RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV, &driver_context_base);
-  const bool has_handoff_base = rtcore_driver_runtime_parse_u64_env(
-      RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV, &driver_handoff_base);
+  const bool has_context_base = rtcore_driver_runtime_resolve_u64_env(
+      RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV,
+      RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE, &driver_context_base,
+      &explicit_context_base);
+  const bool has_handoff_base = rtcore_driver_runtime_resolve_u64_env(
+      RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV,
+      RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE, &driver_handoff_base,
+      &explicit_handoff_base);
   const bool context_matches =
       has_context_base && context_ptr >= driver_context_base &&
       ((context_ptr - driver_context_base) % RTCORE_CONTEXT_BYTES_PER_LANE) == 0;
@@ -8510,6 +8548,23 @@ bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
 
   if (!invalid_flag && has_context_base && has_handoff_base &&
       context_matches && handoff_matches) {
+    const bool explicit_source = explicit_context_base || explicit_handoff_base;
+    const char *ownership_source =
+        explicit_source ? RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_EXPLICIT
+                        : RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT;
+    printf("GPGPU-Sim PTX: RT_SUBMIT driver-runtime-handle-ownership "
+           "(%s:%u), %s, enabled_by_default=%u, "
+           "explicit_context_base=%u, explicit_handoff_base=%u, "
+           "context_base=0x%llx, handoff_base=0x%llx, "
+           "context_matches=%u, handoff_matches=%u, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u\n",
+           pI->source_file(), pI->source_line(), ownership_source,
+           explicit_source ? 0 : 1, explicit_context_base ? 1 : 0,
+           explicit_handoff_base ? 1 : 0, driver_context_base,
+           driver_handoff_base, context_matches ? 1 : 0,
+           handoff_matches ? 1 : 0, context_ptr, handoff_window_base,
+           lane_slot_index);
+    fflush(stdout);
     return false;
   }
 
