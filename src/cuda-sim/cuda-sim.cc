@@ -1312,6 +1312,46 @@ void ptx_instruction::pre_decode() {
   m_decoded = true;
 }
 
+static const char *rtcore_instruction_operand_contract_name(unsigned opcode) {
+  switch (opcode) {
+    case TRACE_RAY_OP:
+      return "trace_ray";
+    case RT_PUBLISH_TRACE_CONTEXT_OP:
+      return "rt_publish_trace_context";
+    case RT_SUBMIT_OP:
+      return "rt_submit";
+    case RT_RETIRE_CONTEXT_OP:
+      return "rt_retire_context";
+    default:
+      return "non_rtcore";
+  }
+}
+
+static bool rtcore_instruction_has_strict_operand_contract(unsigned opcode) {
+  switch (opcode) {
+    case TRACE_RAY_OP:
+    case RT_PUBLISH_TRACE_CONTEXT_OP:
+    case RT_SUBMIT_OP:
+    case RT_RETIRE_CONTEXT_OP:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static void rtcore_fail_closed_on_instruction_operand_contract(
+    const ptx_instruction *inst, unsigned observed_operands,
+    unsigned expected_operands) {
+  printf("GPGPU-Sim PTX: RTCORE fail-closed (%s:%u), "
+         "reason=RTCORE_INSTRUCTION_OPERAND_CONTRACT, opcode=%s, "
+         "observed_operands=%u, expected_operands=%u\n",
+         inst->source_file(), inst->source_line(),
+         rtcore_instruction_operand_contract_name(inst->get_opcode()),
+         observed_operands, expected_operands);
+  fflush(stdout);
+  abort();
+}
+
 void ptx_instruction::set_input_output_registers() {
   unsigned num_operands = get_num_operands();
   std::list<unsigned> operand_classification;
@@ -1400,7 +1440,13 @@ void ptx_instruction::set_input_output_registers() {
   }
 
   if (operand_classification.size() > 0) {
-    assert(num_operands == operand_classification.size());
+    if (num_operands != operand_classification.size()) {
+      if (rtcore_instruction_has_strict_operand_contract(m_opcode)) {
+        rtcore_fail_closed_on_instruction_operand_contract(
+            this, num_operands, operand_classification.size());
+      }
+      assert(num_operands == operand_classification.size());
+    }
     unsigned in_index = 0;
     unsigned out_index = 0;
     ptx_instruction::const_iterator opr = op_iter_begin();

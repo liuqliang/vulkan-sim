@@ -7299,6 +7299,13 @@ rtcore_compiler_driver_publication_source_failpoint_corrupt_context_window_key()
   return value != NULL && strcmp(value, "corrupt_context_window_key") == 0;
 }
 
+static bool
+rtcore_compiler_driver_publication_source_failpoint_drop_context_window_key() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_COMPILER_DRIVER_PUBLICATION_SOURCE_FAILPOINT");
+  return value != NULL && strcmp(value, "drop_context_window_key") == 0;
+}
+
 static bool rtcore_trace_invocation_publication_source_owner_tuple_matches(
     ptx_thread_info *thread,
     const rtcore_trace_invocation_publication_source_shadow &shadow) {
@@ -7485,6 +7492,18 @@ static void rtcore_publish_trace_context_publication_source_shadow(
            shadow.handoff_window_base);
     fflush(stdout);
   }
+  if (rtcore_compiler_driver_publication_source_failpoint_drop_context_window_key()) {
+    shadow.has_context_window_owner_key = false;
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "compiler-driver-publication-source-missing-context-window-key "
+           "(%s:%u), source=compiler_driver_publication_sideband, "
+           "source_publication_seq=%llu, published_context_ptr=0x%llx, "
+           "published_handoff_window_base=0x%llx\n",
+           pI->source_file(), pI->source_line(),
+           shadow.source_publication_seq, shadow.context_ptr,
+           shadow.handoff_window_base);
+    fflush(stdout);
+  }
   g_rtcore_trace_invocation_publication_source_shadow[thread] = shadow;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
@@ -7506,8 +7525,24 @@ static void rtcore_publish_trace_context_publication_source_shadow(
   fflush(stdout);
 }
 
+static bool rtcore_fail_closed_on_rt_publish_trace_context_operand_contract(
+    const ptx_instruction *pI) {
+  if (pI->get_num_operands() == 16) {
+    return false;
+  }
+  printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
+         "reason=RT_PUBLISH_TRACE_CONTEXT_OPERAND_CONTRACT, "
+         "observed_operands=%u, expected_operands=16\n",
+         pI->source_file(), pI->source_line(), pI->get_num_operands());
+  fflush(stdout);
+  inst_not_implemented(pI);
+  return true;
+}
+
 void rt_publish_trace_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  assert(pI->get_num_operands() == 16);
+  if (rtcore_fail_closed_on_rt_publish_trace_context_operand_contract(pI)) {
+    return;
+  }
 
   const operand_info &context_ptr = pI->operand_lookup(0);
   ptx_reg_t context_ptr_data =
@@ -13937,11 +13972,21 @@ rtcore_make_launch_context_input_publication_record(
   return record;
 }
 
+static bool rtcore_compiler_driver_sideband_requires_context_window_key(
+    const rtcore_launch_context_input_publication_record &record) {
+  if (strcmp(record.source, "compiler_driver_publication_sideband") != 0) {
+    return true;
+  }
+  return record.has_source_context_window_key &&
+         record.source_context_window_match;
+}
+
 static bool rtcore_launch_context_input_publication_record_is_complete(
     const rtcore_launch_context_input_publication_record &record) {
   return record.valid && record.has_ray_origin_direction_tmin_tmax &&
          record.has_ray_flags_cull_mask && record.has_launch_context_input &&
-         record.owner_seq_snapshot.valid && record.source_context_window_match;
+         record.owner_seq_snapshot.valid && record.source_context_window_match &&
+         rtcore_compiler_driver_sideband_requires_context_window_key(record);
 }
 
 static void rtcore_log_launch_context_input_publication_record(
