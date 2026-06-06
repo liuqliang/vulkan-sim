@@ -1557,6 +1557,7 @@ class rt_unit : public pipelined_simd_unit {
               warp_uid(0),
               warp_id(0),
               owner_hw_sid(0),
+              static_inst_pc(0),
               issued_active_mask(0),
               adapter_active_mask(0),
               adapter_completed_lane_mask(0),
@@ -1571,6 +1572,7 @@ class rt_unit : public pipelined_simd_unit {
         unsigned warp_uid;
         unsigned warp_id;
         unsigned owner_hw_sid;
+        unsigned long long static_inst_pc;
         unsigned issued_active_mask;
         unsigned adapter_active_mask;
         unsigned adapter_completed_lane_mask;
@@ -1579,6 +1581,44 @@ class rt_unit : public pipelined_simd_unit {
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
         unsigned long long current_cycle;
+      };
+      struct rtcore_shadow_table_release_snapshot {
+        rtcore_shadow_table_release_snapshot()
+            : enabled(false),
+              submit(false),
+              release_attempted(false),
+              entry_found(false),
+              would_release_owner_tuple(false),
+              owner_tuple_released(false),
+              would_reclaim_capacity(false),
+              capacity_reclaimed(false),
+              capacity_mutated(false),
+              reusable_slot_published(false),
+              owner_hw_sid(0),
+              warp_uid(0),
+              warp_id(0),
+              static_inst_pc(0),
+              issued_active_mask(0),
+              release_result("shadow_table_release_skeleton_default_off"),
+              transition_reason("shadow_table_release_skeleton_default_off") {}
+
+        bool enabled;
+        bool submit;
+        bool release_attempted;
+        bool entry_found;
+        bool would_release_owner_tuple;
+        bool owner_tuple_released;
+        bool would_reclaim_capacity;
+        bool capacity_reclaimed;
+        bool capacity_mutated;
+        bool reusable_slot_published;
+        unsigned owner_hw_sid;
+        unsigned warp_uid;
+        unsigned warp_id;
+        unsigned long long static_inst_pc;
+        unsigned issued_active_mask;
+        const char *release_result;
+        const char *transition_reason;
       };
       struct rtcore_adapter_readiness_snapshot {
         rtcore_adapter_readiness_snapshot()
@@ -1642,6 +1682,10 @@ class rt_unit : public pipelined_simd_unit {
       void rtcore_record_completion_queue_enqueue(const warp_inst_t &inst);
       void rtcore_record_completion_queue_retire(const warp_inst_t &inst);
       bool rtcore_completion_queue_has_capacity(const warp_inst_t &inst) const;
+      static const char *rtcore_shadow_table_release_skeleton_env_name() {
+        return "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_SHADOW_TABLE_RELEASE_SKELETON";
+      }
+      bool rtcore_shadow_table_release_enabled() const;
       bool rtcore_existing_backend_latency_resource_binding_enabled() const;
       bool rtcore_stats_completion_latency_enabled() const;
       unsigned rtcore_stats_latency_base() const;
@@ -1666,6 +1710,11 @@ class rt_unit : public pipelined_simd_unit {
           unsigned long long current_cycle) const;
       void rtcore_apply_synthetic_release_snapshot(
           const rtcore_synthetic_release_snapshot &snapshot) const;
+      rtcore_shadow_table_release_snapshot
+      rtcore_make_shadow_table_release_snapshot(
+          const rtcore_synthetic_release_snapshot &release_snapshot) const;
+      void rtcore_apply_shadow_table_release_snapshot(
+          const rtcore_shadow_table_release_snapshot &snapshot) const;
       bool claim_adapter_completion_for_issue(
           rtcore_synthetic_completion_event *event);
       void enqueue_synthetic_completion(const warp_inst_t &inst,

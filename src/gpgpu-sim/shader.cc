@@ -4374,6 +4374,7 @@ rt_unit::rtcore_make_synthetic_release_snapshot(
   snapshot.warp_uid = event.warp_uid;
   snapshot.warp_id = event.warp_id;
   snapshot.owner_hw_sid = m_sid;
+  snapshot.static_inst_pc = inst.pc;
   snapshot.issued_active_mask = event.issued_active_mask;
   snapshot.adapter_active_mask = event.adapter_active_mask;
   snapshot.adapter_completed_lane_mask = event.adapter_completed_lane_mask;
@@ -4394,17 +4395,88 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
     return;
   }
 
-  printf("GPGPU-Sim PTX: RT-unit synthetic-completion-release, "
+  printf("GPGPU-Sim PTX: RT-unit synthetic-completion-release, action=release, "
          "warp_uid=%u, warp_id=%u, owner_hw_sid=%u, "
-         "issued_active_mask=0x%08x, adapter_active_mask=0x%08x, "
+         "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+         "adapter_active_mask=0x%08x, "
          "adapter_completed_lane_mask=0x%08x, ready_cycle=%llu, "
          "current_cycle=%llu, adapter_max_node_visits=%u, "
-         "adapter_max_primitive_tests=%u, action=release\n",
+         "adapter_max_primitive_tests=%u\n",
          snapshot.warp_uid, snapshot.warp_id, snapshot.owner_hw_sid,
+         static_cast<unsigned long long>(snapshot.static_inst_pc),
          snapshot.issued_active_mask, snapshot.adapter_active_mask,
          snapshot.adapter_completed_lane_mask, snapshot.ready_cycle,
          snapshot.current_cycle, snapshot.adapter_max_node_visits,
          snapshot.adapter_max_primitive_tests);
+  fflush(stdout);
+
+  rtcore_shadow_table_release_snapshot shadow_table_release =
+      rtcore_make_shadow_table_release_snapshot(snapshot);
+  rtcore_apply_shadow_table_release_snapshot(shadow_table_release);
+}
+
+bool rt_unit::rtcore_shadow_table_release_enabled() const {
+  const char *value = getenv(rtcore_shadow_table_release_skeleton_env_name());
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+rt_unit::rtcore_shadow_table_release_snapshot
+rt_unit::rtcore_make_shadow_table_release_snapshot(
+    const rtcore_synthetic_release_snapshot &release_snapshot) const {
+  rtcore_shadow_table_release_snapshot snapshot;
+  snapshot.enabled =
+      release_snapshot.submit &&
+      release_snapshot.action == RTCORE_SYNTHETIC_RELEASE_ACTION_RELEASE &&
+      rtcore_shadow_table_release_enabled();
+  snapshot.submit = release_snapshot.submit;
+  snapshot.owner_hw_sid = release_snapshot.owner_hw_sid;
+  snapshot.warp_uid = release_snapshot.warp_uid;
+  snapshot.warp_id = release_snapshot.warp_id;
+  snapshot.static_inst_pc = release_snapshot.static_inst_pc;
+  snapshot.issued_active_mask = release_snapshot.issued_active_mask;
+  snapshot.release_attempted = snapshot.enabled;
+  snapshot.entry_found = snapshot.enabled;
+  snapshot.would_release_owner_tuple = snapshot.enabled;
+  snapshot.owner_tuple_released = false;
+  snapshot.would_reclaim_capacity = snapshot.enabled;
+  snapshot.capacity_reclaimed = false;
+  snapshot.capacity_mutated = false;
+  snapshot.reusable_slot_published = false;
+  snapshot.release_result =
+      snapshot.enabled ? "shadow_table_would_release_noop"
+                       : "shadow_table_release_skeleton_default_off";
+  snapshot.transition_reason =
+      snapshot.enabled ? "shadow_table_release_skeleton_noop"
+                       : "shadow_table_release_skeleton_default_off";
+  return snapshot;
+}
+
+void rt_unit::rtcore_apply_shadow_table_release_snapshot(
+    const rtcore_shadow_table_release_snapshot &snapshot) const {
+  if (!snapshot.enabled) {
+    return;
+  }
+
+  printf("GPGPU-Sim PTX: RT-unit "
+         "scheduler-credit-ledger-shadow-table-release-skeleton=1, "
+         "owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
+         "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+         "release_attempted=%u, entry_found=%u, "
+         "would_release_owner_tuple=%u, owner_tuple_released=%u, "
+         "would_reclaim_capacity=%u, capacity_reclaimed=%u, "
+         "capacity_mutated=%u, reusable_slot_published=%u, "
+         "release_result=%s, transition_reason=%s\n",
+         snapshot.owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
+         static_cast<unsigned long long>(snapshot.static_inst_pc),
+         snapshot.issued_active_mask, snapshot.release_attempted ? 1 : 0,
+         snapshot.entry_found ? 1 : 0,
+         snapshot.would_release_owner_tuple ? 1 : 0,
+         snapshot.owner_tuple_released ? 1 : 0,
+         snapshot.would_reclaim_capacity ? 1 : 0,
+         snapshot.capacity_reclaimed ? 1 : 0,
+         snapshot.capacity_mutated ? 1 : 0,
+         snapshot.reusable_slot_published ? 1 : 0, snapshot.release_result,
+         snapshot.transition_reason);
   fflush(stdout);
 }
 
