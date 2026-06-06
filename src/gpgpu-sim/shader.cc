@@ -117,11 +117,43 @@ rtcore_scheduler_credit_ledger_shadow_table_real_mutation_preflight_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool
+rtcore_scheduler_credit_ledger_shadow_table_real_mutation_duplicate_fault_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_SHADOW_TABLE_REAL_MUTATION_DUPLICATE_FAULT");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool
+rtcore_scheduler_credit_ledger_shadow_table_real_mutation_capacity_full_fault_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_SHADOW_TABLE_REAL_MUTATION_CAPACITY_FULL_FAULT");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
 static std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>
     &rtcore_scheduler_credit_ledger_shadow_table_live_owner_keys() {
   static std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>
       live_owner_keys;
   return live_owner_keys;
+}
+
+static void rtcore_scheduler_credit_ledger_shadow_table_seed_capacity_full_fault(
+    const rtcore_scheduler_credit_ledger_shadow_table_owner_key &key) {
+  std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key> &table =
+      rtcore_scheduler_credit_ledger_shadow_table_live_owner_keys();
+  for (unsigned seed = 0; table.size() < 32; ++seed) {
+    rtcore_scheduler_credit_ledger_shadow_table_owner_key filler_key;
+    filler_key.owner_hw_sid = key.owner_hw_sid;
+    filler_key.warp_uid = 0x80000000u + seed;
+    filler_key.warp_id = seed;
+    filler_key.static_inst_pc = key.static_inst_pc ^ (0x100000ull + seed);
+    filler_key.issued_active_mask = key.issued_active_mask;
+    if (!(filler_key < key) && !(key < filler_key)) {
+      continue;
+    }
+    table.insert(filler_key);
+  }
 }
 
 static rtcore_scheduler_credit_ledger_shadow_table_mutation_result
@@ -130,6 +162,12 @@ rtcore_scheduler_credit_ledger_shadow_table_account_mutation_preflight(
   rtcore_scheduler_credit_ledger_shadow_table_mutation_result result;
   std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key> &table =
       rtcore_scheduler_credit_ledger_shadow_table_live_owner_keys();
+  if (rtcore_scheduler_credit_ledger_shadow_table_real_mutation_duplicate_fault_enabled()) {
+    table.insert(key);
+  }
+  if (rtcore_scheduler_credit_ledger_shadow_table_real_mutation_capacity_full_fault_enabled()) {
+    rtcore_scheduler_credit_ledger_shadow_table_seed_capacity_full_fault(key);
+  }
   result.table_entries_before = table.size();
   result.capacity_limit = 32;
   result.entry_found = table.find(key) != table.end();
