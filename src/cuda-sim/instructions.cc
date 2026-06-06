@@ -9504,7 +9504,11 @@ struct rtcore_launch_allocation_lifetime_record {
         allocator_reuse_authorized(false),
         owner_generation_reuse_minted(false),
         reusable_slot_available(false),
+        scheduler_credit_return_snapshot(false),
+        scheduler_credit_return_visible(false),
+        resource_credit_returned(false),
         deferred_free_reason("no_active_lanes_observed"),
+        scheduler_credit_return_reason("no_active_lanes_observed"),
         submit_create_count(0),
         submit_lookup_count(0),
         retire_count(0),
@@ -9528,7 +9532,11 @@ struct rtcore_launch_allocation_lifetime_record {
   bool allocator_reuse_authorized;
   bool owner_generation_reuse_minted;
   bool reusable_slot_available;
+  bool scheduler_credit_return_snapshot;
+  bool scheduler_credit_return_visible;
+  bool resource_credit_returned;
   const char *deferred_free_reason;
+  const char *scheduler_credit_return_reason;
   unsigned submit_create_count;
   unsigned submit_lookup_count;
   unsigned retire_count;
@@ -9599,6 +9607,20 @@ static const char *rtcore_lifetime_deferred_free_reason(
   return "allocator_reuse_not_enabled";
 }
 
+static const char *rtcore_lifetime_scheduler_credit_return_reason(
+    const rtcore_launch_allocation_lifetime_record &record) {
+  if (record.active_lane_mask == 0) {
+    return "no_active_lanes_observed";
+  }
+  if (!record.full_window_retired) {
+    return "waiting_for_active_lane_retire";
+  }
+  if (!record.reusable_slot_available) {
+    return "waiting_for_allocator_reusable_publication";
+  }
+  return "credit_return_visible";
+}
+
 static bool rtcore_launch_allocation_lifetime_reuse_authorized(
     const rtcore_launch_allocation_lifetime_record &record) {
   (void)record;
@@ -9630,6 +9652,11 @@ static void rtcore_update_launch_allocation_lifetime_retire_state(
       record->full_window_retired && record->allocator_reuse_authorized;
   record->deferred_free_reason =
       rtcore_lifetime_deferred_free_reason(*record);
+  record->scheduler_credit_return_snapshot = true;
+  record->scheduler_credit_return_visible = record->reusable_slot_available;
+  record->resource_credit_returned = record->scheduler_credit_return_visible;
+  record->scheduler_credit_return_reason =
+      rtcore_lifetime_scheduler_credit_return_reason(*record);
 }
 
 static rtcore_launch_allocation_lifetime_record *
@@ -9698,7 +9725,11 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          "allocator_reuse_authorized=%u, "
          "owner_generation_reuse_minted=%u, "
          "reusable_slot_available=%u, "
+         "scheduler_credit_return_snapshot=%u, "
+         "scheduler_credit_return_visible=%u, "
+         "resource_credit_returned=%u, "
          "deferred_free_reason=%s, "
+         "scheduler_credit_return_reason=%s, "
          "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
          "retire_free_policy=%s\n",
          pI->source_file(), pI->source_line(),
@@ -9737,7 +9768,11 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          lifetime_record->allocator_reuse_authorized ? 1 : 0,
          lifetime_record->owner_generation_reuse_minted ? 1 : 0,
          lifetime_record->reusable_slot_available ? 1 : 0,
+         lifetime_record->scheduler_credit_return_snapshot ? 1 : 0,
+         lifetime_record->scheduler_credit_return_visible ? 1 : 0,
+         lifetime_record->resource_credit_returned ? 1 : 0,
          lifetime_record->deferred_free_reason,
+         lifetime_record->scheduler_credit_return_reason,
          lifetime_record->submit_create_count,
          lifetime_record->submit_lookup_count, lifetime_record->retire_count,
          lifetime_record->retire_free_policy);
@@ -9790,7 +9825,12 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          "unretired_lane_mask=0x%08x, full_window_retired=%u, "
          "deferred_free_boundary=%u, allocator_reuse_authorized=%u, "
          "owner_generation_reuse_minted=%u, "
-         "reusable_slot_available=%u, deferred_free_reason=%s, "
+         "reusable_slot_available=%u, "
+         "scheduler_credit_return_snapshot=%u, "
+         "scheduler_credit_return_visible=%u, "
+         "resource_credit_returned=%u, "
+         "deferred_free_reason=%s, "
+         "scheduler_credit_return_reason=%s, "
          "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
          "retire_free_policy=%s\n",
          pI->source_file(), pI->source_line(), table_found ? 1 : 0,
@@ -9838,7 +9878,16 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          table_found && lifetime_record->allocator_reuse_authorized ? 1 : 0,
          table_found && lifetime_record->owner_generation_reuse_minted ? 1 : 0,
          table_found && lifetime_record->reusable_slot_available ? 1 : 0,
+         table_found && lifetime_record->scheduler_credit_return_snapshot
+             ? 1
+             : 0,
+         table_found && lifetime_record->scheduler_credit_return_visible
+             ? 1
+             : 0,
+         table_found && lifetime_record->resource_credit_returned ? 1 : 0,
          table_found ? lifetime_record->deferred_free_reason : "missing",
+         table_found ? lifetime_record->scheduler_credit_return_reason
+                     : "missing",
          table_found ? lifetime_record->submit_create_count : 0,
          table_found ? lifetime_record->submit_lookup_count : 0,
          table_found ? lifetime_record->retire_count : 0,
