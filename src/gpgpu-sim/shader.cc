@@ -1721,6 +1721,8 @@ void scheduler_unit::cycle() {
                       '\0' &&
                   strcmp(rtcore_scheduler_credit_ledger_duplicate_stale_env,
                          "0") != 0;
+              const char *rtcore_scheduler_credit_ledger_shadow_table_env =
+                  getenv("VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_SHADOW_TABLE_SKELETON");
               rtcore_scheduler_credit_ledger_reservation_snapshot
                   rtcore_scheduler_credit_ledger_reservation;
               rtcore_scheduler_credit_ledger_reservation.enabled =
@@ -1820,6 +1822,71 @@ void scheduler_unit::cycle() {
                            .transition_reason);
                 fflush(stdout);
                 abort();
+              }
+              rtcore_scheduler_credit_ledger_shadow_table_snapshot
+                  rtcore_scheduler_credit_ledger_shadow_table;
+              rtcore_scheduler_credit_ledger_shadow_table.table_enabled =
+                  pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_shadow_table_env != NULL &&
+                  *rtcore_scheduler_credit_ledger_shadow_table_env != '\0' &&
+                  strcmp(rtcore_scheduler_credit_ledger_shadow_table_env, "0") !=
+                      0;
+              rtcore_scheduler_credit_ledger_shadow_table.lookup_attempted =
+                  rtcore_scheduler_credit_ledger_shadow_table.table_enabled;
+              rtcore_scheduler_credit_ledger_shadow_table.entry_found = false;
+              rtcore_scheduler_credit_ledger_shadow_table.capacity_mutated =
+                  false;
+              rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid =
+                  rtcore_scheduler_credit_ledger_reservation.owner_hw_sid;
+              rtcore_scheduler_credit_ledger_shadow_table.warp_id =
+                  rtcore_scheduler_credit_ledger_reservation.warp_id;
+              rtcore_scheduler_credit_ledger_shadow_table.static_inst_pc =
+                  rtcore_scheduler_credit_ledger_reservation.static_inst_pc;
+              rtcore_scheduler_credit_ledger_shadow_table.issued_active_mask =
+                  rtcore_scheduler_credit_ledger_reservation.issued_active_mask;
+              rtcore_scheduler_credit_ledger_shadow_table.table_entries_observed =
+                  0;
+              rtcore_scheduler_credit_ledger_shadow_table.lookup_result =
+                  rtcore_scheduler_credit_ledger_shadow_table.table_enabled
+                      ? "shadow_table_observed_no_entry"
+                      : "shadow_table_skeleton_default_off";
+              rtcore_scheduler_credit_ledger_shadow_table.transition_reason =
+                  rtcore_scheduler_credit_ledger_shadow_table.table_enabled
+                      ? "shadow_table_skeleton_noop"
+                      : "shadow_table_skeleton_default_off";
+              if (rtcore_scheduler_credit_ledger_shadow_table.table_enabled) {
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-shadow-table-skeleton=1, "
+                       "owner_hw_sid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "lookup_attempted=%u, entry_found=%u, "
+                       "table_entries_observed=%u, lookup_result=%s, "
+                       "capacity_mutated=%u, transition_reason=%s\n",
+                       rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .issued_active_mask,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .lookup_attempted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table.entry_found
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .table_entries_observed,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .lookup_result,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .capacity_mutated
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .transition_reason);
+                fflush(stdout);
               }
               if (rtcore_scheduler_credit_ledger_reservation.enabled) {
                 printf("GPGPU-Sim PTX: RT_SUBMIT "

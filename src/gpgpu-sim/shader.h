@@ -1372,6 +1372,33 @@ struct rtcore_scheduler_credit_ledger_reservation_snapshot {
   const char *transition_reason;
 };
 
+struct rtcore_scheduler_credit_ledger_shadow_table_snapshot {
+  rtcore_scheduler_credit_ledger_shadow_table_snapshot()
+      : table_enabled(false),
+        lookup_attempted(false),
+        entry_found(false),
+        capacity_mutated(false),
+        owner_hw_sid(0),
+        warp_id(0),
+        static_inst_pc(0),
+        issued_active_mask(0),
+        table_entries_observed(0),
+        lookup_result("shadow_table_skeleton_default_off"),
+        transition_reason("shadow_table_skeleton_default_off") {}
+
+  bool table_enabled;
+  bool lookup_attempted;
+  bool entry_found;
+  bool capacity_mutated;
+  unsigned owner_hw_sid;
+  unsigned warp_id;
+  unsigned long long static_inst_pc;
+  unsigned issued_active_mask;
+  unsigned table_entries_observed;
+  const char *lookup_result;
+  const char *transition_reason;
+};
+
 struct rtcore_resident_warp_demand_snapshot {
   rtcore_resident_warp_demand_snapshot()
       : live_rt_unit_warps(0),
