@@ -152,6 +152,13 @@ rtcore_scheduler_credit_ledger_reusable_credit_issue_gate_preflight_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_REUSABLE_CREDIT_SCHEDULER_BRIDGE");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
 static unsigned &rtcore_scheduler_credit_ledger_reusable_credit_shadow_count() {
   static unsigned reusable_credit_shadow_count = 0;
   return reusable_credit_shadow_count;
@@ -175,11 +182,35 @@ static bool rtcore_scheduler_credit_ledger_consume_reusable_credit_preflight() {
   return true;
 }
 
+static bool rtcore_scheduler_credit_ledger_refund_reusable_credit_preflight() {
+  unsigned &reusable_credit_shadow_count =
+      rtcore_scheduler_credit_ledger_reusable_credit_shadow_count();
+  if (reusable_credit_shadow_count == UINT_MAX) {
+    return false;
+  }
+  ++reusable_credit_shadow_count;
+  return true;
+}
+
 static std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>
     &rtcore_scheduler_credit_ledger_shadow_table_live_owner_keys() {
   static std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>
       live_owner_keys;
   return live_owner_keys;
+}
+
+static bool
+rtcore_scheduler_credit_ledger_shadow_table_cancel_owner_tuple_preflight(
+    const rtcore_scheduler_credit_ledger_shadow_table_owner_key &key) {
+  std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key> &table =
+      rtcore_scheduler_credit_ledger_shadow_table_live_owner_keys();
+  std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>::iterator it =
+      table.find(key);
+  if (it == table.end()) {
+    return false;
+  }
+  table.erase(it);
+  return true;
 }
 
 static void rtcore_scheduler_credit_ledger_shadow_table_seed_capacity_full_fault(
@@ -2432,9 +2463,13 @@ void scheduler_unit::cycle() {
                       0;
               const char *rtcore_scheduler_credit_ledger_issue_gate_consumer_result =
                   "reusable_credit_consumer_not_observed";
+              rtcore_scheduler_credit_ledger_shadow_table_owner_key
+                  rtcore_scheduler_credit_ledger_shadow_table_key;
+              bool rtcore_scheduler_credit_ledger_shadow_table_key_valid =
+                  false;
+              bool rtcore_scheduler_credit_ledger_scheduler_bridge_owner_tuple_reserved =
+                  false;
               if (rtcore_scheduler_credit_ledger_shadow_table_real_mutation_preflight_active) {
-                rtcore_scheduler_credit_ledger_shadow_table_owner_key
-                    rtcore_scheduler_credit_ledger_shadow_table_key;
                 rtcore_scheduler_credit_ledger_shadow_table_key.owner_hw_sid =
                     rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid;
                 rtcore_scheduler_credit_ledger_shadow_table_key.warp_uid =
@@ -2447,10 +2482,14 @@ void scheduler_unit::cycle() {
                     .issued_active_mask =
                     rtcore_scheduler_credit_ledger_shadow_table
                         .issued_active_mask;
+                rtcore_scheduler_credit_ledger_shadow_table_key_valid = true;
                 rtcore_scheduler_credit_ledger_shadow_table_mutation_result
                     rtcore_scheduler_credit_ledger_shadow_table_mutation =
                         rtcore_scheduler_credit_ledger_shadow_table_account_mutation_preflight(
                             rtcore_scheduler_credit_ledger_shadow_table_key);
+                rtcore_scheduler_credit_ledger_scheduler_bridge_owner_tuple_reserved =
+                    rtcore_scheduler_credit_ledger_shadow_table_mutation
+                        .owner_tuple_reserved;
                 printf("GPGPU-Sim PTX: RT_SUBMIT "
                        "scheduler-credit-ledger-shadow-table-real-mutation-preflight=1, "
                        "mutation_phase=submit_account, owner_hw_sid=%u, "
@@ -2778,15 +2817,75 @@ void scheduler_unit::cycle() {
               if (!rtcore_scheduler_credit_ledger_noop_preissue_ready) {
                 break;
               }
-              const bool rtcore_issue_resources_ready =
+              const bool rtcore_issue_resources_ready_before_bridge =
                   pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
                   rtcore_symbolic_submit_issue_resources_available(
                       warp_id, m_shader->get_sid(), rtcore_active_mask,
                       pI->pc);
+              const bool rtcore_scheduler_credit_ledger_scheduler_bridge_enabled =
+                  pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_enabled();
+              const bool
+                  rtcore_scheduler_credit_ledger_scheduler_bridge_override =
+                      rtcore_scheduler_credit_ledger_scheduler_bridge_enabled &&
+                      !rtcore_issue_resources_ready_before_bridge &&
+                      rtcore_scheduler_credit_ledger_issue_gate_credit_consumed;
+              const bool rtcore_issue_resources_ready =
+                  rtcore_issue_resources_ready_before_bridge ||
+                  rtcore_scheduler_credit_ledger_scheduler_bridge_override;
+              const char
+                  *rtcore_scheduler_credit_ledger_scheduler_bridge_decision_result =
+                      "scheduler_bridge_default_off";
+              if (rtcore_scheduler_credit_ledger_scheduler_bridge_enabled) {
+                rtcore_scheduler_credit_ledger_scheduler_bridge_decision_result =
+                    rtcore_issue_resources_ready_before_bridge
+                        ? "scheduler_bridge_existing_resources_ready"
+                        : (rtcore_scheduler_credit_ledger_scheduler_bridge_override
+                               ? "scheduler_bridge_override_reusable_credit"
+                               : "scheduler_bridge_no_credit");
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-reusable-credit-scheduler-bridge=1, "
+                       "owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "bridge_enabled=%u, issue_resources_ready_before=%u, "
+                       "reusable_credit_override=%u, "
+                       "issue_resources_ready_after=%u, "
+                       "consumer_attempted=%u, owner_tuple_reserved=%u, "
+                       "credit_consumed=%u, rollback_attempted=%u, "
+                       "credit_refunded=%u, owner_tuple_cancelled=%u, "
+                       "bridge_result=%s, transition_reason=%s\n",
+                       rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .issued_active_mask,
+                       1,
+                       rtcore_issue_resources_ready_before_bridge ? 1 : 0,
+                       rtcore_scheduler_credit_ledger_scheduler_bridge_override
+                           ? 1
+                           : 0,
+                       rtcore_issue_resources_ready ? 1 : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumer_attempted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_scheduler_bridge_owner_tuple_reserved
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_credit_consumed
+                           ? 1
+                           : 0,
+                       0, 0, 0,
+                       rtcore_scheduler_credit_ledger_scheduler_bridge_decision_result,
+                       "reusable_credit_scheduler_bridge_decision");
+                fflush(stdout);
+              }
               if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
                   rtcore_scheduler_credit_ledger_reusable_credit_issue_gate_preflight_enabled()) {
                 const char *rtcore_scheduler_credit_ledger_issue_gate_result =
-                    !rtcore_issue_resources_ready
+                    !rtcore_issue_resources_ready_before_bridge
                         ? "issue_gate_existing_resource_stall"
                         : (rtcore_scheduler_credit_ledger_issue_gate_credit_consumed
                                ? "issue_gate_reusable_credit_ready"
@@ -2810,7 +2909,7 @@ void scheduler_unit::cycle() {
                                .static_inst_pc),
                        rtcore_scheduler_credit_ledger_shadow_table
                            .issued_active_mask,
-                       rtcore_issue_resources_ready ? 1 : 0,
+                       rtcore_issue_resources_ready_before_bridge ? 1 : 0,
                        rtcore_scheduler_credit_ledger_issue_gate_consumer_attempted
                            ? 1
                            : 0,
@@ -2827,7 +2926,77 @@ void scheduler_unit::cycle() {
                        "reusable_credit_issue_gate_preflight");
                 fflush(stdout);
               }
+              auto rtcore_scheduler_credit_ledger_scheduler_bridge_rollback =
+                  [&](const char *bridge_result) {
+                    if (!rtcore_scheduler_credit_ledger_scheduler_bridge_enabled) {
+                      return;
+                    }
+                    const bool credit_was_consumed =
+                        rtcore_scheduler_credit_ledger_issue_gate_credit_consumed;
+                    const bool owner_tuple_was_reserved =
+                        rtcore_scheduler_credit_ledger_scheduler_bridge_owner_tuple_reserved;
+                    bool credit_refunded = false;
+                    bool owner_tuple_cancelled = false;
+                    if (credit_was_consumed) {
+                      credit_refunded =
+                          rtcore_scheduler_credit_ledger_refund_reusable_credit_preflight();
+                    }
+                    if (owner_tuple_was_reserved &&
+                        rtcore_scheduler_credit_ledger_shadow_table_key_valid) {
+                      owner_tuple_cancelled =
+                          rtcore_scheduler_credit_ledger_shadow_table_cancel_owner_tuple_preflight(
+                              rtcore_scheduler_credit_ledger_shadow_table_key);
+                    }
+                    printf("GPGPU-Sim PTX: RT_SUBMIT "
+                           "scheduler-credit-ledger-reusable-credit-scheduler-bridge=1, "
+                           "owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
+                           "static_inst_pc=0x%llx, "
+                           "issued_active_mask=0x%08x, bridge_enabled=%u, "
+                           "issue_resources_ready_before=%u, "
+                           "reusable_credit_override=%u, "
+                           "issue_resources_ready_after=%u, "
+                           "consumer_attempted=%u, owner_tuple_reserved=%u, "
+                           "credit_consumed=%u, rollback_attempted=%u, "
+                           "credit_refunded=%u, owner_tuple_cancelled=%u, "
+                           "bridge_result=%s, transition_reason=%s\n",
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .owner_hw_sid,
+                           rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
+                           rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                           static_cast<unsigned long long>(
+                               rtcore_scheduler_credit_ledger_shadow_table
+                                   .static_inst_pc),
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .issued_active_mask,
+                           1,
+                           rtcore_issue_resources_ready_before_bridge ? 1 : 0,
+                           rtcore_scheduler_credit_ledger_scheduler_bridge_override
+                               ? 1
+                               : 0,
+                           rtcore_issue_resources_ready ? 1 : 0,
+                           rtcore_scheduler_credit_ledger_issue_gate_consumer_attempted
+                               ? 1
+                               : 0,
+                           owner_tuple_was_reserved ? 1 : 0,
+                           credit_was_consumed ? 1 : 0,
+                           1,
+                           credit_refunded ? 1 : 0,
+                           owner_tuple_cancelled ? 1 : 0,
+                           bridge_result,
+                           "reusable_credit_scheduler_bridge_rollback");
+                    fflush(stdout);
+                    if (credit_refunded) {
+                      rtcore_scheduler_credit_ledger_issue_gate_credit_consumed =
+                          false;
+                    }
+                    if (owner_tuple_cancelled) {
+                      rtcore_scheduler_credit_ledger_scheduler_bridge_owner_tuple_reserved =
+                          false;
+                    }
+                  };
               if (!rtcore_issue_resources_ready) {
+                rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
+                    "scheduler_bridge_rollback_after_issue_resource_stall");
                 break;
               }
               const unsigned rt_core_out_pending_warps =
@@ -2837,6 +3006,8 @@ void scheduler_unit::cycle() {
                   m_shader->rtcore_submit_resident_warp_capacity_available(
                       *pI, warp_id, rt_core_out_pending_warps);
               if (!rtcore_resident_warp_capacity_ready) {
+                rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
+                    "scheduler_bridge_rollback_after_resident_gate");
                 break;
               }
 
@@ -2851,15 +3022,62 @@ void scheduler_unit::cycle() {
                     m_shader->rtcore_submit_completion_queue_reserve_issue_slot(
                         *pI, warp_id, rtcore_active_mask);
                 if (!rtcore_completion_queue_ready) {
+                  rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
+                      "scheduler_bridge_rollback_after_completion_queue");
                   break;
                 }
 
                 m_shader->issue_warp(*m_rt_core_out, pI, active_mask,
                                      warp_id, m_id);
+                if (rtcore_scheduler_credit_ledger_scheduler_bridge_enabled) {
+                  printf("GPGPU-Sim PTX: RT_SUBMIT "
+                         "scheduler-credit-ledger-reusable-credit-scheduler-bridge=1, "
+                         "owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
+                         "static_inst_pc=0x%llx, "
+                         "issued_active_mask=0x%08x, bridge_enabled=%u, "
+                         "issue_resources_ready_before=%u, "
+                         "reusable_credit_override=%u, "
+                         "issue_resources_ready_after=%u, "
+                         "consumer_attempted=%u, owner_tuple_reserved=%u, "
+                         "credit_consumed=%u, rollback_attempted=%u, "
+                         "credit_refunded=%u, owner_tuple_cancelled=%u, "
+                         "bridge_result=%s, transition_reason=%s\n",
+                         rtcore_scheduler_credit_ledger_shadow_table
+                             .owner_hw_sid,
+                         rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
+                         rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                         static_cast<unsigned long long>(
+                             rtcore_scheduler_credit_ledger_shadow_table
+                                 .static_inst_pc),
+                         rtcore_scheduler_credit_ledger_shadow_table
+                             .issued_active_mask,
+                         1,
+                         rtcore_issue_resources_ready_before_bridge ? 1 : 0,
+                         rtcore_scheduler_credit_ledger_scheduler_bridge_override
+                             ? 1
+                             : 0,
+                         rtcore_issue_resources_ready ? 1 : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumer_attempted
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_scheduler_bridge_owner_tuple_reserved
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_credit_consumed
+                             ? 1
+                             : 0,
+                         0, 0, 0,
+                         "scheduler_bridge_issue_committed",
+                         "reusable_credit_scheduler_bridge_issue_commit");
+                  fflush(stdout);
+                }
                 issued++;
                 issued_inst = true;
                 warp_inst_issued = true;
                 previous_issued_inst_exec_type = exec_unit_type_t::RT;
+              } else {
+                rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
+                    "scheduler_bridge_rollback_after_issue_slot");
               }
 
             } else {
