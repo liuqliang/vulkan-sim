@@ -9527,6 +9527,8 @@ bool rtcore_symbolic_submit_has_capacity(
   fflush(stdout);
 
   if (profile.resident_rt_warps == 0) {
+    const char *resource_limit_name =
+        rtcore_symbolic_resource_limit_name(profile);
     printf("GPGPU-Sim PTX: RT_SUBMIT resource-wait-or-reject (%s:%u), "
            "reason=%s, context_ptr=0x%llx, "
            "handoff_window_base=0x%llx, lane_slot_index=%u, "
@@ -9535,8 +9537,20 @@ bool rtcore_symbolic_submit_has_capacity(
            "traversal_stack_limited_warps=%u, resident_rt_warps=%u, "
            "consumed=0\n",
            pI->source_file(), pI->source_line(),
-           rtcore_symbolic_resource_limit_name(profile), context_ptr,
-           handoff_window_base, lane_slot_index,
+           resource_limit_name, context_ptr, handoff_window_base, lane_slot_index,
+           profile.traversal_stack_entries_per_execution_partition,
+           profile.traversal_stack_entries_per_full_warp,
+           profile.traversal_stack_limited_warps, profile.resident_rt_warps);
+    fflush(stdout);
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=%s, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "traversal_stack_entries_per_execution_partition=%u, "
+           "traversal_stack_entries_per_full_warp=%u, "
+           "traversal_stack_limited_warps=%u, resident_rt_warps=%u, "
+           "capacity_available=0, consumed=0\n",
+           pI->source_file(), pI->source_line(), resource_limit_name,
+           context_ptr, handoff_window_base, lane_slot_index,
            profile.traversal_stack_entries_per_execution_partition,
            profile.traversal_stack_entries_per_full_warp,
            profile.traversal_stack_limited_warps, profile.resident_rt_warps);
