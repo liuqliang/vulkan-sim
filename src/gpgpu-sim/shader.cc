@@ -1760,6 +1760,17 @@ void scheduler_unit::cycle() {
                   strcmp(
                       rtcore_scheduler_credit_ledger_shadow_table_live_count_env,
                       "0") != 0;
+              const char *rtcore_scheduler_credit_ledger_shadow_table_capacity_full_env =
+                  getenv("VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_SHADOW_TABLE_CAPACITY_FULL_FAULT");
+              const bool rtcore_scheduler_credit_ledger_shadow_table_capacity_full_fault =
+                  pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_shadow_table_capacity_full_env !=
+                      NULL &&
+                  *rtcore_scheduler_credit_ledger_shadow_table_capacity_full_env !=
+                      '\0' &&
+                  strcmp(
+                      rtcore_scheduler_credit_ledger_shadow_table_capacity_full_env,
+                      "0") != 0;
               rtcore_scheduler_credit_ledger_reservation_snapshot
                   rtcore_scheduler_credit_ledger_reservation;
               rtcore_scheduler_credit_ledger_reservation.enabled =
@@ -1950,6 +1961,78 @@ void scheduler_unit::cycle() {
                            : 0,
                        rtcore_scheduler_credit_ledger_shadow_table
                            .table_entries_observed,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .capacity_mutated
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .transition_reason);
+                fflush(stdout);
+                abort();
+              }
+              if (rtcore_scheduler_credit_ledger_shadow_table_capacity_full_fault) {
+                rtcore_scheduler_credit_ledger_shadow_table.table_enabled =
+                    true;
+                rtcore_scheduler_credit_ledger_shadow_table.lookup_attempted =
+                    true;
+                rtcore_scheduler_credit_ledger_shadow_table.entry_found = false;
+                rtcore_scheduler_credit_ledger_shadow_table.insert_attempted =
+                    false;
+                rtcore_scheduler_credit_ledger_shadow_table.would_insert =
+                    false;
+                rtcore_scheduler_credit_ledger_shadow_table.live_count_attempted =
+                    true;
+                rtcore_scheduler_credit_ledger_shadow_table.capacity_mutated =
+                    false;
+                rtcore_scheduler_credit_ledger_shadow_table.table_entries_observed =
+                    32;
+                rtcore_scheduler_credit_ledger_shadow_table.live_entries_observed =
+                    32;
+                rtcore_scheduler_credit_ledger_shadow_table.capacity_limit = 32;
+                rtcore_scheduler_credit_ledger_shadow_table.capacity_available =
+                    false;
+                rtcore_scheduler_credit_ledger_shadow_table.lookup_result =
+                    "shadow_table_observed_no_entry";
+                rtcore_scheduler_credit_ledger_shadow_table.insert_result =
+                    "shadow_table_insert_blocked_capacity_full";
+                rtcore_scheduler_credit_ledger_shadow_table.live_count_result =
+                    "shadow_table_capacity_unavailable";
+                rtcore_scheduler_credit_ledger_shadow_table.transition_reason =
+                    "shadow_table_capacity_unavailable";
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-shadow-table-capacity-unavailable=1, "
+                       "owner_hw_sid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "lookup_attempted=%u, entry_found=%u, "
+                       "live_count_attempted=%u, live_entries_observed=%u, "
+                       "capacity_limit=%u, capacity_available=%u, "
+                       "capacity_mutated=%u, capacity_rejection_reason=%s\n",
+                       rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .issued_active_mask,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .lookup_attempted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table.entry_found
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .live_count_attempted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .live_entries_observed,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .capacity_limit,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .capacity_available
+                           ? 1
+                           : 0,
                        rtcore_scheduler_credit_ledger_shadow_table
                                .capacity_mutated
                            ? 1
