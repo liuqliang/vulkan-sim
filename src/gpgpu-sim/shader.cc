@@ -1681,6 +1681,26 @@ void scheduler_unit::cycle() {
               assert(m_shader->m_config->gpgpu_num_rt_core_units > 0);
               const unsigned rtcore_active_mask =
                   static_cast<unsigned>(active_mask.to_ulong());
+              bool rtcore_scheduler_credit_ledger_noop_preissue_ready = true;
+              const char *rtcore_scheduler_credit_ledger_noop_env =
+                  getenv("VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_NOOP_HOOK");
+              if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_noop_env != NULL &&
+                  *rtcore_scheduler_credit_ledger_noop_env != '\0' &&
+                  strcmp(rtcore_scheduler_credit_ledger_noop_env, "0") != 0) {
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-noop-preissue, "
+                       "warp_id=%u, owner_hw_sid=%u, "
+                       "static_inst_pc=0x%llx, "
+                       "issued_active_mask=0x%08x, action=ready\n",
+                       warp_id, m_shader->get_sid(),
+                       static_cast<unsigned long long>(pI->pc),
+                       rtcore_active_mask);
+                fflush(stdout);
+              }
+              if (!rtcore_scheduler_credit_ledger_noop_preissue_ready) {
+                break;
+              }
               const bool rtcore_issue_resources_ready =
                   pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
                   rtcore_symbolic_submit_issue_resources_available(
