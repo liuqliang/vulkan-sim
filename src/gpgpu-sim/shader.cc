@@ -1700,6 +1700,65 @@ void scheduler_unit::cycle() {
                   "noop_ready";
               const bool rtcore_scheduler_credit_ledger_noop_preissue_ready =
                   rtcore_scheduler_credit_ledger_readiness.ready;
+              const char *rtcore_scheduler_credit_ledger_reservation_env =
+                  getenv("VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_SKELETON");
+              rtcore_scheduler_credit_ledger_reservation_snapshot
+                  rtcore_scheduler_credit_ledger_reservation;
+              rtcore_scheduler_credit_ledger_reservation.enabled =
+                  pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_reservation_env != NULL &&
+                  *rtcore_scheduler_credit_ledger_reservation_env != '\0' &&
+                  strcmp(rtcore_scheduler_credit_ledger_reservation_env, "0") !=
+                      0;
+              rtcore_scheduler_credit_ledger_reservation.state =
+                  rtcore_scheduler_credit_ledger_reservation.enabled
+                      ? RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_RESERVED_PRE_ISSUE
+                      : RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_EMPTY;
+              rtcore_scheduler_credit_ledger_reservation.capacity_mutated =
+                  false;
+              rtcore_scheduler_credit_ledger_reservation.owner_hw_sid =
+                  rtcore_scheduler_credit_ledger_readiness.owner_hw_sid;
+              rtcore_scheduler_credit_ledger_reservation.warp_id =
+                  rtcore_scheduler_credit_ledger_readiness.warp_id;
+              rtcore_scheduler_credit_ledger_reservation.static_inst_pc =
+                  rtcore_scheduler_credit_ledger_readiness.static_inst_pc;
+              rtcore_scheduler_credit_ledger_reservation.issued_active_mask =
+                  rtcore_scheduler_credit_ledger_readiness.issued_active_mask;
+              rtcore_scheduler_credit_ledger_reservation.state_name =
+                  rtcore_scheduler_credit_ledger_reservation.enabled
+                      ? "reserved_pre_issue"
+                      : "empty";
+              rtcore_scheduler_credit_ledger_reservation.transition_reason =
+                  rtcore_scheduler_credit_ledger_reservation.enabled
+                      ? "reservation_skeleton_noop"
+                      : "reservation_skeleton_default_off";
+              if (rtcore_scheduler_credit_ledger_reservation.enabled) {
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-reservation-skeleton=1, "
+                       "reservation_state=%s, owner_hw_sid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "ready=%u, capacity_mutated=%u, "
+                       "transition_reason=%s\n",
+                       rtcore_scheduler_credit_ledger_reservation.state_name,
+                       rtcore_scheduler_credit_ledger_reservation.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_reservation.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_reservation
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_reservation
+                           .issued_active_mask,
+                       rtcore_scheduler_credit_ledger_reservation.ready ? 1 : 0,
+                       rtcore_scheduler_credit_ledger_reservation
+                               .capacity_mutated
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_reservation
+                           .transition_reason);
+                fflush(stdout);
+              }
+              if (!rtcore_scheduler_credit_ledger_reservation.ready) {
+                break;
+              }
               if (rtcore_scheduler_credit_ledger_readiness.hook_enabled) {
                 printf("GPGPU-Sim PTX: RT_SUBMIT "
                        "scheduler-credit-ledger-noop-preissue, "

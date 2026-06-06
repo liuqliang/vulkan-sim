@@ -1340,6 +1340,37 @@ struct rtcore_scheduler_credit_ledger_readiness_snapshot {
   const char *readiness_reason;
 };
 
+enum rtcore_scheduler_credit_ledger_reservation_state {
+  RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_EMPTY,
+  RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_RESERVED_PRE_ISSUE,
+  RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_CANCELLED_FAIL_CLOSED
+};
+
+struct rtcore_scheduler_credit_ledger_reservation_snapshot {
+  rtcore_scheduler_credit_ledger_reservation_snapshot()
+      : enabled(false),
+        state(RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_EMPTY),
+        ready(true),
+        capacity_mutated(false),
+        owner_hw_sid(0),
+        warp_id(0),
+        static_inst_pc(0),
+        issued_active_mask(0),
+        state_name("empty"),
+        transition_reason("reservation_skeleton_default_off") {}
+
+  bool enabled;
+  rtcore_scheduler_credit_ledger_reservation_state state;
+  bool ready;
+  bool capacity_mutated;
+  unsigned owner_hw_sid;
+  unsigned warp_id;
+  unsigned long long static_inst_pc;
+  unsigned issued_active_mask;
+  const char *state_name;
+  const char *transition_reason;
+};
+
 struct rtcore_resident_warp_demand_snapshot {
   rtcore_resident_warp_demand_snapshot()
       : live_rt_unit_warps(0),
