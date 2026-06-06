@@ -145,6 +145,13 @@ rtcore_scheduler_credit_ledger_reusable_credit_consumer_preflight_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool
+rtcore_scheduler_credit_ledger_reusable_credit_issue_gate_preflight_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_REUSABLE_CREDIT_ISSUE_GATE_PREFLIGHT");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
 static unsigned &rtcore_scheduler_credit_ledger_reusable_credit_shadow_count() {
   static unsigned reusable_credit_shadow_count = 0;
   return reusable_credit_shadow_count;
@@ -2411,6 +2418,20 @@ void scheduler_unit::cycle() {
                        rtcore_scheduler_credit_ledger_shadow_table.warp_uid);
                 fflush(stdout);
               }
+              bool rtcore_scheduler_credit_ledger_issue_gate_consumer_attempted =
+                  false;
+              bool rtcore_scheduler_credit_ledger_issue_gate_owner_reserved =
+                  false;
+              bool rtcore_scheduler_credit_ledger_issue_gate_credit_consumed =
+                  false;
+              unsigned
+                  rtcore_scheduler_credit_ledger_issue_gate_credit_observed_before =
+                      0;
+              unsigned
+                  rtcore_scheduler_credit_ledger_issue_gate_credit_observed_after =
+                      0;
+              const char *rtcore_scheduler_credit_ledger_issue_gate_consumer_result =
+                  "reusable_credit_consumer_not_observed";
               if (rtcore_scheduler_credit_ledger_shadow_table_real_mutation_preflight_active) {
                 rtcore_scheduler_credit_ledger_shadow_table_owner_key
                     rtcore_scheduler_credit_ledger_shadow_table_key;
@@ -2509,6 +2530,18 @@ void scheduler_unit::cycle() {
                           : (!rtcore_scheduler_credit_ledger_consumer_owner_reserved
                                  ? "reusable_credit_consumer_skipped_unreserved_owner"
                                  : "reusable_credit_consumer_no_credit");
+                  rtcore_scheduler_credit_ledger_issue_gate_consumer_attempted =
+                      true;
+                  rtcore_scheduler_credit_ledger_issue_gate_owner_reserved =
+                      rtcore_scheduler_credit_ledger_consumer_owner_reserved;
+                  rtcore_scheduler_credit_ledger_issue_gate_credit_consumed =
+                      rtcore_scheduler_credit_ledger_credit_consumed;
+                  rtcore_scheduler_credit_ledger_issue_gate_credit_observed_before =
+                      rtcore_scheduler_credit_ledger_credit_observed_before;
+                  rtcore_scheduler_credit_ledger_issue_gate_credit_observed_after =
+                      rtcore_scheduler_credit_ledger_credit_observed_after;
+                  rtcore_scheduler_credit_ledger_issue_gate_consumer_result =
+                      rtcore_scheduler_credit_ledger_consumer_result;
                   printf("GPGPU-Sim PTX: RT_SUBMIT "
                          "scheduler-credit-ledger-reusable-credit-consumer-preflight=1, "
                          "owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
@@ -2750,6 +2783,50 @@ void scheduler_unit::cycle() {
                   rtcore_symbolic_submit_issue_resources_available(
                       warp_id, m_shader->get_sid(), rtcore_active_mask,
                       pI->pc);
+              if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_reusable_credit_issue_gate_preflight_enabled()) {
+                const char *rtcore_scheduler_credit_ledger_issue_gate_result =
+                    !rtcore_issue_resources_ready
+                        ? "issue_gate_existing_resource_stall"
+                        : (rtcore_scheduler_credit_ledger_issue_gate_credit_consumed
+                               ? "issue_gate_reusable_credit_ready"
+                               : (rtcore_scheduler_credit_ledger_issue_gate_consumer_attempted
+                                      ? "issue_gate_consumer_no_reusable_credit"
+                                      : "issue_gate_consumer_not_observed"));
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-reusable-credit-issue-gate-preflight=1, "
+                       "owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "issue_resources_ready=%u, consumer_attempted=%u, "
+                       "owner_tuple_reserved=%u, credit_consumed=%u, "
+                       "credit_observed_before=%u, credit_observed_after=%u, "
+                       "consumer_result=%s, issue_gate_result=%s, "
+                       "transition_reason=%s\n",
+                       rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .issued_active_mask,
+                       rtcore_issue_resources_ready ? 1 : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumer_attempted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_owner_reserved
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_credit_consumed
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_credit_observed_before,
+                       rtcore_scheduler_credit_ledger_issue_gate_credit_observed_after,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumer_result,
+                       rtcore_scheduler_credit_ledger_issue_gate_result,
+                       "reusable_credit_issue_gate_preflight");
+                fflush(stdout);
+              }
               if (!rtcore_issue_resources_ready) {
                 break;
               }
