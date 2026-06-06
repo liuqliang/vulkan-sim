@@ -9328,6 +9328,9 @@ struct rtcore_launch_allocation_lifetime_record {
         retired_lane_mask(0),
         unretired_lane_mask(0),
         full_window_retired(false),
+        deferred_free_boundary(false),
+        allocator_reuse_authorized(false),
+        owner_generation_reuse_minted(false),
         reusable_slot_available(false),
         deferred_free_reason("no_active_lanes_observed"),
         submit_create_count(0),
@@ -9347,6 +9350,9 @@ struct rtcore_launch_allocation_lifetime_record {
   unsigned retired_lane_mask;
   unsigned unretired_lane_mask;
   bool full_window_retired;
+  bool deferred_free_boundary;
+  bool allocator_reuse_authorized;
+  bool owner_generation_reuse_minted;
   bool reusable_slot_available;
   const char *deferred_free_reason;
   unsigned submit_create_count;
@@ -9417,6 +9423,19 @@ static const char *rtcore_lifetime_deferred_free_reason(
   return "allocator_reuse_not_enabled";
 }
 
+static bool rtcore_launch_allocation_lifetime_reuse_authorized(
+    const rtcore_launch_allocation_lifetime_record &record) {
+  (void)record;
+  return false;
+}
+
+static bool
+rtcore_launch_allocation_lifetime_owner_generation_reuse_minted(
+    const rtcore_launch_allocation_lifetime_record &record) {
+  (void)record;
+  return false;
+}
+
 static void rtcore_update_launch_allocation_lifetime_retire_state(
     rtcore_launch_allocation_lifetime_record *record) {
   if (record == NULL) {
@@ -9426,7 +9445,13 @@ static void rtcore_update_launch_allocation_lifetime_retire_state(
       record->active_lane_mask & ~record->retired_lane_mask;
   record->full_window_retired =
       record->active_lane_mask != 0 && record->unretired_lane_mask == 0;
-  record->reusable_slot_available = false;
+  record->deferred_free_boundary = true;
+  record->allocator_reuse_authorized =
+      rtcore_launch_allocation_lifetime_reuse_authorized(*record);
+  record->owner_generation_reuse_minted =
+      rtcore_launch_allocation_lifetime_owner_generation_reuse_minted(*record);
+  record->reusable_slot_available =
+      record->full_window_retired && record->allocator_reuse_authorized;
   record->deferred_free_reason =
       rtcore_lifetime_deferred_free_reason(*record);
 }
@@ -9487,7 +9512,10 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          "owner_generation=%u, capacity_lane_slots=%u, "
          "lane_slot_index=%u, active_lane_mask=0x%08x, "
          "retired_lane_mask=0x%08x, unretired_lane_mask=0x%08x, "
-         "full_window_retired=%u, reusable_slot_available=%u, "
+         "full_window_retired=%u, deferred_free_boundary=%u, "
+         "allocator_reuse_authorized=%u, "
+         "owner_generation_reuse_minted=%u, "
+         "reusable_slot_available=%u, "
          "deferred_free_reason=%s, "
          "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
          "retire_free_policy=%s\n",
@@ -9502,6 +9530,9 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          lifetime_record->retired_lane_mask,
          lifetime_record->unretired_lane_mask,
          lifetime_record->full_window_retired ? 1 : 0,
+         lifetime_record->deferred_free_boundary ? 1 : 0,
+         lifetime_record->allocator_reuse_authorized ? 1 : 0,
+         lifetime_record->owner_generation_reuse_minted ? 1 : 0,
          lifetime_record->reusable_slot_available ? 1 : 0,
          lifetime_record->deferred_free_reason,
          lifetime_record->submit_create_count,
@@ -9548,6 +9579,8 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          "released_window=%u, released_token=%u, "
          "active_lane_mask=0x%08x, retired_lane_mask=0x%08x, "
          "unretired_lane_mask=0x%08x, full_window_retired=%u, "
+         "deferred_free_boundary=%u, allocator_reuse_authorized=%u, "
+         "owner_generation_reuse_minted=%u, "
          "reusable_slot_available=%u, deferred_free_reason=%s, "
          "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
          "retire_free_policy=%s\n",
@@ -9564,6 +9597,9 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          table_found ? lifetime_record->retired_lane_mask : 0,
          table_found ? lifetime_record->unretired_lane_mask : 0,
          table_found && lifetime_record->full_window_retired ? 1 : 0,
+         table_found && lifetime_record->deferred_free_boundary ? 1 : 0,
+         table_found && lifetime_record->allocator_reuse_authorized ? 1 : 0,
+         table_found && lifetime_record->owner_generation_reuse_minted ? 1 : 0,
          table_found && lifetime_record->reusable_slot_available ? 1 : 0,
          table_found ? lifetime_record->deferred_free_reason : "missing",
          table_found ? lifetime_record->submit_create_count : 0,
