@@ -1681,21 +1681,45 @@ void scheduler_unit::cycle() {
               assert(m_shader->m_config->gpgpu_num_rt_core_units > 0);
               const unsigned rtcore_active_mask =
                   static_cast<unsigned>(active_mask.to_ulong());
-              bool rtcore_scheduler_credit_ledger_noop_preissue_ready = true;
               const char *rtcore_scheduler_credit_ledger_noop_env =
                   getenv("VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_NOOP_HOOK");
-              if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+              rtcore_scheduler_credit_ledger_readiness_snapshot
+                  rtcore_scheduler_credit_ledger_readiness;
+              rtcore_scheduler_credit_ledger_readiness.hook_enabled =
+                  pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
                   rtcore_scheduler_credit_ledger_noop_env != NULL &&
                   *rtcore_scheduler_credit_ledger_noop_env != '\0' &&
-                  strcmp(rtcore_scheduler_credit_ledger_noop_env, "0") != 0) {
+                  strcmp(rtcore_scheduler_credit_ledger_noop_env, "0") != 0;
+              rtcore_scheduler_credit_ledger_readiness.owner_hw_sid =
+                  m_shader->get_sid();
+              rtcore_scheduler_credit_ledger_readiness.warp_id = warp_id;
+              rtcore_scheduler_credit_ledger_readiness.static_inst_pc = pI->pc;
+              rtcore_scheduler_credit_ledger_readiness.issued_active_mask =
+                  rtcore_active_mask;
+              rtcore_scheduler_credit_ledger_readiness.readiness_reason =
+                  "noop_ready";
+              const bool rtcore_scheduler_credit_ledger_noop_preissue_ready =
+                  rtcore_scheduler_credit_ledger_readiness.ready;
+              if (rtcore_scheduler_credit_ledger_readiness.hook_enabled) {
                 printf("GPGPU-Sim PTX: RT_SUBMIT "
                        "scheduler-credit-ledger-noop-preissue, "
                        "warp_id=%u, owner_hw_sid=%u, "
                        "static_inst_pc=0x%llx, "
-                       "issued_active_mask=0x%08x, action=ready\n",
-                       warp_id, m_shader->get_sid(),
-                       static_cast<unsigned long long>(pI->pc),
-                       rtcore_active_mask);
+                       "issued_active_mask=0x%08x, action=ready, "
+                       "scheduler-credit-ledger-readiness-snapshot=1, "
+                       "hook_enabled=%u, readiness_reason=%s\n",
+                       rtcore_scheduler_credit_ledger_readiness.warp_id,
+                       rtcore_scheduler_credit_ledger_readiness.owner_hw_sid,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_readiness
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_readiness
+                           .issued_active_mask,
+                       rtcore_scheduler_credit_ledger_readiness.hook_enabled
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_readiness
+                           .readiness_reason);
                 fflush(stdout);
               }
               if (!rtcore_scheduler_credit_ledger_noop_preissue_ready) {

@@ -1321,6 +1321,25 @@ struct rtcore_adapter_completion_claim_snapshot {
   const char *reject_reason;
 };
 
+struct rtcore_scheduler_credit_ledger_readiness_snapshot {
+  rtcore_scheduler_credit_ledger_readiness_snapshot()
+      : hook_enabled(false),
+        ready(true),
+        owner_hw_sid(0),
+        warp_id(0),
+        static_inst_pc(0),
+        issued_active_mask(0),
+        readiness_reason("noop_ready") {}
+
+  bool hook_enabled;
+  bool ready;
+  unsigned owner_hw_sid;
+  unsigned warp_id;
+  unsigned long long static_inst_pc;
+  unsigned issued_active_mask;
+  const char *readiness_reason;
+};
+
 struct rtcore_resident_warp_demand_snapshot {
   rtcore_resident_warp_demand_snapshot()
       : live_rt_unit_warps(0),
