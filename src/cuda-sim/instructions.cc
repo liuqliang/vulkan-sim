@@ -14157,10 +14157,16 @@ static rtcore_provider_payload_consumption_evidence_source
 rtcore_get_provider_payload_consumption_evidence_source() {
   const char *value =
       getenv(rtcore_provider_payload_consumption_evidence_source_env_name());
+  if (value == NULL || value[0] == '\0') {
+    return RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_RUNTIME_SHADOW;
+  }
   if (value != NULL &&
       (rtcore_path_mode_is(value, "runtime_shadow") ||
        rtcore_path_mode_is(value, "runtime"))) {
     return RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_RUNTIME_SHADOW;
+  }
+  if (rtcore_path_mode_is(value, "external")) {
+    return RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_EXTERNAL;
   }
   return RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_EXTERNAL;
 }
