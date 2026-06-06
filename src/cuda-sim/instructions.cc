@@ -8473,6 +8473,12 @@ const char *RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BOOTSTRAP_COMPAT =
     "source=bootstrap_compat_scaffold";
 const char *RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_LEGACY_OPT_OUT =
     "source=legacy_opt_out";
+const char *RTCORE_DRIVER_RUNTIME_LAUNCH_ALLOCATION_INTERFACE_ENV =
+    "VULKAN_SIM_RTCORE_DRIVER_RUNTIME_LAUNCH_ALLOCATION_INTERFACE";
+const char *RTCORE_DRIVER_RUNTIME_LAUNCH_ALLOCATION_INTERFACE_V0 =
+    "driver_runtime_launch_allocation_v0";
+const char *RTCORE_DRIVER_RUNTIME_RETIRE_FREE_POLICY =
+    "retire_context_releases_lane_slot_and_token";
 const char *RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BRIDGE =
     "driver_runtime_handle_bridge";
 const char *RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BOOTSTRAP_COMPAT =
@@ -8658,6 +8664,43 @@ const char *rtcore_driver_runtime_allocation_fault_name(
   }
 }
 
+struct rtcore_driver_runtime_launch_allocation_descriptor {
+  rtcore_driver_runtime_launch_allocation_descriptor()
+      : valid(false),
+        explicit_interface(false),
+        interface_supported(false),
+        launch_allocation_interface(
+            RTCORE_DRIVER_RUNTIME_LAUNCH_ALLOCATION_INTERFACE_V0),
+        explicit_context_base(false),
+        explicit_handoff_base(false),
+        context_base(0),
+        handoff_base(0),
+        context_alignment(RTCORE_CONTEXT_ALIGNMENT),
+        handoff_alignment(RTCORE_HANDOFF_WINDOW_ALIGNMENT),
+        context_lane_stride_bytes(RTCORE_CONTEXT_BYTES_PER_LANE),
+        handoff_lane_slot_stride_bytes(
+            RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE),
+        capacity_lane_slots(RTCORE_MAX_LANES_PER_WARP),
+        owner_generation_seed(1),
+        retire_free_policy(RTCORE_DRIVER_RUNTIME_RETIRE_FREE_POLICY) {}
+
+  bool valid;
+  bool explicit_interface;
+  bool interface_supported;
+  const char *launch_allocation_interface;
+  bool explicit_context_base;
+  bool explicit_handoff_base;
+  unsigned long long context_base;
+  unsigned long long handoff_base;
+  unsigned context_alignment;
+  unsigned handoff_alignment;
+  unsigned context_lane_stride_bytes;
+  unsigned handoff_lane_slot_stride_bytes;
+  unsigned capacity_lane_slots;
+  unsigned owner_generation_seed;
+  const char *retire_free_policy;
+};
+
 struct rtcore_driver_runtime_handle_bridge_record {
   rtcore_driver_runtime_handle_bridge_record()
       : enabled(false),
@@ -8671,14 +8714,26 @@ struct rtcore_driver_runtime_handle_bridge_record {
         explicit_context_base(false),
         explicit_handoff_base(false),
         enabled_by_default(false),
+        launch_allocation_interface_valid(false),
+        explicit_launch_allocation_interface(false),
         handle_bridge_source(RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BRIDGE),
+        launch_allocation_interface(
+            RTCORE_DRIVER_RUNTIME_LAUNCH_ALLOCATION_INTERFACE_V0),
         ownership_source(RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BRIDGE),
         allocation_fault(RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_NONE),
         context_base(0),
         handoff_base(0),
         context_ptr(0),
         handoff_window_base(0),
-        lane_slot_index(0) {}
+        lane_slot_index(0),
+        context_alignment(RTCORE_CONTEXT_ALIGNMENT),
+        handoff_alignment(RTCORE_HANDOFF_WINDOW_ALIGNMENT),
+        context_lane_stride_bytes(RTCORE_CONTEXT_BYTES_PER_LANE),
+        handoff_lane_slot_stride_bytes(
+            RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE),
+        capacity_lane_slots(RTCORE_MAX_LANES_PER_WARP),
+        owner_generation_seed(1),
+        retire_free_policy(RTCORE_DRIVER_RUNTIME_RETIRE_FREE_POLICY) {}
 
   bool enabled;
   bool invalid_mode;
@@ -8691,7 +8746,10 @@ struct rtcore_driver_runtime_handle_bridge_record {
   bool explicit_context_base;
   bool explicit_handoff_base;
   bool enabled_by_default;
+  bool launch_allocation_interface_valid;
+  bool explicit_launch_allocation_interface;
   const char *handle_bridge_source;
+  const char *launch_allocation_interface;
   const char *ownership_source;
   const char *allocation_fault;
   unsigned long long context_base;
@@ -8699,6 +8757,13 @@ struct rtcore_driver_runtime_handle_bridge_record {
   unsigned long long context_ptr;
   unsigned long long handoff_window_base;
   unsigned lane_slot_index;
+  unsigned context_alignment;
+  unsigned handoff_alignment;
+  unsigned context_lane_stride_bytes;
+  unsigned handoff_lane_slot_stride_bytes;
+  unsigned capacity_lane_slots;
+  unsigned owner_generation_seed;
+  const char *retire_free_policy;
 };
 
 bool rtcore_driver_runtime_parse_u64_env(const char *name,
@@ -8736,6 +8801,48 @@ bool rtcore_driver_runtime_resolve_u64_env(const char *name,
   *value = parsed;
   *explicit_value = true;
   return true;
+}
+
+rtcore_driver_runtime_launch_allocation_descriptor
+rtcore_make_driver_runtime_launch_allocation_descriptor() {
+  rtcore_driver_runtime_launch_allocation_descriptor descriptor;
+  const char *interface_value =
+      getenv(RTCORE_DRIVER_RUNTIME_LAUNCH_ALLOCATION_INTERFACE_ENV);
+  descriptor.explicit_interface =
+      interface_value != NULL && interface_value[0] != '\0';
+  descriptor.interface_supported =
+      !descriptor.explicit_interface || strcmp(interface_value, "1") == 0 ||
+      rtcore_path_mode_is(interface_value, "true") ||
+      rtcore_path_mode_is(interface_value, "on") ||
+      rtcore_path_mode_is(interface_value, "yes") ||
+      rtcore_path_mode_is(interface_value, "default") ||
+      rtcore_path_mode_is(interface_value,
+                          RTCORE_DRIVER_RUNTIME_LAUNCH_ALLOCATION_INTERFACE_V0) ||
+      rtcore_path_mode_is(interface_value,
+                          "driver-runtime-launch-allocation-v0");
+  descriptor.launch_allocation_interface =
+      descriptor.interface_supported
+          ? RTCORE_DRIVER_RUNTIME_LAUNCH_ALLOCATION_INTERFACE_V0
+          : RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_INVALID;
+  const bool context_base_valid = rtcore_driver_runtime_resolve_u64_env(
+      RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV,
+      RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE, &descriptor.context_base,
+      &descriptor.explicit_context_base);
+  const bool handoff_base_valid = rtcore_driver_runtime_resolve_u64_env(
+      RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV,
+      RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE,
+      &descriptor.handoff_base, &descriptor.explicit_handoff_base);
+  const bool context_aligned =
+      (descriptor.context_base % descriptor.context_alignment) == 0;
+  const bool handoff_aligned =
+      (descriptor.handoff_base % descriptor.handoff_alignment) == 0;
+  descriptor.valid = descriptor.interface_supported && context_base_valid &&
+                     handoff_base_valid && context_aligned && handoff_aligned &&
+                     descriptor.context_lane_stride_bytes != 0 &&
+                     descriptor.handoff_lane_slot_stride_bytes != 0 &&
+                     descriptor.capacity_lane_slots != 0 &&
+                     descriptor.owner_generation_seed != 0;
+  return descriptor;
 }
 
 void rtcore_apply_driver_runtime_allocation_fault(
@@ -8834,24 +8941,44 @@ rtcore_make_driver_runtime_handle_bridge_record(
     return record;
   }
 
-  record.has_context_base = rtcore_driver_runtime_resolve_u64_env(
-      RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV,
-      RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE, &record.context_base,
-      &record.explicit_context_base);
-  record.has_handoff_base = rtcore_driver_runtime_resolve_u64_env(
-      RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV,
-      RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE, &record.handoff_base,
-      &record.explicit_handoff_base);
+  const rtcore_driver_runtime_launch_allocation_descriptor
+      launch_allocation_descriptor =
+          rtcore_make_driver_runtime_launch_allocation_descriptor();
+  record.launch_allocation_interface =
+      launch_allocation_descriptor.launch_allocation_interface;
+  record.launch_allocation_interface_valid = launch_allocation_descriptor.valid;
+  record.explicit_launch_allocation_interface =
+      launch_allocation_descriptor.explicit_interface;
+  record.has_context_base = launch_allocation_descriptor.valid;
+  record.has_handoff_base = launch_allocation_descriptor.valid;
+  record.explicit_context_base =
+      launch_allocation_descriptor.explicit_context_base;
+  record.explicit_handoff_base =
+      launch_allocation_descriptor.explicit_handoff_base;
+  record.context_base = launch_allocation_descriptor.context_base;
+  record.handoff_base = launch_allocation_descriptor.handoff_base;
+  record.context_alignment = launch_allocation_descriptor.context_alignment;
+  record.handoff_alignment = launch_allocation_descriptor.handoff_alignment;
+  record.context_lane_stride_bytes =
+      launch_allocation_descriptor.context_lane_stride_bytes;
+  record.handoff_lane_slot_stride_bytes =
+      launch_allocation_descriptor.handoff_lane_slot_stride_bytes;
+  record.capacity_lane_slots = launch_allocation_descriptor.capacity_lane_slots;
+  record.owner_generation_seed =
+      launch_allocation_descriptor.owner_generation_seed;
+  record.retire_free_policy = launch_allocation_descriptor.retire_free_policy;
   const bool explicit_source =
-      record.explicit_context_base || record.explicit_handoff_base;
+      record.explicit_context_base || record.explicit_handoff_base ||
+      record.explicit_launch_allocation_interface;
   record.enabled_by_default = !explicit_source;
   record.handle_bridge_source =
       RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BRIDGE;
   record.ownership_source =
       explicit_source ? RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_EXPLICIT
                       : RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BRIDGE;
-  record.valid =
-      record.has_context_base && record.has_handoff_base && !record.invalid_mode;
+  record.valid = record.launch_allocation_interface_valid &&
+                 record.has_context_base && record.has_handoff_base &&
+                 !record.invalid_mode;
   rtcore_apply_driver_runtime_allocation_fault(&record);
   return record;
 }
@@ -8861,22 +8988,59 @@ static void rtcore_log_driver_runtime_handle_bridge_record(
     const rtcore_driver_runtime_handle_bridge_record &record) {
   printf("GPGPU-Sim PTX: RT_SUBMIT driver-runtime-handle-bridge (%s:%u), "
          "handle_bridge_record=1, valid=%u, handle_bridge_source=%s, %s, "
+         "launch_allocation_interface=%s, "
+         "launch_allocation_interface_valid=%u, "
          "bridge_owned=%u, bootstrap_compat=%u, legacy_opt_out=%u, "
          "runtime_allocation_record=1, enabled=%u, mode_valid=%u, "
          "enabled_by_default=%u, explicit_context_base=%u, "
-         "explicit_handoff_base=%u, context_base=0x%llx, "
+         "explicit_handoff_base=%u, explicit_launch_allocation_interface=%u, "
+         "context_base=0x%llx, "
          "handoff_base=0x%llx, context_ptr=0x%llx, "
          "handoff_window_base=0x%llx, lane_slot_index=%u, "
          "driver_runtime_allocation_fault=%s\n",
          pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
          record.handle_bridge_source, record.ownership_source,
+         record.launch_allocation_interface,
+         record.launch_allocation_interface_valid ? 1 : 0,
          record.bridge_owned ? 1 : 0, record.bootstrap_compat ? 1 : 0,
          record.legacy_opt_out ? 1 : 0, record.enabled ? 1 : 0,
          record.invalid_mode ? 0 : 1, record.enabled_by_default ? 1 : 0,
          record.explicit_context_base ? 1 : 0,
-         record.explicit_handoff_base ? 1 : 0, record.context_base,
-         record.handoff_base, record.context_ptr, record.handoff_window_base,
-         record.lane_slot_index, record.allocation_fault);
+         record.explicit_handoff_base ? 1 : 0,
+         record.explicit_launch_allocation_interface ? 1 : 0,
+         record.context_base, record.handoff_base, record.context_ptr,
+         record.handoff_window_base, record.lane_slot_index,
+         record.allocation_fault);
+  fflush(stdout);
+}
+
+static void rtcore_log_driver_runtime_launch_allocation_descriptor(
+    const ptx_instruction *pI,
+    const rtcore_driver_runtime_handle_bridge_record &record) {
+  if (!record.enabled || record.bootstrap_compat || record.legacy_opt_out) {
+    return;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT runtime-launch-allocation-interface "
+         "(%s:%u), runtime_launch_allocation_interface=1, valid=%u, "
+         "launch_allocation_interface=%s, enabled_by_default=%u, "
+         "explicit_context_base=%u, explicit_handoff_base=%u, "
+         "explicit_launch_allocation_interface=%u, "
+         "context_base=0x%llx, handoff_base=0x%llx, "
+         "context_alignment=%u, handoff_alignment=%u, "
+         "context_lane_stride_bytes=%u, "
+         "handoff_lane_slot_stride_bytes=%u, capacity_lane_slots=%u, "
+         "owner_generation_seed=%u, retire_free_policy=%s\n",
+         pI->source_file(), pI->source_line(),
+         record.launch_allocation_interface_valid ? 1 : 0,
+         record.launch_allocation_interface,
+         record.enabled_by_default ? 1 : 0,
+         record.explicit_context_base ? 1 : 0,
+         record.explicit_handoff_base ? 1 : 0,
+         record.explicit_launch_allocation_interface ? 1 : 0,
+         record.context_base, record.handoff_base, record.context_alignment,
+         record.handoff_alignment, record.context_lane_stride_bytes,
+         record.handoff_lane_slot_stride_bytes, record.capacity_lane_slots,
+         record.owner_generation_seed, record.retire_free_policy);
   fflush(stdout);
 }
 
@@ -8906,9 +9070,16 @@ struct rtcore_runtime_context_window_allocation_record {
         context_window_index(0),
         handoff_window_index(0),
         owner_generation(0),
+        owner_generation_seed(1),
+        context_alignment(RTCORE_CONTEXT_ALIGNMENT),
+        handoff_alignment(RTCORE_HANDOFF_WINDOW_ALIGNMENT),
+        context_lane_stride_bytes(RTCORE_CONTEXT_BYTES_PER_LANE),
+        handoff_lane_slot_stride_bytes(
+            RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE),
         capacity_lane_slots(RTCORE_MAX_LANES_PER_WARP),
         context_allocation_bytes(RTCORE_CONTEXT_BYTES_PER_FULL_WARP),
-        handoff_allocation_bytes(RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP) {}
+        handoff_allocation_bytes(RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP),
+        retire_free_policy(RTCORE_DRIVER_RUNTIME_RETIRE_FREE_POLICY) {}
 
   bool enabled;
   bool invalid_flag;
@@ -8934,9 +9105,15 @@ struct rtcore_runtime_context_window_allocation_record {
   unsigned long long context_window_index;
   unsigned long long handoff_window_index;
   unsigned owner_generation;
+  unsigned owner_generation_seed;
+  unsigned context_alignment;
+  unsigned handoff_alignment;
+  unsigned context_lane_stride_bytes;
+  unsigned handoff_lane_slot_stride_bytes;
   unsigned capacity_lane_slots;
   unsigned context_allocation_bytes;
   unsigned handoff_allocation_bytes;
+  const char *retire_free_policy;
 };
 
 static rtcore_runtime_context_window_allocation_record
@@ -8957,6 +9134,18 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
   record.allocation_fault = bridge_record.allocation_fault;
   record.context_base = bridge_record.context_base;
   record.handoff_base = bridge_record.handoff_base;
+  record.context_alignment = bridge_record.context_alignment;
+  record.handoff_alignment = bridge_record.handoff_alignment;
+  record.context_lane_stride_bytes = bridge_record.context_lane_stride_bytes;
+  record.handoff_lane_slot_stride_bytes =
+      bridge_record.handoff_lane_slot_stride_bytes;
+  record.capacity_lane_slots = bridge_record.capacity_lane_slots;
+  record.owner_generation_seed = bridge_record.owner_generation_seed;
+  record.retire_free_policy = bridge_record.retire_free_policy;
+  record.context_allocation_bytes =
+      record.capacity_lane_slots * record.context_lane_stride_bytes;
+  record.handoff_allocation_bytes =
+      record.capacity_lane_slots * record.handoff_lane_slot_stride_bytes;
   if (!record.enabled) {
     return record;
   }
@@ -8965,14 +9154,16 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
     const unsigned long long context_offset =
         record.context_ptr - record.context_base;
     record.context_matches =
-        (context_offset % RTCORE_CONTEXT_BYTES_PER_LANE) == 0;
+        record.context_lane_stride_bytes != 0 &&
+        record.capacity_lane_slots != 0 &&
+        (context_offset % record.context_lane_stride_bytes) == 0;
     if (record.context_matches) {
       const unsigned long long context_lane_index =
-          context_offset / RTCORE_CONTEXT_BYTES_PER_LANE;
+          context_offset / record.context_lane_stride_bytes;
       record.context_lane_slot_index =
-          (unsigned)(context_lane_index % RTCORE_MAX_LANES_PER_WARP);
+          (unsigned)(context_lane_index % record.capacity_lane_slots);
       record.context_window_index =
-          context_lane_index / RTCORE_MAX_LANES_PER_WARP;
+          context_lane_index / record.capacity_lane_slots;
       record.context_window_index_valid = true;
     }
   }
@@ -8982,11 +9173,12 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
     const unsigned long long handoff_offset =
         record.handoff_window_base - record.handoff_base;
     record.handoff_matches =
-        (handoff_offset % RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP) == 0 &&
-        (record.handoff_window_base % RTCORE_HANDOFF_WINDOW_ALIGNMENT) == 0;
+        record.handoff_allocation_bytes != 0 &&
+        (handoff_offset % record.handoff_allocation_bytes) == 0 &&
+        (record.handoff_window_base % record.handoff_alignment) == 0;
     if (record.handoff_matches) {
       record.handoff_window_index =
-          handoff_offset / RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP;
+          handoff_offset / record.handoff_allocation_bytes;
       record.handoff_window_index_valid = true;
     }
   }
@@ -8996,7 +9188,9 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
                          record.context_window_index ==
                              record.handoff_window_index;
   record.owner_generation =
-      record.indices_match ? (unsigned)(record.context_window_index + 1) : 0;
+      record.indices_match ? (unsigned)(record.context_window_index +
+                                        record.owner_generation_seed)
+                           : 0;
   record.valid = !record.invalid_flag && bridge_record.valid &&
                  record.has_context_base &&
                  record.has_handoff_base && record.context_matches &&
@@ -9036,9 +9230,13 @@ static void rtcore_log_runtime_context_window_allocation_record(
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, context_lane_slot_index=%u, "
          "context_window_index=%llu, handoff_window_index=%llu, "
-         "owner_generation=%u, capacity_lane_slots=%u, "
+         "owner_generation=%u, owner_generation_seed=%u, "
+         "context_alignment=%u, handoff_alignment=%u, "
+         "context_lane_stride_bytes=%u, "
+         "handoff_lane_slot_stride_bytes=%u, capacity_lane_slots=%u, "
          "context_allocation_bytes=%u, handoff_allocation_bytes=%u, "
-         "allocation_state=live, driver_runtime_allocation_fault=%s\n",
+         "allocation_state=live, retire_free_policy=%s, "
+         "driver_runtime_allocation_fault=%s\n",
          pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
          record.ownership_source, record.enabled_by_default ? 1 : 0,
          record.explicit_context_base ? 1 : 0,
@@ -9048,9 +9246,12 @@ static void rtcore_log_runtime_context_window_allocation_record(
          record.handoff_base, record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.context_lane_slot_index,
          record.context_window_index, record.handoff_window_index,
-         record.owner_generation, record.capacity_lane_slots,
+         record.owner_generation, record.owner_generation_seed,
+         record.context_alignment, record.handoff_alignment,
+         record.context_lane_stride_bytes,
+         record.handoff_lane_slot_stride_bytes, record.capacity_lane_slots,
          record.context_allocation_bytes, record.handoff_allocation_bytes,
-         record.allocation_fault);
+         record.retire_free_policy, record.allocation_fault);
   fflush(stdout);
 }
 
@@ -9071,16 +9272,19 @@ static void rtcore_log_runtime_context_window_allocation_retire(
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, context_window_index=%llu, "
          "handoff_window_index=%llu, owner_generation=%u, "
-         "capacity_lane_slots=%u, released_window=%u, released_token=%u, "
+         "owner_generation_seed=%u, capacity_lane_slots=%u, "
+         "retire_free_policy=%s, released_window=%u, released_token=%u, "
          "remaining_windows=%zu, remaining_tokens=%zu, "
          "remaining_allocator_live=%zu, retire_free_status=%s\n",
          pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
          record.ownership_source, record.context_ptr,
          record.handoff_window_base, record.lane_slot_index,
          record.context_window_index, record.handoff_window_index,
-         record.owner_generation, record.capacity_lane_slots,
-         released_window ? 1 : 0, released_token ? 1 : 0, remaining_windows,
-         remaining_tokens, remaining_allocator_live, retire_free_status);
+         record.owner_generation, record.owner_generation_seed,
+         record.capacity_lane_slots, record.retire_free_policy,
+         released_window ? 1 : 0, released_token ? 1 : 0,
+         remaining_windows, remaining_tokens, remaining_allocator_live,
+         retire_free_status);
   fflush(stdout);
 }
 
@@ -9090,6 +9294,7 @@ bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
   const rtcore_driver_runtime_handle_bridge_record bridge_record =
       rtcore_make_driver_runtime_handle_bridge_record(
           context_ptr, handoff_window_base, lane_slot_index);
+  rtcore_log_driver_runtime_launch_allocation_descriptor(pI, bridge_record);
   rtcore_log_driver_runtime_handle_bridge_record(pI, bridge_record);
   const rtcore_runtime_context_window_allocation_record allocation_record =
       rtcore_make_runtime_context_window_allocation_record_from_bridge(
