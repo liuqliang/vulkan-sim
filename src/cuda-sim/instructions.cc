@@ -9324,7 +9324,12 @@ struct rtcore_launch_allocation_lifetime_record {
         handoff_window_index(0),
         owner_generation(0),
         capacity_lane_slots(0),
+        active_lane_mask(0),
         retired_lane_mask(0),
+        unretired_lane_mask(0),
+        full_window_retired(false),
+        reusable_slot_available(false),
+        deferred_free_reason("no_active_lanes_observed"),
         submit_create_count(0),
         submit_lookup_count(0),
         retire_count(0),
@@ -9338,7 +9343,12 @@ struct rtcore_launch_allocation_lifetime_record {
   unsigned long long handoff_window_index;
   unsigned owner_generation;
   unsigned capacity_lane_slots;
+  unsigned active_lane_mask;
   unsigned retired_lane_mask;
+  unsigned unretired_lane_mask;
+  bool full_window_retired;
+  bool reusable_slot_available;
+  const char *deferred_free_reason;
   unsigned submit_create_count;
   unsigned submit_lookup_count;
   unsigned retire_count;
@@ -9377,10 +9387,54 @@ rtcore_make_launch_allocation_lifetime_record(
   return record;
 }
 
+static unsigned rtcore_launch_allocation_lifetime_capacity_mask(
+    unsigned capacity_lane_slots) {
+  if (capacity_lane_slots >= RTCORE_MAX_LANES_PER_WARP) {
+    return 0xffffffffu;
+  }
+  if (capacity_lane_slots == 0) {
+    return 0;
+  }
+  return (1u << capacity_lane_slots) - 1u;
+}
+
+static unsigned rtcore_launch_allocation_lifetime_active_lane_mask(
+    const rtcore_runtime_context_window_allocation_record &allocation_record,
+    unsigned active_lane_mask) {
+  return active_lane_mask &
+         rtcore_launch_allocation_lifetime_capacity_mask(
+             allocation_record.capacity_lane_slots);
+}
+
+static const char *rtcore_lifetime_deferred_free_reason(
+    const rtcore_launch_allocation_lifetime_record &record) {
+  if (record.active_lane_mask == 0) {
+    return "no_active_lanes_observed";
+  }
+  if (!record.full_window_retired) {
+    return "waiting_for_active_lane_retire";
+  }
+  return "allocator_reuse_not_enabled";
+}
+
+static void rtcore_update_launch_allocation_lifetime_retire_state(
+    rtcore_launch_allocation_lifetime_record *record) {
+  if (record == NULL) {
+    return;
+  }
+  record->unretired_lane_mask =
+      record->active_lane_mask & ~record->retired_lane_mask;
+  record->full_window_retired =
+      record->active_lane_mask != 0 && record->unretired_lane_mask == 0;
+  record->reusable_slot_available = false;
+  record->deferred_free_reason =
+      rtcore_lifetime_deferred_free_reason(*record);
+}
+
 static rtcore_launch_allocation_lifetime_record *
 rtcore_get_or_create_launch_allocation_lifetime_record(
     const rtcore_runtime_context_window_allocation_record &allocation_record,
-    bool *created) {
+    unsigned active_lane_mask, bool *created) {
   *created = false;
   if (!allocation_record.enabled || !allocation_record.valid) {
     return NULL;
@@ -9399,10 +9453,20 @@ rtcore_get_or_create_launch_allocation_lifetime_record(
                 key, rtcore_make_launch_allocation_lifetime_record(
                          allocation_record)));
     *created = true;
-    return &inserted.first->second;
+    rtcore_launch_allocation_lifetime_record *record =
+        &inserted.first->second;
+    record->active_lane_mask |=
+        rtcore_launch_allocation_lifetime_active_lane_mask(
+            allocation_record, active_lane_mask);
+    rtcore_update_launch_allocation_lifetime_retire_state(record);
+    return record;
   }
   iter->second.live = true;
+  iter->second.active_lane_mask |=
+      rtcore_launch_allocation_lifetime_active_lane_mask(allocation_record,
+                                                        active_lane_mask);
   iter->second.submit_lookup_count++;
+  rtcore_update_launch_allocation_lifetime_retire_state(&iter->second);
   return &iter->second;
 }
 
@@ -9421,7 +9485,10 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          "context_base=0x%llx, handoff_base=0x%llx, "
          "context_window_index=%llu, handoff_window_index=%llu, "
          "owner_generation=%u, capacity_lane_slots=%u, "
-         "lane_slot_index=%u, retired_lane_mask=0x%08x, "
+         "lane_slot_index=%u, active_lane_mask=0x%08x, "
+         "retired_lane_mask=0x%08x, unretired_lane_mask=0x%08x, "
+         "full_window_retired=%u, reusable_slot_available=%u, "
+         "deferred_free_reason=%s, "
          "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
          "retire_free_policy=%s\n",
          pI->source_file(), pI->source_line(),
@@ -9431,7 +9498,12 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          lifetime_record->handoff_window_index,
          lifetime_record->owner_generation,
          lifetime_record->capacity_lane_slots, allocation_record.lane_slot_index,
+         lifetime_record->active_lane_mask,
          lifetime_record->retired_lane_mask,
+         lifetime_record->unretired_lane_mask,
+         lifetime_record->full_window_retired ? 1 : 0,
+         lifetime_record->reusable_slot_available ? 1 : 0,
+         lifetime_record->deferred_free_reason,
          lifetime_record->submit_create_count,
          lifetime_record->submit_lookup_count, lifetime_record->retire_count,
          lifetime_record->retire_free_policy);
@@ -9441,7 +9513,7 @@ static void rtcore_log_launch_allocation_lifetime_submit(
 static bool rtcore_mark_launch_allocation_lifetime_retire(
     const ptx_instruction *pI,
     const rtcore_runtime_context_window_allocation_record &allocation_record,
-    bool released_window, bool released_token) {
+    unsigned active_lane_mask, bool released_window, bool released_token) {
   if (!allocation_record.enabled || !allocation_record.valid) {
     return false;
   }
@@ -9454,8 +9526,14 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
       iter != g_rtcore_launch_allocation_lifetime_table.end();
   if (table_found) {
     iter->second.retire_count++;
-    iter->second.retired_lane_mask |=
-        (1u << allocation_record.lane_slot_index);
+    iter->second.active_lane_mask |=
+        rtcore_launch_allocation_lifetime_active_lane_mask(
+            allocation_record, active_lane_mask);
+    if (allocation_record.lane_slot_index < RTCORE_MAX_LANES_PER_WARP) {
+      iter->second.retired_lane_mask |=
+          (1u << allocation_record.lane_slot_index);
+    }
+    rtcore_update_launch_allocation_lifetime_retire_state(&iter->second);
   }
   const rtcore_launch_allocation_lifetime_record *lifetime_record =
       table_found ? &iter->second : NULL;
@@ -9467,7 +9545,10 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          "handoff_base=0x%llx, context_window_index=%llu, "
          "handoff_window_index=%llu, owner_generation=%u, "
          "capacity_lane_slots=%u, lane_slot_index=%u, "
-         "released_window=%u, released_token=%u, retired_lane_mask=0x%08x, "
+         "released_window=%u, released_token=%u, "
+         "active_lane_mask=0x%08x, retired_lane_mask=0x%08x, "
+         "unretired_lane_mask=0x%08x, full_window_retired=%u, "
+         "reusable_slot_available=%u, deferred_free_reason=%s, "
          "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
          "retire_free_policy=%s\n",
          pI->source_file(), pI->source_line(), table_found ? 1 : 0,
@@ -9479,7 +9560,12 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          allocation_record.owner_generation, allocation_record.capacity_lane_slots,
          allocation_record.lane_slot_index, released_window ? 1 : 0,
          released_token ? 1 : 0,
+         table_found ? lifetime_record->active_lane_mask : 0,
          table_found ? lifetime_record->retired_lane_mask : 0,
+         table_found ? lifetime_record->unretired_lane_mask : 0,
+         table_found && lifetime_record->full_window_retired ? 1 : 0,
+         table_found && lifetime_record->reusable_slot_available ? 1 : 0,
+         table_found ? lifetime_record->deferred_free_reason : "missing",
          table_found ? lifetime_record->submit_create_count : 0,
          table_found ? lifetime_record->submit_lookup_count : 0,
          table_found ? lifetime_record->retire_count : 0,
@@ -17610,7 +17696,8 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   bool lifetime_record_created = false;
   const rtcore_launch_allocation_lifetime_record *lifetime_record =
       rtcore_get_or_create_launch_allocation_lifetime_record(
-          allocation_record, &lifetime_record_created);
+          allocation_record, current_warp_metadata.active_mask,
+          &lifetime_record_created);
   rtcore_log_launch_allocation_lifetime_submit(
       pI, allocation_record, lifetime_record, lifetime_record_created);
   if (allocation_record.enabled && lifetime_record == NULL) {
@@ -17703,7 +17790,8 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   const bool released_window = rtcore_release_synthetic_handoff_window(key);
   const bool released_token = rtcore_release_symbolic_rt_token(token_key);
   rtcore_mark_launch_allocation_lifetime_retire(
-      pI, allocation_record, released_window, released_token);
+      pI, allocation_record, current_warp_metadata.active_mask, released_window,
+      released_token);
   rtcore_log_runtime_context_window_allocation_retire(
       pI, allocation_record, released_window, released_token,
       rtcore_synthetic_handoff_window_count(), rtcore_symbolic_rt_token_count(),
