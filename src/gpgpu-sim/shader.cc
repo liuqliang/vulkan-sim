@@ -30,6 +30,7 @@
 #include "shader.h"
 #include <float.h>
 #include <limits.h>
+#include <set>
 #include <stdlib.h>
 #include <string.h>
 #include "../../libcuda/gpgpu_context.h"
@@ -58,6 +59,134 @@ extern "C" bool rtcore_symbolic_submit_issue_resources_available(
     unsigned long long static_inst_pc);
 extern "C" bool
 rtcore_symbolic_submit_issue_resource_backpressure_is_enabled();
+
+namespace {
+
+struct rtcore_scheduler_credit_ledger_shadow_table_owner_key {
+  unsigned owner_hw_sid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned long long static_inst_pc;
+  unsigned issued_active_mask;
+
+  bool operator<(
+      const rtcore_scheduler_credit_ledger_shadow_table_owner_key &other)
+      const {
+    if (owner_hw_sid != other.owner_hw_sid) return owner_hw_sid < other.owner_hw_sid;
+    if (warp_uid != other.warp_uid) return warp_uid < other.warp_uid;
+    if (warp_id != other.warp_id) return warp_id < other.warp_id;
+    if (static_inst_pc != other.static_inst_pc)
+      return static_inst_pc < other.static_inst_pc;
+    return issued_active_mask < other.issued_active_mask;
+  }
+};
+
+struct rtcore_scheduler_credit_ledger_shadow_table_mutation_result {
+  rtcore_scheduler_credit_ledger_shadow_table_mutation_result()
+      : entry_found(false),
+        capacity_guard_passed(false),
+        table_entries_before(0),
+        table_entries_after(0),
+        capacity_limit(32),
+        owner_tuple_reserved(false),
+        owner_tuple_released(false),
+        capacity_reclaimed(false),
+        capacity_mutated(false),
+        reusable_slot_published(false),
+        mutation_result("shadow_table_real_mutation_default_off"),
+        transition_reason("shadow_table_real_mutation_default_off") {}
+
+  bool entry_found;
+  bool capacity_guard_passed;
+  unsigned table_entries_before;
+  unsigned table_entries_after;
+  unsigned capacity_limit;
+  bool owner_tuple_reserved;
+  bool owner_tuple_released;
+  bool capacity_reclaimed;
+  bool capacity_mutated;
+  bool reusable_slot_published;
+  const char *mutation_result;
+  const char *transition_reason;
+};
+
+static bool
+rtcore_scheduler_credit_ledger_shadow_table_real_mutation_preflight_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_SHADOW_TABLE_REAL_MUTATION_PREFLIGHT");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>
+    &rtcore_scheduler_credit_ledger_shadow_table_live_owner_keys() {
+  static std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>
+      live_owner_keys;
+  return live_owner_keys;
+}
+
+static rtcore_scheduler_credit_ledger_shadow_table_mutation_result
+rtcore_scheduler_credit_ledger_shadow_table_account_mutation_preflight(
+    const rtcore_scheduler_credit_ledger_shadow_table_owner_key &key) {
+  rtcore_scheduler_credit_ledger_shadow_table_mutation_result result;
+  std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key> &table =
+      rtcore_scheduler_credit_ledger_shadow_table_live_owner_keys();
+  result.table_entries_before = table.size();
+  result.capacity_limit = 32;
+  result.entry_found = table.find(key) != table.end();
+  result.capacity_guard_passed =
+      result.table_entries_before < result.capacity_limit;
+  const bool insert_allowed =
+      !result.entry_found && result.capacity_guard_passed;
+  if (insert_allowed) {
+    result.owner_tuple_reserved = table.insert(key).second;
+    result.capacity_mutated = result.owner_tuple_reserved;
+  }
+  result.table_entries_after = table.size();
+  if (result.owner_tuple_reserved) {
+    result.mutation_result = "shadow_table_owner_tuple_reserved";
+    result.transition_reason = "shadow_table_submit_accounted_mutation_preflight";
+  } else if (result.entry_found) {
+    result.mutation_result = "shadow_table_duplicate_owner_tuple";
+    result.transition_reason = "shadow_table_submit_duplicate_rejected_preflight";
+  } else {
+    result.mutation_result = "shadow_table_capacity_unavailable";
+    result.transition_reason = "shadow_table_submit_capacity_rejected_preflight";
+  }
+  return result;
+}
+
+static rtcore_scheduler_credit_ledger_shadow_table_mutation_result
+rtcore_scheduler_credit_ledger_shadow_table_release_mutation_preflight(
+    const rtcore_scheduler_credit_ledger_shadow_table_owner_key &key) {
+  rtcore_scheduler_credit_ledger_shadow_table_mutation_result result;
+  std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key> &table =
+      rtcore_scheduler_credit_ledger_shadow_table_live_owner_keys();
+  result.table_entries_before = table.size();
+  result.capacity_limit = 32;
+  std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>::iterator it =
+      table.find(key);
+  result.entry_found = it != table.end();
+  result.capacity_guard_passed = true;
+  if (result.entry_found) {
+    table.erase(it);
+    result.owner_tuple_released = true;
+    result.capacity_reclaimed = true;
+    result.capacity_mutated = true;
+  }
+  result.reusable_slot_published = false;
+  result.table_entries_after = table.size();
+  if (result.owner_tuple_released) {
+    result.mutation_result = "shadow_table_owner_tuple_released";
+    result.transition_reason =
+        "shadow_table_completion_released_mutation_preflight";
+  } else {
+    result.mutation_result = "shadow_table_release_missing_owner_tuple";
+    result.transition_reason = "shadow_table_completion_release_missing_preflight";
+  }
+  return result;
+}
+
+}  // namespace
 
 mem_fetch *shader_core_mem_fetch_allocator::alloc(
     new_addr_type addr, mem_access_type type, unsigned size, bool wr,
@@ -1782,6 +1911,9 @@ void scheduler_unit::cycle() {
                   strcmp(
                       rtcore_scheduler_credit_ledger_shadow_table_accounting_env,
                       "0") != 0;
+              const bool rtcore_scheduler_credit_ledger_shadow_table_real_mutation_preflight_active =
+                  pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_shadow_table_real_mutation_preflight_enabled();
               rtcore_scheduler_credit_ledger_reservation_snapshot
                   rtcore_scheduler_credit_ledger_reservation;
               rtcore_scheduler_credit_ledger_reservation.enabled =
@@ -2195,6 +2327,77 @@ void scheduler_unit::cycle() {
                        rtcore_scheduler_credit_ledger_shadow_table
                            .transition_reason,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_uid);
+                fflush(stdout);
+              }
+              if (rtcore_scheduler_credit_ledger_shadow_table_real_mutation_preflight_active) {
+                rtcore_scheduler_credit_ledger_shadow_table_owner_key
+                    rtcore_scheduler_credit_ledger_shadow_table_key;
+                rtcore_scheduler_credit_ledger_shadow_table_key.owner_hw_sid =
+                    rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid;
+                rtcore_scheduler_credit_ledger_shadow_table_key.warp_uid =
+                    rtcore_scheduler_credit_ledger_shadow_table.warp_uid;
+                rtcore_scheduler_credit_ledger_shadow_table_key.warp_id =
+                    rtcore_scheduler_credit_ledger_shadow_table.warp_id;
+                rtcore_scheduler_credit_ledger_shadow_table_key.static_inst_pc =
+                    rtcore_scheduler_credit_ledger_shadow_table.static_inst_pc;
+                rtcore_scheduler_credit_ledger_shadow_table_key
+                    .issued_active_mask =
+                    rtcore_scheduler_credit_ledger_shadow_table
+                        .issued_active_mask;
+                rtcore_scheduler_credit_ledger_shadow_table_mutation_result
+                    rtcore_scheduler_credit_ledger_shadow_table_mutation =
+                        rtcore_scheduler_credit_ledger_shadow_table_account_mutation_preflight(
+                            rtcore_scheduler_credit_ledger_shadow_table_key);
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-shadow-table-real-mutation-preflight=1, "
+                       "mutation_phase=submit_account, owner_hw_sid=%u, "
+                       "warp_uid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "lookup_attempted=%u, entry_found=%u, "
+                       "insert_attempted=%u, capacity_limit=%u, "
+                       "capacity_guard_passed=%u, "
+                       "table_entries_before=%u, table_entries_after=%u, "
+                       "owner_tuple_reserved=%u, capacity_mutated=%u, "
+                       "mutation_result=%s, transition_reason=%s\n",
+                       rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .issued_active_mask,
+                       1,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                               .entry_found
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                               .owner_tuple_reserved
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                           .capacity_limit,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                               .capacity_guard_passed
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                           .table_entries_before,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                           .table_entries_after,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                               .owner_tuple_reserved
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                               .capacity_mutated
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                           .mutation_result,
+                       rtcore_scheduler_credit_ledger_shadow_table_mutation
+                           .transition_reason);
                 fflush(stdout);
               }
               if (rtcore_scheduler_credit_ledger_shadow_table_insert_enabled) {
@@ -4417,6 +4620,59 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
   rtcore_shadow_table_release_snapshot shadow_table_release =
       rtcore_make_shadow_table_release_snapshot(snapshot);
   rtcore_apply_shadow_table_release_snapshot(shadow_table_release);
+  if (rtcore_scheduler_credit_ledger_shadow_table_real_mutation_preflight_enabled()) {
+    rtcore_scheduler_credit_ledger_shadow_table_owner_key
+        rtcore_scheduler_credit_ledger_shadow_table_key;
+    rtcore_scheduler_credit_ledger_shadow_table_key.owner_hw_sid =
+        snapshot.owner_hw_sid;
+    rtcore_scheduler_credit_ledger_shadow_table_key.warp_uid =
+        snapshot.warp_uid;
+    rtcore_scheduler_credit_ledger_shadow_table_key.warp_id = snapshot.warp_id;
+    rtcore_scheduler_credit_ledger_shadow_table_key.static_inst_pc =
+        snapshot.static_inst_pc;
+    rtcore_scheduler_credit_ledger_shadow_table_key.issued_active_mask =
+        snapshot.issued_active_mask;
+    rtcore_scheduler_credit_ledger_shadow_table_mutation_result
+        rtcore_scheduler_credit_ledger_shadow_table_mutation =
+            rtcore_scheduler_credit_ledger_shadow_table_release_mutation_preflight(
+                rtcore_scheduler_credit_ledger_shadow_table_key);
+    printf("GPGPU-Sim PTX: RT-unit "
+           "scheduler-credit-ledger-shadow-table-real-mutation-preflight=1, "
+           "mutation_phase=completion_release, owner_hw_sid=%u, "
+           "warp_uid=%u, warp_id=%u, "
+           "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+           "release_attempted=%u, entry_found=%u, capacity_limit=%u, "
+           "table_entries_before=%u, table_entries_after=%u, "
+           "owner_tuple_released=%u, capacity_reclaimed=%u, "
+           "capacity_mutated=%u, reusable_slot_published=%u, "
+           "mutation_result=%s, transition_reason=%s\n",
+           snapshot.owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
+           static_cast<unsigned long long>(snapshot.static_inst_pc),
+           snapshot.issued_active_mask, 1,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation.entry_found ? 1
+                                                                            : 0,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation.capacity_limit,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation
+               .table_entries_before,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation
+               .table_entries_after,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation
+                   .owner_tuple_released
+               ? 1
+               : 0,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation
+                   .capacity_reclaimed
+               ? 1
+               : 0,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation.capacity_mutated
+               ? 1
+               : 0,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation.reusable_slot_published ? 1 : 0,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation.mutation_result,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation
+               .transition_reason);
+    fflush(stdout);
+  }
 }
 
 bool rt_unit::rtcore_shadow_table_release_enabled() const {
