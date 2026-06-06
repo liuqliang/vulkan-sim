@@ -1906,6 +1906,8 @@ void scheduler_unit::cycle() {
                   false;
               rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid =
                   rtcore_scheduler_credit_ledger_reservation.owner_hw_sid;
+              rtcore_scheduler_credit_ledger_shadow_table.warp_uid =
+                  m_shader->m_config->gpgpu_ctx->warp_inst_sm_next_uid + 1;
               rtcore_scheduler_credit_ledger_shadow_table.warp_id =
                   rtcore_scheduler_credit_ledger_reservation.warp_id;
               rtcore_scheduler_credit_ledger_shadow_table.static_inst_pc =
@@ -2133,7 +2135,8 @@ void scheduler_unit::cycle() {
                        "would_account_capacity=%u, "
                        "would_reserve_owner_tuple=%u, "
                        "owner_tuple_reserved=%u, capacity_mutated=%u, "
-                       "accounting_result=%s, transition_reason=%s\n",
+                       "accounting_result=%s, transition_reason=%s, "
+                       "warp_uid=%u\n",
                        rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_id,
                        static_cast<unsigned long long>(
@@ -2190,7 +2193,8 @@ void scheduler_unit::cycle() {
                        rtcore_scheduler_credit_ledger_shadow_table
                            .accounting_result,
                        rtcore_scheduler_credit_ledger_shadow_table
-                           .transition_reason);
+                           .transition_reason,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_uid);
                 fflush(stdout);
               }
               if (rtcore_scheduler_credit_ledger_shadow_table_insert_enabled) {

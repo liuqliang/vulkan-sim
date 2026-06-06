@@ -1386,6 +1386,7 @@ struct rtcore_scheduler_credit_ledger_shadow_table_snapshot {
         owner_tuple_reserved(false),
         capacity_mutated(false),
         owner_hw_sid(0),
+        warp_uid(0),
         warp_id(0),
         static_inst_pc(0),
         issued_active_mask(0),
@@ -1411,6 +1412,7 @@ struct rtcore_scheduler_credit_ledger_shadow_table_snapshot {
   bool owner_tuple_reserved;
   bool capacity_mutated;
   unsigned owner_hw_sid;
+  unsigned warp_uid;
   unsigned warp_id;
   unsigned long long static_inst_pc;
   unsigned issued_active_mask;
