@@ -9604,6 +9604,9 @@ static const char *rtcore_lifetime_deferred_free_reason(
   if (!record.full_window_retired) {
     return "waiting_for_active_lane_retire";
   }
+  if (record.reusable_slot_available) {
+    return "allocator_reuse_published";
+  }
   return "allocator_reuse_not_enabled";
 }
 
@@ -9621,17 +9624,32 @@ static const char *rtcore_lifetime_scheduler_credit_return_reason(
   return "credit_return_visible";
 }
 
+static bool rtcore_launch_allocation_reusable_publication_switch_enabled() {
+  return rtcore_env_flag_enabled(
+      "VULKAN_SIM_RTCORE_LAUNCH_ALLOCATION_REUSABLE_PUBLICATION");
+}
+
+static bool rtcore_launch_allocation_lifetime_publication_guards_pass(
+    const rtcore_launch_allocation_lifetime_record &record) {
+  return rtcore_launch_allocation_reusable_publication_switch_enabled() &&
+         record.valid && record.live && record.active_lane_mask != 0 &&
+         record.full_window_retired && record.deferred_free_boundary &&
+         record.owner_generation_source_record.allocator_generation_source_valid &&
+         strcmp(record.owner_generation_source_record
+                    .owner_generation_source_reject_reason,
+                RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_REJECT_NONE) ==
+             0;
+}
+
 static bool rtcore_launch_allocation_lifetime_reuse_authorized(
     const rtcore_launch_allocation_lifetime_record &record) {
-  (void)record;
-  return false;
+  return rtcore_launch_allocation_lifetime_publication_guards_pass(record);
 }
 
 static bool
 rtcore_launch_allocation_lifetime_owner_generation_reuse_minted(
     const rtcore_launch_allocation_lifetime_record &record) {
-  (void)record;
-  return false;
+  return rtcore_launch_allocation_lifetime_publication_guards_pass(record);
 }
 
 static void rtcore_update_launch_allocation_lifetime_retire_state(
@@ -9649,7 +9667,8 @@ static void rtcore_update_launch_allocation_lifetime_retire_state(
   record->owner_generation_reuse_minted =
       rtcore_launch_allocation_lifetime_owner_generation_reuse_minted(*record);
   record->reusable_slot_available =
-      record->full_window_retired && record->allocator_reuse_authorized;
+      record->full_window_retired && record->allocator_reuse_authorized &&
+      record->owner_generation_reuse_minted;
   record->deferred_free_reason =
       rtcore_lifetime_deferred_free_reason(*record);
   record->scheduler_credit_return_snapshot = true;
