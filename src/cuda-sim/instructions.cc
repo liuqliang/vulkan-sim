@@ -13911,6 +13911,23 @@ rtcore_provider_payload_consumption_preflight_fail_reason_name(
   }
 }
 
+enum rtcore_provider_payload_consumption_evidence_source {
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_EXTERNAL = 0,
+  RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_RUNTIME_SHADOW = 1
+};
+
+static const char *
+rtcore_provider_payload_consumption_evidence_source_name(
+    rtcore_provider_payload_consumption_evidence_source source) {
+  switch (source) {
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_RUNTIME_SHADOW:
+      return "runtime_shadow";
+    case RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_EXTERNAL:
+    default:
+      return "external";
+  }
+}
+
 struct rtcore_provider_payload_consumption_preflight_record {
   rtcore_provider_payload_consumption_preflight_record()
       : valid(false),
@@ -13921,6 +13938,9 @@ struct rtcore_provider_payload_consumption_preflight_record {
         field_coverage_complete(false),
         owner_lifetime_ok(false),
         consumption_policy_enabled(false),
+        evidence_source(
+            RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_EXTERNAL),
+        uses_runtime_evidence(false),
         parity_evidence_available(false),
         resource_evidence_available(false),
         provider_payload_consumption_preflight_passed(false),
@@ -13936,6 +13956,8 @@ struct rtcore_provider_payload_consumption_preflight_record {
   bool field_coverage_complete;
   bool owner_lifetime_ok;
   bool consumption_policy_enabled;
+  rtcore_provider_payload_consumption_evidence_source evidence_source;
+  bool uses_runtime_evidence;
   bool parity_evidence_available;
   bool resource_evidence_available;
   bool provider_payload_consumption_preflight_passed;
@@ -13964,6 +13986,8 @@ struct rtcore_provider_payload_consumption_runtime_evidence_record {
         runtime_evidence_complete(false),
         runtime_evidence_gates_preflight(false),
         preflight_uses_runtime_evidence(false),
+        evidence_source(
+            RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_EXTERNAL),
         provider_payload_consumption_enabled(false),
         resident_rt_warps(0),
         token_limited_warps(0),
@@ -13990,6 +14014,7 @@ struct rtcore_provider_payload_consumption_runtime_evidence_record {
   bool runtime_evidence_complete;
   bool runtime_evidence_gates_preflight;
   bool preflight_uses_runtime_evidence;
+  rtcore_provider_payload_consumption_evidence_source evidence_source;
   bool provider_payload_consumption_enabled;
   unsigned resident_rt_warps;
   unsigned token_limited_warps;
@@ -14109,6 +14134,28 @@ static bool rtcore_provider_payload_consumption_resource_evidence_available() {
       rtcore_provider_payload_consumption_resource_evidence_env_name());
 }
 
+static const char *
+rtcore_provider_payload_consumption_evidence_source_env_name() {
+  return "VULKAN_SIM_RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE";
+}
+
+static rtcore_provider_payload_consumption_evidence_source
+rtcore_get_provider_payload_consumption_evidence_source() {
+  const char *value =
+      getenv(rtcore_provider_payload_consumption_evidence_source_env_name());
+  if (value != NULL &&
+      (rtcore_path_mode_is(value, "runtime_shadow") ||
+       rtcore_path_mode_is(value, "runtime"))) {
+    return RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_RUNTIME_SHADOW;
+  }
+  return RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_EXTERNAL;
+}
+
+static bool rtcore_provider_payload_consumption_uses_runtime_evidence() {
+  return rtcore_get_provider_payload_consumption_evidence_source() ==
+         RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_RUNTIME_SHADOW;
+}
+
 static bool rtcore_provider_payload_consumption_default_custom_path() {
   if (!rtcore_path_mode_policy_enables_custom_path(
           rtcore_get_path_mode_policy())) {
@@ -14157,6 +14204,12 @@ rtcore_make_provider_payload_consumption_runtime_evidence_record(
   record.has_registry_payload_shadow = registry_payload_shadow != NULL;
   record.consumption_policy_enabled =
       rtcore_provider_payload_consumption_policy_enabled();
+  record.evidence_source =
+      rtcore_get_provider_payload_consumption_evidence_source();
+  record.preflight_uses_runtime_evidence =
+      rtcore_provider_payload_consumption_uses_runtime_evidence();
+  record.runtime_evidence_gates_preflight =
+      record.preflight_uses_runtime_evidence;
   record.existing_traversal_backend_available =
       rtcore_provider_payload_consumption_existing_traversal_backend_available();
   record.provider_payload_consumption_enabled =
@@ -14224,6 +14277,7 @@ static void rtcore_log_provider_payload_consumption_runtime_evidence_record(
          "provider_payload_field_coverage_complete=%u, "
          "provider_payload_consumption_owner_lifetime_ok=%u, "
          "provider_payload_consumption_policy_enabled=%u, "
+         "provider_payload_consumption_evidence_source=%s, "
          "provider_payload_consumption_existing_traversal_backend_available=%u, "
          "provider_payload_consumption_runtime_parity_evidence_available=%u, "
          "provider_payload_consumption_runtime_token_resource_model_available=%u, "
@@ -14234,8 +14288,8 @@ static void rtcore_log_provider_payload_consumption_runtime_evidence_record(
          "provider_payload_consumption_runtime_completion_queue_evidence_deferred=%u, "
          "provider_payload_consumption_runtime_resource_evidence_available=%u, "
          "provider_payload_consumption_runtime_evidence_complete=%u, "
-         "provider_payload_consumption_runtime_evidence_gates_preflight=0, "
-         "provider_payload_consumption_preflight_uses_runtime_evidence=0, "
+         "provider_payload_consumption_runtime_evidence_gates_preflight=%u, "
+         "provider_payload_consumption_preflight_uses_runtime_evidence=%u, "
          "provider_payload_consumption_enabled=%u, "
          "resident_rt_warps=%u, token_limited_warps=%u, "
          "handoff_window_limited_warps=%u, traversal_stack_limited_warps=%u\n",
@@ -14249,6 +14303,8 @@ static void rtcore_log_provider_payload_consumption_runtime_evidence_record(
          record.field_coverage_complete ? 1 : 0,
          record.owner_lifetime_ok ? 1 : 0,
          record.consumption_policy_enabled ? 1 : 0,
+         rtcore_provider_payload_consumption_evidence_source_name(
+             record.evidence_source),
          record.existing_traversal_backend_available ? 1 : 0,
          record.runtime_parity_evidence_available ? 1 : 0,
          record.runtime_token_resource_model_available ? 1 : 0,
@@ -14259,6 +14315,8 @@ static void rtcore_log_provider_payload_consumption_runtime_evidence_record(
          record.runtime_completion_queue_evidence_deferred ? 1 : 0,
          record.runtime_resource_evidence_available ? 1 : 0,
          record.runtime_evidence_complete ? 1 : 0,
+         record.runtime_evidence_gates_preflight ? 1 : 0,
+         record.preflight_uses_runtime_evidence ? 1 : 0,
          record.provider_payload_consumption_enabled ? 1 : 0,
          record.resident_rt_warps, record.token_limited_warps,
          record.handoff_window_limited_warps,
@@ -14280,10 +14338,26 @@ rtcore_make_provider_payload_consumption_preflight_record(
   preflight.has_registry_payload_shadow = registry_payload_shadow != NULL;
   preflight.consumption_policy_enabled =
       rtcore_provider_payload_consumption_policy_enabled();
-  preflight.parity_evidence_available =
-      rtcore_provider_payload_consumption_parity_evidence_available();
-  preflight.resource_evidence_available =
-      rtcore_provider_payload_consumption_resource_evidence_available();
+  preflight.evidence_source =
+      rtcore_get_provider_payload_consumption_evidence_source();
+  preflight.uses_runtime_evidence =
+      preflight.evidence_source ==
+      RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_RUNTIME_SHADOW;
+  if (preflight.uses_runtime_evidence) {
+    const rtcore_provider_payload_consumption_runtime_evidence_record
+        runtime_evidence =
+            rtcore_make_provider_payload_consumption_runtime_evidence_record(
+                registry_payload_shadow, false);
+    preflight.parity_evidence_available =
+        runtime_evidence.runtime_parity_evidence_available;
+    preflight.resource_evidence_available =
+        runtime_evidence.runtime_resource_evidence_available;
+  } else {
+    preflight.parity_evidence_available =
+        rtcore_provider_payload_consumption_parity_evidence_available();
+    preflight.resource_evidence_available =
+        rtcore_provider_payload_consumption_resource_evidence_available();
+  }
 
   if (registry_payload_shadow != NULL && registry_payload_shadow->valid) {
     preflight.observed_valid_shadow = true;
@@ -14608,6 +14682,8 @@ static void rtcore_log_provider_payload_consumption_preflight_record(
          "provider_payload_consumption_owner_lifetime_ok=%u, "
          "provider_payload_consumption_policy_source=%s, "
          "provider_payload_consumption_policy_enabled=%u, "
+         "provider_payload_consumption_evidence_source=%s, "
+         "provider_payload_consumption_preflight_uses_runtime_evidence=%u, "
          "provider_payload_consumption_parity_evidence_available=%u, "
          "provider_payload_consumption_resource_evidence_available=%u, "
          "provider_payload_consumption_preflight_passed=%u, "
@@ -14625,6 +14701,9 @@ static void rtcore_log_provider_payload_consumption_preflight_record(
          preflight.owner_lifetime_ok ? 1 : 0,
          rtcore_provider_payload_consumption_policy_source(),
          preflight.consumption_policy_enabled ? 1 : 0,
+         rtcore_provider_payload_consumption_evidence_source_name(
+             preflight.evidence_source),
+         preflight.uses_runtime_evidence ? 1 : 0,
          preflight.parity_evidence_available ? 1 : 0,
          preflight.resource_evidence_available ? 1 : 0,
          preflight.provider_payload_consumption_preflight_passed ? 1 : 0,
