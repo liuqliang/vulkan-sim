@@ -7188,6 +7188,29 @@ static bool rtcore_path_mode_is(const char *mode, const char *value) {
   return *mode == '\0' && *value == '\0';
 }
 
+static bool rtcore_rt_env_value_is_explicit_false(const char *value) {
+  return value != NULL && value[0] != '\0' &&
+         (strcmp(value, "0") == 0 || rtcore_path_mode_is(value, "false") ||
+          rtcore_path_mode_is(value, "off") ||
+          rtcore_path_mode_is(value, "no") ||
+          rtcore_path_mode_is(value, "disabled") ||
+          rtcore_path_mode_is(value, "disable") ||
+          rtcore_path_mode_is(value, "deny") ||
+          rtcore_path_mode_is(value, "denied"));
+}
+
+static bool rtcore_rt_env_value_is_explicit_true(const char *value) {
+  return value != NULL && value[0] != '\0' &&
+         (strcmp(value, "1") == 0 || rtcore_path_mode_is(value, "true") ||
+          rtcore_path_mode_is(value, "on") ||
+          rtcore_path_mode_is(value, "yes") ||
+          rtcore_path_mode_is(value, "allow") ||
+          rtcore_path_mode_is(value, "allowed") ||
+          rtcore_path_mode_is(value, "enabled") ||
+          rtcore_path_mode_is(value, "enable") ||
+          rtcore_path_mode_is(value, "default"));
+}
+
 static const char *rtcore_path_mode_raw_value() {
   const char *mode = getenv("VULKAN_SIM_RTCORE_PATH_MODE");
   return mode == NULL ? "" : mode;
@@ -11868,7 +11891,7 @@ rtcore_registry_payload_consumption_admission_policy_opt_in_source() {
       getenv(rtcore_registry_payload_admission_policy_env_name());
   return value != NULL && value[0] != '\0'
              ? rtcore_registry_payload_admission_policy_env_name()
-             : "default-deny";
+             : "default-allow";
 }
 
 static bool
@@ -11878,11 +11901,14 @@ rtcore_registry_payload_consumption_admission_policy_opt_in_enabled(
   const char *value =
       getenv(rtcore_registry_payload_admission_policy_env_name());
   if (value == NULL || value[0] == '\0') {
-    return false;
-  }
-  if (strcmp(value, "allow") == 0 || strcmp(value, "enabled") == 0 ||
-      strcmp(value, "1") == 0) {
     return true;
+  }
+  if (rtcore_rt_env_value_is_explicit_true(value)) {
+    return true;
+  }
+  if (rtcore_rt_env_value_is_explicit_false(value) ||
+      rtcore_path_mode_is(value, "deny")) {
+    return false;
   }
   return false;
 }
@@ -13498,7 +13524,13 @@ struct rtcore_input_provenance_registry_publication_snapshot {
 static bool rtcore_input_provenance_registry_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_INPUT_PROVENANCE_REGISTRY_ENABLE");
-  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+  if (value == NULL || value[0] == '\0') {
+    return true;
+  }
+  if (rtcore_rt_env_value_is_explicit_false(value)) {
+    return false;
+  }
+  return true;
 }
 
 static rtcore_input_provenance_registry_key
@@ -14099,18 +14131,21 @@ static const char *rtcore_provider_payload_consumption_policy_source() {
       getenv(rtcore_provider_payload_consumption_policy_env_name());
   return value != NULL && value[0] != '\0'
              ? rtcore_provider_payload_consumption_policy_env_name()
-             : "default-disabled";
+             : "default-enabled";
 }
 
 static bool rtcore_provider_payload_consumption_policy_enabled() {
   const char *value =
       getenv(rtcore_provider_payload_consumption_policy_env_name());
   if (value == NULL || value[0] == '\0') {
-    return false;
-  }
-  if (strcmp(value, "allow") == 0 || strcmp(value, "enabled") == 0 ||
-      strcmp(value, "1") == 0) {
     return true;
+  }
+  if (rtcore_rt_env_value_is_explicit_true(value)) {
+    return true;
+  }
+  if (rtcore_rt_env_value_is_explicit_false(value) ||
+      rtcore_path_mode_is(value, "deny")) {
+    return false;
   }
   return false;
 }
