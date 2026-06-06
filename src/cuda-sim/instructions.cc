@@ -15756,6 +15756,9 @@ struct rtcore_default_compiler_driver_publication_route_record {
         source_owner_tuple_match(false),
         has_source_context_window_key(false),
         source_context_window_match(false),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
         context_window_owner_seq_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         ray_origin_direction_tmin_tmax_owner(
             RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
@@ -15782,6 +15785,9 @@ struct rtcore_default_compiler_driver_publication_route_record {
   bool source_owner_tuple_match;
   bool has_source_context_window_key;
   bool source_context_window_match;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
   rtcore_decoded_input_field_owner_class context_window_owner_seq_owner;
   rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
   rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
@@ -15820,6 +15826,12 @@ rtcore_make_default_compiler_driver_publication_route_record(
       launch_context_input_publication_record.has_source_context_window_key;
   record.source_context_window_match =
       launch_context_input_publication_record.source_context_window_match;
+  record.has_ray_origin_direction_tmin_tmax =
+      launch_context_input_publication_record.has_ray_origin_direction_tmin_tmax;
+  record.has_ray_flags_cull_mask =
+      launch_context_input_publication_record.has_ray_flags_cull_mask;
+  record.has_launch_context_input =
+      launch_context_input_publication_record.has_launch_context_input;
   record.context_window_owner_seq_owner =
       decoded_input_snapshot.context_window_owner_seq_owner;
   record.ray_origin_direction_tmin_tmax_owner =
@@ -15909,6 +15921,8 @@ static void rtcore_log_default_compiler_driver_publication_route_record(
          "lane_slot_index=%u, source_publication_seq=%llu, "
          "source_owner_tuple_match=%u, has_source_context_window_key=%u, "
          "source_context_window_match=%u, "
+         "has_ray_origin_direction_tmin_tmax=%u, "
+         "has_ray_flags_cull_mask=%u, has_launch_context_input=%u, "
          "context_window_owner_seq_owner=%s, "
          "ray_origin_direction_tmin_tmax_owner=%s, "
          "ray_flags_cull_mask_owner=%s, launch_context_input_owner=%s, "
@@ -15925,6 +15939,9 @@ static void rtcore_log_default_compiler_driver_publication_route_record(
          record.source_owner_tuple_match ? 1 : 0,
          record.has_source_context_window_key ? 1 : 0,
          record.source_context_window_match ? 1 : 0,
+         record.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         record.has_ray_flags_cull_mask ? 1 : 0,
+         record.has_launch_context_input ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              record.context_window_owner_seq_owner),
          rtcore_decoded_input_field_owner_class_name(
@@ -15956,13 +15973,19 @@ rtcore_fail_closed_on_default_compiler_driver_publication_route_record(
   printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
          "reason=DEFAULT_COMPILER_DRIVER_PUBLICATION_ROUTE_PARTIAL, "
          "legacy_partial_marker=LAUNCH_CONTEXT_INPUT_PUBLICATION_PARTIAL, "
+         "compiler_publication_negative_default_consumption=1, "
+         "before_registry_payload_shadow=1, "
+         "before_provider_consumed_input=1, before_backend_input_route=1, "
+         "before_traversal_completion=1, before_completion_release=1, "
          "default_publication_route=1, valid=%u, route_source=%s, "
          "compiler_fields_complete=%u, runtime_context_window_complete=%u, "
          "proxy_fields_complete=%u, provider_consumption_default_disabled=%u, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, source_publication_seq=%llu, "
          "source_owner_tuple_match=%u, has_source_context_window_key=%u, "
-         "source_context_window_match=%u\n",
+         "source_context_window_match=%u, "
+         "has_ray_origin_direction_tmin_tmax=%u, "
+         "has_ray_flags_cull_mask=%u, has_launch_context_input=%u\n",
          pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
          record.route_source, record.compiler_fields_complete ? 1 : 0,
          record.runtime_context_window_complete ? 1 : 0,
@@ -15972,7 +15995,10 @@ rtcore_fail_closed_on_default_compiler_driver_publication_route_record(
          record.lane_slot_index, record.source_publication_seq,
          record.source_owner_tuple_match ? 1 : 0,
          record.has_source_context_window_key ? 1 : 0,
-         record.source_context_window_match ? 1 : 0);
+         record.source_context_window_match ? 1 : 0,
+         record.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         record.has_ray_flags_cull_mask ? 1 : 0,
+         record.has_launch_context_input ? 1 : 0);
   fflush(stdout);
   return true;
 }
