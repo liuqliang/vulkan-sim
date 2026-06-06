@@ -1380,6 +1380,10 @@ struct rtcore_scheduler_credit_ledger_shadow_table_snapshot {
         insert_attempted(false),
         would_insert(false),
         live_count_attempted(false),
+        accounting_attempted(false),
+        would_account_capacity(false),
+        would_reserve_owner_tuple(false),
+        owner_tuple_reserved(false),
         capacity_mutated(false),
         owner_hw_sid(0),
         warp_id(0),
@@ -1392,6 +1396,7 @@ struct rtcore_scheduler_credit_ledger_shadow_table_snapshot {
         lookup_result("shadow_table_skeleton_default_off"),
         insert_result("shadow_table_insert_skeleton_default_off"),
         live_count_result("shadow_table_live_count_skeleton_default_off"),
+        accounting_result("shadow_table_accounting_skeleton_default_off"),
         transition_reason("shadow_table_skeleton_default_off") {}
 
   bool table_enabled;
@@ -1400,6 +1405,10 @@ struct rtcore_scheduler_credit_ledger_shadow_table_snapshot {
   bool insert_attempted;
   bool would_insert;
   bool live_count_attempted;
+  bool accounting_attempted;
+  bool would_account_capacity;
+  bool would_reserve_owner_tuple;
+  bool owner_tuple_reserved;
   bool capacity_mutated;
   unsigned owner_hw_sid;
   unsigned warp_id;
@@ -1412,6 +1421,7 @@ struct rtcore_scheduler_credit_ledger_shadow_table_snapshot {
   const char *lookup_result;
   const char *insert_result;
   const char *live_count_result;
+  const char *accounting_result;
   const char *transition_reason;
 };
 

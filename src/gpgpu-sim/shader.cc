@@ -1771,6 +1771,17 @@ void scheduler_unit::cycle() {
                   strcmp(
                       rtcore_scheduler_credit_ledger_shadow_table_capacity_full_env,
                       "0") != 0;
+              const char *rtcore_scheduler_credit_ledger_shadow_table_accounting_env =
+                  getenv("VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_SHADOW_TABLE_ACCOUNTING_SKELETON");
+              const bool rtcore_scheduler_credit_ledger_shadow_table_accounting_enabled =
+                  pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_shadow_table_accounting_env !=
+                      NULL &&
+                  *rtcore_scheduler_credit_ledger_shadow_table_accounting_env !=
+                      '\0' &&
+                  strcmp(
+                      rtcore_scheduler_credit_ledger_shadow_table_accounting_env,
+                      "0") != 0;
               rtcore_scheduler_credit_ledger_reservation_snapshot
                   rtcore_scheduler_credit_ledger_reservation;
               rtcore_scheduler_credit_ledger_reservation.enabled =
@@ -1883,6 +1894,14 @@ void scheduler_unit::cycle() {
               rtcore_scheduler_credit_ledger_shadow_table.would_insert = false;
               rtcore_scheduler_credit_ledger_shadow_table.live_count_attempted =
                   false;
+              rtcore_scheduler_credit_ledger_shadow_table.accounting_attempted =
+                  false;
+              rtcore_scheduler_credit_ledger_shadow_table.would_account_capacity =
+                  false;
+              rtcore_scheduler_credit_ledger_shadow_table
+                  .would_reserve_owner_tuple = false;
+              rtcore_scheduler_credit_ledger_shadow_table.owner_tuple_reserved =
+                  false;
               rtcore_scheduler_credit_ledger_shadow_table.capacity_mutated =
                   false;
               rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid =
@@ -1908,6 +1927,8 @@ void scheduler_unit::cycle() {
                   "shadow_table_insert_skeleton_default_off";
               rtcore_scheduler_credit_ledger_shadow_table.live_count_result =
                   "shadow_table_live_count_skeleton_default_off";
+              rtcore_scheduler_credit_ledger_shadow_table.accounting_result =
+                  "shadow_table_accounting_skeleton_default_off";
               rtcore_scheduler_credit_ledger_shadow_table.transition_reason =
                   rtcore_scheduler_credit_ledger_shadow_table.table_enabled
                       ? "shadow_table_skeleton_noop"
@@ -1924,6 +1945,14 @@ void scheduler_unit::cycle() {
                     false;
                 rtcore_scheduler_credit_ledger_shadow_table.live_count_attempted =
                     false;
+                rtcore_scheduler_credit_ledger_shadow_table.accounting_attempted =
+                    false;
+                rtcore_scheduler_credit_ledger_shadow_table
+                    .would_account_capacity = false;
+                rtcore_scheduler_credit_ledger_shadow_table
+                    .would_reserve_owner_tuple = false;
+                rtcore_scheduler_credit_ledger_shadow_table
+                    .owner_tuple_reserved = false;
                 rtcore_scheduler_credit_ledger_shadow_table.capacity_mutated =
                     false;
                 rtcore_scheduler_credit_ledger_shadow_table.table_entries_observed =
@@ -1936,6 +1965,8 @@ void scheduler_unit::cycle() {
                     "shadow_table_insert_skipped_existing_entry";
                 rtcore_scheduler_credit_ledger_shadow_table.live_count_result =
                     "shadow_table_live_count_skipped_rejected_match";
+                rtcore_scheduler_credit_ledger_shadow_table.accounting_result =
+                    "shadow_table_accounting_skipped_rejected_match";
                 rtcore_scheduler_credit_ledger_shadow_table.transition_reason =
                     "shadow_table_match_rejected";
                 printf("GPGPU-Sim PTX: RT_SUBMIT "
@@ -1982,6 +2013,14 @@ void scheduler_unit::cycle() {
                     false;
                 rtcore_scheduler_credit_ledger_shadow_table.live_count_attempted =
                     true;
+                rtcore_scheduler_credit_ledger_shadow_table.accounting_attempted =
+                    false;
+                rtcore_scheduler_credit_ledger_shadow_table
+                    .would_account_capacity = false;
+                rtcore_scheduler_credit_ledger_shadow_table
+                    .would_reserve_owner_tuple = false;
+                rtcore_scheduler_credit_ledger_shadow_table
+                    .owner_tuple_reserved = false;
                 rtcore_scheduler_credit_ledger_shadow_table.capacity_mutated =
                     false;
                 rtcore_scheduler_credit_ledger_shadow_table.table_entries_observed =
@@ -1997,6 +2036,8 @@ void scheduler_unit::cycle() {
                     "shadow_table_insert_blocked_capacity_full";
                 rtcore_scheduler_credit_ledger_shadow_table.live_count_result =
                     "shadow_table_capacity_unavailable";
+                rtcore_scheduler_credit_ledger_shadow_table.accounting_result =
+                    "shadow_table_accounting_blocked_capacity_full";
                 rtcore_scheduler_credit_ledger_shadow_table.transition_reason =
                     "shadow_table_capacity_unavailable";
                 printf("GPGPU-Sim PTX: RT_SUBMIT "
@@ -2041,6 +2082,116 @@ void scheduler_unit::cycle() {
                            .transition_reason);
                 fflush(stdout);
                 abort();
+              }
+              if (rtcore_scheduler_credit_ledger_shadow_table_accounting_enabled) {
+                rtcore_scheduler_credit_ledger_shadow_table.table_enabled =
+                    true;
+                rtcore_scheduler_credit_ledger_shadow_table.lookup_attempted =
+                    true;
+                rtcore_scheduler_credit_ledger_shadow_table.entry_found = false;
+                rtcore_scheduler_credit_ledger_shadow_table.insert_attempted =
+                    true;
+                rtcore_scheduler_credit_ledger_shadow_table.would_insert = true;
+                rtcore_scheduler_credit_ledger_shadow_table.live_count_attempted =
+                    true;
+                rtcore_scheduler_credit_ledger_shadow_table.accounting_attempted =
+                    true;
+                rtcore_scheduler_credit_ledger_shadow_table
+                    .would_account_capacity = true;
+                rtcore_scheduler_credit_ledger_shadow_table
+                    .would_reserve_owner_tuple = true;
+                rtcore_scheduler_credit_ledger_shadow_table.owner_tuple_reserved =
+                    false;
+                rtcore_scheduler_credit_ledger_shadow_table.capacity_mutated =
+                    false;
+                rtcore_scheduler_credit_ledger_shadow_table.table_entries_observed =
+                    0;
+                rtcore_scheduler_credit_ledger_shadow_table.live_entries_observed =
+                    0;
+                rtcore_scheduler_credit_ledger_shadow_table.capacity_limit = 32;
+                rtcore_scheduler_credit_ledger_shadow_table.capacity_available =
+                    true;
+                rtcore_scheduler_credit_ledger_shadow_table.lookup_result =
+                    "shadow_table_observed_no_entry";
+                rtcore_scheduler_credit_ledger_shadow_table.insert_result =
+                    "shadow_table_would_insert_noop";
+                rtcore_scheduler_credit_ledger_shadow_table.live_count_result =
+                    "shadow_table_live_count_skeleton_noop";
+                rtcore_scheduler_credit_ledger_shadow_table.accounting_result =
+                    "shadow_table_would_account_noop";
+                rtcore_scheduler_credit_ledger_shadow_table.transition_reason =
+                    "shadow_table_accounting_skeleton_noop";
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-shadow-table-accounting-skeleton=1, "
+                       "owner_hw_sid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "lookup_attempted=%u, entry_found=%u, "
+                       "insert_attempted=%u, would_insert=%u, "
+                       "live_count_attempted=%u, live_entries_observed=%u, "
+                       "capacity_limit=%u, capacity_available=%u, "
+                       "accounting_attempted=%u, "
+                       "would_account_capacity=%u, "
+                       "would_reserve_owner_tuple=%u, "
+                       "owner_tuple_reserved=%u, capacity_mutated=%u, "
+                       "accounting_result=%s, transition_reason=%s\n",
+                       rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .issued_active_mask,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .lookup_attempted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table.entry_found
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .insert_attempted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table.would_insert
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .live_count_attempted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .live_entries_observed,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .capacity_limit,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .capacity_available
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .accounting_attempted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .would_account_capacity
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .would_reserve_owner_tuple
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .owner_tuple_reserved
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                               .capacity_mutated
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .accounting_result,
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .transition_reason);
+                fflush(stdout);
               }
               if (rtcore_scheduler_credit_ledger_shadow_table_insert_enabled) {
                 rtcore_scheduler_credit_ledger_shadow_table.table_enabled =
