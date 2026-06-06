@@ -12942,6 +12942,10 @@ static void rtcore_log_provider_payload_consumption_preflight_record(
     const rtcore_traversal_work_descriptor &descriptor);
 
 static void
+rtcore_log_compiler_driver_runtime_consumption_readiness_record(
+    const rtcore_traversal_work_descriptor &descriptor);
+
+static void
 rtcore_annotate_provider_response_with_registry_payload_observation(
     rtcore_traversal_provider_response *response,
     const rtcore_traversal_work_descriptor &descriptor);
@@ -12970,6 +12974,7 @@ rtcore_invoke_rtcore_provider_bridge(
   rtcore_log_provider_facing_registry_payload_admission_mirror(descriptor);
   rtcore_log_provider_payload_consumption_eligibility_shadow(descriptor);
   rtcore_log_provider_payload_consumption_preflight_record(descriptor);
+  rtcore_log_compiler_driver_runtime_consumption_readiness_record(descriptor);
   rtcore_log_provider_decoded_input_observation(descriptor);
   rtcore_log_provider_payload_consumed_input_view(descriptor);
   rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(descriptor);
@@ -14460,6 +14465,187 @@ rtcore_make_provider_payload_consumption_preflight_record(
         RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_PREFLIGHT_NONE;
   }
   return preflight;
+}
+
+struct rtcore_compiler_driver_runtime_consumption_readiness_record {
+  rtcore_compiler_driver_runtime_consumption_readiness_record()
+      : valid(false),
+        provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        compiler_publication_ready(false),
+        driver_runtime_allocation_ready(false),
+        owner_lifetime_ready(false),
+        registry_payload_ready(false),
+        provider_policy_ready(false),
+        parity_ready(false),
+        resource_ready(false),
+        provider_preflight_ready(false),
+        backend_route_input_ready(false),
+        provider_payload_consumption_enabled(false),
+        compiler_driver_runtime_consumption_ready(false),
+        context_window_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        allocation_ownership_source(
+            RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT) {}
+
+  bool valid;
+  rtcore_traversal_source_provider provider;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+  bool compiler_publication_ready;
+  bool driver_runtime_allocation_ready;
+  bool owner_lifetime_ready;
+  bool registry_payload_ready;
+  bool provider_policy_ready;
+  bool parity_ready;
+  bool resource_ready;
+  bool provider_preflight_ready;
+  bool backend_route_input_ready;
+  bool provider_payload_consumption_enabled;
+  bool compiler_driver_runtime_consumption_ready;
+  rtcore_decoded_input_field_owner_class context_window_owner;
+  const char *allocation_ownership_source;
+};
+
+static bool
+rtcore_provider_payload_shadow_compiler_publication_ready(
+    const rtcore_provider_facing_registry_payload_shadow *shadow) {
+  if (shadow == NULL || !shadow->valid) {
+    return false;
+  }
+  return shadow->has_ray_origin_direction_tmin_tmax &&
+         shadow->ray_origin_direction_tmin_tmax_owner ==
+             RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION &&
+         shadow->has_ray_flags_cull_mask &&
+         shadow->ray_flags_cull_mask_owner ==
+             RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION &&
+         shadow->has_launch_context_input &&
+         shadow->launch_context_input_owner ==
+             RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION;
+}
+
+static bool rtcore_provider_payload_shadow_proxy_fields_ready(
+    const rtcore_provider_facing_registry_payload_shadow *shadow) {
+  if (shadow == NULL || !shadow->valid) {
+    return false;
+  }
+  return shadow->has_traversable_root_proxy &&
+         shadow->traversable_root_proxy_owner ==
+             RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY &&
+         shadow->has_bvh_format_profile &&
+         shadow->bvh_format_profile_owner ==
+             RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
+}
+
+static rtcore_compiler_driver_runtime_consumption_readiness_record
+rtcore_make_compiler_driver_runtime_consumption_readiness_record(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_compiler_driver_runtime_consumption_readiness_record record;
+  record.provider = descriptor.provider;
+  record.context_ptr = descriptor.context_ptr;
+  record.handoff_window_base = descriptor.handoff_window_base;
+  record.lane_slot_index = descriptor.lane_slot_index;
+  record.warp_metadata = descriptor.warp_metadata;
+  record.provider_payload_consumption_enabled =
+      descriptor.provider_payload_consumption_enabled;
+
+  const rtcore_provider_payload_consumption_preflight_record preflight =
+      rtcore_make_provider_payload_consumption_preflight_record(
+          descriptor.registry_payload_shadow);
+  if (!preflight.default_custom_path) {
+    return record;
+  }
+
+  const rtcore_runtime_context_window_allocation_record allocation_record =
+      rtcore_make_runtime_context_window_allocation_record(
+          descriptor.context_ptr, descriptor.handoff_window_base,
+          descriptor.lane_slot_index);
+  const bool allocation_source_is_bootstrap =
+      strcmp(allocation_record.ownership_source,
+             RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BOOTSTRAP_COMPAT) == 0;
+  const bool allocation_source_is_legacy =
+      strcmp(allocation_record.ownership_source,
+             RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_LEGACY_OPT_OUT) == 0;
+
+  record.valid = true;
+  record.context_window_owner = RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME;
+  record.allocation_ownership_source = allocation_record.ownership_source;
+  record.compiler_publication_ready =
+      rtcore_provider_payload_shadow_compiler_publication_ready(
+          descriptor.registry_payload_shadow) &&
+      rtcore_provider_payload_shadow_proxy_fields_ready(
+          descriptor.registry_payload_shadow);
+  record.driver_runtime_allocation_ready =
+      allocation_record.enabled && allocation_record.valid &&
+      !allocation_source_is_bootstrap && !allocation_source_is_legacy;
+  record.owner_lifetime_ready = preflight.owner_lifetime_ok;
+  record.registry_payload_ready = preflight.observed_valid_shadow &&
+                                  preflight.field_coverage_complete &&
+                                  preflight.admission_allowed;
+  record.provider_policy_ready = preflight.consumption_policy_enabled;
+  record.parity_ready = preflight.parity_evidence_available;
+  record.resource_ready = preflight.resource_evidence_available;
+  record.provider_preflight_ready =
+      preflight.provider_payload_consumption_preflight_passed;
+  record.backend_route_input_ready =
+      descriptor.provider_payload_consumption_enabled &&
+      descriptor.has_provider_payload_consumed_input &&
+      descriptor.provider_payload_consumed_input.valid;
+  record.compiler_driver_runtime_consumption_ready =
+      record.valid && record.compiler_publication_ready &&
+      record.driver_runtime_allocation_ready && record.owner_lifetime_ready &&
+      record.registry_payload_ready && record.provider_policy_ready &&
+      record.parity_ready && record.resource_ready &&
+      record.provider_preflight_ready && record.backend_route_input_ready;
+  return record;
+}
+
+static void
+rtcore_log_compiler_driver_runtime_consumption_readiness_record(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  const rtcore_compiler_driver_runtime_consumption_readiness_record record =
+      rtcore_make_compiler_driver_runtime_consumption_readiness_record(
+          descriptor);
+  if (!record.valid) {
+    return;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "compiler-driver-runtime-consumption-readiness=1, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "compiler_publication_ready=%u, "
+         "driver_runtime_allocation_ready=%u, "
+         "context_window_owner=%s, allocation_ownership_source=%s, "
+         "owner_lifetime_ready=%u, registry_payload_ready=%u, "
+         "provider_policy_ready=%u, parity_ready=%u, resource_ready=%u, "
+         "provider_preflight_ready=%u, backend_route_input_ready=%u, "
+         "provider_payload_consumption_enabled=%u, "
+         "compiler_driver_runtime_consumption_ready=%u, "
+         "legacy_switchable=1, existing_traversal_backend_reused=1, "
+         "claims_new_hardware_bvh_engine=0, "
+         "compiler_driver_runtime_consumption_readiness_consumes_traversal_behavior=0\n",
+         rtcore_traversal_source_provider_name(record.provider),
+         record.context_ptr, record.handoff_window_base,
+         record.lane_slot_index, record.warp_metadata.warp_uid,
+         record.warp_metadata.active_mask,
+         record.compiler_publication_ready ? 1 : 0,
+         record.driver_runtime_allocation_ready ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             record.context_window_owner),
+         record.allocation_ownership_source,
+         record.owner_lifetime_ready ? 1 : 0,
+         record.registry_payload_ready ? 1 : 0,
+         record.provider_policy_ready ? 1 : 0, record.parity_ready ? 1 : 0,
+         record.resource_ready ? 1 : 0,
+         record.provider_preflight_ready ? 1 : 0,
+         record.backend_route_input_ready ? 1 : 0,
+         record.provider_payload_consumption_enabled ? 1 : 0,
+         record.compiler_driver_runtime_consumption_ready ? 1 : 0);
+  fflush(stdout);
 }
 
 static rtcore_provider_decoded_input_observation
