@@ -8489,6 +8489,23 @@ const char *RTCORE_DRIVER_RUNTIME_CONTEXT_BASE_ENV =
     "VULKAN_SIM_RTCORE_DRIVER_RUNTIME_CONTEXT_BASE";
 const char *RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE_ENV =
     "VULKAN_SIM_RTCORE_DRIVER_RUNTIME_HANDOFF_WINDOW_BASE";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_ENV =
+    "VULKAN_SIM_RTCORE_TEST_DRIVER_RUNTIME_ALLOCATION_FAULT";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_NONE = "none";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_INVALID_BRIDGE_MODE =
+    "invalid_bridge_mode";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_DROP_CONTEXT_BASE =
+    "drop_context_base";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_DROP_HANDOFF_BASE =
+    "drop_handoff_base";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISALIGN_CONTEXT_BASE =
+    "misalign_context_base";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISALIGN_HANDOFF_BASE =
+    "misalign_handoff_base";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISMATCH_CONTEXT_INDEX =
+    "mismatch_context_index";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISMATCH_HANDOFF_INDEX =
+    "mismatch_handoff_index";
 
 enum rtcore_driver_runtime_handle_scaffold_mode {
   RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED = 0,
@@ -8565,6 +8582,82 @@ rtcore_driver_runtime_handle_bridge_mode_from_env() {
   return RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_INVALID;
 }
 
+enum rtcore_driver_runtime_allocation_fault {
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NONE = 0,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_INVALID_BRIDGE_MODE,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_DROP_CONTEXT_BASE,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_DROP_HANDOFF_BASE,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_CONTEXT_BASE,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_HANDOFF_BASE,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_CONTEXT_INDEX,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_HANDOFF_INDEX
+};
+
+rtcore_driver_runtime_allocation_fault
+rtcore_driver_runtime_allocation_fault_from_env() {
+  const char *value = getenv(RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_ENV);
+  if (value == NULL || value[0] == '\0') {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NONE;
+  }
+  if (rtcore_path_mode_is(value, "invalid_bridge") ||
+      rtcore_path_mode_is(value, "invalid_bridge_mode") ||
+      rtcore_path_mode_is(value, "invalid-bridge-mode")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_INVALID_BRIDGE_MODE;
+  }
+  if (rtcore_path_mode_is(value, "drop_context_base") ||
+      rtcore_path_mode_is(value, "drop-context-base") ||
+      rtcore_path_mode_is(value, "malformed_context_base") ||
+      rtcore_path_mode_is(value, "malformed-context-base")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_DROP_CONTEXT_BASE;
+  }
+  if (rtcore_path_mode_is(value, "drop_handoff_base") ||
+      rtcore_path_mode_is(value, "drop-handoff-base") ||
+      rtcore_path_mode_is(value, "malformed_handoff_base") ||
+      rtcore_path_mode_is(value, "malformed-handoff-base")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_DROP_HANDOFF_BASE;
+  }
+  if (rtcore_path_mode_is(value, "misalign_context_base") ||
+      rtcore_path_mode_is(value, "misalign-context-base")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_CONTEXT_BASE;
+  }
+  if (rtcore_path_mode_is(value, "misalign_handoff_base") ||
+      rtcore_path_mode_is(value, "misalign-handoff-base")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_HANDOFF_BASE;
+  }
+  if (rtcore_path_mode_is(value, "mismatch_context_index") ||
+      rtcore_path_mode_is(value, "mismatch-context-index")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_CONTEXT_INDEX;
+  }
+  if (rtcore_path_mode_is(value, "mismatch_handoff_index") ||
+      rtcore_path_mode_is(value, "mismatch-handoff-index")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_HANDOFF_INDEX;
+  }
+  return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_INVALID_BRIDGE_MODE;
+}
+
+const char *rtcore_driver_runtime_allocation_fault_name(
+    rtcore_driver_runtime_allocation_fault fault) {
+  switch (fault) {
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_INVALID_BRIDGE_MODE:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_INVALID_BRIDGE_MODE;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_DROP_CONTEXT_BASE:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_DROP_CONTEXT_BASE;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_DROP_HANDOFF_BASE:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_DROP_HANDOFF_BASE;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_CONTEXT_BASE:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISALIGN_CONTEXT_BASE;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_HANDOFF_BASE:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISALIGN_HANDOFF_BASE;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_CONTEXT_INDEX:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISMATCH_CONTEXT_INDEX;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_HANDOFF_INDEX:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISMATCH_HANDOFF_INDEX;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NONE:
+    default:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_NONE;
+  }
+}
+
 struct rtcore_driver_runtime_handle_bridge_record {
   rtcore_driver_runtime_handle_bridge_record()
       : enabled(false),
@@ -8580,6 +8673,7 @@ struct rtcore_driver_runtime_handle_bridge_record {
         enabled_by_default(false),
         handle_bridge_source(RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_BRIDGE),
         ownership_source(RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BRIDGE),
+        allocation_fault(RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_NONE),
         context_base(0),
         handoff_base(0),
         context_ptr(0),
@@ -8599,6 +8693,7 @@ struct rtcore_driver_runtime_handle_bridge_record {
   bool enabled_by_default;
   const char *handle_bridge_source;
   const char *ownership_source;
+  const char *allocation_fault;
   unsigned long long context_base;
   unsigned long long handoff_base;
   unsigned long long context_ptr;
@@ -8641,6 +8736,54 @@ bool rtcore_driver_runtime_resolve_u64_env(const char *name,
   *value = parsed;
   *explicit_value = true;
   return true;
+}
+
+void rtcore_apply_driver_runtime_allocation_fault(
+    rtcore_driver_runtime_handle_bridge_record *record) {
+  const rtcore_driver_runtime_allocation_fault fault =
+      rtcore_driver_runtime_allocation_fault_from_env();
+  record->allocation_fault =
+      rtcore_driver_runtime_allocation_fault_name(fault);
+  switch (fault) {
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NONE:
+      return;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_INVALID_BRIDGE_MODE:
+      record->enabled = true;
+      record->invalid_mode = true;
+      record->bridge_owned = false;
+      record->bootstrap_compat = false;
+      record->legacy_opt_out = false;
+      record->handle_bridge_source =
+          RTCORE_DRIVER_RUNTIME_HANDLE_BRIDGE_SOURCE_INVALID;
+      record->ownership_source = RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT;
+      break;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_DROP_CONTEXT_BASE:
+      record->has_context_base = false;
+      record->context_base = 0;
+      break;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_DROP_HANDOFF_BASE:
+      record->has_handoff_base = false;
+      record->handoff_base = 0;
+      break;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_CONTEXT_BASE:
+      record->has_context_base = true;
+      record->context_base += 1;
+      break;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_HANDOFF_BASE:
+      record->has_handoff_base = true;
+      record->handoff_base += 1;
+      break;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_CONTEXT_INDEX:
+      record->has_context_base = true;
+      record->context_base -= RTCORE_CONTEXT_BYTES_PER_FULL_WARP;
+      break;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_HANDOFF_INDEX:
+      record->has_handoff_base = true;
+      record->handoff_base -= RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP;
+      break;
+  }
+  record->valid = record->has_context_base && record->has_handoff_base &&
+                  !record->invalid_mode;
 }
 
 static rtcore_driver_runtime_handle_bridge_record
@@ -8709,6 +8852,7 @@ rtcore_make_driver_runtime_handle_bridge_record(
                       : RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_BRIDGE;
   record.valid =
       record.has_context_base && record.has_handoff_base && !record.invalid_mode;
+  rtcore_apply_driver_runtime_allocation_fault(&record);
   return record;
 }
 
@@ -8722,7 +8866,8 @@ static void rtcore_log_driver_runtime_handle_bridge_record(
          "enabled_by_default=%u, explicit_context_base=%u, "
          "explicit_handoff_base=%u, context_base=0x%llx, "
          "handoff_base=0x%llx, context_ptr=0x%llx, "
-         "handoff_window_base=0x%llx, lane_slot_index=%u\n",
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "driver_runtime_allocation_fault=%s\n",
          pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
          record.handle_bridge_source, record.ownership_source,
          record.bridge_owned ? 1 : 0, record.bootstrap_compat ? 1 : 0,
@@ -8731,7 +8876,7 @@ static void rtcore_log_driver_runtime_handle_bridge_record(
          record.explicit_context_base ? 1 : 0,
          record.explicit_handoff_base ? 1 : 0, record.context_base,
          record.handoff_base, record.context_ptr, record.handoff_window_base,
-         record.lane_slot_index);
+         record.lane_slot_index, record.allocation_fault);
   fflush(stdout);
 }
 
@@ -8751,6 +8896,7 @@ struct rtcore_runtime_context_window_allocation_record {
         handoff_window_index_valid(false),
         indices_match(false),
         ownership_source(RTCORE_DRIVER_RUNTIME_OWNERSHIP_SOURCE_DEFAULT),
+        allocation_fault(RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_NONE),
         context_base(0),
         handoff_base(0),
         context_ptr(0),
@@ -8778,6 +8924,7 @@ struct rtcore_runtime_context_window_allocation_record {
   bool handoff_window_index_valid;
   bool indices_match;
   const char *ownership_source;
+  const char *allocation_fault;
   unsigned long long context_base;
   unsigned long long handoff_base;
   unsigned long long context_ptr;
@@ -8807,6 +8954,7 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
   record.explicit_handoff_base = bridge_record.explicit_handoff_base;
   record.enabled_by_default = bridge_record.enabled_by_default;
   record.ownership_source = bridge_record.ownership_source;
+  record.allocation_fault = bridge_record.allocation_fault;
   record.context_base = bridge_record.context_base;
   record.handoff_base = bridge_record.handoff_base;
   if (!record.enabled) {
@@ -8890,7 +9038,7 @@ static void rtcore_log_runtime_context_window_allocation_record(
          "context_window_index=%llu, handoff_window_index=%llu, "
          "owner_generation=%u, capacity_lane_slots=%u, "
          "context_allocation_bytes=%u, handoff_allocation_bytes=%u, "
-         "allocation_state=live\n",
+         "allocation_state=live, driver_runtime_allocation_fault=%s\n",
          pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
          record.ownership_source, record.enabled_by_default ? 1 : 0,
          record.explicit_context_base ? 1 : 0,
@@ -8901,7 +9049,8 @@ static void rtcore_log_runtime_context_window_allocation_record(
          record.lane_slot_index, record.context_lane_slot_index,
          record.context_window_index, record.handoff_window_index,
          record.owner_generation, record.capacity_lane_slots,
-         record.context_allocation_bytes, record.handoff_allocation_bytes);
+         record.context_allocation_bytes, record.handoff_allocation_bytes,
+         record.allocation_fault);
   fflush(stdout);
 }
 
@@ -8980,7 +9129,7 @@ bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
          "context_matches=%u, handoff_matches=%u, indices_match=%u, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, runtime_allocation_record=1, "
-         "owner_generation=%u\n",
+         "owner_generation=%u, driver_runtime_allocation_fault=%s\n",
          pI->source_file(), pI->source_line(),
          allocation_record.invalid_flag ? 0 : 1,
          allocation_record.has_context_base ? 1 : 0,
@@ -8989,7 +9138,7 @@ bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
          allocation_record.handoff_matches ? 1 : 0,
          allocation_record.indices_match ? 1 : 0, context_ptr,
          handoff_window_base, lane_slot_index,
-         allocation_record.owner_generation);
+         allocation_record.owner_generation, allocation_record.allocation_fault);
   fflush(stdout);
   inst_not_implemented(pI);
   return true;
