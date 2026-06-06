@@ -131,6 +131,13 @@ rtcore_scheduler_credit_ledger_shadow_table_real_mutation_capacity_full_fault_en
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool
+rtcore_scheduler_credit_ledger_reusable_slot_publication_preflight_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_REUSABLE_SLOT_PUBLICATION_PREFLIGHT");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
 static std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>
     &rtcore_scheduler_credit_ledger_shadow_table_live_owner_keys() {
   static std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>
@@ -212,6 +219,12 @@ rtcore_scheduler_credit_ledger_shadow_table_release_mutation_preflight(
     result.capacity_mutated = true;
   }
   result.reusable_slot_published = false;
+  if (result.owner_tuple_released &&
+      rtcore_scheduler_credit_ledger_reusable_slot_publication_preflight_enabled() &&
+      !rtcore_scheduler_credit_ledger_shadow_table_real_mutation_duplicate_fault_enabled() &&
+      !rtcore_scheduler_credit_ledger_shadow_table_real_mutation_capacity_full_fault_enabled()) {
+    result.reusable_slot_published = true;
+  }
   result.table_entries_after = table.size();
   if (result.owner_tuple_released) {
     result.mutation_result = "shadow_table_owner_tuple_released";
@@ -4705,11 +4718,54 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
            rtcore_scheduler_credit_ledger_shadow_table_mutation.capacity_mutated
                ? 1
                : 0,
-           rtcore_scheduler_credit_ledger_shadow_table_mutation.reusable_slot_published ? 1 : 0,
+           rtcore_scheduler_credit_ledger_shadow_table_mutation
+                   .reusable_slot_published
+               ? 1
+               : 0,
            rtcore_scheduler_credit_ledger_shadow_table_mutation.mutation_result,
            rtcore_scheduler_credit_ledger_shadow_table_mutation
                .transition_reason);
     fflush(stdout);
+    if (rtcore_scheduler_credit_ledger_reusable_slot_publication_preflight_enabled()) {
+      const bool rtcore_scheduler_credit_ledger_publication_negative_fault =
+          rtcore_scheduler_credit_ledger_shadow_table_real_mutation_duplicate_fault_enabled() ||
+          rtcore_scheduler_credit_ledger_shadow_table_real_mutation_capacity_full_fault_enabled();
+      const char *rtcore_scheduler_credit_ledger_publication_result =
+          rtcore_scheduler_credit_ledger_shadow_table_mutation
+                  .reusable_slot_published
+              ? "reusable_slot_published_after_release"
+              : (!rtcore_scheduler_credit_ledger_shadow_table_mutation
+                          .owner_tuple_released
+                     ? "reusable_slot_publication_skipped_missing_owner"
+                     : (rtcore_scheduler_credit_ledger_publication_negative_fault
+                            ? "reusable_slot_publication_blocked_negative_fault"
+                            : "reusable_slot_publication_not_published"));
+      printf("GPGPU-Sim PTX: RT-unit "
+             "scheduler-credit-ledger-reusable-slot-publication-preflight=1, "
+             "owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
+             "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+             "publication_attempted=%u, owner_tuple_released=%u, "
+             "capacity_reclaimed=%u, reusable_slot_published=%u, "
+             "publication_result=%s, transition_reason=%s\n",
+             snapshot.owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
+             static_cast<unsigned long long>(snapshot.static_inst_pc),
+             snapshot.issued_active_mask, 1,
+             rtcore_scheduler_credit_ledger_shadow_table_mutation
+                     .owner_tuple_released
+                 ? 1
+                 : 0,
+             rtcore_scheduler_credit_ledger_shadow_table_mutation
+                     .capacity_reclaimed
+                 ? 1
+                 : 0,
+             rtcore_scheduler_credit_ledger_shadow_table_mutation
+                     .reusable_slot_published
+                 ? 1
+                 : 0,
+             rtcore_scheduler_credit_ledger_publication_result,
+             "reusable_slot_publication_preflight");
+      fflush(stdout);
+    }
   }
 }
 
