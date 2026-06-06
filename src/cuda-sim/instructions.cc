@@ -8512,6 +8512,8 @@ const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISMATCH_CONTEXT_INDEX =
     "mismatch_context_index";
 const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISMATCH_HANDOFF_INDEX =
     "mismatch_handoff_index";
+const char *RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_DIAGNOSTIC_SHADOW =
+    "diagnostic_shadow_no_reuse";
 
 enum rtcore_driver_runtime_handle_scaffold_mode {
   RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED = 0,
@@ -9044,6 +9046,46 @@ static void rtcore_log_driver_runtime_launch_allocation_descriptor(
   fflush(stdout);
 }
 
+struct rtcore_launch_allocation_owner_generation_source_record {
+  rtcore_launch_allocation_owner_generation_source_record()
+      : valid(false),
+        diagnostic_owner_generation(0),
+        allocator_owner_generation(0),
+        allocator_generation_source_state(
+            RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_DIAGNOSTIC_SHADOW),
+        allocator_generation_source_valid(false),
+        allocator_generation_authoritative(false),
+        allocator_generation_minting_enabled(false) {}
+
+  bool valid;
+  unsigned diagnostic_owner_generation;
+  unsigned allocator_owner_generation;
+  const char *allocator_generation_source_state;
+  bool allocator_generation_source_valid;
+  bool allocator_generation_authoritative;
+  bool allocator_generation_minting_enabled;
+};
+
+static rtcore_launch_allocation_owner_generation_source_record
+rtcore_make_launch_allocation_owner_generation_source_record(
+    bool indices_match, unsigned long long context_window_index,
+    unsigned owner_generation_seed) {
+  rtcore_launch_allocation_owner_generation_source_record source_record;
+  source_record.valid = indices_match && owner_generation_seed != 0;
+  source_record.diagnostic_owner_generation =
+      source_record.valid ? (unsigned)(context_window_index +
+                                       owner_generation_seed)
+                          : 0;
+  source_record.allocator_owner_generation =
+      source_record.diagnostic_owner_generation;
+  source_record.allocator_generation_source_valid = source_record.valid;
+  source_record.allocator_generation_source_state =
+      RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_DIAGNOSTIC_SHADOW;
+  source_record.allocator_generation_authoritative = false;
+  source_record.allocator_generation_minting_enabled = false;
+  return source_record;
+}
+
 struct rtcore_runtime_context_window_allocation_record {
   rtcore_runtime_context_window_allocation_record()
       : enabled(false),
@@ -9071,6 +9113,7 @@ struct rtcore_runtime_context_window_allocation_record {
         handoff_window_index(0),
         owner_generation(0),
         owner_generation_seed(1),
+        owner_generation_source_record(),
         context_alignment(RTCORE_CONTEXT_ALIGNMENT),
         handoff_alignment(RTCORE_HANDOFF_WINDOW_ALIGNMENT),
         context_lane_stride_bytes(RTCORE_CONTEXT_BYTES_PER_LANE),
@@ -9106,6 +9149,8 @@ struct rtcore_runtime_context_window_allocation_record {
   unsigned long long handoff_window_index;
   unsigned owner_generation;
   unsigned owner_generation_seed;
+  rtcore_launch_allocation_owner_generation_source_record
+      owner_generation_source_record;
   unsigned context_alignment;
   unsigned handoff_alignment;
   unsigned context_lane_stride_bytes;
@@ -9187,14 +9232,17 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
                          record.handoff_window_index_valid &&
                          record.context_window_index ==
                              record.handoff_window_index;
+  record.owner_generation_source_record =
+      rtcore_make_launch_allocation_owner_generation_source_record(
+          record.indices_match, record.context_window_index,
+          record.owner_generation_seed);
   record.owner_generation =
-      record.indices_match ? (unsigned)(record.context_window_index +
-                                        record.owner_generation_seed)
-                           : 0;
+      record.owner_generation_source_record.diagnostic_owner_generation;
   record.valid = !record.invalid_flag && bridge_record.valid &&
                  record.has_context_base &&
                  record.has_handoff_base && record.context_matches &&
                  record.handoff_matches && record.indices_match &&
+                 record.owner_generation_source_record.valid &&
                  record.owner_generation != 0;
   return record;
 }
@@ -9231,6 +9279,11 @@ static void rtcore_log_runtime_context_window_allocation_record(
          "lane_slot_index=%u, context_lane_slot_index=%u, "
          "context_window_index=%llu, handoff_window_index=%llu, "
          "owner_generation=%u, owner_generation_seed=%u, "
+         "diagnostic_owner_generation=%u, allocator_owner_generation=%u, "
+         "allocator_generation_source_state=%s, "
+         "allocator_generation_source_valid=%u, "
+         "allocator_generation_authoritative=%u, "
+         "allocator_generation_minting_enabled=%u, "
          "context_alignment=%u, handoff_alignment=%u, "
          "context_lane_stride_bytes=%u, "
          "handoff_lane_slot_stride_bytes=%u, capacity_lane_slots=%u, "
@@ -9247,6 +9300,18 @@ static void rtcore_log_runtime_context_window_allocation_record(
          record.lane_slot_index, record.context_lane_slot_index,
          record.context_window_index, record.handoff_window_index,
          record.owner_generation, record.owner_generation_seed,
+         record.owner_generation_source_record.diagnostic_owner_generation,
+         record.owner_generation_source_record.allocator_owner_generation,
+         record.owner_generation_source_record.allocator_generation_source_state,
+         record.owner_generation_source_record.allocator_generation_source_valid
+             ? 1
+             : 0,
+         record.owner_generation_source_record.allocator_generation_authoritative
+             ? 1
+             : 0,
+         record.owner_generation_source_record.allocator_generation_minting_enabled
+             ? 1
+             : 0,
          record.context_alignment, record.handoff_alignment,
          record.context_lane_stride_bytes,
          record.handoff_lane_slot_stride_bytes, record.capacity_lane_slots,
@@ -9273,6 +9338,11 @@ static void rtcore_log_runtime_context_window_allocation_retire(
          "lane_slot_index=%u, context_window_index=%llu, "
          "handoff_window_index=%llu, owner_generation=%u, "
          "owner_generation_seed=%u, capacity_lane_slots=%u, "
+         "diagnostic_owner_generation=%u, allocator_owner_generation=%u, "
+         "allocator_generation_source_state=%s, "
+         "allocator_generation_source_valid=%u, "
+         "allocator_generation_authoritative=%u, "
+         "allocator_generation_minting_enabled=%u, "
          "retire_free_policy=%s, released_window=%u, released_token=%u, "
          "remaining_windows=%zu, remaining_tokens=%zu, "
          "remaining_allocator_live=%zu, retire_free_status=%s\n",
@@ -9281,10 +9351,22 @@ static void rtcore_log_runtime_context_window_allocation_retire(
          record.handoff_window_base, record.lane_slot_index,
          record.context_window_index, record.handoff_window_index,
          record.owner_generation, record.owner_generation_seed,
-         record.capacity_lane_slots, record.retire_free_policy,
-         released_window ? 1 : 0, released_token ? 1 : 0,
-         remaining_windows, remaining_tokens, remaining_allocator_live,
-         retire_free_status);
+         record.capacity_lane_slots,
+         record.owner_generation_source_record.diagnostic_owner_generation,
+         record.owner_generation_source_record.allocator_owner_generation,
+         record.owner_generation_source_record.allocator_generation_source_state,
+         record.owner_generation_source_record.allocator_generation_source_valid
+             ? 1
+             : 0,
+         record.owner_generation_source_record.allocator_generation_authoritative
+             ? 1
+             : 0,
+         record.owner_generation_source_record.allocator_generation_minting_enabled
+             ? 1
+             : 0,
+         record.retire_free_policy, released_window ? 1 : 0,
+         released_token ? 1 : 0, remaining_windows, remaining_tokens,
+         remaining_allocator_live, retire_free_status);
   fflush(stdout);
 }
 
@@ -9323,6 +9405,7 @@ struct rtcore_launch_allocation_lifetime_record {
         context_window_index(0),
         handoff_window_index(0),
         owner_generation(0),
+        owner_generation_source_record(),
         capacity_lane_slots(0),
         active_lane_mask(0),
         retired_lane_mask(0),
@@ -9345,6 +9428,8 @@ struct rtcore_launch_allocation_lifetime_record {
   unsigned long long context_window_index;
   unsigned long long handoff_window_index;
   unsigned owner_generation;
+  rtcore_launch_allocation_owner_generation_source_record
+      owner_generation_source_record;
   unsigned capacity_lane_slots;
   unsigned active_lane_mask;
   unsigned retired_lane_mask;
@@ -9387,6 +9472,8 @@ rtcore_make_launch_allocation_lifetime_record(
   record.context_window_index = allocation_record.context_window_index;
   record.handoff_window_index = allocation_record.handoff_window_index;
   record.owner_generation = allocation_record.owner_generation;
+  record.owner_generation_source_record =
+      allocation_record.owner_generation_source_record;
   record.capacity_lane_slots = allocation_record.capacity_lane_slots;
   record.retire_free_policy = allocation_record.retire_free_policy;
   record.submit_create_count = 1;
@@ -9510,6 +9597,11 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          "context_base=0x%llx, handoff_base=0x%llx, "
          "context_window_index=%llu, handoff_window_index=%llu, "
          "owner_generation=%u, capacity_lane_slots=%u, "
+         "diagnostic_owner_generation=%u, allocator_owner_generation=%u, "
+         "allocator_generation_source_state=%s, "
+         "allocator_generation_source_valid=%u, "
+         "allocator_generation_authoritative=%u, "
+         "allocator_generation_minting_enabled=%u, "
          "lane_slot_index=%u, active_lane_mask=0x%08x, "
          "retired_lane_mask=0x%08x, unretired_lane_mask=0x%08x, "
          "full_window_retired=%u, deferred_free_boundary=%u, "
@@ -9525,7 +9617,26 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          lifetime_record->context_window_index,
          lifetime_record->handoff_window_index,
          lifetime_record->owner_generation,
-         lifetime_record->capacity_lane_slots, allocation_record.lane_slot_index,
+         lifetime_record->capacity_lane_slots,
+         lifetime_record->owner_generation_source_record
+             .diagnostic_owner_generation,
+         lifetime_record->owner_generation_source_record
+             .allocator_owner_generation,
+         lifetime_record->owner_generation_source_record
+             .allocator_generation_source_state,
+         lifetime_record->owner_generation_source_record
+                 .allocator_generation_source_valid
+             ? 1
+             : 0,
+         lifetime_record->owner_generation_source_record
+                 .allocator_generation_authoritative
+             ? 1
+             : 0,
+         lifetime_record->owner_generation_source_record
+                 .allocator_generation_minting_enabled
+             ? 1
+             : 0,
+         allocation_record.lane_slot_index,
          lifetime_record->active_lane_mask,
          lifetime_record->retired_lane_mask,
          lifetime_record->unretired_lane_mask,
@@ -9576,6 +9687,11 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          "handoff_base=0x%llx, context_window_index=%llu, "
          "handoff_window_index=%llu, owner_generation=%u, "
          "capacity_lane_slots=%u, lane_slot_index=%u, "
+         "diagnostic_owner_generation=%u, allocator_owner_generation=%u, "
+         "allocator_generation_source_state=%s, "
+         "allocator_generation_source_valid=%u, "
+         "allocator_generation_authoritative=%u, "
+         "allocator_generation_minting_enabled=%u, "
          "released_window=%u, released_token=%u, "
          "active_lane_mask=0x%08x, retired_lane_mask=0x%08x, "
          "unretired_lane_mask=0x%08x, full_window_retired=%u, "
@@ -9591,8 +9707,32 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          allocation_record.context_window_index,
          allocation_record.handoff_window_index,
          allocation_record.owner_generation, allocation_record.capacity_lane_slots,
-         allocation_record.lane_slot_index, released_window ? 1 : 0,
-         released_token ? 1 : 0,
+         allocation_record.lane_slot_index,
+         table_found
+             ? lifetime_record->owner_generation_source_record
+                   .diagnostic_owner_generation
+             : 0,
+         table_found
+             ? lifetime_record->owner_generation_source_record
+                   .allocator_owner_generation
+             : 0,
+         table_found
+             ? lifetime_record->owner_generation_source_record
+                   .allocator_generation_source_state
+             : "missing",
+         table_found && lifetime_record->owner_generation_source_record
+                            .allocator_generation_source_valid
+             ? 1
+             : 0,
+         table_found && lifetime_record->owner_generation_source_record
+                            .allocator_generation_authoritative
+             ? 1
+             : 0,
+         table_found && lifetime_record->owner_generation_source_record
+                            .allocator_generation_minting_enabled
+             ? 1
+             : 0,
+         released_window ? 1 : 0, released_token ? 1 : 0,
          table_found ? lifetime_record->active_lane_mask : 0,
          table_found ? lifetime_record->retired_lane_mask : 0,
          table_found ? lifetime_record->unretired_lane_mask : 0,
