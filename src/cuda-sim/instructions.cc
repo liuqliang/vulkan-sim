@@ -9507,8 +9507,11 @@ struct rtcore_launch_allocation_lifetime_record {
         scheduler_credit_return_snapshot(false),
         scheduler_credit_return_visible(false),
         resource_credit_returned(false),
+        scheduler_credit_consumption_bridge_enabled(false),
+        issue_admission_credit_consumed(false),
         deferred_free_reason("no_active_lanes_observed"),
         scheduler_credit_return_reason("no_active_lanes_observed"),
+        issue_admission_credit_reason("waiting_for_resource_credit_return"),
         submit_create_count(0),
         submit_lookup_count(0),
         retire_count(0),
@@ -9535,8 +9538,11 @@ struct rtcore_launch_allocation_lifetime_record {
   bool scheduler_credit_return_snapshot;
   bool scheduler_credit_return_visible;
   bool resource_credit_returned;
+  bool scheduler_credit_consumption_bridge_enabled;
+  bool issue_admission_credit_consumed;
   const char *deferred_free_reason;
   const char *scheduler_credit_return_reason;
+  const char *issue_admission_credit_reason;
   unsigned submit_create_count;
   unsigned submit_lookup_count;
   unsigned retire_count;
@@ -9624,6 +9630,22 @@ static const char *rtcore_lifetime_scheduler_credit_return_reason(
   return "credit_return_visible";
 }
 
+static bool rtcore_launch_allocation_scheduler_credit_bridge_enabled() {
+  return rtcore_env_flag_enabled(
+      "VULKAN_SIM_RTCORE_LAUNCH_ALLOCATION_SCHEDULER_CREDIT_BRIDGE");
+}
+
+static const char *rtcore_lifetime_issue_admission_credit_reason(
+    const rtcore_launch_allocation_lifetime_record &record) {
+  if (!record.resource_credit_returned) {
+    return "waiting_for_resource_credit_return";
+  }
+  if (!record.scheduler_credit_consumption_bridge_enabled) {
+    return "scheduler_credit_bridge_disabled";
+  }
+  return "issue_admission_credit_consumed";
+}
+
 static bool rtcore_launch_allocation_reusable_publication_switch_enabled() {
   return rtcore_env_flag_enabled(
       "VULKAN_SIM_RTCORE_LAUNCH_ALLOCATION_REUSABLE_PUBLICATION");
@@ -9676,6 +9698,13 @@ static void rtcore_update_launch_allocation_lifetime_retire_state(
   record->resource_credit_returned = record->scheduler_credit_return_visible;
   record->scheduler_credit_return_reason =
       rtcore_lifetime_scheduler_credit_return_reason(*record);
+  record->scheduler_credit_consumption_bridge_enabled =
+      rtcore_launch_allocation_scheduler_credit_bridge_enabled();
+  record->issue_admission_credit_consumed =
+      record->scheduler_credit_consumption_bridge_enabled &&
+      record->resource_credit_returned;
+  record->issue_admission_credit_reason =
+      rtcore_lifetime_issue_admission_credit_reason(*record);
 }
 
 static rtcore_launch_allocation_lifetime_record *
@@ -9747,8 +9776,11 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          "scheduler_credit_return_snapshot=%u, "
          "scheduler_credit_return_visible=%u, "
          "resource_credit_returned=%u, "
+         "scheduler_credit_consumption_bridge_enabled=%u, "
+         "issue_admission_credit_consumed=%u, "
          "deferred_free_reason=%s, "
          "scheduler_credit_return_reason=%s, "
+         "issue_admission_credit_reason=%s, "
          "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
          "retire_free_policy=%s\n",
          pI->source_file(), pI->source_line(),
@@ -9790,8 +9822,11 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          lifetime_record->scheduler_credit_return_snapshot ? 1 : 0,
          lifetime_record->scheduler_credit_return_visible ? 1 : 0,
          lifetime_record->resource_credit_returned ? 1 : 0,
+         lifetime_record->scheduler_credit_consumption_bridge_enabled ? 1 : 0,
+         lifetime_record->issue_admission_credit_consumed ? 1 : 0,
          lifetime_record->deferred_free_reason,
          lifetime_record->scheduler_credit_return_reason,
+         lifetime_record->issue_admission_credit_reason,
          lifetime_record->submit_create_count,
          lifetime_record->submit_lookup_count, lifetime_record->retire_count,
          lifetime_record->retire_free_policy);
@@ -9848,8 +9883,11 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          "scheduler_credit_return_snapshot=%u, "
          "scheduler_credit_return_visible=%u, "
          "resource_credit_returned=%u, "
+         "scheduler_credit_consumption_bridge_enabled=%u, "
+         "issue_admission_credit_consumed=%u, "
          "deferred_free_reason=%s, "
          "scheduler_credit_return_reason=%s, "
+         "issue_admission_credit_reason=%s, "
          "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
          "retire_free_policy=%s\n",
          pI->source_file(), pI->source_line(), table_found ? 1 : 0,
@@ -9904,8 +9942,16 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
              ? 1
              : 0,
          table_found && lifetime_record->resource_credit_returned ? 1 : 0,
+         table_found &&
+                 lifetime_record->scheduler_credit_consumption_bridge_enabled
+             ? 1
+             : 0,
+         table_found && lifetime_record->issue_admission_credit_consumed ? 1
+                                                                          : 0,
          table_found ? lifetime_record->deferred_free_reason : "missing",
          table_found ? lifetime_record->scheduler_credit_return_reason
+                     : "missing",
+         table_found ? lifetime_record->issue_admission_credit_reason
                      : "missing",
          table_found ? lifetime_record->submit_create_count : 0,
          table_found ? lifetime_record->submit_lookup_count : 0,
