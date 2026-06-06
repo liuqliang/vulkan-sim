@@ -9288,6 +9288,206 @@ static void rtcore_log_runtime_context_window_allocation_retire(
   fflush(stdout);
 }
 
+struct rtcore_launch_allocation_lifetime_key {
+  rtcore_launch_allocation_lifetime_key()
+      : context_base(0),
+        handoff_base(0),
+        context_window_index(0),
+        owner_generation(0) {}
+
+  bool operator<(const rtcore_launch_allocation_lifetime_key &other) const {
+    if (context_base != other.context_base) {
+      return context_base < other.context_base;
+    }
+    if (handoff_base != other.handoff_base) {
+      return handoff_base < other.handoff_base;
+    }
+    if (context_window_index != other.context_window_index) {
+      return context_window_index < other.context_window_index;
+    }
+    return owner_generation < other.owner_generation;
+  }
+
+  unsigned long long context_base;
+  unsigned long long handoff_base;
+  unsigned long long context_window_index;
+  unsigned owner_generation;
+};
+
+struct rtcore_launch_allocation_lifetime_record {
+  rtcore_launch_allocation_lifetime_record()
+      : valid(false),
+        live(false),
+        context_base(0),
+        handoff_base(0),
+        context_window_index(0),
+        handoff_window_index(0),
+        owner_generation(0),
+        capacity_lane_slots(0),
+        retired_lane_mask(0),
+        submit_create_count(0),
+        submit_lookup_count(0),
+        retire_count(0),
+        retire_free_policy(RTCORE_DRIVER_RUNTIME_RETIRE_FREE_POLICY) {}
+
+  bool valid;
+  bool live;
+  unsigned long long context_base;
+  unsigned long long handoff_base;
+  unsigned long long context_window_index;
+  unsigned long long handoff_window_index;
+  unsigned owner_generation;
+  unsigned capacity_lane_slots;
+  unsigned retired_lane_mask;
+  unsigned submit_create_count;
+  unsigned submit_lookup_count;
+  unsigned retire_count;
+  const char *retire_free_policy;
+};
+
+std::map<rtcore_launch_allocation_lifetime_key,
+         rtcore_launch_allocation_lifetime_record>
+    g_rtcore_launch_allocation_lifetime_table;
+
+static rtcore_launch_allocation_lifetime_key
+rtcore_make_launch_allocation_lifetime_key(
+    const rtcore_runtime_context_window_allocation_record &allocation_record) {
+  rtcore_launch_allocation_lifetime_key key;
+  key.context_base = allocation_record.context_base;
+  key.handoff_base = allocation_record.handoff_base;
+  key.context_window_index = allocation_record.context_window_index;
+  key.owner_generation = allocation_record.owner_generation;
+  return key;
+}
+
+static rtcore_launch_allocation_lifetime_record
+rtcore_make_launch_allocation_lifetime_record(
+    const rtcore_runtime_context_window_allocation_record &allocation_record) {
+  rtcore_launch_allocation_lifetime_record record;
+  record.valid = allocation_record.valid;
+  record.live = allocation_record.valid;
+  record.context_base = allocation_record.context_base;
+  record.handoff_base = allocation_record.handoff_base;
+  record.context_window_index = allocation_record.context_window_index;
+  record.handoff_window_index = allocation_record.handoff_window_index;
+  record.owner_generation = allocation_record.owner_generation;
+  record.capacity_lane_slots = allocation_record.capacity_lane_slots;
+  record.retire_free_policy = allocation_record.retire_free_policy;
+  record.submit_create_count = 1;
+  return record;
+}
+
+static rtcore_launch_allocation_lifetime_record *
+rtcore_get_or_create_launch_allocation_lifetime_record(
+    const rtcore_runtime_context_window_allocation_record &allocation_record,
+    bool *created) {
+  *created = false;
+  if (!allocation_record.enabled || !allocation_record.valid) {
+    return NULL;
+  }
+  const rtcore_launch_allocation_lifetime_key key =
+      rtcore_make_launch_allocation_lifetime_key(allocation_record);
+  std::map<rtcore_launch_allocation_lifetime_key,
+           rtcore_launch_allocation_lifetime_record>::iterator iter =
+      g_rtcore_launch_allocation_lifetime_table.find(key);
+  if (iter == g_rtcore_launch_allocation_lifetime_table.end()) {
+    const std::pair<std::map<rtcore_launch_allocation_lifetime_key,
+                             rtcore_launch_allocation_lifetime_record>::iterator,
+                    bool>
+        inserted = g_rtcore_launch_allocation_lifetime_table.insert(
+            std::make_pair(
+                key, rtcore_make_launch_allocation_lifetime_record(
+                         allocation_record)));
+    *created = true;
+    return &inserted.first->second;
+  }
+  iter->second.live = true;
+  iter->second.submit_lookup_count++;
+  return &iter->second;
+}
+
+static void rtcore_log_launch_allocation_lifetime_submit(
+    const ptx_instruction *pI,
+    const rtcore_runtime_context_window_allocation_record &allocation_record,
+    const rtcore_launch_allocation_lifetime_record *lifetime_record,
+    bool created) {
+  if (lifetime_record == NULL) {
+    return;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT launch-allocation-lifetime-table "
+         "(%s:%u), launch_allocation_lifetime_table=1, "
+         "consumer=RT_SUBMIT, action=%s, table_backed_allocation=1, "
+         "table_found=1, allocation_table_state=%s, "
+         "context_base=0x%llx, handoff_base=0x%llx, "
+         "context_window_index=%llu, handoff_window_index=%llu, "
+         "owner_generation=%u, capacity_lane_slots=%u, "
+         "lane_slot_index=%u, retired_lane_mask=0x%08x, "
+         "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
+         "retire_free_policy=%s\n",
+         pI->source_file(), pI->source_line(),
+         created ? "create" : "lookup", lifetime_record->live ? "live" : "free",
+         lifetime_record->context_base, lifetime_record->handoff_base,
+         lifetime_record->context_window_index,
+         lifetime_record->handoff_window_index,
+         lifetime_record->owner_generation,
+         lifetime_record->capacity_lane_slots, allocation_record.lane_slot_index,
+         lifetime_record->retired_lane_mask,
+         lifetime_record->submit_create_count,
+         lifetime_record->submit_lookup_count, lifetime_record->retire_count,
+         lifetime_record->retire_free_policy);
+  fflush(stdout);
+}
+
+static bool rtcore_mark_launch_allocation_lifetime_retire(
+    const ptx_instruction *pI,
+    const rtcore_runtime_context_window_allocation_record &allocation_record,
+    bool released_window, bool released_token) {
+  if (!allocation_record.enabled || !allocation_record.valid) {
+    return false;
+  }
+  const rtcore_launch_allocation_lifetime_key key =
+      rtcore_make_launch_allocation_lifetime_key(allocation_record);
+  std::map<rtcore_launch_allocation_lifetime_key,
+           rtcore_launch_allocation_lifetime_record>::iterator iter =
+      g_rtcore_launch_allocation_lifetime_table.find(key);
+  const bool table_found =
+      iter != g_rtcore_launch_allocation_lifetime_table.end();
+  if (table_found) {
+    iter->second.retire_count++;
+    iter->second.retired_lane_mask |=
+        (1u << allocation_record.lane_slot_index);
+  }
+  const rtcore_launch_allocation_lifetime_record *lifetime_record =
+      table_found ? &iter->second : NULL;
+  printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT "
+         "launch-allocation-lifetime-table (%s:%u), "
+         "launch_allocation_lifetime_table=1, consumer=RT_RETIRE_CONTEXT, "
+         "action=retire, table_backed_allocation=%u, table_found=%u, "
+         "allocation_table_state=%s, context_base=0x%llx, "
+         "handoff_base=0x%llx, context_window_index=%llu, "
+         "handoff_window_index=%llu, owner_generation=%u, "
+         "capacity_lane_slots=%u, lane_slot_index=%u, "
+         "released_window=%u, released_token=%u, retired_lane_mask=0x%08x, "
+         "submit_create_count=%u, submit_lookup_count=%u, retire_count=%u, "
+         "retire_free_policy=%s\n",
+         pI->source_file(), pI->source_line(), table_found ? 1 : 0,
+         table_found ? 1 : 0,
+         table_found && lifetime_record->live ? "live" : "missing",
+         allocation_record.context_base, allocation_record.handoff_base,
+         allocation_record.context_window_index,
+         allocation_record.handoff_window_index,
+         allocation_record.owner_generation, allocation_record.capacity_lane_slots,
+         allocation_record.lane_slot_index, released_window ? 1 : 0,
+         released_token ? 1 : 0,
+         table_found ? lifetime_record->retired_lane_mask : 0,
+         table_found ? lifetime_record->submit_create_count : 0,
+         table_found ? lifetime_record->submit_lookup_count : 0,
+         table_found ? lifetime_record->retire_count : 0,
+         allocation_record.retire_free_policy);
+  fflush(stdout);
+  return table_found;
+}
+
 bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
     const ptx_instruction *pI, unsigned long long context_ptr,
     unsigned long long handoff_window_base, unsigned lane_slot_index) {
@@ -17404,6 +17604,29 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
+  const rtcore_runtime_context_window_allocation_record allocation_record =
+      rtcore_make_runtime_context_window_allocation_record(
+          context_ptr_data.u64, handoff_window_base_data.u64, lane_slot_index);
+  bool lifetime_record_created = false;
+  const rtcore_launch_allocation_lifetime_record *lifetime_record =
+      rtcore_get_or_create_launch_allocation_lifetime_record(
+          allocation_record, &lifetime_record_created);
+  rtcore_log_launch_allocation_lifetime_submit(
+      pI, allocation_record, lifetime_record, lifetime_record_created);
+  if (allocation_record.enabled && lifetime_record == NULL) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=LAUNCH_ALLOCATION_LIFETIME_TABLE_MISSING, "
+           "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u\n",
+           pI->source_file(), pI->source_line(),
+           (unsigned long long)context_ptr_data.u64,
+           (unsigned long long)handoff_window_base_data.u64,
+           lane_slot_index);
+    fflush(stdout);
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+
   rtcore_traversal_completion_adapter_publish(
       pI, thread, result, context_ptr_data.u64, handoff_window_base_data.u64);
 }
@@ -17479,6 +17702,8 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   // is deferred until a warp-level allocator exists.
   const bool released_window = rtcore_release_synthetic_handoff_window(key);
   const bool released_token = rtcore_release_symbolic_rt_token(token_key);
+  rtcore_mark_launch_allocation_lifetime_retire(
+      pI, allocation_record, released_window, released_token);
   rtcore_log_runtime_context_window_allocation_retire(
       pI, allocation_record, released_window, released_token,
       rtcore_synthetic_handoff_window_count(), rtcore_symbolic_rt_token_count(),
