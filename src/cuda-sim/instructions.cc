@@ -8514,6 +8514,14 @@ const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISMATCH_HANDOFF_INDEX =
     "mismatch_handoff_index";
 const char *RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_DIAGNOSTIC_SHADOW =
     "diagnostic_shadow_no_reuse";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_STALE_OWNER_GENERATION =
+    "stale_owner_generation";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_WRONG_OWNER_TUPLE =
+    "wrong_owner_tuple";
+const char *RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_LIVE_SLOT_CONFLICT =
+    "live_slot_conflict";
+const char *RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_REJECT_NONE =
+    "none";
 
 enum rtcore_driver_runtime_handle_scaffold_mode {
   RTCORE_DRIVER_RUNTIME_HANDLE_SCAFFOLD_DISABLED = 0,
@@ -8598,7 +8606,10 @@ enum rtcore_driver_runtime_allocation_fault {
   RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_CONTEXT_BASE,
   RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISALIGN_HANDOFF_BASE,
   RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_CONTEXT_INDEX,
-  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_HANDOFF_INDEX
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_HANDOFF_INDEX,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_STALE_OWNER_GENERATION,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_WRONG_OWNER_TUPLE,
+  RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_LIVE_SLOT_CONFLICT
 };
 
 rtcore_driver_runtime_allocation_fault
@@ -8640,6 +8651,18 @@ rtcore_driver_runtime_allocation_fault_from_env() {
       rtcore_path_mode_is(value, "mismatch-handoff-index")) {
     return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_HANDOFF_INDEX;
   }
+  if (rtcore_path_mode_is(value, "stale_owner_generation") ||
+      rtcore_path_mode_is(value, "stale-owner-generation")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_STALE_OWNER_GENERATION;
+  }
+  if (rtcore_path_mode_is(value, "wrong_owner_tuple") ||
+      rtcore_path_mode_is(value, "wrong-owner-tuple")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_WRONG_OWNER_TUPLE;
+  }
+  if (rtcore_path_mode_is(value, "live_slot_conflict") ||
+      rtcore_path_mode_is(value, "live-slot-conflict")) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_LIVE_SLOT_CONFLICT;
+  }
   return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_INVALID_BRIDGE_MODE;
 }
 
@@ -8660,6 +8683,12 @@ const char *rtcore_driver_runtime_allocation_fault_name(
       return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISMATCH_CONTEXT_INDEX;
     case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_MISMATCH_HANDOFF_INDEX:
       return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_MISMATCH_HANDOFF_INDEX;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_STALE_OWNER_GENERATION:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_STALE_OWNER_GENERATION;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_WRONG_OWNER_TUPLE:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_WRONG_OWNER_TUPLE;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_LIVE_SLOT_CONFLICT:
+      return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_LIVE_SLOT_CONFLICT;
     case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NONE:
     default:
       return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_NONE;
@@ -8890,6 +8919,10 @@ void rtcore_apply_driver_runtime_allocation_fault(
       record->has_handoff_base = true;
       record->handoff_base -= RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP;
       break;
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_STALE_OWNER_GENERATION:
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_WRONG_OWNER_TUPLE:
+    case RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_LIVE_SLOT_CONFLICT:
+      break;
   }
   record->valid = record->has_context_base && record->has_handoff_base &&
                   !record->invalid_mode;
@@ -9053,6 +9086,8 @@ struct rtcore_launch_allocation_owner_generation_source_record {
         allocator_owner_generation(0),
         allocator_generation_source_state(
             RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_DIAGNOSTIC_SHADOW),
+        owner_generation_source_reject_reason(
+            RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_REJECT_NONE),
         allocator_generation_source_valid(false),
         allocator_generation_authoritative(false),
         allocator_generation_minting_enabled(false) {}
@@ -9061,6 +9096,7 @@ struct rtcore_launch_allocation_owner_generation_source_record {
   unsigned diagnostic_owner_generation;
   unsigned allocator_owner_generation;
   const char *allocator_generation_source_state;
+  const char *owner_generation_source_reject_reason;
   bool allocator_generation_source_valid;
   bool allocator_generation_authoritative;
   bool allocator_generation_minting_enabled;
@@ -9161,6 +9197,52 @@ struct rtcore_runtime_context_window_allocation_record {
   const char *retire_free_policy;
 };
 
+static const char *rtcore_launch_allocation_owner_generation_fault_reason(
+    const rtcore_runtime_context_window_allocation_record &record) {
+  if (strcmp(record.allocation_fault,
+             RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_STALE_OWNER_GENERATION) ==
+      0) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_STALE_OWNER_GENERATION;
+  }
+  if (strcmp(record.allocation_fault,
+             RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_WRONG_OWNER_TUPLE) ==
+      0) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_WRONG_OWNER_TUPLE;
+  }
+  if (strcmp(record.allocation_fault,
+             RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_LIVE_SLOT_CONFLICT) ==
+      0) {
+    return RTCORE_DRIVER_RUNTIME_ALLOCATION_FAULT_NAME_LIVE_SLOT_CONFLICT;
+  }
+  return RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_REJECT_NONE;
+}
+
+static void rtcore_apply_launch_allocation_owner_generation_source_fault(
+    rtcore_runtime_context_window_allocation_record *record) {
+  if (record == NULL) {
+    return;
+  }
+  const char *reason =
+      rtcore_launch_allocation_owner_generation_fault_reason(*record);
+  if (strcmp(reason,
+             RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_REJECT_NONE) ==
+      0) {
+    return;
+  }
+  record->owner_generation_source_record.valid = false;
+  record->owner_generation_source_record.allocator_generation_source_valid =
+      false;
+  record->owner_generation_source_record.allocator_generation_source_state =
+      reason;
+  record->owner_generation_source_record.owner_generation_source_reject_reason =
+      reason;
+  record->owner_generation_source_record.allocator_generation_authoritative =
+      false;
+  record->owner_generation_source_record.allocator_generation_minting_enabled =
+      false;
+  record->valid = false;
+}
+
 static rtcore_runtime_context_window_allocation_record
 rtcore_make_runtime_context_window_allocation_record_from_bridge(
     const rtcore_driver_runtime_handle_bridge_record &bridge_record) {
@@ -9244,6 +9326,7 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
                  record.handoff_matches && record.indices_match &&
                  record.owner_generation_source_record.valid &&
                  record.owner_generation != 0;
+  rtcore_apply_launch_allocation_owner_generation_source_fault(&record);
   return record;
 }
 
@@ -9281,6 +9364,7 @@ static void rtcore_log_runtime_context_window_allocation_record(
          "owner_generation=%u, owner_generation_seed=%u, "
          "diagnostic_owner_generation=%u, allocator_owner_generation=%u, "
          "allocator_generation_source_state=%s, "
+         "owner_generation_source_reject_reason=%s, "
          "allocator_generation_source_valid=%u, "
          "allocator_generation_authoritative=%u, "
          "allocator_generation_minting_enabled=%u, "
@@ -9303,6 +9387,8 @@ static void rtcore_log_runtime_context_window_allocation_record(
          record.owner_generation_source_record.diagnostic_owner_generation,
          record.owner_generation_source_record.allocator_owner_generation,
          record.owner_generation_source_record.allocator_generation_source_state,
+         record.owner_generation_source_record
+             .owner_generation_source_reject_reason,
          record.owner_generation_source_record.allocator_generation_source_valid
              ? 1
              : 0,
@@ -9340,6 +9426,7 @@ static void rtcore_log_runtime_context_window_allocation_retire(
          "owner_generation_seed=%u, capacity_lane_slots=%u, "
          "diagnostic_owner_generation=%u, allocator_owner_generation=%u, "
          "allocator_generation_source_state=%s, "
+         "owner_generation_source_reject_reason=%s, "
          "allocator_generation_source_valid=%u, "
          "allocator_generation_authoritative=%u, "
          "allocator_generation_minting_enabled=%u, "
@@ -9355,6 +9442,8 @@ static void rtcore_log_runtime_context_window_allocation_retire(
          record.owner_generation_source_record.diagnostic_owner_generation,
          record.owner_generation_source_record.allocator_owner_generation,
          record.owner_generation_source_record.allocator_generation_source_state,
+         record.owner_generation_source_record
+             .owner_generation_source_reject_reason,
          record.owner_generation_source_record.allocator_generation_source_valid
              ? 1
              : 0,
@@ -9599,6 +9688,7 @@ static void rtcore_log_launch_allocation_lifetime_submit(
          "owner_generation=%u, capacity_lane_slots=%u, "
          "diagnostic_owner_generation=%u, allocator_owner_generation=%u, "
          "allocator_generation_source_state=%s, "
+         "owner_generation_source_reject_reason=%s, "
          "allocator_generation_source_valid=%u, "
          "allocator_generation_authoritative=%u, "
          "allocator_generation_minting_enabled=%u, "
@@ -9624,6 +9714,8 @@ static void rtcore_log_launch_allocation_lifetime_submit(
              .allocator_owner_generation,
          lifetime_record->owner_generation_source_record
              .allocator_generation_source_state,
+         lifetime_record->owner_generation_source_record
+             .owner_generation_source_reject_reason,
          lifetime_record->owner_generation_source_record
                  .allocator_generation_source_valid
              ? 1
@@ -9689,6 +9781,7 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          "capacity_lane_slots=%u, lane_slot_index=%u, "
          "diagnostic_owner_generation=%u, allocator_owner_generation=%u, "
          "allocator_generation_source_state=%s, "
+         "owner_generation_source_reject_reason=%s, "
          "allocator_generation_source_valid=%u, "
          "allocator_generation_authoritative=%u, "
          "allocator_generation_minting_enabled=%u, "
@@ -9719,6 +9812,10 @@ static bool rtcore_mark_launch_allocation_lifetime_retire(
          table_found
              ? lifetime_record->owner_generation_source_record
                    .allocator_generation_source_state
+             : "missing",
+         table_found
+             ? lifetime_record->owner_generation_source_record
+                   .owner_generation_source_reject_reason
              : "missing",
          table_found && lifetime_record->owner_generation_source_record
                             .allocator_generation_source_valid
@@ -9796,7 +9893,14 @@ bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
          "context_matches=%u, handoff_matches=%u, indices_match=%u, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, runtime_allocation_record=1, "
-         "owner_generation=%u, driver_runtime_allocation_fault=%s\n",
+         "owner_generation=%u, diagnostic_owner_generation=%u, "
+         "allocator_owner_generation=%u, "
+         "allocator_generation_source_state=%s, "
+         "owner_generation_source_reject_reason=%s, "
+         "allocator_generation_source_valid=%u, "
+         "allocator_generation_authoritative=%u, "
+         "allocator_generation_minting_enabled=%u, "
+         "driver_runtime_allocation_fault=%s\n",
          pI->source_file(), pI->source_line(),
          allocation_record.invalid_flag ? 0 : 1,
          allocation_record.has_context_base ? 1 : 0,
@@ -9805,7 +9909,28 @@ bool rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
          allocation_record.handoff_matches ? 1 : 0,
          allocation_record.indices_match ? 1 : 0, context_ptr,
          handoff_window_base, lane_slot_index,
-         allocation_record.owner_generation, allocation_record.allocation_fault);
+         allocation_record.owner_generation,
+         allocation_record.owner_generation_source_record
+             .diagnostic_owner_generation,
+         allocation_record.owner_generation_source_record
+             .allocator_owner_generation,
+         allocation_record.owner_generation_source_record
+             .allocator_generation_source_state,
+         allocation_record.owner_generation_source_record
+             .owner_generation_source_reject_reason,
+         allocation_record.owner_generation_source_record
+                 .allocator_generation_source_valid
+             ? 1
+             : 0,
+         allocation_record.owner_generation_source_record
+                 .allocator_generation_authoritative
+             ? 1
+             : 0,
+         allocation_record.owner_generation_source_record
+                 .allocator_generation_minting_enabled
+             ? 1
+             : 0,
+         allocation_record.allocation_fault);
   fflush(stdout);
   inst_not_implemented(pI);
   return true;
