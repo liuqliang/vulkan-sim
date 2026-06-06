@@ -1702,6 +1702,16 @@ void scheduler_unit::cycle() {
                   rtcore_scheduler_credit_ledger_readiness.ready;
               const char *rtcore_scheduler_credit_ledger_reservation_env =
                   getenv("VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_SKELETON");
+              const char *rtcore_scheduler_credit_ledger_reservation_cancel_env =
+                  getenv("VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_CANCEL_FAULT");
+              const bool rtcore_scheduler_credit_ledger_reservation_cancel_fault =
+                  pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_reservation_cancel_env !=
+                      NULL &&
+                  *rtcore_scheduler_credit_ledger_reservation_cancel_env !=
+                      '\0' &&
+                  strcmp(rtcore_scheduler_credit_ledger_reservation_cancel_env,
+                         "0") != 0;
               rtcore_scheduler_credit_ledger_reservation_snapshot
                   rtcore_scheduler_credit_ledger_reservation;
               rtcore_scheduler_credit_ledger_reservation.enabled =
@@ -1732,6 +1742,41 @@ void scheduler_unit::cycle() {
                   rtcore_scheduler_credit_ledger_reservation.enabled
                       ? "reservation_skeleton_noop"
                       : "reservation_skeleton_default_off";
+              if (rtcore_scheduler_credit_ledger_reservation_cancel_fault) {
+                rtcore_scheduler_credit_ledger_reservation.enabled = true;
+                rtcore_scheduler_credit_ledger_reservation.state =
+                    RTCORE_SCHEDULER_CREDIT_LEDGER_RESERVATION_CANCELLED_FAIL_CLOSED;
+                rtcore_scheduler_credit_ledger_reservation.ready = false;
+                rtcore_scheduler_credit_ledger_reservation.capacity_mutated =
+                    false;
+                rtcore_scheduler_credit_ledger_reservation.state_name =
+                    "cancelled_fail_closed";
+                rtcore_scheduler_credit_ledger_reservation.transition_reason =
+                    "reservation_cancel_fault";
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-reservation-cancelled=1, "
+                       "reservation_state=%s, owner_hw_sid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "ready=%u, capacity_mutated=%u, "
+                       "cancellation_reason=%s\n",
+                       rtcore_scheduler_credit_ledger_reservation.state_name,
+                       rtcore_scheduler_credit_ledger_reservation.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_reservation.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_reservation
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_reservation
+                           .issued_active_mask,
+                       rtcore_scheduler_credit_ledger_reservation.ready ? 1 : 0,
+                       rtcore_scheduler_credit_ledger_reservation
+                               .capacity_mutated
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_reservation
+                           .transition_reason);
+                fflush(stdout);
+                abort();
+              }
               if (rtcore_scheduler_credit_ledger_reservation.enabled) {
                 printf("GPGPU-Sim PTX: RT_SUBMIT "
                        "scheduler-credit-ledger-reservation-skeleton=1, "
