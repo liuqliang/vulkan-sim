@@ -12474,7 +12474,10 @@ struct rtcore_provider_payload_consumed_input_view {
         has_bvh_format_profile(false),
         bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bvh_format_version(0),
-        provider_consumed_input_fields_all_owned_with_lifetime(false) {
+        provider_consumed_input_fields_all_owned_with_lifetime(false),
+        provider_payload_runtime_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
     memset(&ray_direction, 0, sizeof(ray_direction));
   }
@@ -12505,6 +12508,9 @@ struct rtcore_provider_payload_consumed_input_view {
   rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   uint32_t bvh_format_version;
   bool provider_consumed_input_fields_all_owned_with_lifetime;
+  bool provider_payload_runtime_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
 };
 
 struct rtcore_provider_decoded_input_observation {
@@ -12534,6 +12540,9 @@ struct rtcore_provider_decoded_input_observation {
         bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bvh_format_version(0),
         provider_consumed_input_fields_all_owned_with_lifetime(false),
+        provider_payload_runtime_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false),
         provider_payload_consumption_owner_lifetime_blocked(true) {
     memset(&ray_origin, 0, sizeof(ray_origin));
     memset(&ray_direction, 0, sizeof(ray_direction));
@@ -12565,6 +12574,9 @@ struct rtcore_provider_decoded_input_observation {
   rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   uint32_t bvh_format_version;
   bool provider_consumed_input_fields_all_owned_with_lifetime;
+  bool provider_payload_runtime_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
   bool provider_payload_consumption_owner_lifetime_blocked;
 };
 
@@ -13075,6 +13087,9 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_payload_backend_input_snapshot_valid(false),
         provider_payload_backend_input_snapshot_accepted(false),
         provider_payload_backend_input_owner_lifetime_ok(false),
+        provider_backend_input_runtime_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false),
         ray_origin_direction_tmin_tmax_owner(
             RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
@@ -13098,6 +13113,9 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool provider_payload_backend_input_snapshot_valid;
   bool provider_payload_backend_input_snapshot_accepted;
   bool provider_payload_backend_input_owner_lifetime_ok;
+  bool provider_backend_input_runtime_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
   rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
   rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   rtcore_decoded_input_field_owner_class launch_context_input_owner;
@@ -13140,6 +13158,11 @@ rtcore_make_provider_backend_input_consumption_route_record(
             .consumed_input_view;
     record.provider_payload_backend_input_owner_lifetime_ok =
         view.provider_consumed_input_fields_all_owned_with_lifetime;
+    record.provider_backend_input_runtime_lifetime_ready =
+        view.provider_payload_runtime_lifetime_ready;
+    record.context_window_owner_seq_matches_lifetime =
+        view.context_window_owner_seq_matches_lifetime;
+    record.token_lifetime_key_ready = view.token_lifetime_key_ready;
     record.ray_origin_direction_tmin_tmax_owner =
         view.ray_origin_direction_tmin_tmax_owner;
     record.ray_flags_cull_mask_owner = view.ray_flags_cull_mask_owner;
@@ -13160,6 +13183,7 @@ rtcore_make_provider_backend_input_consumption_route_record(
       record.provider_payload_backend_input_snapshot_valid &&
       record.provider_payload_backend_input_snapshot_accepted &&
       record.provider_payload_backend_input_owner_lifetime_ok &&
+      record.provider_backend_input_runtime_lifetime_ready &&
       (!record.existing_traversal_input_replay_requested ||
        record.existing_traversal_request_replay_live_input_match);
   return record;
@@ -13185,6 +13209,9 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_payload_backend_input_snapshot_valid=%u, "
          "provider_payload_backend_input_snapshot_accepted=%u, "
          "provider_payload_backend_input_owner_lifetime_ok=%u, "
+         "provider_backend_input_runtime_lifetime_ready=%u, "
+         "context_window_owner_seq_matches_lifetime=%u, "
+         "token_lifetime_key_ready=%u, "
          "provider_backend_input_authority_propagated=%u, "
          "provider_backend_route_source_bridge=field_source_labels, "
          "ray_origin_direction_tmin_tmax_owner=%s, "
@@ -13208,7 +13235,13 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.provider_payload_backend_input_snapshot_valid ? 1 : 0,
          record.provider_payload_backend_input_snapshot_accepted ? 1 : 0,
          record.provider_payload_backend_input_owner_lifetime_ok ? 1 : 0,
-         record.provider_payload_backend_input_owner_lifetime_ok ? 1 : 0,
+         record.provider_backend_input_runtime_lifetime_ready ? 1 : 0,
+         record.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         record.token_lifetime_key_ready ? 1 : 0,
+         record.provider_payload_backend_input_owner_lifetime_ok &&
+                 record.provider_backend_input_runtime_lifetime_ready
+             ? 1
+             : 0,
          rtcore_decoded_input_field_owner_class_name(
              record.ray_origin_direction_tmin_tmax_owner),
          rtcore_decoded_input_field_source_label(
@@ -13711,6 +13744,9 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_version=%u, bvh_format_profile_source=%s, "
          "provider_payload_backend_input_owner_lifetime_ok=%u, "
+         "provider_backend_input_runtime_lifetime_ready=%u, "
+         "context_window_owner_seq_matches_lifetime=%u, "
+         "token_lifetime_key_ready=%u, "
          "provider_backend_input_authority_propagated=%u, "
          "ray_origin_direction_tmin_tmax_owner=%s, "
          "ray_flags_cull_mask_owner=%s, launch_context_input_owner=%s, "
@@ -13748,7 +13784,13 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          rtcore_decoded_input_field_source_label(
              view.bvh_format_profile_owner),
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
-         view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
+         view.provider_payload_runtime_lifetime_ready ? 1 : 0,
+         view.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         view.token_lifetime_key_ready ? 1 : 0,
+         view.provider_consumed_input_fields_all_owned_with_lifetime &&
+                 view.provider_payload_runtime_lifetime_ready
+             ? 1
+             : 0,
          rtcore_decoded_input_field_owner_class_name(
              view.ray_origin_direction_tmin_tmax_owner),
          rtcore_decoded_input_field_owner_class_name(
@@ -14648,6 +14690,324 @@ rtcore_make_context_window_owner_seq_snapshot(
   return snapshot;
 }
 
+struct rtcore_driver_runtime_context_window_lifetime_bridge_snapshot {
+  rtcore_driver_runtime_context_window_lifetime_bridge_snapshot()
+      : valid(false),
+        runtime_allocation_record_valid(false),
+        lifetime_table_found(false),
+        context_window_owner_seq_valid(false),
+        context_window_owner_seq_matches_lifetime(false),
+        lane_slot_matches(false),
+        active_lane_observed(false),
+        owner_generation_matches(false),
+        token_lifetime_key_ready(false),
+        retire_release_policy_ready(false),
+        driver_runtime_context_window_lifetime_ready(false),
+        provider_lifetime_ready(false),
+        provider_payload_runtime_lifetime_ready(false),
+        failpoint("none"),
+        reject_reason("none"),
+        context_ptr(0),
+        handoff_window_base(0),
+        context_base(0),
+        handoff_base(0),
+        context_window_index(0),
+        handoff_window_index(0),
+        lane_slot_index(0),
+        capacity_lane_slots(0),
+        owner_generation(0),
+        window_generation(0),
+        completion_seq_low(0),
+        resume_seq_low(0),
+        window_tag(0),
+        token_owner_hw_sid(0),
+        token_owner_hw_wid(0),
+        token_owner_hw_tid(0),
+        token_lane_slot_index(0),
+        active_lane_mask(0),
+        retire_free_policy(RTCORE_DRIVER_RUNTIME_RETIRE_FREE_POLICY) {}
+
+  bool valid;
+  bool runtime_allocation_record_valid;
+  bool lifetime_table_found;
+  bool context_window_owner_seq_valid;
+  bool context_window_owner_seq_matches_lifetime;
+  bool lane_slot_matches;
+  bool active_lane_observed;
+  bool owner_generation_matches;
+  bool token_lifetime_key_ready;
+  bool retire_release_policy_ready;
+  bool driver_runtime_context_window_lifetime_ready;
+  bool provider_lifetime_ready;
+  bool provider_payload_runtime_lifetime_ready;
+  const char *failpoint;
+  const char *reject_reason;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned long long context_base;
+  unsigned long long handoff_base;
+  unsigned long long context_window_index;
+  unsigned long long handoff_window_index;
+  unsigned lane_slot_index;
+  unsigned capacity_lane_slots;
+  unsigned owner_generation;
+  unsigned window_generation;
+  unsigned completion_seq_low;
+  unsigned resume_seq_low;
+  unsigned window_tag;
+  unsigned token_owner_hw_sid;
+  unsigned token_owner_hw_wid;
+  unsigned token_owner_hw_tid;
+  unsigned token_lane_slot_index;
+  unsigned active_lane_mask;
+  const char *retire_free_policy;
+};
+
+static const char *
+rtcore_driver_runtime_context_window_lifetime_bridge_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_CONTEXT_WINDOW_LIFETIME_BRIDGE_FAILPOINT";
+}
+
+static const char *
+rtcore_driver_runtime_context_window_lifetime_bridge_failpoint_name() {
+  const char *value = getenv(
+      rtcore_driver_runtime_context_window_lifetime_bridge_failpoint_env_name());
+  if (value == NULL || value[0] == '\0' ||
+      rtcore_path_mode_is(value, "none") ||
+      rtcore_rt_env_value_is_explicit_false(value)) {
+    return "none";
+  }
+  if (rtcore_path_mode_is(value, "wrong_owner_sequence") ||
+      rtcore_path_mode_is(value, "owner_seq_mismatch")) {
+    return "wrong_owner_sequence";
+  }
+  if (rtcore_path_mode_is(value, "wrong_lane_slot") ||
+      rtcore_path_mode_is(value, "lane_slot_mismatch")) {
+    return "wrong_lane_slot";
+  }
+  if (rtcore_path_mode_is(value, "stale_token_lifetime") ||
+      rtcore_path_mode_is(value, "stale_token")) {
+    return "stale_token_lifetime";
+  }
+  if (rtcore_path_mode_is(value, "missing_lifetime_record") ||
+      rtcore_rt_env_value_is_explicit_true(value)) {
+    return "missing_lifetime_record";
+  }
+  return "unsupported";
+}
+
+static void
+rtcore_refresh_driver_runtime_context_window_lifetime_bridge_ready(
+    rtcore_driver_runtime_context_window_lifetime_bridge_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->driver_runtime_context_window_lifetime_ready =
+      snapshot->valid && snapshot->runtime_allocation_record_valid &&
+      snapshot->lifetime_table_found &&
+      snapshot->context_window_owner_seq_valid &&
+      snapshot->context_window_owner_seq_matches_lifetime &&
+      snapshot->lane_slot_matches && snapshot->active_lane_observed &&
+      snapshot->owner_generation_matches && snapshot->token_lifetime_key_ready &&
+      snapshot->retire_release_policy_ready;
+  snapshot->provider_lifetime_ready =
+      snapshot->driver_runtime_context_window_lifetime_ready;
+  snapshot->provider_payload_runtime_lifetime_ready =
+      snapshot->provider_lifetime_ready;
+  snapshot->reject_reason =
+      snapshot->provider_lifetime_ready
+          ? "none"
+          : "DRIVER_RUNTIME_CONTEXT_WINDOW_LIFETIME_BRIDGE_NOT_READY";
+}
+
+static rtcore_driver_runtime_context_window_lifetime_bridge_snapshot
+rtcore_make_driver_runtime_context_window_lifetime_bridge_snapshot(
+    const rtcore_runtime_context_window_allocation_record &allocation_record,
+    const rtcore_launch_allocation_lifetime_record *lifetime_record,
+    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot,
+    const rtcore_symbolic_rt_token_key &token_key) {
+  rtcore_driver_runtime_context_window_lifetime_bridge_snapshot snapshot;
+  snapshot.valid = allocation_record.enabled;
+  snapshot.runtime_allocation_record_valid =
+      allocation_record.enabled && allocation_record.valid;
+  snapshot.lifetime_table_found =
+      lifetime_record != NULL && lifetime_record->valid;
+  snapshot.context_window_owner_seq_valid = owner_seq_snapshot.valid;
+  snapshot.context_ptr = allocation_record.context_ptr;
+  snapshot.handoff_window_base = allocation_record.handoff_window_base;
+  snapshot.context_base = allocation_record.context_base;
+  snapshot.handoff_base = allocation_record.handoff_base;
+  snapshot.context_window_index = allocation_record.context_window_index;
+  snapshot.handoff_window_index = allocation_record.handoff_window_index;
+  snapshot.lane_slot_index = allocation_record.lane_slot_index;
+  snapshot.capacity_lane_slots = allocation_record.capacity_lane_slots;
+  snapshot.owner_generation = allocation_record.owner_generation;
+  snapshot.window_generation = owner_seq_snapshot.window_generation;
+  snapshot.completion_seq_low = owner_seq_snapshot.completion_seq_low;
+  snapshot.resume_seq_low = owner_seq_snapshot.resume_seq_low;
+  snapshot.window_tag = owner_seq_snapshot.window_tag;
+  snapshot.token_owner_hw_sid = token_key.owner_hw_sid;
+  snapshot.token_owner_hw_wid = token_key.owner_hw_wid;
+  snapshot.token_owner_hw_tid = token_key.owner_hw_tid;
+  snapshot.token_lane_slot_index = token_key.lane_slot_index;
+  snapshot.active_lane_mask =
+      lifetime_record != NULL ? lifetime_record->active_lane_mask : 0;
+  snapshot.retire_free_policy = allocation_record.retire_free_policy;
+
+  snapshot.context_window_owner_seq_matches_lifetime =
+      snapshot.context_window_owner_seq_valid && snapshot.lifetime_table_found &&
+      owner_seq_snapshot.context_ptr == allocation_record.context_ptr &&
+      owner_seq_snapshot.handoff_window_base ==
+          allocation_record.handoff_window_base &&
+      owner_seq_snapshot.lane_slot_index == allocation_record.lane_slot_index &&
+      lifetime_record->context_base == allocation_record.context_base &&
+      lifetime_record->handoff_base == allocation_record.handoff_base &&
+      lifetime_record->context_window_index ==
+          allocation_record.context_window_index &&
+      lifetime_record->handoff_window_index ==
+          allocation_record.handoff_window_index;
+  snapshot.lane_slot_matches =
+      owner_seq_snapshot.lane_slot_index == allocation_record.lane_slot_index &&
+      token_key.lane_slot_index == allocation_record.lane_slot_index;
+  snapshot.active_lane_observed =
+      lifetime_record != NULL &&
+      allocation_record.lane_slot_index < RTCORE_MAX_LANES_PER_WARP &&
+      (lifetime_record->active_lane_mask &
+       rtcore_lane_thread_mask(allocation_record.lane_slot_index)) != 0;
+  snapshot.owner_generation_matches =
+      lifetime_record != NULL &&
+      lifetime_record->owner_generation == allocation_record.owner_generation;
+  snapshot.token_lifetime_key_ready =
+      token_key.context_ptr == allocation_record.context_ptr &&
+      token_key.handoff_window_base == allocation_record.handoff_window_base &&
+      token_key.owner_hw_sid == owner_seq_snapshot.warp_metadata.owner_hw_sid &&
+      token_key.lane_slot_index == allocation_record.lane_slot_index;
+  snapshot.retire_release_policy_ready =
+      lifetime_record != NULL && allocation_record.retire_free_policy != NULL &&
+      lifetime_record->retire_free_policy != NULL &&
+      strcmp(lifetime_record->retire_free_policy,
+             allocation_record.retire_free_policy) == 0;
+
+  snapshot.failpoint =
+      rtcore_driver_runtime_context_window_lifetime_bridge_failpoint_name();
+  if (strcmp(snapshot.failpoint, "wrong_owner_sequence") == 0) {
+    snapshot.context_window_owner_seq_matches_lifetime = false;
+  } else if (strcmp(snapshot.failpoint, "wrong_lane_slot") == 0) {
+    snapshot.lane_slot_matches = false;
+  } else if (strcmp(snapshot.failpoint, "stale_token_lifetime") == 0) {
+    snapshot.token_lifetime_key_ready = false;
+  } else if (strcmp(snapshot.failpoint, "missing_lifetime_record") == 0) {
+    snapshot.lifetime_table_found = false;
+  } else if (strcmp(snapshot.failpoint, "unsupported") == 0) {
+    snapshot.valid = false;
+  }
+
+  rtcore_refresh_driver_runtime_context_window_lifetime_bridge_ready(
+      &snapshot);
+  return snapshot;
+}
+
+static void rtcore_log_driver_runtime_context_window_lifetime_bridge_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_driver_runtime_context_window_lifetime_bridge_snapshot
+        &snapshot) {
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "driver-runtime-context-window-lifetime-bridge=1, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, "
+         "driver_runtime_context_window_lifetime_bridge_valid=%u, "
+         "runtime_allocation_record_valid=%u, lifetime_table_found=%u, "
+         "context_window_owner_seq_valid=%u, "
+         "context_window_owner_seq_matches_lifetime=%u, "
+         "lane_slot_matches=%u, active_lane_observed=%u, "
+         "owner_generation_matches=%u, token_lifetime_key_ready=%u, "
+         "retire_release_policy_ready=%u, "
+         "driver_runtime_context_window_lifetime_ready=%u, "
+         "provider_lifetime_ready=%u, "
+         "provider_payload_runtime_lifetime_ready=%u, "
+         "context_base=0x%llx, handoff_base=0x%llx, "
+         "context_window_index=%llu, handoff_window_index=%llu, "
+         "owner_generation=%u, window_generation=%u, "
+         "completion_seq_low=%u, resume_seq_low=%u, window_tag=%u, "
+         "token_owner_hw_sid=%u, token_owner_hw_wid=%u, "
+         "token_owner_hw_tid=%u, token_lane_slot_index=%u, "
+         "active_lane_mask=0x%08x, capacity_lane_slots=%u, "
+         "retire_free_policy=%s, failpoint=%s, reject_reason=%s, "
+         "driver_runtime_context_window_lifetime_bridge_consumes_traversal_behavior=0 "
+         "(%s:%u)\n",
+         snapshot.context_ptr, snapshot.handoff_window_base,
+         snapshot.lane_slot_index, snapshot.valid ? 1 : 0,
+         snapshot.runtime_allocation_record_valid ? 1 : 0,
+         snapshot.lifetime_table_found ? 1 : 0,
+         snapshot.context_window_owner_seq_valid ? 1 : 0,
+         snapshot.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         snapshot.lane_slot_matches ? 1 : 0,
+         snapshot.active_lane_observed ? 1 : 0,
+         snapshot.owner_generation_matches ? 1 : 0,
+         snapshot.token_lifetime_key_ready ? 1 : 0,
+         snapshot.retire_release_policy_ready ? 1 : 0,
+         snapshot.driver_runtime_context_window_lifetime_ready ? 1 : 0,
+         snapshot.provider_lifetime_ready ? 1 : 0,
+         snapshot.provider_payload_runtime_lifetime_ready ? 1 : 0,
+         snapshot.context_base, snapshot.handoff_base,
+         snapshot.context_window_index, snapshot.handoff_window_index,
+         snapshot.owner_generation, snapshot.window_generation,
+         snapshot.completion_seq_low, snapshot.resume_seq_low,
+         snapshot.window_tag, snapshot.token_owner_hw_sid,
+         snapshot.token_owner_hw_wid, snapshot.token_owner_hw_tid,
+         snapshot.token_lane_slot_index, snapshot.active_lane_mask,
+         snapshot.capacity_lane_slots,
+         snapshot.retire_free_policy != NULL ? snapshot.retire_free_policy
+                                             : "missing",
+         snapshot.failpoint, snapshot.reject_reason,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static bool
+rtcore_fail_closed_on_driver_runtime_context_window_lifetime_bridge_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_driver_runtime_context_window_lifetime_bridge_snapshot
+        &snapshot) {
+  if (snapshot.provider_lifetime_ready) {
+    return false;
+  }
+  const bool bridge_required = snapshot.runtime_allocation_record_valid ||
+                               snapshot.lifetime_table_found ||
+                               strcmp(snapshot.failpoint, "none") != 0;
+  if (!bridge_required) {
+    return false;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=DRIVER_RUNTIME_CONTEXT_WINDOW_LIFETIME_BRIDGE_NOT_READY, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, "
+         "driver_runtime_context_window_lifetime_bridge_valid=%u, "
+         "runtime_allocation_record_valid=%u, lifetime_table_found=%u, "
+         "context_window_owner_seq_matches_lifetime=%u, "
+         "lane_slot_matches=%u, active_lane_observed=%u, "
+         "owner_generation_matches=%u, token_lifetime_key_ready=%u, "
+         "retire_release_policy_ready=%u, provider_backend_dispatch_skipped=1, "
+         "failpoint=%s, reject_reason=%s\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0, snapshot.context_ptr,
+         snapshot.handoff_window_base, snapshot.lane_slot_index,
+         snapshot.valid ? 1 : 0,
+         snapshot.runtime_allocation_record_valid ? 1 : 0,
+         snapshot.lifetime_table_found ? 1 : 0,
+         snapshot.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         snapshot.lane_slot_matches ? 1 : 0,
+         snapshot.active_lane_observed ? 1 : 0,
+         snapshot.owner_generation_matches ? 1 : 0,
+         snapshot.token_lifetime_key_ready ? 1 : 0,
+         snapshot.retire_release_policy_ready ? 1 : 0, snapshot.failpoint,
+         snapshot.reject_reason);
+  fflush(stdout);
+  return true;
+}
+
 enum rtcore_input_provenance_registry_fail_reason {
   RTCORE_INPUT_PROVENANCE_REGISTRY_FAIL_NONE = 0,
   RTCORE_INPUT_PROVENANCE_REGISTRY_DISABLED = 1,
@@ -15081,6 +15441,13 @@ struct rtcore_provider_facing_registry_payload_shadow {
         has_bvh_format_profile(false),
         bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bvh_format_version(0),
+        driver_runtime_context_window_lifetime_bridge_valid(false),
+        runtime_allocation_record_valid(false),
+        lifetime_table_found(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false),
+        driver_runtime_context_window_lifetime_ready(false),
+        provider_payload_runtime_lifetime_ready(false),
         provider_consumed_input_fields_all_owned_with_lifetime(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
     memset(&ray_direction, 0, sizeof(ray_direction));
@@ -15113,6 +15480,13 @@ struct rtcore_provider_facing_registry_payload_shadow {
   bool has_bvh_format_profile;
   rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   uint32_t bvh_format_version;
+  bool driver_runtime_context_window_lifetime_bridge_valid;
+  bool runtime_allocation_record_valid;
+  bool lifetime_table_found;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
+  bool driver_runtime_context_window_lifetime_ready;
+  bool provider_payload_runtime_lifetime_ready;
   bool provider_consumed_input_fields_all_owned_with_lifetime;
 };
 
@@ -15210,6 +15584,9 @@ struct rtcore_provider_payload_consumption_preflight_record {
         observed_valid_shadow(false),
         field_coverage_complete(false),
         owner_lifetime_ok(false),
+        driver_runtime_context_window_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false),
         consumption_policy_enabled(false),
         evidence_source(
             RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_EXTERNAL),
@@ -15228,6 +15605,9 @@ struct rtcore_provider_payload_consumption_preflight_record {
   bool observed_valid_shadow;
   bool field_coverage_complete;
   bool owner_lifetime_ok;
+  bool driver_runtime_context_window_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
   bool consumption_policy_enabled;
   rtcore_provider_payload_consumption_evidence_source evidence_source;
   bool uses_runtime_evidence;
@@ -15246,6 +15626,9 @@ struct rtcore_provider_payload_consumption_runtime_evidence_record {
         observed_valid_shadow(false),
         field_coverage_complete(false),
         owner_lifetime_ok(false),
+        driver_runtime_context_window_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false),
         consumption_policy_enabled(false),
         existing_traversal_backend_available(false),
         runtime_parity_evidence_available(false),
@@ -15274,6 +15657,9 @@ struct rtcore_provider_payload_consumption_runtime_evidence_record {
   bool observed_valid_shadow;
   bool field_coverage_complete;
   bool owner_lifetime_ok;
+  bool driver_runtime_context_window_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
   bool consumption_policy_enabled;
   bool existing_traversal_backend_available;
   bool runtime_parity_evidence_available;
@@ -15592,9 +15978,24 @@ rtcore_make_provider_payload_consumption_runtime_evidence_record(
     record.field_coverage_complete =
         rtcore_provider_payload_shadow_has_complete_field_coverage(
             registry_payload_shadow);
-    record.owner_lifetime_ok =
+    const bool registry_fields_owned_with_lifetime =
         registry_payload_shadow
             ->provider_consumed_input_fields_all_owned_with_lifetime;
+    const bool registry_runtime_lifetime_ready =
+        registry_payload_shadow->driver_runtime_context_window_lifetime_ready;
+    const bool registry_provider_payload_runtime_lifetime_ready =
+        registry_payload_shadow->provider_payload_runtime_lifetime_ready;
+    record.owner_lifetime_ok =
+        registry_fields_owned_with_lifetime &&
+        registry_runtime_lifetime_ready &&
+        registry_provider_payload_runtime_lifetime_ready;
+    record.driver_runtime_context_window_lifetime_ready =
+        registry_payload_shadow
+            ->driver_runtime_context_window_lifetime_ready;
+    record.context_window_owner_seq_matches_lifetime =
+        registry_payload_shadow->context_window_owner_seq_matches_lifetime;
+    record.token_lifetime_key_ready =
+        registry_payload_shadow->token_lifetime_key_ready;
   }
 
   const rtcore_symbolic_resource_profile resource_profile =
@@ -15648,6 +16049,9 @@ static void rtcore_log_provider_payload_consumption_runtime_evidence_record(
          "registry_payload_shadow_observed=%u, "
          "provider_payload_field_coverage_complete=%u, "
          "provider_payload_consumption_owner_lifetime_ok=%u, "
+         "driver_runtime_context_window_lifetime_ready=%u, "
+         "context_window_owner_seq_matches_lifetime=%u, "
+         "token_lifetime_key_ready=%u, "
          "provider_payload_consumption_policy_enabled=%u, "
          "provider_payload_consumption_evidence_source=%s, "
          "provider_payload_consumption_existing_traversal_backend_available=%u, "
@@ -15674,6 +16078,9 @@ static void rtcore_log_provider_payload_consumption_runtime_evidence_record(
          record.observed_valid_shadow ? 1 : 0,
          record.field_coverage_complete ? 1 : 0,
          record.owner_lifetime_ok ? 1 : 0,
+         record.driver_runtime_context_window_lifetime_ready ? 1 : 0,
+         record.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         record.token_lifetime_key_ready ? 1 : 0,
          record.consumption_policy_enabled ? 1 : 0,
          rtcore_provider_payload_consumption_evidence_source_name(
              record.evidence_source),
@@ -15736,9 +16143,17 @@ rtcore_make_provider_payload_consumption_preflight_record(
     preflight.field_coverage_complete =
         rtcore_provider_payload_shadow_has_complete_field_coverage(
             registry_payload_shadow);
-    preflight.owner_lifetime_ok =
+    const bool registry_fields_owned_with_lifetime =
         registry_payload_shadow
             ->provider_consumed_input_fields_all_owned_with_lifetime;
+    const bool registry_runtime_lifetime_ready =
+        registry_payload_shadow->driver_runtime_context_window_lifetime_ready;
+    const bool registry_provider_payload_runtime_lifetime_ready =
+        registry_payload_shadow->provider_payload_runtime_lifetime_ready;
+    preflight.owner_lifetime_ok =
+        registry_fields_owned_with_lifetime &&
+        registry_runtime_lifetime_ready &&
+        registry_provider_payload_runtime_lifetime_ready;
   }
 
   preflight.provider_payload_consumption_preflight_passed =
@@ -15788,6 +16203,9 @@ struct rtcore_compiler_driver_runtime_consumption_readiness_record {
         lane_slot_index(0),
         compiler_publication_ready(false),
         driver_runtime_allocation_ready(false),
+        driver_runtime_context_window_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false),
         owner_lifetime_ready(false),
         registry_payload_ready(false),
         provider_policy_ready(false),
@@ -15809,6 +16227,9 @@ struct rtcore_compiler_driver_runtime_consumption_readiness_record {
   ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
   bool compiler_publication_ready;
   bool driver_runtime_allocation_ready;
+  bool driver_runtime_context_window_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
   bool owner_lifetime_ready;
   bool registry_payload_ready;
   bool provider_policy_ready;
@@ -15893,6 +16314,17 @@ rtcore_make_compiler_driver_runtime_consumption_readiness_record(
   record.driver_runtime_allocation_ready =
       allocation_record.enabled && allocation_record.valid &&
       !allocation_source_is_bootstrap && !allocation_source_is_legacy;
+  if (descriptor.registry_payload_shadow != NULL &&
+      descriptor.registry_payload_shadow->valid) {
+    record.driver_runtime_context_window_lifetime_ready =
+        descriptor.registry_payload_shadow
+            ->driver_runtime_context_window_lifetime_ready;
+    record.context_window_owner_seq_matches_lifetime =
+        descriptor.registry_payload_shadow
+            ->context_window_owner_seq_matches_lifetime;
+    record.token_lifetime_key_ready =
+        descriptor.registry_payload_shadow->token_lifetime_key_ready;
+  }
   record.owner_lifetime_ready = preflight.owner_lifetime_ok;
   record.registry_payload_ready = preflight.observed_valid_shadow &&
                                   preflight.field_coverage_complete &&
@@ -15908,7 +16340,9 @@ rtcore_make_compiler_driver_runtime_consumption_readiness_record(
       descriptor.provider_payload_consumed_input.valid;
   record.compiler_driver_runtime_consumption_ready =
       record.valid && record.compiler_publication_ready &&
-      record.driver_runtime_allocation_ready && record.owner_lifetime_ready &&
+      record.driver_runtime_allocation_ready &&
+      record.driver_runtime_context_window_lifetime_ready &&
+      record.owner_lifetime_ready &&
       record.registry_payload_ready && record.provider_policy_ready &&
       record.parity_ready && record.resource_ready &&
       record.provider_preflight_ready && record.backend_route_input_ready;
@@ -15931,6 +16365,9 @@ rtcore_log_compiler_driver_runtime_consumption_readiness_record(
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
          "compiler_publication_ready=%u, "
          "driver_runtime_allocation_ready=%u, "
+         "driver_runtime_context_window_lifetime_ready=%u, "
+         "context_window_owner_seq_matches_lifetime=%u, "
+         "token_lifetime_key_ready=%u, "
          "context_window_owner=%s, allocation_ownership_source=%s, "
          "owner_lifetime_ready=%u, registry_payload_ready=%u, "
          "provider_policy_ready=%u, parity_ready=%u, resource_ready=%u, "
@@ -15946,6 +16383,9 @@ rtcore_log_compiler_driver_runtime_consumption_readiness_record(
          record.warp_metadata.active_mask,
          record.compiler_publication_ready ? 1 : 0,
          record.driver_runtime_allocation_ready ? 1 : 0,
+         record.driver_runtime_context_window_lifetime_ready ? 1 : 0,
+         record.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         record.token_lifetime_key_ready ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              record.context_window_owner),
          record.allocation_ownership_source,
@@ -16008,6 +16448,12 @@ rtcore_make_provider_decoded_input_observation(
   observation.provider_consumed_input_fields_all_owned_with_lifetime =
       registry_payload_shadow
           ->provider_consumed_input_fields_all_owned_with_lifetime;
+  observation.provider_payload_runtime_lifetime_ready =
+      registry_payload_shadow->provider_payload_runtime_lifetime_ready;
+  observation.context_window_owner_seq_matches_lifetime =
+      registry_payload_shadow->context_window_owner_seq_matches_lifetime;
+  observation.token_lifetime_key_ready =
+      registry_payload_shadow->token_lifetime_key_ready;
   observation.provider_payload_consumption_owner_lifetime_blocked =
       !observation.provider_consumed_input_fields_all_owned_with_lifetime;
   return observation;
@@ -16076,6 +16522,12 @@ rtcore_make_provider_payload_consumed_input_view(
   view.provider_consumed_input_fields_all_owned_with_lifetime =
       registry_payload_shadow
           ->provider_consumed_input_fields_all_owned_with_lifetime;
+  view.provider_payload_runtime_lifetime_ready =
+      registry_payload_shadow->provider_payload_runtime_lifetime_ready;
+  view.context_window_owner_seq_matches_lifetime =
+      registry_payload_shadow->context_window_owner_seq_matches_lifetime;
+  view.token_lifetime_key_ready =
+      registry_payload_shadow->token_lifetime_key_ready;
   return view;
 }
 
@@ -17316,7 +17768,9 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
     const rtcore_input_provenance_registry_publication_snapshot
         &publication_snapshot,
     const rtcore_input_provenance_registry_read_gate_result &read_gate_result,
-    const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot) {
+    const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot,
+    const rtcore_driver_runtime_context_window_lifetime_bridge_snapshot
+        &driver_runtime_context_window_lifetime_bridge_snapshot) {
   rtcore_provider_facing_registry_payload_shadow shadow;
   if (!read_gate_result.gate_enabled || !read_gate_result.read_allowed ||
       !publication_snapshot.entry.valid) {
@@ -17376,6 +17830,25 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
   shadow.traversable_proxy_id = decoded_input_snapshot.traversable_proxy_id;
   shadow.root_proxy_id = decoded_input_snapshot.root_proxy_id;
   shadow.bvh_format_version = decoded_input_snapshot.bvh_format_version;
+  shadow.driver_runtime_context_window_lifetime_bridge_valid =
+      driver_runtime_context_window_lifetime_bridge_snapshot.valid;
+  shadow.runtime_allocation_record_valid =
+      driver_runtime_context_window_lifetime_bridge_snapshot
+          .runtime_allocation_record_valid;
+  shadow.lifetime_table_found =
+      driver_runtime_context_window_lifetime_bridge_snapshot.lifetime_table_found;
+  shadow.context_window_owner_seq_matches_lifetime =
+      driver_runtime_context_window_lifetime_bridge_snapshot
+          .context_window_owner_seq_matches_lifetime;
+  shadow.token_lifetime_key_ready =
+      driver_runtime_context_window_lifetime_bridge_snapshot
+          .token_lifetime_key_ready;
+  shadow.driver_runtime_context_window_lifetime_ready =
+      driver_runtime_context_window_lifetime_bridge_snapshot
+          .driver_runtime_context_window_lifetime_ready;
+  shadow.provider_payload_runtime_lifetime_ready =
+      driver_runtime_context_window_lifetime_bridge_snapshot
+          .provider_payload_runtime_lifetime_ready;
   shadow.valid = shadow.has_ray_origin_direction_tmin_tmax &&
                  shadow.has_ray_flags_cull_mask &&
                  shadow.has_launch_context_input &&
@@ -17389,7 +17862,8 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
           shadow.has_launch_context_input, shadow.launch_context_input_owner,
           shadow.has_traversable_root_proxy,
           shadow.traversable_root_proxy_owner,
-          shadow.has_bvh_format_profile, shadow.bvh_format_profile_owner);
+          shadow.has_bvh_format_profile, shadow.bvh_format_profile_owner) &&
+      shadow.provider_payload_runtime_lifetime_ready;
   return shadow;
 }
 
@@ -17474,7 +17948,12 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
          "traversable_proxy_id=0x%llx, root_proxy_id=0x%llx, "
-         "bvh_format_version=%u\n",
+         "bvh_format_version=%u, "
+         "driver_runtime_context_window_lifetime_bridge_valid=%u, "
+         "driver_runtime_context_window_lifetime_ready=%u, "
+         "context_window_owner_seq_matches_lifetime=%u, "
+         "token_lifetime_key_ready=%u, "
+         "provider_payload_runtime_lifetime_ready=%u\n",
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0,
          rtcore_traversal_source_provider_name(source_request.provider),
@@ -17489,7 +17968,12 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          shadow.has_traversable_root_proxy ? 1 : 0,
          shadow.has_bvh_format_profile ? 1 : 0,
          (unsigned long long)shadow.traversable_proxy_id,
-         (unsigned long long)shadow.root_proxy_id, shadow.bvh_format_version);
+         (unsigned long long)shadow.root_proxy_id, shadow.bvh_format_version,
+         shadow.driver_runtime_context_window_lifetime_bridge_valid ? 1 : 0,
+         shadow.driver_runtime_context_window_lifetime_ready ? 1 : 0,
+         shadow.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         shadow.token_lifetime_key_ready ? 1 : 0,
+         shadow.provider_payload_runtime_lifetime_ready ? 1 : 0);
   fflush(stdout);
 }
 
@@ -17530,6 +18014,9 @@ static void rtcore_log_provider_decoded_input_observation(
          "bvh_format_profile_owner=%s, bvh_format_version=%u, "
          "bvh_format_profile_source=%s, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
+         "provider_payload_runtime_lifetime_ready=%u, "
+         "context_window_owner_seq_matches_lifetime=%u, "
+         "token_lifetime_key_ready=%u, "
          "provider_payload_consumption_owner_lifetime_blocked=%u, "
          "provider_decoded_input_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
@@ -17576,6 +18063,9 @@ static void rtcore_log_provider_decoded_input_observation(
              observation.bvh_format_profile_owner),
          observation.provider_consumed_input_fields_all_owned_with_lifetime ? 1
                                                                            : 0,
+         observation.provider_payload_runtime_lifetime_ready ? 1 : 0,
+         observation.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         observation.token_lifetime_key_ready ? 1 : 0,
          observation.provider_payload_consumption_owner_lifetime_blocked ? 1
                                                                          : 0);
   fflush(stdout);
@@ -17657,6 +18147,9 @@ static void rtcore_log_provider_payload_consumed_input_view(
          "bvh_format_profile_owner=%s, bvh_format_version=%u, "
          "bvh_format_profile_source=%s, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
+         "provider_payload_runtime_lifetime_ready=%u, "
+         "context_window_owner_seq_matches_lifetime=%u, "
+         "token_lifetime_key_ready=%u, "
          "provider_payload_consumed_input_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
@@ -17695,7 +18188,10 @@ static void rtcore_log_provider_payload_consumed_input_view(
          view.bvh_format_version,
          rtcore_decoded_input_field_source_label(
              view.bvh_format_profile_owner),
-         view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0);
+         view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
+         view.provider_payload_runtime_lifetime_ready ? 1 : 0,
+         view.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         view.token_lifetime_key_ready ? 1 : 0);
   fflush(stdout);
 }
 
@@ -17786,6 +18282,8 @@ struct rtcore_traversal_completion_event {
   rtcore_symbolic_rt_token_key token_key;
   rtcore_symbolic_rt_token_reservation_key reservation_key;
   rtcore_context_window_owner_seq_snapshot owner_seq_snapshot;
+  rtcore_driver_runtime_context_window_lifetime_bridge_snapshot
+      driver_runtime_context_window_lifetime_bridge_snapshot;
   rtcore_decoded_traversal_input_snapshot decoded_input_snapshot;
   rtcore_provider_facing_registry_payload_shadow registry_payload_shadow;
   unsigned long long context_ptr;
@@ -18026,7 +18524,10 @@ static bool rtcore_enqueue_pending_traversal_completion(
 bool rtcore_build_traversal_completion_event(
     const ptx_instruction *pI, ptx_thread_info *thread,
     unsigned long long context_ptr, unsigned long long handoff_window_base,
-    unsigned lane_slot_index, rtcore_traversal_completion_event *event) {
+    unsigned lane_slot_index,
+    const rtcore_runtime_context_window_allocation_record &allocation_record,
+    const rtcore_launch_allocation_lifetime_record *lifetime_record,
+    rtcore_traversal_completion_event *event) {
   if (event == NULL) {
     return false;
   }
@@ -18059,6 +18560,16 @@ bool rtcore_build_traversal_completion_event(
       event->context_ptr, event->handoff_window_base, event->lane_slot_index,
       event->warp_metadata, event->window_generation,
       event->completion_seq_low, event->resume_seq_low, event->window_tag);
+  event->driver_runtime_context_window_lifetime_bridge_snapshot =
+      rtcore_make_driver_runtime_context_window_lifetime_bridge_snapshot(
+          allocation_record, lifetime_record, event->owner_seq_snapshot,
+          event->token_key);
+  rtcore_log_driver_runtime_context_window_lifetime_bridge_snapshot(
+      pI, event->driver_runtime_context_window_lifetime_bridge_snapshot);
+  if (rtcore_fail_closed_on_driver_runtime_context_window_lifetime_bridge_snapshot(
+          pI, event->driver_runtime_context_window_lifetime_bridge_snapshot)) {
+    return false;
+  }
   event->decoded_input_snapshot = rtcore_make_decoded_traversal_input_snapshot(
       event->owner_seq_snapshot);
 
@@ -18130,7 +18641,8 @@ bool rtcore_build_traversal_completion_event(
   event->registry_payload_shadow =
       rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
           registry_publication_snapshot, registry_read_gate_result,
-          event->decoded_input_snapshot);
+          event->decoded_input_snapshot,
+          event->driver_runtime_context_window_lifetime_bridge_snapshot);
   rtcore_apply_provider_decoded_abi_authority_fault_to_registry_payload_shadow(
       pI, source_request, &event->registry_payload_shadow);
   rtcore_log_provider_facing_registry_payload_shadow_before_provider(
@@ -18142,7 +18654,7 @@ bool rtcore_build_traversal_completion_event(
   const rtcore_provider_decoded_input_observation
       provider_decoded_input_observation =
           rtcore_make_provider_decoded_input_observation(
-              event->decoded_input_snapshot);
+              registry_payload_shadow_sidecar);
   rtcore_traversal_source_snapshot source_snapshot =
       rtcore_make_traversal_source_snapshot(
           source_request, registry_payload_shadow_sidecar,
@@ -18320,12 +18832,14 @@ bool rtcore_complete_traversal_completion_event_token(
 void rtcore_traversal_completion_adapter_publish(
     const ptx_instruction *pI, ptx_thread_info *thread,
     const operand_info &result, unsigned long long context_ptr,
-    unsigned long long handoff_window_base) {
+    unsigned long long handoff_window_base,
+    const rtcore_runtime_context_window_allocation_record &allocation_record,
+    const rtcore_launch_allocation_lifetime_record *lifetime_record) {
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
   rtcore_traversal_completion_event event;
   if (!rtcore_build_traversal_completion_event(
           pI, thread, context_ptr, handoff_window_base, lane_slot_index,
-          &event)) {
+          allocation_record, lifetime_record, &event)) {
     inst_not_implemented(pI);
     return;
   }
@@ -18482,7 +18996,8 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
 
   rtcore_traversal_completion_adapter_publish(
-      pI, thread, result, context_ptr_data.u64, handoff_window_base_data.u64);
+      pI, thread, result, context_ptr_data.u64, handoff_window_base_data.u64,
+      allocation_record, lifetime_record);
 }
 
 void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
