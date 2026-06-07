@@ -12417,6 +12417,14 @@ static const char *rtcore_proxy_delegation_source_label() {
   return "proxy_delegation";
 }
 
+static const char *rtcore_top_level_as_proxy_resolve_adapter_source_label() {
+  return "top_level_as_proxy_resolve_adapter";
+}
+
+static const char *rtcore_top_level_as_proxy_token_source_label() {
+  return "vulkan_sim_traversal_proxy_table";
+}
+
 static bool rtcore_decoded_input_field_owner_has_lifetime(
     rtcore_decoded_input_field_owner_class owner) {
   return owner == RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME ||
@@ -17528,6 +17536,320 @@ rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
   decoded_input_snapshot->launch_context_input_owner = publication_owner;
 }
 
+struct rtcore_top_level_as_proxy_resolve_adapter_snapshot {
+  rtcore_top_level_as_proxy_resolve_adapter_snapshot()
+      : valid(false),
+        has_launch_context_top_level_as(false),
+        launch_context_top_level_as(0),
+        has_traversal_data_top_level_as(false),
+        traversal_data_top_level_as(0),
+        top_level_as_match(false),
+        has_proxy_token(false),
+        traversable_proxy_id(0),
+        root_proxy_id(0),
+        has_bvh_format_profile(false),
+        bvh_format_version(0),
+        resolve_adapter_gate_passed(false),
+        actual_abi_evidence_for_proxy_fields(false) {}
+
+  bool valid;
+  bool has_launch_context_top_level_as;
+  uint64_t launch_context_top_level_as;
+  bool has_traversal_data_top_level_as;
+  uint64_t traversal_data_top_level_as;
+  bool top_level_as_match;
+  bool has_proxy_token;
+  uint64_t traversable_proxy_id;
+  uint64_t root_proxy_id;
+  bool has_bvh_format_profile;
+  uint32_t bvh_format_version;
+  bool resolve_adapter_gate_passed;
+  bool actual_abi_evidence_for_proxy_fields;
+};
+
+enum rtcore_top_level_as_proxy_resolve_failpoint {
+  RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_NONE = 0,
+  RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_DROP_RESOLVE_METADATA,
+  RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_STALE_TOP_LEVEL_AS,
+  RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_DROP_PROXY_TOKEN,
+};
+
+static const char *rtcore_top_level_as_proxy_resolve_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT";
+}
+
+static rtcore_top_level_as_proxy_resolve_failpoint
+rtcore_top_level_as_proxy_resolve_failpoint_mode() {
+  const char *value =
+      getenv(rtcore_top_level_as_proxy_resolve_failpoint_env_name());
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "none") == 0) {
+    return RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "drop_resolve_metadata") == 0) {
+    return RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_DROP_RESOLVE_METADATA;
+  }
+  if (strcmp(value, "stale_top_level_as") == 0) {
+    return RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_STALE_TOP_LEVEL_AS;
+  }
+  if (strcmp(value, "drop_proxy_token") == 0) {
+    return RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_DROP_PROXY_TOKEN;
+  }
+  return RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_NONE;
+}
+
+static const char *rtcore_top_level_as_proxy_resolve_failpoint_name(
+    rtcore_top_level_as_proxy_resolve_failpoint mode) {
+  switch (mode) {
+    case RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_DROP_RESOLVE_METADATA:
+      return "drop_resolve_metadata";
+    case RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_STALE_TOP_LEVEL_AS:
+      return "stale_top_level_as";
+    case RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_DROP_PROXY_TOKEN:
+      return "drop_proxy_token";
+    case RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void rtcore_recompute_top_level_as_proxy_resolve_adapter_validity(
+    rtcore_top_level_as_proxy_resolve_adapter_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->resolve_adapter_gate_passed =
+      snapshot->has_launch_context_top_level_as &&
+      snapshot->has_traversal_data_top_level_as &&
+      snapshot->top_level_as_match && snapshot->has_proxy_token &&
+      snapshot->has_bvh_format_profile;
+  snapshot->valid = snapshot->resolve_adapter_gate_passed;
+  snapshot->actual_abi_evidence_for_proxy_fields = false;
+}
+
+static rtcore_top_level_as_proxy_resolve_adapter_snapshot
+rtcore_make_top_level_as_proxy_resolve_adapter_snapshot(
+    const rtcore_launch_context_input_publication_record
+        &launch_context_input_publication_record,
+    const rtcore_pre_provider_traversal_data_snapshot
+        &pre_provider_traversal_data_snapshot) {
+  rtcore_top_level_as_proxy_resolve_adapter_snapshot snapshot;
+  if (!rtcore_launch_context_input_publication_record_is_complete(
+          launch_context_input_publication_record) ||
+      !pre_provider_traversal_data_snapshot.valid) {
+    return snapshot;
+  }
+
+  const Traversal_data &traversal =
+      pre_provider_traversal_data_snapshot.traversal_snapshot;
+  snapshot.has_launch_context_top_level_as =
+      launch_context_input_publication_record.has_launch_context_input;
+  snapshot.launch_context_top_level_as =
+      launch_context_input_publication_record.bridge_trace_replay_top_level_as;
+  snapshot.has_traversal_data_top_level_as =
+      traversal.rtcore_trace_input_has_top_level_as != 0;
+  snapshot.traversal_data_top_level_as =
+      traversal.rtcore_trace_input_top_level_as;
+  snapshot.top_level_as_match =
+      snapshot.has_launch_context_top_level_as &&
+      snapshot.has_traversal_data_top_level_as &&
+      snapshot.launch_context_top_level_as ==
+          snapshot.traversal_data_top_level_as;
+  snapshot.traversable_proxy_id = traversal.rtcore_traversable_proxy_id;
+  snapshot.root_proxy_id = traversal.rtcore_root_proxy_id;
+  snapshot.has_proxy_token = snapshot.top_level_as_match &&
+                             snapshot.traversable_proxy_id != 0 &&
+                             snapshot.root_proxy_id != 0;
+  snapshot.bvh_format_version = RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  snapshot.has_bvh_format_profile = snapshot.top_level_as_match;
+  rtcore_recompute_top_level_as_proxy_resolve_adapter_validity(&snapshot);
+  return snapshot;
+}
+
+static void
+rtcore_apply_top_level_as_proxy_resolve_failpoint_to_adapter_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    rtcore_top_level_as_proxy_resolve_adapter_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  const rtcore_top_level_as_proxy_resolve_failpoint mode =
+      rtcore_top_level_as_proxy_resolve_failpoint_mode();
+  if (mode == RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_NONE) {
+    return;
+  }
+
+  bool drop_resolve_metadata = false;
+  bool stale_top_level_as = false;
+  bool drop_proxy_token = false;
+  switch (mode) {
+    case RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_DROP_RESOLVE_METADATA:
+      snapshot->has_traversal_data_top_level_as = false;
+      snapshot->traversal_data_top_level_as = 0;
+      snapshot->top_level_as_match = false;
+      snapshot->has_proxy_token = false;
+      snapshot->has_bvh_format_profile = false;
+      drop_resolve_metadata = true;
+      break;
+    case RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_STALE_TOP_LEVEL_AS:
+      snapshot->traversal_data_top_level_as =
+          snapshot->launch_context_top_level_as ^ 0x1000ULL;
+      if (snapshot->traversal_data_top_level_as ==
+          snapshot->launch_context_top_level_as) {
+        snapshot->traversal_data_top_level_as =
+            snapshot->launch_context_top_level_as + 1;
+      }
+      snapshot->has_traversal_data_top_level_as = true;
+      snapshot->top_level_as_match = false;
+      snapshot->has_proxy_token = false;
+      snapshot->has_bvh_format_profile = false;
+      stale_top_level_as = true;
+      break;
+    case RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_DROP_PROXY_TOKEN:
+      snapshot->has_proxy_token = false;
+      snapshot->traversable_proxy_id = 0;
+      snapshot->root_proxy_id = 0;
+      drop_proxy_token = true;
+      break;
+    case RTCORE_TOP_LEVEL_AS_PROXY_RESOLVE_FAILPOINT_NONE:
+    default:
+      return;
+  }
+  rtcore_recompute_top_level_as_proxy_resolve_adapter_validity(snapshot);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "top-level-as-proxy-resolve-failpoint=1, "
+         "failpoint=%s, mode=%s, provider=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, adapter_source=%s, proxy_token_source=%s, "
+         "drop_resolve_metadata=%u, stale_top_level_as=%u, "
+         "drop_proxy_token=%u, launch_context_top_level_as=0x%llx, "
+         "traversal_data_top_level_as=0x%llx, top_level_as_match=%u, "
+         "resolve_adapter_gate_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_top_level_as_proxy_resolve_failpoint_name(mode),
+         rtcore_top_level_as_proxy_resolve_failpoint_name(mode),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index,
+         rtcore_top_level_as_proxy_resolve_adapter_source_label(),
+         rtcore_top_level_as_proxy_token_source_label(),
+         drop_resolve_metadata ? 1 : 0, stale_top_level_as ? 1 : 0,
+         drop_proxy_token ? 1 : 0,
+         (unsigned long long)snapshot->launch_context_top_level_as,
+         (unsigned long long)snapshot->traversal_data_top_level_as,
+         snapshot->top_level_as_match ? 1 : 0,
+         snapshot->resolve_adapter_gate_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static void rtcore_log_top_level_as_proxy_resolve_adapter_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_top_level_as_proxy_resolve_adapter_snapshot &snapshot) {
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "top-level-as-proxy-resolve-adapter=1, "
+         "adapter_source=%s, proxy_token_source=%s, provider=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, valid=%u, "
+         "has_launch_context_top_level_as=%u, "
+         "launch_context_top_level_as=0x%llx, "
+         "has_traversal_data_top_level_as=%u, "
+         "traversal_data_top_level_as=0x%llx, top_level_as_match=%u, "
+         "has_proxy_token=%u, has_traversable_root_proxy=%u, "
+         "traversable_proxy_id=0x%llx, root_proxy_id=0x%llx, "
+         "has_bvh_format_profile=%u, bvh_format_version=%u, "
+         "proxy_delegation_source=%s, resolve_adapter_gate_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_top_level_as_proxy_resolve_adapter_source_label(),
+         rtcore_top_level_as_proxy_token_source_label(),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index, snapshot.valid ? 1 : 0,
+         snapshot.has_launch_context_top_level_as ? 1 : 0,
+         (unsigned long long)snapshot.launch_context_top_level_as,
+         snapshot.has_traversal_data_top_level_as ? 1 : 0,
+         (unsigned long long)snapshot.traversal_data_top_level_as,
+         snapshot.top_level_as_match ? 1 : 0,
+         snapshot.has_proxy_token ? 1 : 0,
+         snapshot.has_proxy_token ? 1 : 0,
+         (unsigned long long)snapshot.traversable_proxy_id,
+         (unsigned long long)snapshot.root_proxy_id,
+         snapshot.has_bvh_format_profile ? 1 : 0,
+         snapshot.bvh_format_version, rtcore_proxy_delegation_source_label(),
+         snapshot.resolve_adapter_gate_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static bool
+rtcore_fail_closed_on_top_level_as_proxy_resolve_adapter_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_top_level_as_proxy_resolve_adapter_snapshot &snapshot) {
+  if (snapshot.valid) {
+    return false;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=TOP_LEVEL_AS_PROXY_RESOLVE_NOT_READY, "
+         "adapter_source=%s, proxy_token_source=%s, provider=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, valid=%u, "
+         "has_launch_context_top_level_as=%u, "
+         "launch_context_top_level_as=0x%llx, "
+         "has_traversal_data_top_level_as=%u, "
+         "traversal_data_top_level_as=0x%llx, top_level_as_match=%u, "
+         "has_proxy_token=%u, has_bvh_format_profile=%u, "
+         "resolve_adapter_gate_passed=%u, "
+         "before_registry_payload_shadow=1, "
+         "before_provider_consumed_input=1, before_backend_input_route=1, "
+         "before_traversal_completion=1, before_completion_release=1, "
+         "actual_abi_evidence_for_proxy_fields=0\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0,
+         rtcore_top_level_as_proxy_resolve_adapter_source_label(),
+         rtcore_top_level_as_proxy_token_source_label(),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index, snapshot.valid ? 1 : 0,
+         snapshot.has_launch_context_top_level_as ? 1 : 0,
+         (unsigned long long)snapshot.launch_context_top_level_as,
+         snapshot.has_traversal_data_top_level_as ? 1 : 0,
+         (unsigned long long)snapshot.traversal_data_top_level_as,
+         snapshot.top_level_as_match ? 1 : 0,
+         snapshot.has_proxy_token ? 1 : 0,
+         snapshot.has_bvh_format_profile ? 1 : 0,
+         snapshot.resolve_adapter_gate_passed ? 1 : 0);
+  fflush(stdout);
+  return true;
+}
+
+static void
+rtcore_apply_top_level_as_proxy_resolve_adapter_snapshot_to_decoded_snapshot(
+    rtcore_decoded_traversal_input_snapshot *decoded_input_snapshot,
+    const rtcore_top_level_as_proxy_resolve_adapter_snapshot &snapshot) {
+  if (decoded_input_snapshot == NULL || !snapshot.valid) {
+    return;
+  }
+  decoded_input_snapshot->traversable_proxy_id = snapshot.traversable_proxy_id;
+  decoded_input_snapshot->root_proxy_id = snapshot.root_proxy_id;
+  decoded_input_snapshot->has_traversable_root_proxy = snapshot.has_proxy_token;
+  decoded_input_snapshot->traversable_root_proxy_owner =
+      snapshot.has_proxy_token ? RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY
+                               : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+  decoded_input_snapshot->bvh_format_version = snapshot.bvh_format_version;
+  decoded_input_snapshot->has_bvh_format_version =
+      snapshot.has_bvh_format_profile;
+  decoded_input_snapshot->bvh_format_profile_owner =
+      snapshot.has_bvh_format_profile
+          ? RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY
+          : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+}
+
 struct rtcore_default_compiler_driver_publication_route_record {
   rtcore_default_compiler_driver_publication_route_record()
       : publication_enabled(false),
@@ -17540,6 +17862,8 @@ struct rtcore_default_compiler_driver_publication_route_record {
         runtime_context_window_source("unavailable"),
         proxy_fields_source("unavailable"),
         proxy_delegation_source("unavailable"),
+        top_level_as_proxy_resolve_adapter_source("unavailable"),
+        proxy_token_source("unavailable"),
         source_publication_seq(0),
         source_owner_tuple_match(false),
         has_source_context_window_key(false),
@@ -17559,6 +17883,7 @@ struct rtcore_default_compiler_driver_publication_route_record {
         proxy_fields_complete(false),
         proxy_delegation_gate_required(false),
         proxy_delegation_gate_passed(false),
+        top_level_as_proxy_resolve_adapter_gate_passed(false),
         proxy_fields_actual_abi_evidence(false),
         provider_consumption_policy_enabled(false),
         provider_consumption_default_disabled(true) {}
@@ -17573,6 +17898,8 @@ struct rtcore_default_compiler_driver_publication_route_record {
   const char *runtime_context_window_source;
   const char *proxy_fields_source;
   const char *proxy_delegation_source;
+  const char *top_level_as_proxy_resolve_adapter_source;
+  const char *proxy_token_source;
   unsigned long long source_publication_seq;
   bool source_owner_tuple_match;
   bool has_source_context_window_key;
@@ -17591,6 +17918,7 @@ struct rtcore_default_compiler_driver_publication_route_record {
   bool proxy_fields_complete;
   bool proxy_delegation_gate_required;
   bool proxy_delegation_gate_passed;
+  bool top_level_as_proxy_resolve_adapter_gate_passed;
   bool proxy_fields_actual_abi_evidence;
   bool provider_consumption_policy_enabled;
   bool provider_consumption_default_disabled;
@@ -17656,6 +17984,9 @@ rtcore_make_default_compiler_driver_publication_route_record(
   record.runtime_context_window_source = "driver_runtime";
   record.proxy_fields_source = "simulator_proxy";
   record.proxy_delegation_source = rtcore_proxy_delegation_source_label();
+  record.top_level_as_proxy_resolve_adapter_source =
+      rtcore_top_level_as_proxy_resolve_adapter_source_label();
+  record.proxy_token_source = rtcore_top_level_as_proxy_token_source_label();
   record.proxy_delegation_gate_required = true;
   record.compiler_fields_complete =
       compiler_driver_source &&
@@ -17691,6 +18022,8 @@ rtcore_make_default_compiler_driver_publication_route_record(
           decoded_input_snapshot.has_bvh_format_version,
           decoded_input_snapshot.bvh_format_profile_owner);
   record.proxy_delegation_gate_passed = record.proxy_fields_complete;
+  record.top_level_as_proxy_resolve_adapter_gate_passed =
+      record.proxy_fields_complete && record.has_launch_context_input;
   record.proxy_fields_actual_abi_evidence = false;
   record.valid = record.compiler_fields_complete &&
                  record.runtime_context_window_complete &&
@@ -17717,6 +18050,9 @@ static void rtcore_log_default_compiler_driver_publication_route_record(
          "runtime_context_window_source=%s, proxy_fields_source=%s, "
          "proxy_delegation_source=%s, proxy_delegation_gate_required=%u, "
          "proxy_delegation_gate_passed=%u, "
+         "top_level_as_proxy_resolve_adapter_source=%s, "
+         "proxy_token_source=%s, "
+         "top_level_as_proxy_resolve_adapter_gate_passed=%u, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, source_publication_seq=%llu, "
@@ -17738,6 +18074,9 @@ static void rtcore_log_default_compiler_driver_publication_route_record(
          record.proxy_delegation_source,
          record.proxy_delegation_gate_required ? 1 : 0,
          record.proxy_delegation_gate_passed ? 1 : 0,
+         record.top_level_as_proxy_resolve_adapter_source,
+         record.proxy_token_source,
+         record.top_level_as_proxy_resolve_adapter_gate_passed ? 1 : 0,
          record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.source_publication_seq,
          record.source_owner_tuple_match ? 1 : 0,
@@ -17796,6 +18135,9 @@ rtcore_fail_closed_on_default_compiler_driver_publication_route_record(
          "proxy_fields_complete=%u, proxy_delegation_source=%s, "
          "proxy_delegation_gate_required=%u, "
          "proxy_delegation_gate_passed=%u, "
+         "top_level_as_proxy_resolve_adapter_source=%s, "
+         "proxy_token_source=%s, "
+         "top_level_as_proxy_resolve_adapter_gate_passed=%u, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "provider_consumption_default_disabled=%u, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -17811,6 +18153,9 @@ rtcore_fail_closed_on_default_compiler_driver_publication_route_record(
          record.proxy_fields_complete ? 1 : 0, record.proxy_delegation_source,
          record.proxy_delegation_gate_required ? 1 : 0,
          record.proxy_delegation_gate_passed ? 1 : 0,
+         record.top_level_as_proxy_resolve_adapter_source,
+         record.proxy_token_source,
+         record.top_level_as_proxy_resolve_adapter_gate_passed ? 1 : 0,
          record.provider_consumption_default_disabled ? 1 : 0,
          record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.source_publication_seq,
@@ -18823,18 +19168,32 @@ bool rtcore_build_traversal_completion_event(
               source_request, event->owner_seq_snapshot,
               pre_provider_traversal_data_snapshot);
   if (launch_context_input_publication_record.publication_enabled) {
+    rtcore_log_launch_context_input_publication_record(
+        pI, launch_context_input_publication_record);
     if (rtcore_launch_context_input_publication_record_is_complete(
             launch_context_input_publication_record)) {
       rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
           &event->decoded_input_snapshot,
           launch_context_input_publication_record);
-      rtcore_update_decoded_traversal_input_proxy_profile_from_pre_provider_snapshot(
-          &event->decoded_input_snapshot, pre_provider_traversal_data_snapshot);
+      rtcore_top_level_as_proxy_resolve_adapter_snapshot
+          top_level_as_proxy_resolve_adapter_snapshot =
+              rtcore_make_top_level_as_proxy_resolve_adapter_snapshot(
+                  launch_context_input_publication_record,
+                  pre_provider_traversal_data_snapshot);
+      rtcore_apply_top_level_as_proxy_resolve_failpoint_to_adapter_snapshot(
+          pI, source_request, &top_level_as_proxy_resolve_adapter_snapshot);
+      rtcore_log_top_level_as_proxy_resolve_adapter_snapshot(
+          pI, source_request, top_level_as_proxy_resolve_adapter_snapshot);
+      if (rtcore_fail_closed_on_top_level_as_proxy_resolve_adapter_snapshot(
+              pI, source_request, top_level_as_proxy_resolve_adapter_snapshot)) {
+        return false;
+      }
+      rtcore_apply_top_level_as_proxy_resolve_adapter_snapshot_to_decoded_snapshot(
+          &event->decoded_input_snapshot,
+          top_level_as_proxy_resolve_adapter_snapshot);
       rtcore_apply_proxy_delegation_failpoint_to_decoded_snapshot(
           pI, source_request, &event->decoded_input_snapshot);
     }
-    rtcore_log_launch_context_input_publication_record(
-        pI, launch_context_input_publication_record);
     rtcore_default_compiler_driver_publication_route_record
         default_publication_route_record =
             rtcore_make_default_compiler_driver_publication_route_record(
