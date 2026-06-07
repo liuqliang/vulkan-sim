@@ -152,11 +152,111 @@ rtcore_scheduler_credit_ledger_reusable_credit_issue_gate_preflight_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+enum rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy {
+  rtcore_scheduler_bridge_policy_opt_in,
+  rtcore_scheduler_bridge_policy_force_off,
+  rtcore_scheduler_bridge_policy_default_on_unsupported,
+};
+
+static const char *
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_env() {
+  return getenv(
+      "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_REUSABLE_CREDIT_SCHEDULER_BRIDGE_POLICY");
+}
+
+static bool
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_explicit() {
+  const char *value =
+      rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_env();
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_value() {
+  const char *value =
+      rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_env();
+  if (value == NULL || *value == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "opt_in") == 0) {
+    return rtcore_scheduler_bridge_policy_opt_in;
+  }
+  if (strcmp(value, "force_off") == 0) {
+    return rtcore_scheduler_bridge_policy_force_off;
+  }
+  if (strcmp(value, "default_on") == 0) {
+    return rtcore_scheduler_bridge_policy_default_on_unsupported;
+  }
+  return rtcore_scheduler_bridge_policy_force_off;
+}
+
+static const char *
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_name(
+    rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy
+        policy) {
+  switch (policy) {
+    case rtcore_scheduler_bridge_policy_force_off:
+      return "force_off";
+    case rtcore_scheduler_bridge_policy_default_on_unsupported:
+      return "default_on";
+    case rtcore_scheduler_bridge_policy_opt_in:
+    default:
+      return "opt_in";
+  }
+}
+
+static const char *
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_result(
+    rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy
+        policy) {
+  switch (policy) {
+    case rtcore_scheduler_bridge_policy_force_off:
+      return "scheduler_bridge_policy_force_off";
+    case rtcore_scheduler_bridge_policy_default_on_unsupported:
+      return "scheduler_bridge_policy_default_on_unsupported";
+    case rtcore_scheduler_bridge_policy_opt_in:
+    default:
+      return "scheduler_bridge_policy_opt_in";
+  }
+}
+
+static void
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_log_once(
+    rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy
+        policy,
+    bool legacy_bridge_env_enabled, bool bridge_enabled) {
+  static bool policy_logged = false;
+  if (policy_logged ||
+      !rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_explicit()) {
+    return;
+  }
+  policy_logged = true;
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "scheduler-credit-ledger-reusable-credit-scheduler-bridge-policy=1, "
+         "policy=%s, legacy_bridge_env_enabled=%u, bridge_enabled=%u, "
+         "policy_result=%s, transition_reason=reusable_credit_scheduler_bridge_policy\n",
+         rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_name(
+             policy),
+         legacy_bridge_env_enabled ? 1 : 0, bridge_enabled ? 1 : 0,
+         rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_result(
+             policy));
+  fflush(stdout);
+}
+
 static bool
 rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_enabled() {
+  const rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy
+      policy =
+          rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_value();
+  const bool policy_force_off =
+      policy == rtcore_scheduler_bridge_policy_force_off ||
+      policy == rtcore_scheduler_bridge_policy_default_on_unsupported;
   const char *value = getenv(
       "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_REUSABLE_CREDIT_SCHEDULER_BRIDGE");
-  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  const bool legacy_bridge_env_enabled =
+      value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  const bool bridge_enabled = !policy_force_off && legacy_bridge_env_enabled;
+  rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_log_once(
+      policy, legacy_bridge_env_enabled, bridge_enabled);
+  return bridge_enabled;
 }
 
 static bool
