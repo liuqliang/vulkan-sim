@@ -14067,6 +14067,8 @@ rtcore_log_compiler_driver_runtime_consumption_readiness_record(
 
 static bool
 rtcore_provider_decoded_abi_authority_owner_lifetime_blocked_fault_enabled();
+static bool rtcore_provider_decoded_abi_authority_fault_enabled();
+static const char *rtcore_provider_decoded_abi_authority_fault_name();
 
 static void
 rtcore_annotate_provider_response_with_registry_payload_observation(
@@ -14075,7 +14077,7 @@ rtcore_annotate_provider_response_with_registry_payload_observation(
 
 static bool rtcore_provider_decoded_abi_authority_rejection_required(
     const rtcore_traversal_work_descriptor &descriptor) {
-  if (!rtcore_provider_decoded_abi_authority_owner_lifetime_blocked_fault_enabled()) {
+  if (!rtcore_provider_decoded_abi_authority_fault_enabled()) {
     return false;
   }
   if (!descriptor.has_registry_payload_shadow) {
@@ -14101,6 +14103,7 @@ rtcore_make_provider_decoded_abi_authority_rejected_response(
          "provider_backend_dispatch_skipped=1, "
          "provider_payload_consumption_enabled=%u, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
+         "fault=%s, provider_decoded_abi_authority_fault_kind=%s, "
          "reject_reason=%s, "
          "provider_decoded_abi_authority_rejection_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
@@ -14112,6 +14115,8 @@ rtcore_make_provider_decoded_abi_authority_rejected_response(
                  .provider_consumed_input_fields_all_owned_with_lifetime
              ? 1
              : 0,
+         rtcore_provider_decoded_abi_authority_fault_name(),
+         rtcore_provider_decoded_abi_authority_fault_name(),
          rtcore_traversal_provider_reject_reason_name(response.reject_reason));
   fflush(stdout);
   return response;
@@ -15392,32 +15397,90 @@ static const char *rtcore_provider_decoded_abi_authority_fault_env_name() {
   return "VULKAN_SIM_RTCORE_TEST_PROVIDER_DECODED_ABI_AUTHORITY_FAULT";
 }
 
+enum rtcore_provider_decoded_abi_authority_fault_kind_t {
+  RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_NONE = 0,
+  RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_RAY_INPUT_OWNER_BLOCKED,
+  RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_LAUNCH_CONTEXT_OWNER_BLOCKED,
+  RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_PROXY_OWNER_BLOCKED,
+  RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_UNSUPPORTED
+};
+
+static const char *
+rtcore_provider_decoded_abi_authority_fault_ray_input_owner_blocked_name() {
+  return "ray_input_owner_blocked";
+}
+
+static const char *
+rtcore_provider_decoded_abi_authority_fault_launch_context_owner_blocked_name() {
+  return "launch_context_owner_blocked";
+}
+
+static const char *
+rtcore_provider_decoded_abi_authority_fault_proxy_owner_blocked_name() {
+  return "proxy_owner_blocked";
+}
+
 static const char *
 rtcore_provider_decoded_abi_authority_fault_owner_lifetime_blocked_name() {
   return "owner_lifetime_blocked";
 }
 
-static const char *rtcore_provider_decoded_abi_authority_fault_name() {
+static rtcore_provider_decoded_abi_authority_fault_kind_t
+rtcore_get_provider_decoded_abi_authority_fault_kind() {
   const char *value =
       getenv(rtcore_provider_decoded_abi_authority_fault_env_name());
   if (value == NULL || value[0] == '\0' ||
       rtcore_path_mode_is(value, "none") ||
       rtcore_rt_env_value_is_explicit_false(value)) {
-    return "none";
+    return RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_NONE;
   }
   if (rtcore_path_mode_is(
           value,
+          rtcore_provider_decoded_abi_authority_fault_ray_input_owner_blocked_name())) {
+    return RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_RAY_INPUT_OWNER_BLOCKED;
+  }
+  if (rtcore_path_mode_is(
+          value,
+          rtcore_provider_decoded_abi_authority_fault_launch_context_owner_blocked_name()) ||
+      rtcore_path_mode_is(value,
           rtcore_provider_decoded_abi_authority_fault_owner_lifetime_blocked_name()) ||
       rtcore_rt_env_value_is_explicit_true(value)) {
-    return rtcore_provider_decoded_abi_authority_fault_owner_lifetime_blocked_name();
+    return RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_LAUNCH_CONTEXT_OWNER_BLOCKED;
   }
-  return "unsupported";
+  if (rtcore_path_mode_is(
+          value,
+          rtcore_provider_decoded_abi_authority_fault_proxy_owner_blocked_name())) {
+    return RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_PROXY_OWNER_BLOCKED;
+  }
+  return RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_UNSUPPORTED;
+}
+
+static const char *rtcore_provider_decoded_abi_authority_fault_name() {
+  switch (rtcore_get_provider_decoded_abi_authority_fault_kind()) {
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_RAY_INPUT_OWNER_BLOCKED:
+      return rtcore_provider_decoded_abi_authority_fault_ray_input_owner_blocked_name();
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_LAUNCH_CONTEXT_OWNER_BLOCKED:
+      return rtcore_provider_decoded_abi_authority_fault_launch_context_owner_blocked_name();
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_PROXY_OWNER_BLOCKED:
+      return rtcore_provider_decoded_abi_authority_fault_proxy_owner_blocked_name();
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_UNSUPPORTED:
+      return "unsupported";
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static bool rtcore_provider_decoded_abi_authority_fault_enabled() {
+  const rtcore_provider_decoded_abi_authority_fault_kind_t fault_kind =
+      rtcore_get_provider_decoded_abi_authority_fault_kind();
+  return fault_kind != RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_NONE &&
+         fault_kind != RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_UNSUPPORTED;
 }
 
 static bool
 rtcore_provider_decoded_abi_authority_owner_lifetime_blocked_fault_enabled() {
-  return strcmp(rtcore_provider_decoded_abi_authority_fault_name(),
-                rtcore_provider_decoded_abi_authority_fault_owner_lifetime_blocked_name()) == 0;
+  return rtcore_provider_decoded_abi_authority_fault_enabled();
 }
 
 static bool rtcore_provider_payload_consumption_default_custom_path() {
@@ -17290,24 +17353,57 @@ rtcore_apply_provider_decoded_abi_authority_fault_to_registry_payload_shadow(
     const ptx_instruction *pI,
     const rtcore_traversal_source_request &source_request,
     rtcore_provider_facing_registry_payload_shadow *shadow) {
-  if (!rtcore_provider_decoded_abi_authority_owner_lifetime_blocked_fault_enabled() ||
+  const rtcore_provider_decoded_abi_authority_fault_kind_t fault_kind =
+      rtcore_get_provider_decoded_abi_authority_fault_kind();
+  if (!rtcore_provider_decoded_abi_authority_fault_enabled() ||
       shadow == NULL || !shadow->valid) {
     return;
   }
 
-  shadow->launch_context_input_owner = RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+  bool ray_owner_forced_invalid = false;
+  bool launch_context_owner_forced_invalid = false;
+  bool proxy_owner_forced_invalid = false;
+  switch (fault_kind) {
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_RAY_INPUT_OWNER_BLOCKED:
+      shadow->ray_origin_direction_tmin_tmax_owner =
+          RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+      ray_owner_forced_invalid = true;
+      break;
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_LAUNCH_CONTEXT_OWNER_BLOCKED:
+      shadow->launch_context_input_owner = RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+      launch_context_owner_forced_invalid = true;
+      break;
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_PROXY_OWNER_BLOCKED:
+      shadow->traversable_root_proxy_owner =
+          RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+      shadow->bvh_format_profile_owner = RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+      proxy_owner_forced_invalid = true;
+      break;
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_NONE:
+    case RTCORE_PROVIDER_DECODED_ABI_AUTHORITY_FAULT_UNSUPPORTED:
+    default:
+      return;
+  }
   shadow->provider_consumed_input_fields_all_owned_with_lifetime = false;
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "provider-decoded-abi-authority-fault=1, "
-         "fault=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "fault=%s, provider_decoded_abi_authority_fault_kind=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
          "provider_decoded_abi_owner_lifetime_forced_invalid=1, "
+         "provider_decoded_abi_ray_owner_forced_invalid=%u, "
+         "provider_decoded_abi_launch_context_owner_forced_invalid=%u, "
+         "provider_decoded_abi_proxy_owner_forced_invalid=%u, "
          "provider_decoded_abi_authority_fault_consumes_traversal_behavior=0 "
          "(%s:%u)\n",
+         rtcore_provider_decoded_abi_authority_fault_name(),
          rtcore_provider_decoded_abi_authority_fault_name(),
          source_request.context_ptr, source_request.handoff_window_base,
          source_request.lane_slot_index, source_request.warp_metadata.warp_uid,
          source_request.warp_metadata.active_mask,
+         ray_owner_forced_invalid ? 1 : 0,
+         launch_context_owner_forced_invalid ? 1 : 0,
+         proxy_owner_forced_invalid ? 1 : 0,
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0);
   fflush(stdout);
