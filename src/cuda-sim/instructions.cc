@@ -12681,7 +12681,8 @@ enum rtcore_traversal_provider_reject_reason {
   RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED = 1,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED = 2,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING = 3,
-  RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING = 4
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING = 4,
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_DECODED_ABI_AUTHORITY = 5
 };
 
 static const char *rtcore_traversal_provider_reject_reason_name(
@@ -12691,6 +12692,8 @@ static const char *rtcore_traversal_provider_reject_reason_name(
       return "RTCORE_TRAVERSAL_PROVIDER_ACCEPTED_PAYLOAD_MISSING";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING:
       return "RTCORE_TRAVERSAL_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING";
+    case RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_DECODED_ABI_AUTHORITY:
+      return "RTCORE_TRAVERSAL_PROVIDER_DECODED_ABI_AUTHORITY_REJECTED";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED:
       return "RTCORE_TRAVERSAL_PROVIDER_WORK_DESCRIPTOR_REJECTED";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED:
@@ -14000,10 +14003,57 @@ static void
 rtcore_log_compiler_driver_runtime_consumption_readiness_record(
     const rtcore_traversal_work_descriptor &descriptor);
 
+static bool
+rtcore_provider_decoded_abi_authority_owner_lifetime_blocked_fault_enabled();
+
 static void
 rtcore_annotate_provider_response_with_registry_payload_observation(
     rtcore_traversal_provider_response *response,
     const rtcore_traversal_work_descriptor &descriptor);
+
+static bool rtcore_provider_decoded_abi_authority_rejection_required(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  if (!rtcore_provider_decoded_abi_authority_owner_lifetime_blocked_fault_enabled()) {
+    return false;
+  }
+  if (!descriptor.has_registry_payload_shadow) {
+    return false;
+  }
+  return !descriptor.provider_payload_consumption_enabled;
+}
+
+static rtcore_traversal_provider_response
+rtcore_make_provider_decoded_abi_authority_rejected_response(
+    const rtcore_traversal_work_descriptor &descriptor) {
+  rtcore_traversal_provider_response response;
+  response.provider = descriptor.provider;
+  response.provider_supported = true;
+  response.provider_accepted = false;
+  response.reject_reason =
+      RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_DECODED_ABI_AUTHORITY;
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "provider-decoded-abi-authority-readiness-negative=1, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "provider_decoded_abi_authority_rejected=1, "
+         "provider_backend_dispatch_skipped=1, "
+         "provider_payload_consumption_enabled=%u, "
+         "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
+         "reject_reason=%s, "
+         "provider_decoded_abi_authority_rejection_consumes_traversal_behavior=0\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
+         descriptor.warp_metadata.active_mask,
+         descriptor.provider_payload_consumption_enabled ? 1 : 0,
+         descriptor.provider_payload_consumed_input
+                 .provider_consumed_input_fields_all_owned_with_lifetime
+             ? 1
+             : 0,
+         rtcore_traversal_provider_reject_reason_name(response.reject_reason));
+  fflush(stdout);
+  return response;
+}
 
 static rtcore_traversal_provider_response
 rtcore_invoke_rtcore_provider_bridge(
@@ -14033,6 +14083,11 @@ rtcore_invoke_rtcore_provider_bridge(
   rtcore_log_provider_decoded_input_observation(descriptor);
   rtcore_log_provider_payload_consumed_input_view(descriptor);
   rtcore_log_provider_side_registry_payload_shadow_diagnostic_read(descriptor);
+
+  if (rtcore_provider_decoded_abi_authority_rejection_required(descriptor)) {
+    return rtcore_make_provider_decoded_abi_authority_rejected_response(
+        descriptor);
+  }
 
   rtcore_traversal_provider_response response;
   switch (descriptor.provider) {
@@ -15269,6 +15324,38 @@ rtcore_get_provider_payload_consumption_evidence_source() {
 static bool rtcore_provider_payload_consumption_uses_runtime_evidence() {
   return rtcore_get_provider_payload_consumption_evidence_source() ==
          RTCORE_PROVIDER_PAYLOAD_CONSUMPTION_EVIDENCE_SOURCE_RUNTIME_SHADOW;
+}
+
+static const char *rtcore_provider_decoded_abi_authority_fault_env_name() {
+  return "VULKAN_SIM_RTCORE_TEST_PROVIDER_DECODED_ABI_AUTHORITY_FAULT";
+}
+
+static const char *
+rtcore_provider_decoded_abi_authority_fault_owner_lifetime_blocked_name() {
+  return "owner_lifetime_blocked";
+}
+
+static const char *rtcore_provider_decoded_abi_authority_fault_name() {
+  const char *value =
+      getenv(rtcore_provider_decoded_abi_authority_fault_env_name());
+  if (value == NULL || value[0] == '\0' ||
+      rtcore_path_mode_is(value, "none") ||
+      rtcore_rt_env_value_is_explicit_false(value)) {
+    return "none";
+  }
+  if (rtcore_path_mode_is(
+          value,
+          rtcore_provider_decoded_abi_authority_fault_owner_lifetime_blocked_name()) ||
+      rtcore_rt_env_value_is_explicit_true(value)) {
+    return rtcore_provider_decoded_abi_authority_fault_owner_lifetime_blocked_name();
+  }
+  return "unsupported";
+}
+
+static bool
+rtcore_provider_decoded_abi_authority_owner_lifetime_blocked_fault_enabled() {
+  return strcmp(rtcore_provider_decoded_abi_authority_fault_name(),
+                rtcore_provider_decoded_abi_authority_fault_owner_lifetime_blocked_name()) == 0;
 }
 
 static bool rtcore_provider_payload_consumption_default_custom_path() {
@@ -17137,6 +17224,34 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
 }
 
 static void
+rtcore_apply_provider_decoded_abi_authority_fault_to_registry_payload_shadow(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    rtcore_provider_facing_registry_payload_shadow *shadow) {
+  if (!rtcore_provider_decoded_abi_authority_owner_lifetime_blocked_fault_enabled() ||
+      shadow == NULL || !shadow->valid) {
+    return;
+  }
+
+  shadow->launch_context_input_owner = RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+  shadow->provider_consumed_input_fields_all_owned_with_lifetime = false;
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "provider-decoded-abi-authority-fault=1, "
+         "fault=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "provider_decoded_abi_owner_lifetime_forced_invalid=1, "
+         "provider_decoded_abi_authority_fault_consumes_traversal_behavior=0 "
+         "(%s:%u)\n",
+         rtcore_provider_decoded_abi_authority_fault_name(),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index, source_request.warp_metadata.warp_uid,
+         source_request.warp_metadata.active_mask,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static void
 rtcore_log_provider_facing_registry_payload_shadow_before_provider(
     const ptx_instruction *pI,
     const rtcore_traversal_source_request &source_request,
@@ -17781,6 +17896,8 @@ bool rtcore_build_traversal_completion_event(
       rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
           registry_publication_snapshot, registry_read_gate_result,
           event->decoded_input_snapshot);
+  rtcore_apply_provider_decoded_abi_authority_fault_to_registry_payload_shadow(
+      pI, source_request, &event->registry_payload_shadow);
   rtcore_log_provider_facing_registry_payload_shadow_before_provider(
       pI, source_request, event->registry_payload_shadow);
   const rtcore_provider_facing_registry_payload_shadow
