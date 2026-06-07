@@ -12413,6 +12413,10 @@ static const char *rtcore_decoded_input_field_source_label(
   }
 }
 
+static const char *rtcore_proxy_delegation_source_label() {
+  return "proxy_delegation";
+}
+
 static bool rtcore_decoded_input_field_owner_has_lifetime(
     rtcore_decoded_input_field_owner_class owner) {
   return owner == RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME ||
@@ -12446,6 +12450,18 @@ static bool rtcore_decoded_input_fields_all_owned_with_lifetime(
          has_bvh_format_profile &&
          rtcore_decoded_input_field_owner_has_lifetime(
              bvh_format_profile_owner);
+}
+
+static bool rtcore_proxy_delegation_gate_passed_for_proxy_fields(
+    bool has_traversable_root_proxy,
+    rtcore_decoded_input_field_owner_class traversable_root_proxy_owner,
+    bool has_bvh_format_profile,
+    rtcore_decoded_input_field_owner_class bvh_format_profile_owner) {
+  return has_traversable_root_proxy &&
+         traversable_root_proxy_owner ==
+             RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY &&
+         has_bvh_format_profile &&
+         bvh_format_profile_owner == RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
 }
 
 struct rtcore_provider_payload_consumed_input_view {
@@ -13220,6 +13236,8 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "ray_flags_cull_mask_source=%s, launch_context_input_source=%s, "
          "traversable_root_proxy_owner=%s, bvh_format_profile_owner=%s, "
          "traversable_root_proxy_source=%s, bvh_format_profile_source=%s, "
+         "proxy_delegation_source=%s, proxy_delegation_gate_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0, "
          "existing_traversal_input_replay_requested=%u, "
          "existing_traversal_request_replay_live_input_match=%u, "
          "provider_backend_input_consumption_route_passed=%u, "
@@ -13262,6 +13280,12 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
              record.traversable_root_proxy_owner),
          rtcore_decoded_input_field_source_label(
              record.bvh_format_profile_owner),
+         rtcore_proxy_delegation_source_label(),
+         rtcore_proxy_delegation_gate_passed_for_proxy_fields(
+             true, record.traversable_root_proxy_owner, true,
+             record.bvh_format_profile_owner)
+             ? 1
+             : 0,
          record.existing_traversal_input_replay_requested ? 1 : 0,
          record.existing_traversal_request_replay_live_input_match ? 1 : 0,
          record.provider_backend_input_consumption_route_passed ? 1 : 0,
@@ -13743,6 +13767,8 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "traversable_root_proxy_source=%s, "
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_version=%u, bvh_format_profile_source=%s, "
+         "proxy_delegation_source=%s, proxy_delegation_gate_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0, "
          "provider_payload_backend_input_owner_lifetime_ok=%u, "
          "provider_backend_input_runtime_lifetime_ready=%u, "
          "context_window_owner_seq_matches_lifetime=%u, "
@@ -13783,6 +13809,12 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          view.has_bvh_format_profile ? 1 : 0, view.bvh_format_version,
          rtcore_decoded_input_field_source_label(
              view.bvh_format_profile_owner),
+         rtcore_proxy_delegation_source_label(),
+         rtcore_proxy_delegation_gate_passed_for_proxy_fields(
+             view.has_traversable_root_proxy, view.traversable_root_proxy_owner,
+             view.has_bvh_format_profile, view.bvh_format_profile_owner)
+             ? 1
+             : 0,
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
          view.provider_payload_runtime_lifetime_ready ? 1 : 0,
          view.context_window_owner_seq_matches_lifetime ? 1 : 0,
@@ -16983,6 +17015,128 @@ static void rtcore_update_decoded_traversal_input_bvh_format_profile_snapshot(
       RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
 }
 
+enum rtcore_proxy_delegation_failpoint {
+  RTCORE_PROXY_DELEGATION_FAILPOINT_NONE = 0,
+  RTCORE_PROXY_DELEGATION_FAILPOINT_DROP_TRAVERSABLE_ROOT_PROXY,
+  RTCORE_PROXY_DELEGATION_FAILPOINT_DROP_BVH_FORMAT_PROFILE,
+  RTCORE_PROXY_DELEGATION_FAILPOINT_WRONG_PROXY_SOURCE_LABEL,
+  RTCORE_PROXY_DELEGATION_FAILPOINT_UNSUPPORTED,
+};
+
+static const char *rtcore_proxy_delegation_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_PROXY_DELEGATION_FAILPOINT";
+}
+
+static rtcore_proxy_delegation_failpoint
+rtcore_proxy_delegation_failpoint_mode() {
+  const char *value = getenv(rtcore_proxy_delegation_failpoint_env_name());
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "none") == 0) {
+    return RTCORE_PROXY_DELEGATION_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "drop_traversable_root_proxy") == 0) {
+    return RTCORE_PROXY_DELEGATION_FAILPOINT_DROP_TRAVERSABLE_ROOT_PROXY;
+  }
+  if (strcmp(value, "drop_bvh_format_profile") == 0) {
+    return RTCORE_PROXY_DELEGATION_FAILPOINT_DROP_BVH_FORMAT_PROFILE;
+  }
+  if (strcmp(value, "wrong_proxy_source_label") == 0) {
+    return RTCORE_PROXY_DELEGATION_FAILPOINT_WRONG_PROXY_SOURCE_LABEL;
+  }
+  return RTCORE_PROXY_DELEGATION_FAILPOINT_UNSUPPORTED;
+}
+
+static const char *rtcore_proxy_delegation_failpoint_name(
+    rtcore_proxy_delegation_failpoint mode) {
+  switch (mode) {
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_DROP_TRAVERSABLE_ROOT_PROXY:
+      return "drop_traversable_root_proxy";
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_DROP_BVH_FORMAT_PROFILE:
+      return "drop_bvh_format_profile";
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_WRONG_PROXY_SOURCE_LABEL:
+      return "wrong_proxy_source_label";
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_UNSUPPORTED:
+      return "unsupported";
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void rtcore_apply_proxy_delegation_failpoint_to_decoded_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    rtcore_decoded_traversal_input_snapshot *decoded_input_snapshot) {
+  if (decoded_input_snapshot == NULL) {
+    return;
+  }
+  const rtcore_proxy_delegation_failpoint mode =
+      rtcore_proxy_delegation_failpoint_mode();
+  if (mode == RTCORE_PROXY_DELEGATION_FAILPOINT_NONE) {
+    return;
+  }
+
+  bool drop_traversable_root_proxy = false;
+  bool drop_bvh_format_profile = false;
+  bool wrong_proxy_source_label = false;
+  switch (mode) {
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_DROP_TRAVERSABLE_ROOT_PROXY:
+      decoded_input_snapshot->has_traversable_root_proxy = false;
+      decoded_input_snapshot->traversable_root_proxy_owner =
+          RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+      decoded_input_snapshot->traversable_proxy_id = 0;
+      decoded_input_snapshot->root_proxy_id = 0;
+      drop_traversable_root_proxy = true;
+      break;
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_DROP_BVH_FORMAT_PROFILE:
+      decoded_input_snapshot->has_bvh_format_version = false;
+      decoded_input_snapshot->bvh_format_profile_owner =
+          RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+      decoded_input_snapshot->bvh_format_version = 0;
+      drop_bvh_format_profile = true;
+      break;
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_WRONG_PROXY_SOURCE_LABEL:
+      decoded_input_snapshot->traversable_root_proxy_owner =
+          RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION;
+      decoded_input_snapshot->bvh_format_profile_owner =
+          RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION;
+      wrong_proxy_source_label = true;
+      break;
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_UNSUPPORTED:
+      decoded_input_snapshot->traversable_root_proxy_owner =
+          RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+      decoded_input_snapshot->bvh_format_profile_owner =
+          RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+      wrong_proxy_source_label = true;
+      break;
+    case RTCORE_PROXY_DELEGATION_FAILPOINT_NONE:
+    default:
+      return;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT proxy-delegation-failpoint (%s:%u), "
+         "proxy-delegation-failpoint=1, "
+         "failpoint=%s, mode=%s, provider=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, proxy_delegation_source=%s, "
+         "drop_traversable_root_proxy=%u, drop_bvh_format_profile=%u, "
+         "wrong_proxy_source_label=%u, before_registry_payload_shadow=1, "
+         "before_provider_consumed_input=1, before_backend_input_route=1, "
+         "before_traversal_completion=1, "
+         "actual_abi_evidence_for_proxy_fields=0\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0,
+         rtcore_proxy_delegation_failpoint_name(mode),
+         rtcore_proxy_delegation_failpoint_name(mode),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index, rtcore_proxy_delegation_source_label(),
+         drop_traversable_root_proxy ? 1 : 0,
+         drop_bvh_format_profile ? 1 : 0,
+         wrong_proxy_source_label ? 1 : 0);
+  fflush(stdout);
+}
+
 struct rtcore_pre_provider_traversal_data_snapshot {
   rtcore_pre_provider_traversal_data_snapshot() : valid(false) {
     memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
@@ -17385,6 +17539,7 @@ struct rtcore_default_compiler_driver_publication_route_record {
         compiler_fields_source("unavailable"),
         runtime_context_window_source("unavailable"),
         proxy_fields_source("unavailable"),
+        proxy_delegation_source("unavailable"),
         source_publication_seq(0),
         source_owner_tuple_match(false),
         has_source_context_window_key(false),
@@ -17402,6 +17557,9 @@ struct rtcore_default_compiler_driver_publication_route_record {
         compiler_fields_complete(false),
         runtime_context_window_complete(false),
         proxy_fields_complete(false),
+        proxy_delegation_gate_required(false),
+        proxy_delegation_gate_passed(false),
+        proxy_fields_actual_abi_evidence(false),
         provider_consumption_policy_enabled(false),
         provider_consumption_default_disabled(true) {}
 
@@ -17414,6 +17572,7 @@ struct rtcore_default_compiler_driver_publication_route_record {
   const char *compiler_fields_source;
   const char *runtime_context_window_source;
   const char *proxy_fields_source;
+  const char *proxy_delegation_source;
   unsigned long long source_publication_seq;
   bool source_owner_tuple_match;
   bool has_source_context_window_key;
@@ -17430,6 +17589,9 @@ struct rtcore_default_compiler_driver_publication_route_record {
   bool compiler_fields_complete;
   bool runtime_context_window_complete;
   bool proxy_fields_complete;
+  bool proxy_delegation_gate_required;
+  bool proxy_delegation_gate_passed;
+  bool proxy_fields_actual_abi_evidence;
   bool provider_consumption_policy_enabled;
   bool provider_consumption_default_disabled;
 };
@@ -17493,6 +17655,8 @@ rtcore_make_default_compiler_driver_publication_route_record(
                              : "unexpected_source";
   record.runtime_context_window_source = "driver_runtime";
   record.proxy_fields_source = "simulator_proxy";
+  record.proxy_delegation_source = rtcore_proxy_delegation_source_label();
+  record.proxy_delegation_gate_required = true;
   record.compiler_fields_complete =
       compiler_driver_source &&
       decoded_input_snapshot.has_ray_origin_direction_tmin_tmax &&
@@ -17521,15 +17685,16 @@ rtcore_make_default_compiler_driver_publication_route_record(
       decoded_input_snapshot.context_window_owner_seq.lane_slot_index ==
           launch_context_input_publication_record.lane_slot_index;
   record.proxy_fields_complete =
-      decoded_input_snapshot.has_traversable_root_proxy &&
-      decoded_input_snapshot.traversable_root_proxy_owner ==
-          RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY &&
-      decoded_input_snapshot.has_bvh_format_version &&
-      decoded_input_snapshot.bvh_format_profile_owner ==
-          RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
+      rtcore_proxy_delegation_gate_passed_for_proxy_fields(
+          decoded_input_snapshot.has_traversable_root_proxy,
+          decoded_input_snapshot.traversable_root_proxy_owner,
+          decoded_input_snapshot.has_bvh_format_version,
+          decoded_input_snapshot.bvh_format_profile_owner);
+  record.proxy_delegation_gate_passed = record.proxy_fields_complete;
+  record.proxy_fields_actual_abi_evidence = false;
   record.valid = record.compiler_fields_complete &&
                  record.runtime_context_window_complete &&
-                 record.proxy_fields_complete;
+                 record.proxy_delegation_gate_passed;
   return record;
 }
 
@@ -17550,6 +17715,9 @@ static void rtcore_log_default_compiler_driver_publication_route_record(
          "default_publication_route=1, valid=%u, "
          "route_source=%s, compiler_fields_source=%s, "
          "runtime_context_window_source=%s, proxy_fields_source=%s, "
+         "proxy_delegation_source=%s, proxy_delegation_gate_required=%u, "
+         "proxy_delegation_gate_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, source_publication_seq=%llu, "
          "source_owner_tuple_match=%u, has_source_context_window_key=%u, "
@@ -17567,6 +17735,9 @@ static void rtcore_log_default_compiler_driver_publication_route_record(
          pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
          record.route_source, record.compiler_fields_source,
          record.runtime_context_window_source, record.proxy_fields_source,
+         record.proxy_delegation_source,
+         record.proxy_delegation_gate_required ? 1 : 0,
+         record.proxy_delegation_gate_passed ? 1 : 0,
          record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.source_publication_seq,
          record.source_owner_tuple_match ? 1 : 0,
@@ -17603,26 +17774,43 @@ rtcore_fail_closed_on_default_compiler_driver_publication_route_record(
           record)) {
     return false;
   }
+  const bool proxy_delegation_gate_not_ready =
+      record.compiler_fields_complete &&
+      record.runtime_context_window_complete &&
+      !record.proxy_delegation_gate_passed;
+  const char *fail_reason =
+      proxy_delegation_gate_not_ready
+          ? "PROXY_DELEGATION_GATE_NOT_READY"
+          : "DEFAULT_COMPILER_DRIVER_PUBLICATION_ROUTE_PARTIAL";
   printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
-         "reason=DEFAULT_COMPILER_DRIVER_PUBLICATION_ROUTE_PARTIAL, "
+         "reason=%s, "
+         "legacy_reason=DEFAULT_COMPILER_DRIVER_PUBLICATION_ROUTE_PARTIAL, "
          "legacy_partial_marker=LAUNCH_CONTEXT_INPUT_PUBLICATION_PARTIAL, "
          "compiler_publication_negative_default_consumption=1, "
+         "proxy_delegation_gate_fail_closed=%u, "
          "before_registry_payload_shadow=1, "
          "before_provider_consumed_input=1, before_backend_input_route=1, "
          "before_traversal_completion=1, before_completion_release=1, "
          "default_publication_route=1, valid=%u, route_source=%s, "
          "compiler_fields_complete=%u, runtime_context_window_complete=%u, "
-         "proxy_fields_complete=%u, provider_consumption_default_disabled=%u, "
+         "proxy_fields_complete=%u, proxy_delegation_source=%s, "
+         "proxy_delegation_gate_required=%u, "
+         "proxy_delegation_gate_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0, "
+         "provider_consumption_default_disabled=%u, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, source_publication_seq=%llu, "
          "source_owner_tuple_match=%u, has_source_context_window_key=%u, "
          "source_context_window_match=%u, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "has_ray_flags_cull_mask=%u, has_launch_context_input=%u\n",
-         pI->source_file(), pI->source_line(), record.valid ? 1 : 0,
+         pI->source_file(), pI->source_line(), fail_reason,
+         proxy_delegation_gate_not_ready ? 1 : 0, record.valid ? 1 : 0,
          record.route_source, record.compiler_fields_complete ? 1 : 0,
          record.runtime_context_window_complete ? 1 : 0,
-         record.proxy_fields_complete ? 1 : 0,
+         record.proxy_fields_complete ? 1 : 0, record.proxy_delegation_source,
+         record.proxy_delegation_gate_required ? 1 : 0,
+         record.proxy_delegation_gate_passed ? 1 : 0,
          record.provider_consumption_default_disabled ? 1 : 0,
          record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.source_publication_seq,
@@ -17966,7 +18154,10 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "has_traversable_root_proxy=%u, has_bvh_format_profile=%u, "
          "traversable_proxy_id=0x%llx, root_proxy_id=0x%llx, "
-         "bvh_format_version=%u, "
+         "bvh_format_version=%u, traversable_root_proxy_source=%s, "
+         "bvh_format_profile_source=%s, proxy_delegation_source=%s, "
+         "proxy_delegation_gate_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0, "
          "driver_runtime_context_window_lifetime_bridge_valid=%u, "
          "driver_runtime_context_window_lifetime_ready=%u, "
          "context_window_owner_seq_matches_lifetime=%u, "
@@ -17987,6 +18178,16 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          shadow.has_bvh_format_profile ? 1 : 0,
          (unsigned long long)shadow.traversable_proxy_id,
          (unsigned long long)shadow.root_proxy_id, shadow.bvh_format_version,
+         rtcore_decoded_input_field_source_label(
+             shadow.traversable_root_proxy_owner),
+         rtcore_decoded_input_field_source_label(shadow.bvh_format_profile_owner),
+         rtcore_proxy_delegation_source_label(),
+         rtcore_proxy_delegation_gate_passed_for_proxy_fields(
+             shadow.has_traversable_root_proxy,
+             shadow.traversable_root_proxy_owner,
+             shadow.has_bvh_format_profile, shadow.bvh_format_profile_owner)
+             ? 1
+             : 0,
          shadow.driver_runtime_context_window_lifetime_bridge_valid ? 1 : 0,
          shadow.driver_runtime_context_window_lifetime_ready ? 1 : 0,
          shadow.context_window_owner_seq_matches_lifetime ? 1 : 0,
@@ -18031,6 +18232,8 @@ static void rtcore_log_provider_decoded_input_observation(
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_profile_owner=%s, bvh_format_version=%u, "
          "bvh_format_profile_source=%s, "
+         "proxy_delegation_source=%s, proxy_delegation_gate_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
          "provider_payload_runtime_lifetime_ready=%u, "
          "context_window_owner_seq_matches_lifetime=%u, "
@@ -18079,6 +18282,14 @@ static void rtcore_log_provider_decoded_input_observation(
          observation.bvh_format_version,
          rtcore_decoded_input_field_source_label(
              observation.bvh_format_profile_owner),
+         rtcore_proxy_delegation_source_label(),
+         rtcore_proxy_delegation_gate_passed_for_proxy_fields(
+             observation.has_traversable_root_proxy,
+             observation.traversable_root_proxy_owner,
+             observation.has_bvh_format_profile,
+             observation.bvh_format_profile_owner)
+             ? 1
+             : 0,
          observation.provider_consumed_input_fields_all_owned_with_lifetime ? 1
                                                                            : 0,
          observation.provider_payload_runtime_lifetime_ready ? 1 : 0,
@@ -18164,6 +18375,8 @@ static void rtcore_log_provider_payload_consumed_input_view(
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_profile_owner=%s, bvh_format_version=%u, "
          "bvh_format_profile_source=%s, "
+         "proxy_delegation_source=%s, proxy_delegation_gate_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
          "provider_payload_runtime_lifetime_ready=%u, "
          "context_window_owner_seq_matches_lifetime=%u, "
@@ -18206,6 +18419,12 @@ static void rtcore_log_provider_payload_consumed_input_view(
          view.bvh_format_version,
          rtcore_decoded_input_field_source_label(
              view.bvh_format_profile_owner),
+         rtcore_proxy_delegation_source_label(),
+         rtcore_proxy_delegation_gate_passed_for_proxy_fields(
+             view.has_traversable_root_proxy, view.traversable_root_proxy_owner,
+             view.has_bvh_format_profile, view.bvh_format_profile_owner)
+             ? 1
+             : 0,
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
          view.provider_payload_runtime_lifetime_ready ? 1 : 0,
          view.context_window_owner_seq_matches_lifetime ? 1 : 0,
@@ -18611,6 +18830,8 @@ bool rtcore_build_traversal_completion_event(
           launch_context_input_publication_record);
       rtcore_update_decoded_traversal_input_proxy_profile_from_pre_provider_snapshot(
           &event->decoded_input_snapshot, pre_provider_traversal_data_snapshot);
+      rtcore_apply_proxy_delegation_failpoint_to_decoded_snapshot(
+          pI, source_request, &event->decoded_input_snapshot);
     }
     rtcore_log_launch_context_input_publication_record(
         pI, launch_context_input_publication_record);
@@ -18628,6 +18849,8 @@ bool rtcore_build_traversal_completion_event(
   } else {
     rtcore_update_decoded_traversal_input_from_pre_provider_traversal_data_snapshot(
         &event->decoded_input_snapshot, pre_provider_traversal_data_snapshot);
+    rtcore_apply_proxy_delegation_failpoint_to_decoded_snapshot(
+        pI, source_request, &event->decoded_input_snapshot);
   }
   rtcore_input_provenance_registry_publication_snapshot registry_publication_snapshot =
       rtcore_publish_input_provenance_registry_entry_snapshot_from_decoded_input(
