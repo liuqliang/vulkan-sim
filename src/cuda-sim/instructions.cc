@@ -14789,6 +14789,10 @@ rtcore_driver_runtime_context_window_lifetime_bridge_failpoint_name() {
       rtcore_path_mode_is(value, "stale_token")) {
     return "stale_token_lifetime";
   }
+  if (rtcore_path_mode_is(value, "wrong_owner_generation") ||
+      rtcore_path_mode_is(value, "owner_generation_mismatch")) {
+    return "wrong_owner_generation";
+  }
   if (rtcore_path_mode_is(value, "missing_lifetime_record") ||
       rtcore_rt_env_value_is_explicit_true(value)) {
     return "missing_lifetime_record";
@@ -14896,6 +14900,8 @@ rtcore_make_driver_runtime_context_window_lifetime_bridge_snapshot(
     snapshot.lane_slot_matches = false;
   } else if (strcmp(snapshot.failpoint, "stale_token_lifetime") == 0) {
     snapshot.token_lifetime_key_ready = false;
+  } else if (strcmp(snapshot.failpoint, "wrong_owner_generation") == 0) {
+    snapshot.owner_generation_matches = false;
   } else if (strcmp(snapshot.failpoint, "missing_lifetime_record") == 0) {
     snapshot.lifetime_table_found = false;
   } else if (strcmp(snapshot.failpoint, "unsupported") == 0) {
@@ -17072,6 +17078,7 @@ enum rtcore_launch_context_input_publication_failpoint {
   RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_ORIGIN_DIRECTION_TMIN_TMAX,
   RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_RAY_FLAGS_CULL_MASK,
   RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_LAUNCH_CONTEXT_INPUT,
+  RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_WRONG_SOURCE_LABEL,
 };
 
 static rtcore_launch_context_input_publication_failpoint
@@ -17091,6 +17098,9 @@ rtcore_launch_context_input_publication_failpoint_mode() {
   if (strcmp(value, "drop_launch_context_input") == 0) {
     return RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_LAUNCH_CONTEXT_INPUT;
   }
+  if (strcmp(value, "wrong_source_label") == 0) {
+    return RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_WRONG_SOURCE_LABEL;
+  }
   return RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_NONE;
 }
 
@@ -17103,6 +17113,8 @@ static const char *rtcore_launch_context_input_publication_failpoint_name(
       return "drop_ray_flags_cull_mask";
     case RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_LAUNCH_CONTEXT_INPUT:
       return "drop_launch_context_input";
+    case RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_WRONG_SOURCE_LABEL:
+      return "wrong_source_label";
     case RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_NONE:
     default:
       return "none";
@@ -17130,8 +17142,14 @@ static void rtcore_apply_launch_context_input_publication_failpoint(
   } else if (mode ==
              RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_DROP_LAUNCH_CONTEXT_INPUT) {
     record->has_launch_context_input = false;
+  } else if (mode ==
+             RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_WRONG_SOURCE_LABEL) {
+    record->source = "unexpected_source_label";
   }
-  record->valid = false;
+  if (mode !=
+      RTCORE_LAUNCH_CONTEXT_INPUT_PUBLICATION_FAILPOINT_WRONG_SOURCE_LABEL) {
+    record->valid = false;
+  }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "launch-context-input-publication-failpoint (%s:%u), "
