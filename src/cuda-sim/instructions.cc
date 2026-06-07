@@ -12398,6 +12398,21 @@ static const char *rtcore_decoded_input_field_owner_class_name(
   }
 }
 
+static const char *rtcore_decoded_input_field_source_label(
+    rtcore_decoded_input_field_owner_class owner) {
+  switch (owner) {
+    case RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME:
+      return "driver_runtime";
+    case RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION:
+      return "compiler_driver_publication_sideband";
+    case RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY:
+      return "simulator_proxy";
+    case RTCORE_DECODED_INPUT_OWNER_FORBIDDEN:
+    default:
+      return "unavailable";
+  }
+}
+
 static bool rtcore_decoded_input_field_owner_has_lifetime(
     rtcore_decoded_input_field_owner_class owner) {
   return owner == RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME ||
@@ -13171,9 +13186,13 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_payload_backend_input_snapshot_accepted=%u, "
          "provider_payload_backend_input_owner_lifetime_ok=%u, "
          "provider_backend_input_authority_propagated=%u, "
+         "provider_backend_route_source_bridge=field_source_labels, "
          "ray_origin_direction_tmin_tmax_owner=%s, "
+         "ray_origin_direction_tmin_tmax_source=%s, "
          "ray_flags_cull_mask_owner=%s, launch_context_input_owner=%s, "
+         "ray_flags_cull_mask_source=%s, launch_context_input_source=%s, "
          "traversable_root_proxy_owner=%s, bvh_format_profile_owner=%s, "
+         "traversable_root_proxy_source=%s, bvh_format_profile_source=%s, "
          "existing_traversal_input_replay_requested=%u, "
          "existing_traversal_request_replay_live_input_match=%u, "
          "provider_backend_input_consumption_route_passed=%u, "
@@ -13192,13 +13211,23 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.provider_payload_backend_input_owner_lifetime_ok ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              record.ray_origin_direction_tmin_tmax_owner),
+         rtcore_decoded_input_field_source_label(
+             record.ray_origin_direction_tmin_tmax_owner),
          rtcore_decoded_input_field_owner_class_name(
              record.ray_flags_cull_mask_owner),
          rtcore_decoded_input_field_owner_class_name(
              record.launch_context_input_owner),
+         rtcore_decoded_input_field_source_label(
+             record.ray_flags_cull_mask_owner),
+         rtcore_decoded_input_field_source_label(
+             record.launch_context_input_owner),
          rtcore_decoded_input_field_owner_class_name(
              record.traversable_root_proxy_owner),
          rtcore_decoded_input_field_owner_class_name(
+             record.bvh_format_profile_owner),
+         rtcore_decoded_input_field_source_label(
+             record.traversable_root_proxy_owner),
+         rtcore_decoded_input_field_source_label(
              record.bvh_format_profile_owner),
          record.existing_traversal_input_replay_requested ? 1 : 0,
          record.existing_traversal_request_replay_live_input_match ? 1 : 0,
@@ -13664,18 +13693,23 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "custom-rtcore-backend-provider-payload-consumed-input-snapshot=1, "
          "provider_payload_consumption_enabled=%u, "
          "provider_payload_backend_input_source=registry_payload_shadow, "
+         "provider_backend_input_source_bridge=field_source_labels, "
          "rtcore-provider-payload-launch-context-input=1, "
          "has_ray_origin_direction_tmin_tmax=%u, "
+         "ray_origin_direction_tmin_tmax_source=%s, "
          "ray_origin=(%f,%f,%f), ray_direction=(%f,%f,%f), "
          "ray_tmin=%f, ray_tmax=%f, "
-         "has_ray_flags_cull_mask=%u, ray_flags=%u, cull_mask=%u, "
+         "has_ray_flags_cull_mask=%u, ray_flags_cull_mask_source=%s, "
+         "ray_flags=%u, cull_mask=%u, "
          "has_launch_context_input=%u, "
+         "launch_context_input_source=%s, "
          "provider_payload_launch_context_input_source=shadow_context_acquire, "
          "bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "has_traversable_root_proxy=%u, traversable_proxy_id=0x%llx, "
+         "traversable_root_proxy_source=%s, "
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
-         "bvh_format_version=%u, "
+         "bvh_format_version=%u, bvh_format_profile_source=%s, "
          "provider_payload_backend_input_owner_lifetime_ok=%u, "
          "provider_backend_input_authority_propagated=%u, "
          "ray_origin_direction_tmin_tmax_owner=%s, "
@@ -13691,17 +13725,28 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
              ? 1
              : 0,
          view.has_ray_origin_direction_tmin_tmax ? 1 : 0,
+         rtcore_decoded_input_field_source_label(
+             view.ray_origin_direction_tmin_tmax_owner),
          view.ray_origin.x, view.ray_origin.y, view.ray_origin.z,
          view.ray_direction.x, view.ray_direction.y, view.ray_direction.z,
          view.ray_tmin, view.ray_tmax,
-         view.has_ray_flags_cull_mask ? 1 : 0, view.ray_flags,
-         view.cull_mask, view.has_launch_context_input ? 1 : 0,
+         view.has_ray_flags_cull_mask ? 1 : 0,
+         rtcore_decoded_input_field_source_label(
+             view.ray_flags_cull_mask_owner),
+         view.ray_flags, view.cull_mask,
+         view.has_launch_context_input ? 1 : 0,
+         rtcore_decoded_input_field_source_label(
+             view.launch_context_input_owner),
          (unsigned long long)view.bridge_trace_replay_top_level_as,
          view.sbt_record_offset, view.sbt_record_stride, view.miss_index,
          view.has_traversable_root_proxy ? 1 : 0,
          (unsigned long long)view.traversable_proxy_id,
+         rtcore_decoded_input_field_source_label(
+             view.traversable_root_proxy_owner),
          (unsigned long long)view.root_proxy_id,
          view.has_bvh_format_profile ? 1 : 0, view.bvh_format_version,
+         rtcore_decoded_input_field_source_label(
+             view.bvh_format_profile_owner),
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
@@ -17462,22 +17507,28 @@ static void rtcore_log_provider_decoded_input_observation(
          "lane_slot_index=%u, provider_decoded_input_observed=1, "
          "provider_decoded_input_source=%s, "
          "provider_decoded_input_owner_classification=1, "
+         "provider_decoded_input_source_bridge=field_source_labels, "
          "provider_payload_consumption_enabled=%u, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "ray_origin_direction_tmin_tmax_owner=%s, "
+         "ray_origin_direction_tmin_tmax_source=%s, "
          "ray_origin=(%f,%f,%f), ray_direction=(%f,%f,%f), "
          "ray_tmin=%f, ray_tmax=%f, "
          "has_ray_flags_cull_mask=%u, ray_flags_cull_mask_owner=%s, "
+         "ray_flags_cull_mask_source=%s, "
          "ray_flags=%u, cull_mask=%u, "
          "has_launch_context_input=%u, "
          "launch_context_input_owner=%s, "
+         "launch_context_input_source=%s, "
          "provider_decoded_input_launch_context_source=shadow_context_acquire, "
          "bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "has_traversable_root_proxy=%u, traversable_root_proxy_owner=%s, "
+         "traversable_root_proxy_source=%s, "
          "traversable_proxy_id=0x%llx, "
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_profile_owner=%s, bvh_format_version=%u, "
+         "bvh_format_profile_source=%s, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
          "provider_payload_consumption_owner_lifetime_blocked=%u, "
          "provider_decoded_input_consumes_traversal_behavior=0\n",
@@ -17490,6 +17541,8 @@ static void rtcore_log_provider_decoded_input_observation(
          observation.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              observation.ray_origin_direction_tmin_tmax_owner),
+         rtcore_decoded_input_field_source_label(
+             observation.ray_origin_direction_tmin_tmax_owner),
          observation.ray_origin.x, observation.ray_origin.y,
          observation.ray_origin.z, observation.ray_direction.x,
          observation.ray_direction.y, observation.ray_direction.z,
@@ -17497,9 +17550,13 @@ static void rtcore_log_provider_decoded_input_observation(
          observation.has_ray_flags_cull_mask ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              observation.ray_flags_cull_mask_owner),
+         rtcore_decoded_input_field_source_label(
+             observation.ray_flags_cull_mask_owner),
          observation.ray_flags, observation.cull_mask,
          observation.has_launch_context_input ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
+             observation.launch_context_input_owner),
+         rtcore_decoded_input_field_source_label(
              observation.launch_context_input_owner),
          (unsigned long long)observation.bridge_trace_replay_top_level_as,
          observation.sbt_record_offset, observation.sbt_record_stride,
@@ -17507,12 +17564,16 @@ static void rtcore_log_provider_decoded_input_observation(
          observation.has_traversable_root_proxy ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              observation.traversable_root_proxy_owner),
+         rtcore_decoded_input_field_source_label(
+             observation.traversable_root_proxy_owner),
          (unsigned long long)observation.traversable_proxy_id,
          (unsigned long long)observation.root_proxy_id,
          observation.has_bvh_format_profile ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              observation.bvh_format_profile_owner),
          observation.bvh_format_version,
+         rtcore_decoded_input_field_source_label(
+             observation.bvh_format_profile_owner),
          observation.provider_consumed_input_fields_all_owned_with_lifetime ? 1
                                                                            : 0,
          observation.provider_payload_consumption_owner_lifetime_blocked ? 1
@@ -17573,22 +17634,28 @@ static void rtcore_log_provider_payload_consumed_input_view(
          "lane_slot_index=%u, provider-payload-consumed-input-view=1, "
          "provider_payload_consumption_enabled=1, "
          "provider_payload_consumption_source=registry_payload_shadow, "
+         "provider_payload_consumed_input_source_bridge=field_source_labels, "
          "rtcore-provider-payload-launch-context-input=1, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "ray_origin_direction_tmin_tmax_owner=%s, "
+         "ray_origin_direction_tmin_tmax_source=%s, "
          "ray_origin=(%f,%f,%f), ray_direction=(%f,%f,%f), "
          "ray_tmin=%f, ray_tmax=%f, "
          "has_ray_flags_cull_mask=%u, ray_flags_cull_mask_owner=%s, "
+         "ray_flags_cull_mask_source=%s, "
          "ray_flags=%u, cull_mask=%u, "
          "has_launch_context_input=%u, "
          "launch_context_input_owner=%s, "
+         "launch_context_input_source=%s, "
          "provider_payload_launch_context_input_source=shadow_context_acquire, "
          "bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "has_traversable_root_proxy=%u, traversable_root_proxy_owner=%s, "
+         "traversable_root_proxy_source=%s, "
          "traversable_proxy_id=0x%llx, "
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_profile_owner=%s, bvh_format_version=%u, "
+         "bvh_format_profile_source=%s, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
          "provider_payload_consumed_input_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
@@ -17597,20 +17664,28 @@ static void rtcore_log_provider_payload_consumed_input_view(
          view.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              view.ray_origin_direction_tmin_tmax_owner),
+         rtcore_decoded_input_field_source_label(
+             view.ray_origin_direction_tmin_tmax_owner),
          view.ray_origin.x, view.ray_origin.y, view.ray_origin.z,
          view.ray_direction.x, view.ray_direction.y, view.ray_direction.z,
          view.ray_tmin, view.ray_tmax,
          view.has_ray_flags_cull_mask ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              view.ray_flags_cull_mask_owner),
+         rtcore_decoded_input_field_source_label(
+             view.ray_flags_cull_mask_owner),
          view.ray_flags, view.cull_mask,
          view.has_launch_context_input ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
+             view.launch_context_input_owner),
+         rtcore_decoded_input_field_source_label(
              view.launch_context_input_owner),
          (unsigned long long)view.bridge_trace_replay_top_level_as,
          view.sbt_record_offset, view.sbt_record_stride, view.miss_index,
          view.has_traversable_root_proxy ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
+             view.traversable_root_proxy_owner),
+         rtcore_decoded_input_field_source_label(
              view.traversable_root_proxy_owner),
          (unsigned long long)view.traversable_proxy_id,
          (unsigned long long)view.root_proxy_id,
@@ -17618,6 +17693,8 @@ static void rtcore_log_provider_payload_consumed_input_view(
          rtcore_decoded_input_field_owner_class_name(
              view.bvh_format_profile_owner),
          view.bvh_format_version,
+         rtcore_decoded_input_field_source_label(
+             view.bvh_format_profile_owner),
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0);
   fflush(stdout);
 }
