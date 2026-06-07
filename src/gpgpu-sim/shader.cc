@@ -156,6 +156,7 @@ enum rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy {
   rtcore_scheduler_bridge_policy_opt_in,
   rtcore_scheduler_bridge_policy_force_off,
   rtcore_scheduler_bridge_policy_default_on_unsupported,
+  rtcore_scheduler_bridge_policy_invalid_unsupported,
 };
 
 static const char *
@@ -185,7 +186,7 @@ rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_value() {
   if (strcmp(value, "default_on") == 0) {
     return rtcore_scheduler_bridge_policy_default_on_unsupported;
   }
-  return rtcore_scheduler_bridge_policy_force_off;
+  return rtcore_scheduler_bridge_policy_invalid_unsupported;
 }
 
 static const char *
@@ -197,6 +198,8 @@ rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_name(
       return "force_off";
     case rtcore_scheduler_bridge_policy_default_on_unsupported:
       return "default_on";
+    case rtcore_scheduler_bridge_policy_invalid_unsupported:
+      return "invalid";
     case rtcore_scheduler_bridge_policy_opt_in:
     default:
       return "opt_in";
@@ -212,6 +215,8 @@ rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_result(
       return "scheduler_bridge_policy_force_off";
     case rtcore_scheduler_bridge_policy_default_on_unsupported:
       return "scheduler_bridge_policy_default_on_unsupported";
+    case rtcore_scheduler_bridge_policy_invalid_unsupported:
+      return "scheduler_bridge_policy_invalid_unsupported";
     case rtcore_scheduler_bridge_policy_opt_in:
     default:
       return "scheduler_bridge_policy_opt_in";
@@ -248,7 +253,8 @@ rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_enabled() {
           rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_policy_value();
   const bool policy_force_off =
       policy == rtcore_scheduler_bridge_policy_force_off ||
-      policy == rtcore_scheduler_bridge_policy_default_on_unsupported;
+      policy == rtcore_scheduler_bridge_policy_default_on_unsupported ||
+      policy == rtcore_scheduler_bridge_policy_invalid_unsupported;
   const char *value = getenv(
       "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_REUSABLE_CREDIT_SCHEDULER_BRIDGE");
   const bool legacy_bridge_env_enabled =
