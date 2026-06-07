@@ -159,6 +159,26 @@ rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_enabled() {
   return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
 }
 
+static bool
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_force_later_gate_stall_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_REUSABLE_CREDIT_SCHEDULER_BRIDGE_FORCE_LATER_GATE_STALL");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_force_later_gate_stall_once(
+    bool bridge_enabled, bool credit_consumed) {
+  static bool forced_later_gate_stall_injected = false;
+  if (forced_later_gate_stall_injected || !bridge_enabled ||
+      !credit_consumed ||
+      !rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_force_later_gate_stall_enabled()) {
+    return false;
+  }
+  forced_later_gate_stall_injected = true;
+  return true;
+}
+
 static unsigned &rtcore_scheduler_credit_ledger_reusable_credit_shadow_count() {
   static unsigned reusable_credit_shadow_count = 0;
   return reusable_credit_shadow_count;
@@ -2997,6 +3017,43 @@ void scheduler_unit::cycle() {
               if (!rtcore_issue_resources_ready) {
                 rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
                     "scheduler_bridge_rollback_after_issue_resource_stall");
+                break;
+              }
+              const bool
+                  rtcore_scheduler_credit_ledger_forced_later_gate_stall =
+                      pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                      rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_force_later_gate_stall_once(
+                          rtcore_scheduler_credit_ledger_scheduler_bridge_enabled,
+                          rtcore_scheduler_credit_ledger_issue_gate_credit_consumed);
+              if (rtcore_scheduler_credit_ledger_forced_later_gate_stall) {
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-reusable-credit-scheduler-bridge-forced-later-gate-stall=1, "
+                       "owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "bridge_enabled=%u, credit_consumed=%u, "
+                       "owner_tuple_reserved=%u, "
+                       "forced_gate=post_issue_resource_pre_resident_gate, "
+                       "transition_reason=reusable_credit_scheduler_bridge_force_later_gate_stall\n",
+                       rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .issued_active_mask,
+                       rtcore_scheduler_credit_ledger_scheduler_bridge_enabled
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_credit_consumed
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_scheduler_bridge_owner_tuple_reserved
+                           ? 1
+                           : 0);
+                fflush(stdout);
+                rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
+                    "scheduler_bridge_rollback_after_forced_later_gate");
                 break;
               }
               const unsigned rt_core_out_pending_warps =
