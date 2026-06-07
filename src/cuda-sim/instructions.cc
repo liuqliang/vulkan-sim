@@ -17540,11 +17540,202 @@ static const char *rtcore_runtime_as_proxy_registry_source_label() {
   return "runtime_as_proxy_registry_skeleton";
 }
 
+static const char *rtcore_bvh_format_profile_object_bridge_source_label() {
+  return "bvh_format_profile_object_bridge";
+}
+
+static const char *rtcore_bvh_format_profile_ref_source_label() {
+  return "vulkan_sim_gen_rt_compat_profile_object";
+}
+
 static const char *rtcore_bvh_format_profile_ref_name(uint32_t profile) {
   if (profile == RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT) {
     return "RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT";
   }
   return "unknown";
+}
+
+struct rtcore_bvh_format_profile_object_bridge_snapshot {
+  rtcore_bvh_format_profile_object_bridge_snapshot()
+      : valid(false),
+        has_bvh_format_profile_object(false),
+        has_profile_ref(false),
+        bvh_format_version(0),
+        profile_object_source(
+            rtcore_bvh_format_profile_object_bridge_source_label()),
+        profile_ref_source("unavailable"),
+        profile_ref("unavailable"),
+        selected_compatibility_backend_profile(false),
+        bvh_format_profile_object_bridge_passed(false),
+        actual_abi_evidence_for_proxy_fields(false) {}
+
+  bool valid;
+  bool has_bvh_format_profile_object;
+  bool has_profile_ref;
+  uint32_t bvh_format_version;
+  const char *profile_object_source;
+  const char *profile_ref_source;
+  const char *profile_ref;
+  bool selected_compatibility_backend_profile;
+  bool bvh_format_profile_object_bridge_passed;
+  bool actual_abi_evidence_for_proxy_fields;
+};
+
+static rtcore_bvh_format_profile_object_bridge_snapshot
+rtcore_make_bvh_format_profile_object_bridge_snapshot(
+    uint32_t bvh_format_version) {
+  rtcore_bvh_format_profile_object_bridge_snapshot snapshot;
+  snapshot.bvh_format_version = bvh_format_version;
+  snapshot.has_bvh_format_profile_object =
+      bvh_format_version == RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  snapshot.has_profile_ref = snapshot.has_bvh_format_profile_object;
+  snapshot.profile_ref_source =
+      snapshot.has_profile_ref ? rtcore_bvh_format_profile_ref_source_label()
+                               : "unavailable";
+  snapshot.profile_ref = snapshot.has_profile_ref
+                             ? rtcore_bvh_format_profile_ref_name(
+                                   bvh_format_version)
+                             : "unavailable";
+  snapshot.selected_compatibility_backend_profile =
+      snapshot.has_bvh_format_profile_object &&
+      strcmp(snapshot.profile_ref, "RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT") == 0;
+  snapshot.bvh_format_profile_object_bridge_passed =
+      snapshot.has_bvh_format_profile_object && snapshot.has_profile_ref &&
+      snapshot.selected_compatibility_backend_profile;
+  snapshot.valid = snapshot.bvh_format_profile_object_bridge_passed;
+  snapshot.actual_abi_evidence_for_proxy_fields = false;
+  return snapshot;
+}
+
+enum rtcore_bvh_format_profile_object_bridge_failpoint {
+  RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_NONE = 0,
+  RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_DROP_PROFILE_REF,
+  RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_WRONG_PROFILE_REF,
+};
+
+static const char *
+rtcore_bvh_format_profile_object_bridge_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT";
+}
+
+static rtcore_bvh_format_profile_object_bridge_failpoint
+rtcore_bvh_format_profile_object_bridge_failpoint_mode() {
+  const char *value =
+      getenv(rtcore_bvh_format_profile_object_bridge_failpoint_env_name());
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "none") == 0) {
+    return RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "drop_profile_ref") == 0) {
+    return RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_DROP_PROFILE_REF;
+  }
+  if (strcmp(value, "wrong_profile_ref") == 0) {
+    return RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_WRONG_PROFILE_REF;
+  }
+  return RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_NONE;
+}
+
+static const char *rtcore_bvh_format_profile_object_bridge_failpoint_name(
+    rtcore_bvh_format_profile_object_bridge_failpoint mode) {
+  switch (mode) {
+    case RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_DROP_PROFILE_REF:
+      return "drop_profile_ref";
+    case RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_WRONG_PROFILE_REF:
+      return "wrong_profile_ref";
+    case RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void rtcore_apply_bvh_format_profile_object_bridge_failpoint(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    rtcore_bvh_format_profile_object_bridge_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  const rtcore_bvh_format_profile_object_bridge_failpoint mode =
+      rtcore_bvh_format_profile_object_bridge_failpoint_mode();
+  if (mode == RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_NONE) {
+    return;
+  }
+
+  bool drop_profile_ref = false;
+  bool wrong_profile_ref = false;
+  switch (mode) {
+    case RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_DROP_PROFILE_REF:
+      snapshot->has_profile_ref = false;
+      snapshot->profile_ref_source = "unavailable";
+      snapshot->profile_ref = "unavailable";
+      snapshot->selected_compatibility_backend_profile = false;
+      snapshot->bvh_format_profile_object_bridge_passed = false;
+      snapshot->valid = false;
+      drop_profile_ref = true;
+      break;
+    case RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_WRONG_PROFILE_REF:
+      snapshot->has_profile_ref = true;
+      snapshot->profile_ref_source =
+          rtcore_bvh_format_profile_ref_source_label();
+      snapshot->profile_ref = "RTCORE_BVH_FORMAT_UNSUPPORTED";
+      snapshot->bvh_format_version = 0xffffffffu;
+      snapshot->selected_compatibility_backend_profile = false;
+      snapshot->bvh_format_profile_object_bridge_passed = false;
+      snapshot->valid = false;
+      wrong_profile_ref = true;
+      break;
+    case RTCORE_BVH_FORMAT_PROFILE_BRIDGE_FAILPOINT_NONE:
+    default:
+      return;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "bvh-format-profile-object-bridge-failpoint=1, "
+         "failpoint=%s, mode=%s, provider=%s, "
+         "profile_object_source=%s, profile_ref_source=%s, "
+         "has_bvh_format_profile_object=%u, has_profile_ref=%u, "
+         "profile_ref=%s, bvh_format_version=%u, "
+         "drop_profile_ref=%u, wrong_profile_ref=%u, "
+         "selected_compatibility_backend_profile=%u, "
+         "bvh_format_profile_object_bridge_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_bvh_format_profile_object_bridge_failpoint_name(mode),
+         rtcore_bvh_format_profile_object_bridge_failpoint_name(mode),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot->profile_object_source, snapshot->profile_ref_source,
+         snapshot->has_bvh_format_profile_object ? 1 : 0,
+         snapshot->has_profile_ref ? 1 : 0, snapshot->profile_ref,
+         snapshot->bvh_format_version, drop_profile_ref ? 1 : 0,
+         wrong_profile_ref ? 1 : 0,
+         snapshot->selected_compatibility_backend_profile ? 1 : 0,
+         snapshot->bvh_format_profile_object_bridge_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static void rtcore_log_bvh_format_profile_object_bridge_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_bvh_format_profile_object_bridge_snapshot &snapshot) {
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "bvh-format-profile-object-bridge=1, "
+         "provider=%s, profile_object_source=%s, "
+         "profile_ref_source=%s, has_bvh_format_profile_object=%u, "
+         "has_profile_ref=%u, profile_ref=%s, bvh_format_version=%u, "
+         "selected_compatibility_backend_profile=%u, "
+         "bvh_format_profile_object_bridge_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot.profile_object_source, snapshot.profile_ref_source,
+         snapshot.has_bvh_format_profile_object ? 1 : 0,
+         snapshot.has_profile_ref ? 1 : 0, snapshot.profile_ref,
+         snapshot.bvh_format_version,
+         snapshot.selected_compatibility_backend_profile ? 1 : 0,
+         snapshot.bvh_format_profile_object_bridge_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
 }
 
 struct rtcore_runtime_as_proxy_registry_key {
@@ -17631,7 +17822,12 @@ struct rtcore_runtime_as_proxy_registry_entry {
         root_proxy_id(0),
         bvh_format_version(0),
         proxy_token_source("unavailable"),
+        profile_object_source("unavailable"),
+        profile_ref_source("unavailable"),
         profile_ref("unavailable"),
+        has_bvh_format_profile_object(false),
+        selected_compatibility_backend_profile(false),
+        bvh_format_profile_object_bridge_passed(false),
         actual_abi_evidence_for_proxy_fields(false) {}
 
   bool valid;
@@ -17641,7 +17837,12 @@ struct rtcore_runtime_as_proxy_registry_entry {
   uint64_t root_proxy_id;
   uint32_t bvh_format_version;
   const char *proxy_token_source;
+  const char *profile_object_source;
+  const char *profile_ref_source;
   const char *profile_ref;
+  bool has_bvh_format_profile_object;
+  bool selected_compatibility_backend_profile;
+  bool bvh_format_profile_object_bridge_passed;
   bool actual_abi_evidence_for_proxy_fields;
 };
 
@@ -17655,10 +17856,15 @@ struct rtcore_runtime_as_proxy_registry_lookup_snapshot {
         registry_generation_match(false),
         top_level_as_match(false),
         has_proxy_token(false),
+        has_bvh_format_profile_object(false),
         has_profile_ref(false),
+        selected_compatibility_backend_profile(false),
+        bvh_format_profile_object_bridge_passed(false),
         registry_lookup_passed(false),
         registry_source(rtcore_runtime_as_proxy_registry_source_label()),
         proxy_token_source(rtcore_top_level_as_proxy_token_source_label()),
+        profile_object_source("unavailable"),
+        profile_ref_source("unavailable"),
         profile_ref("unavailable"),
         actual_abi_evidence_for_proxy_fields(false) {}
 
@@ -17670,10 +17876,15 @@ struct rtcore_runtime_as_proxy_registry_lookup_snapshot {
   bool registry_generation_match;
   bool top_level_as_match;
   bool has_proxy_token;
+  bool has_bvh_format_profile_object;
   bool has_profile_ref;
+  bool selected_compatibility_backend_profile;
+  bool bvh_format_profile_object_bridge_passed;
   bool registry_lookup_passed;
   const char *registry_source;
   const char *proxy_token_source;
+  const char *profile_object_source;
+  const char *profile_ref_source;
   const char *profile_ref;
   bool actual_abi_evidence_for_proxy_fields;
   rtcore_runtime_as_proxy_registry_key key;
@@ -17716,12 +17927,27 @@ static rtcore_runtime_as_proxy_registry_entry
 rtcore_publish_runtime_as_proxy_registry_entry(
     const rtcore_runtime_as_proxy_registry_key &key,
     const rtcore_pre_provider_traversal_data_snapshot
-        &pre_provider_traversal_data_snapshot) {
+        &pre_provider_traversal_data_snapshot,
+    const rtcore_bvh_format_profile_object_bridge_snapshot
+        &bvh_format_profile_object_bridge_snapshot) {
   rtcore_runtime_as_proxy_registry_entry entry;
   entry.key = key;
   entry.proxy_token_source = rtcore_top_level_as_proxy_token_source_label();
-  entry.bvh_format_version = RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
-  entry.profile_ref = rtcore_bvh_format_profile_ref_name(entry.bvh_format_version);
+  entry.bvh_format_version =
+      bvh_format_profile_object_bridge_snapshot.bvh_format_version;
+  entry.profile_object_source =
+      bvh_format_profile_object_bridge_snapshot.profile_object_source;
+  entry.profile_ref_source =
+      bvh_format_profile_object_bridge_snapshot.profile_ref_source;
+  entry.profile_ref = bvh_format_profile_object_bridge_snapshot.profile_ref;
+  entry.has_bvh_format_profile_object =
+      bvh_format_profile_object_bridge_snapshot.has_bvh_format_profile_object;
+  entry.selected_compatibility_backend_profile =
+      bvh_format_profile_object_bridge_snapshot
+          .selected_compatibility_backend_profile;
+  entry.bvh_format_profile_object_bridge_passed =
+      bvh_format_profile_object_bridge_snapshot
+          .bvh_format_profile_object_bridge_passed;
   if (!key.valid || !pre_provider_traversal_data_snapshot.valid) {
     return entry;
   }
@@ -17768,12 +17994,38 @@ static void rtcore_recompute_runtime_as_proxy_registry_lookup_snapshot(
   snapshot->has_proxy_token = snapshot->entry_live &&
                               snapshot->entry.traversable_proxy_id != 0 &&
                               snapshot->entry.root_proxy_id != 0;
-  snapshot->has_profile_ref =
+  snapshot->has_bvh_format_profile_object =
+      snapshot->entry_live && snapshot->entry.has_bvh_format_profile_object &&
+      snapshot->entry.profile_object_source != NULL &&
+      strcmp(snapshot->entry.profile_object_source,
+             rtcore_bvh_format_profile_object_bridge_source_label()) == 0;
+  snapshot->selected_compatibility_backend_profile =
       snapshot->entry_live &&
+      snapshot->entry.selected_compatibility_backend_profile &&
+      snapshot->entry.bvh_format_version ==
+          RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  snapshot->bvh_format_profile_object_bridge_passed =
+      snapshot->has_bvh_format_profile_object &&
+      snapshot->selected_compatibility_backend_profile &&
+      snapshot->entry.bvh_format_profile_object_bridge_passed;
+  snapshot->has_profile_ref =
+      snapshot->bvh_format_profile_object_bridge_passed &&
       snapshot->entry.bvh_format_version ==
           RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT &&
+      snapshot->entry.profile_ref_source != NULL &&
+      strcmp(snapshot->entry.profile_ref_source,
+             rtcore_bvh_format_profile_ref_source_label()) == 0 &&
       snapshot->entry.profile_ref != NULL &&
-      strcmp(snapshot->entry.profile_ref, "unavailable") != 0;
+      strcmp(snapshot->entry.profile_ref,
+             "RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT") == 0;
+  snapshot->profile_object_source =
+      snapshot->entry_found && snapshot->entry.profile_object_source != NULL
+          ? snapshot->entry.profile_object_source
+          : "unavailable";
+  snapshot->profile_ref_source =
+      snapshot->entry_found && snapshot->entry.profile_ref_source != NULL
+          ? snapshot->entry.profile_ref_source
+          : "unavailable";
   snapshot->profile_ref =
       snapshot->has_profile_ref ? snapshot->entry.profile_ref : "unavailable";
   snapshot->proxy_token_source =
@@ -17909,7 +18161,9 @@ rtcore_apply_runtime_as_proxy_registry_failpoint_to_lookup_snapshot(
          "drop_registry_entry=%u, wrong_owner=%u, stale_generation=%u, "
          "entry_found=%u, entry_live=%u, registry_key_match=%u, "
          "registry_owner_match=%u, registry_generation_match=%u, "
-         "top_level_as_match=%u, registry_lookup_passed=%u, "
+         "top_level_as_match=%u, has_bvh_format_profile_object=%u, "
+         "has_profile_ref=%u, bvh_format_profile_object_bridge_passed=%u, "
+         "registry_lookup_passed=%u, "
          "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
          rtcore_runtime_as_proxy_registry_failpoint_name(mode),
          rtcore_runtime_as_proxy_registry_failpoint_name(mode),
@@ -17926,6 +18180,9 @@ rtcore_apply_runtime_as_proxy_registry_failpoint_to_lookup_snapshot(
          snapshot->registry_owner_match ? 1 : 0,
          snapshot->registry_generation_match ? 1 : 0,
          snapshot->top_level_as_match ? 1 : 0,
+         snapshot->has_bvh_format_profile_object ? 1 : 0,
+         snapshot->has_profile_ref ? 1 : 0,
+         snapshot->bvh_format_profile_object_bridge_passed ? 1 : 0,
          snapshot->registry_lookup_passed ? 1 : 0,
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0);
@@ -17946,8 +18203,12 @@ static void rtcore_log_runtime_as_proxy_registry_lookup_snapshot(
          "registry_key_match=%u, registry_owner_match=%u, "
          "registry_generation_match=%u, top_level_as_match=%u, "
          "has_proxy_token=%u, traversable_proxy_id=0x%llx, "
-         "root_proxy_id=0x%llx, has_profile_ref=%u, profile_ref=%s, "
+         "root_proxy_id=0x%llx, profile_object_source=%s, "
+         "profile_ref_source=%s, has_bvh_format_profile_object=%u, "
+         "has_profile_ref=%u, profile_ref=%s, "
          "bvh_format_version=%u, registry_lookup_passed=%u, "
+         "selected_compatibility_backend_profile=%u, "
+         "bvh_format_profile_object_bridge_passed=%u, "
          "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
          snapshot.registry_source, snapshot.proxy_token_source,
          rtcore_traversal_source_provider_name(source_request.provider),
@@ -17964,9 +18225,13 @@ static void rtcore_log_runtime_as_proxy_registry_lookup_snapshot(
          snapshot.has_proxy_token ? 1 : 0,
          (unsigned long long)snapshot.entry.traversable_proxy_id,
          (unsigned long long)snapshot.entry.root_proxy_id,
+         snapshot.profile_object_source, snapshot.profile_ref_source,
+         snapshot.has_bvh_format_profile_object ? 1 : 0,
          snapshot.has_profile_ref ? 1 : 0, snapshot.profile_ref,
          snapshot.entry.bvh_format_version,
          snapshot.registry_lookup_passed ? 1 : 0,
+         snapshot.selected_compatibility_backend_profile ? 1 : 0,
+         snapshot.bvh_format_profile_object_bridge_passed ? 1 : 0,
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0);
   fflush(stdout);
@@ -17987,7 +18252,11 @@ static bool rtcore_fail_closed_on_runtime_as_proxy_registry_lookup_snapshot(
          "entry_found=%u, entry_live=%u, registry_key_match=%u, "
          "registry_owner_match=%u, registry_generation_match=%u, "
          "top_level_as_match=%u, has_proxy_token=%u, has_profile_ref=%u, "
-         "profile_ref=%s, registry_lookup_passed=%u, "
+         "profile_object_source=%s, profile_ref_source=%s, "
+         "has_bvh_format_profile_object=%u, profile_ref=%s, "
+         "selected_compatibility_backend_profile=%u, "
+         "bvh_format_profile_object_bridge_passed=%u, "
+         "registry_lookup_passed=%u, "
          "before_top_level_as_proxy_resolve_adapter=1, "
          "before_registry_payload_shadow=1, "
          "before_provider_consumed_input=1, before_backend_input_route=1, "
@@ -18006,7 +18275,12 @@ static bool rtcore_fail_closed_on_runtime_as_proxy_registry_lookup_snapshot(
          snapshot.registry_generation_match ? 1 : 0,
          snapshot.top_level_as_match ? 1 : 0,
          snapshot.has_proxy_token ? 1 : 0,
-         snapshot.has_profile_ref ? 1 : 0, snapshot.profile_ref,
+         snapshot.has_profile_ref ? 1 : 0, snapshot.profile_object_source,
+         snapshot.profile_ref_source,
+         snapshot.has_bvh_format_profile_object ? 1 : 0,
+         snapshot.profile_ref,
+         snapshot.selected_compatibility_backend_profile ? 1 : 0,
+         snapshot.bvh_format_profile_object_bridge_passed ? 1 : 0,
          snapshot.registry_lookup_passed ? 1 : 0);
   fflush(stdout);
   return true;
@@ -18028,6 +18302,12 @@ struct rtcore_top_level_as_proxy_resolve_adapter_snapshot {
         root_proxy_id(0),
         has_bvh_format_profile(false),
         bvh_format_version(0),
+        profile_object_source("unavailable"),
+        profile_ref_source("unavailable"),
+        profile_ref("unavailable"),
+        has_bvh_format_profile_object(false),
+        selected_compatibility_backend_profile(false),
+        bvh_format_profile_object_bridge_passed(false),
         resolve_adapter_gate_passed(false),
         actual_abi_evidence_for_proxy_fields(false) {}
 
@@ -18045,6 +18325,12 @@ struct rtcore_top_level_as_proxy_resolve_adapter_snapshot {
   uint64_t root_proxy_id;
   bool has_bvh_format_profile;
   uint32_t bvh_format_version;
+  const char *profile_object_source;
+  const char *profile_ref_source;
+  const char *profile_ref;
+  bool has_bvh_format_profile_object;
+  bool selected_compatibility_backend_profile;
+  bool bvh_format_profile_object_bridge_passed;
   bool resolve_adapter_gate_passed;
   bool actual_abi_evidence_for_proxy_fields;
 };
@@ -18106,7 +18392,8 @@ static void rtcore_recompute_top_level_as_proxy_resolve_adapter_validity(
       snapshot->has_launch_context_top_level_as &&
       snapshot->has_traversal_data_top_level_as &&
       snapshot->top_level_as_match && snapshot->has_proxy_token &&
-      snapshot->has_bvh_format_profile;
+      snapshot->has_bvh_format_profile &&
+      snapshot->bvh_format_profile_object_bridge_passed;
   snapshot->valid = snapshot->resolve_adapter_gate_passed;
   snapshot->actual_abi_evidence_for_proxy_fields = false;
 }
@@ -18150,8 +18437,23 @@ rtcore_make_top_level_as_proxy_resolve_adapter_snapshot(
                              snapshot.traversable_proxy_id != 0 &&
                              snapshot.root_proxy_id != 0;
   snapshot.bvh_format_version = entry.bvh_format_version;
+  snapshot.profile_object_source =
+      runtime_as_proxy_registry_lookup_snapshot.profile_object_source;
+  snapshot.profile_ref_source =
+      runtime_as_proxy_registry_lookup_snapshot.profile_ref_source;
+  snapshot.profile_ref =
+      runtime_as_proxy_registry_lookup_snapshot.profile_ref;
+  snapshot.has_bvh_format_profile_object =
+      runtime_as_proxy_registry_lookup_snapshot.has_bvh_format_profile_object;
+  snapshot.selected_compatibility_backend_profile =
+      runtime_as_proxy_registry_lookup_snapshot
+          .selected_compatibility_backend_profile;
+  snapshot.bvh_format_profile_object_bridge_passed =
+      runtime_as_proxy_registry_lookup_snapshot
+          .bvh_format_profile_object_bridge_passed;
   snapshot.has_bvh_format_profile =
       runtime_as_proxy_registry_lookup_snapshot.has_profile_ref &&
+      snapshot.bvh_format_profile_object_bridge_passed &&
       snapshot.top_level_as_match;
   rtcore_recompute_top_level_as_proxy_resolve_adapter_validity(&snapshot);
   return snapshot;
@@ -18256,6 +18558,10 @@ static void rtcore_log_top_level_as_proxy_resolve_adapter_snapshot(
          "has_proxy_token=%u, has_traversable_root_proxy=%u, "
          "traversable_proxy_id=0x%llx, root_proxy_id=0x%llx, "
          "has_bvh_format_profile=%u, bvh_format_version=%u, "
+         "profile_object_source=%s, profile_ref_source=%s, "
+         "has_bvh_format_profile_object=%u, profile_ref=%s, "
+         "selected_compatibility_backend_profile=%u, "
+         "bvh_format_profile_object_bridge_passed=%u, "
          "proxy_delegation_source=%s, resolve_adapter_gate_passed=%u, "
          "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
          rtcore_top_level_as_proxy_resolve_adapter_source_label(),
@@ -18275,7 +18581,13 @@ static void rtcore_log_top_level_as_proxy_resolve_adapter_snapshot(
          (unsigned long long)snapshot.traversable_proxy_id,
          (unsigned long long)snapshot.root_proxy_id,
          snapshot.has_bvh_format_profile ? 1 : 0,
-         snapshot.bvh_format_version, rtcore_proxy_delegation_source_label(),
+         snapshot.bvh_format_version, snapshot.profile_object_source,
+         snapshot.profile_ref_source,
+         snapshot.has_bvh_format_profile_object ? 1 : 0,
+         snapshot.profile_ref,
+         snapshot.selected_compatibility_backend_profile ? 1 : 0,
+         snapshot.bvh_format_profile_object_bridge_passed ? 1 : 0,
+         rtcore_proxy_delegation_source_label(),
          snapshot.resolve_adapter_gate_passed ? 1 : 0,
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0);
@@ -18300,6 +18612,10 @@ rtcore_fail_closed_on_top_level_as_proxy_resolve_adapter_snapshot(
          "has_traversal_data_top_level_as=%u, "
          "traversal_data_top_level_as=0x%llx, top_level_as_match=%u, "
          "has_proxy_token=%u, has_bvh_format_profile=%u, "
+         "profile_object_source=%s, profile_ref_source=%s, "
+         "has_bvh_format_profile_object=%u, profile_ref=%s, "
+         "selected_compatibility_backend_profile=%u, "
+         "bvh_format_profile_object_bridge_passed=%u, "
          "resolve_adapter_gate_passed=%u, "
          "before_registry_payload_shadow=1, "
          "before_provider_consumed_input=1, before_backend_input_route=1, "
@@ -18319,6 +18635,11 @@ rtcore_fail_closed_on_top_level_as_proxy_resolve_adapter_snapshot(
          snapshot.top_level_as_match ? 1 : 0,
          snapshot.has_proxy_token ? 1 : 0,
          snapshot.has_bvh_format_profile ? 1 : 0,
+         snapshot.profile_object_source, snapshot.profile_ref_source,
+         snapshot.has_bvh_format_profile_object ? 1 : 0,
+         snapshot.profile_ref,
+         snapshot.selected_compatibility_backend_profile ? 1 : 0,
+         snapshot.bvh_format_profile_object_bridge_passed ? 1 : 0,
          snapshot.resolve_adapter_gate_passed ? 1 : 0);
   fflush(stdout);
   return true;
@@ -19676,8 +19997,17 @@ bool rtcore_build_traversal_completion_event(
               source_request, event->owner_seq_snapshot,
               event->driver_runtime_context_window_lifetime_bridge_snapshot,
               launch_context_input_publication_record);
+      rtcore_bvh_format_profile_object_bridge_snapshot
+          bvh_format_profile_object_bridge_snapshot =
+              rtcore_make_bvh_format_profile_object_bridge_snapshot(
+                  RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT);
+      rtcore_apply_bvh_format_profile_object_bridge_failpoint(
+          pI, source_request, &bvh_format_profile_object_bridge_snapshot);
+      rtcore_log_bvh_format_profile_object_bridge_snapshot(
+          pI, source_request, bvh_format_profile_object_bridge_snapshot);
       (void)rtcore_publish_runtime_as_proxy_registry_entry(
-          runtime_as_proxy_registry_key, pre_provider_traversal_data_snapshot);
+          runtime_as_proxy_registry_key, pre_provider_traversal_data_snapshot,
+          bvh_format_profile_object_bridge_snapshot);
       rtcore_runtime_as_proxy_registry_lookup_snapshot
           runtime_as_proxy_registry_lookup_snapshot =
               rtcore_lookup_runtime_as_proxy_registry_entry(
