@@ -13059,6 +13059,13 @@ struct rtcore_provider_backend_input_consumption_route_record {
         has_provider_payload_backend_input_snapshot(false),
         provider_payload_backend_input_snapshot_valid(false),
         provider_payload_backend_input_snapshot_accepted(false),
+        provider_payload_backend_input_owner_lifetime_ok(false),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        traversable_root_proxy_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         existing_traversal_input_replay_requested(false),
         existing_traversal_request_replay_live_input_match(false),
         provider_backend_input_consumption_route_passed(false),
@@ -13075,6 +13082,12 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool has_provider_payload_backend_input_snapshot;
   bool provider_payload_backend_input_snapshot_valid;
   bool provider_payload_backend_input_snapshot_accepted;
+  bool provider_payload_backend_input_owner_lifetime_ok;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
+  rtcore_decoded_input_field_owner_class traversable_root_proxy_owner;
+  rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   bool existing_traversal_input_replay_requested;
   bool existing_traversal_request_replay_live_input_match;
   bool provider_backend_input_consumption_route_passed;
@@ -13105,6 +13118,20 @@ rtcore_make_provider_backend_input_consumption_route_record(
   record.provider_payload_backend_input_snapshot_accepted =
       response.provider_backend_input_response_annotation
           .provider_payload_backend_input_snapshot_accepted;
+  if (record.has_provider_payload_backend_input_snapshot &&
+      record.provider_payload_backend_input_snapshot_valid) {
+    const rtcore_provider_payload_consumed_input_view &view =
+        custom_result.provider_payload_backend_input_snapshot
+            .consumed_input_view;
+    record.provider_payload_backend_input_owner_lifetime_ok =
+        view.provider_consumed_input_fields_all_owned_with_lifetime;
+    record.ray_origin_direction_tmin_tmax_owner =
+        view.ray_origin_direction_tmin_tmax_owner;
+    record.ray_flags_cull_mask_owner = view.ray_flags_cull_mask_owner;
+    record.launch_context_input_owner = view.launch_context_input_owner;
+    record.traversable_root_proxy_owner = view.traversable_root_proxy_owner;
+    record.bvh_format_profile_owner = view.bvh_format_profile_owner;
+  }
   record.existing_traversal_input_replay_requested =
       custom_result.existing_traversal_input_replay_requested;
   record.existing_traversal_request_replay_live_input_match =
@@ -13117,6 +13144,7 @@ rtcore_make_provider_backend_input_consumption_route_record(
       record.has_provider_payload_backend_input_snapshot &&
       record.provider_payload_backend_input_snapshot_valid &&
       record.provider_payload_backend_input_snapshot_accepted &&
+      record.provider_payload_backend_input_owner_lifetime_ok &&
       (!record.existing_traversal_input_replay_requested ||
        record.existing_traversal_request_replay_live_input_match);
   return record;
@@ -13141,6 +13169,11 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "has_provider_payload_backend_input_snapshot=%u, "
          "provider_payload_backend_input_snapshot_valid=%u, "
          "provider_payload_backend_input_snapshot_accepted=%u, "
+         "provider_payload_backend_input_owner_lifetime_ok=%u, "
+         "provider_backend_input_authority_propagated=%u, "
+         "ray_origin_direction_tmin_tmax_owner=%s, "
+         "ray_flags_cull_mask_owner=%s, launch_context_input_owner=%s, "
+         "traversable_root_proxy_owner=%s, bvh_format_profile_owner=%s, "
          "existing_traversal_input_replay_requested=%u, "
          "existing_traversal_request_replay_live_input_match=%u, "
          "provider_backend_input_consumption_route_passed=%u, "
@@ -13155,6 +13188,18 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.has_provider_payload_backend_input_snapshot ? 1 : 0,
          record.provider_payload_backend_input_snapshot_valid ? 1 : 0,
          record.provider_payload_backend_input_snapshot_accepted ? 1 : 0,
+         record.provider_payload_backend_input_owner_lifetime_ok ? 1 : 0,
+         record.provider_payload_backend_input_owner_lifetime_ok ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             record.ray_origin_direction_tmin_tmax_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             record.ray_flags_cull_mask_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             record.launch_context_input_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             record.traversable_root_proxy_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             record.bvh_format_profile_owner),
          record.existing_traversal_input_replay_requested ? 1 : 0,
          record.existing_traversal_request_replay_live_input_match ? 1 : 0,
          record.provider_backend_input_consumption_route_passed ? 1 : 0,
@@ -13631,6 +13676,11 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "has_traversable_root_proxy=%u, traversable_proxy_id=0x%llx, "
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_version=%u, "
+         "provider_payload_backend_input_owner_lifetime_ok=%u, "
+         "provider_backend_input_authority_propagated=%u, "
+         "ray_origin_direction_tmin_tmax_owner=%s, "
+         "ray_flags_cull_mask_owner=%s, launch_context_input_owner=%s, "
+         "traversable_root_proxy_owner=%s, bvh_format_profile_owner=%s, "
          "custom_backend_provider_payload_consumed_input_snapshot_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(result.provider),
          result.context_ptr, result.handoff_window_base,
@@ -13651,7 +13701,19 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          view.has_traversable_root_proxy ? 1 : 0,
          (unsigned long long)view.traversable_proxy_id,
          (unsigned long long)view.root_proxy_id,
-         view.has_bvh_format_profile ? 1 : 0, view.bvh_format_version);
+         view.has_bvh_format_profile ? 1 : 0, view.bvh_format_version,
+         view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
+         view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             view.ray_origin_direction_tmin_tmax_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             view.ray_flags_cull_mask_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             view.launch_context_input_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             view.traversable_root_proxy_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             view.bvh_format_profile_owner));
   fflush(stdout);
 }
 
