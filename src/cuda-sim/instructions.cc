@@ -17536,9 +17536,488 @@ rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
   decoded_input_snapshot->launch_context_input_owner = publication_owner;
 }
 
+static const char *rtcore_runtime_as_proxy_registry_source_label() {
+  return "runtime_as_proxy_registry_skeleton";
+}
+
+static const char *rtcore_bvh_format_profile_ref_name(uint32_t profile) {
+  if (profile == RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT) {
+    return "RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT";
+  }
+  return "unknown";
+}
+
+struct rtcore_runtime_as_proxy_registry_key {
+  rtcore_runtime_as_proxy_registry_key()
+      : valid(false),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        owner_generation(0),
+        owner_hw_sid(0),
+        warp_uid(0),
+        warp_id(0),
+        has_top_level_as(false),
+        top_level_as(0) {}
+
+  bool valid;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  unsigned owner_generation;
+  unsigned owner_hw_sid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  bool has_top_level_as;
+  uint64_t top_level_as;
+
+  bool operator<(const rtcore_runtime_as_proxy_registry_key &other) const {
+    if (context_ptr != other.context_ptr) {
+      return context_ptr < other.context_ptr;
+    }
+    if (handoff_window_base != other.handoff_window_base) {
+      return handoff_window_base < other.handoff_window_base;
+    }
+    if (lane_slot_index != other.lane_slot_index) {
+      return lane_slot_index < other.lane_slot_index;
+    }
+    if (owner_generation != other.owner_generation) {
+      return owner_generation < other.owner_generation;
+    }
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    if (warp_uid != other.warp_uid) {
+      return warp_uid < other.warp_uid;
+    }
+    if (warp_id != other.warp_id) {
+      return warp_id < other.warp_id;
+    }
+    if (has_top_level_as != other.has_top_level_as) {
+      return has_top_level_as < other.has_top_level_as;
+    }
+    return top_level_as < other.top_level_as;
+  }
+};
+
+static bool rtcore_runtime_as_proxy_registry_key_equal(
+    const rtcore_runtime_as_proxy_registry_key &a,
+    const rtcore_runtime_as_proxy_registry_key &b) {
+  return a.valid == b.valid && a.context_ptr == b.context_ptr &&
+         a.handoff_window_base == b.handoff_window_base &&
+         a.lane_slot_index == b.lane_slot_index &&
+         a.owner_generation == b.owner_generation &&
+         a.owner_hw_sid == b.owner_hw_sid &&
+         a.warp_uid == b.warp_uid && a.warp_id == b.warp_id &&
+         a.has_top_level_as == b.has_top_level_as &&
+         a.top_level_as == b.top_level_as;
+}
+
+static bool rtcore_runtime_as_proxy_registry_owner_equal(
+    const rtcore_runtime_as_proxy_registry_key &a,
+    const rtcore_runtime_as_proxy_registry_key &b) {
+  return a.context_ptr == b.context_ptr &&
+         a.handoff_window_base == b.handoff_window_base &&
+         a.lane_slot_index == b.lane_slot_index &&
+         a.owner_hw_sid == b.owner_hw_sid &&
+         a.warp_uid == b.warp_uid && a.warp_id == b.warp_id;
+}
+
+struct rtcore_runtime_as_proxy_registry_entry {
+  rtcore_runtime_as_proxy_registry_entry()
+      : valid(false),
+        live(false),
+        traversable_proxy_id(0),
+        root_proxy_id(0),
+        bvh_format_version(0),
+        proxy_token_source("unavailable"),
+        profile_ref("unavailable"),
+        actual_abi_evidence_for_proxy_fields(false) {}
+
+  bool valid;
+  bool live;
+  rtcore_runtime_as_proxy_registry_key key;
+  uint64_t traversable_proxy_id;
+  uint64_t root_proxy_id;
+  uint32_t bvh_format_version;
+  const char *proxy_token_source;
+  const char *profile_ref;
+  bool actual_abi_evidence_for_proxy_fields;
+};
+
+struct rtcore_runtime_as_proxy_registry_lookup_snapshot {
+  rtcore_runtime_as_proxy_registry_lookup_snapshot()
+      : valid(false),
+        entry_found(false),
+        entry_live(false),
+        registry_key_match(false),
+        registry_owner_match(false),
+        registry_generation_match(false),
+        top_level_as_match(false),
+        has_proxy_token(false),
+        has_profile_ref(false),
+        registry_lookup_passed(false),
+        registry_source(rtcore_runtime_as_proxy_registry_source_label()),
+        proxy_token_source(rtcore_top_level_as_proxy_token_source_label()),
+        profile_ref("unavailable"),
+        actual_abi_evidence_for_proxy_fields(false) {}
+
+  bool valid;
+  bool entry_found;
+  bool entry_live;
+  bool registry_key_match;
+  bool registry_owner_match;
+  bool registry_generation_match;
+  bool top_level_as_match;
+  bool has_proxy_token;
+  bool has_profile_ref;
+  bool registry_lookup_passed;
+  const char *registry_source;
+  const char *proxy_token_source;
+  const char *profile_ref;
+  bool actual_abi_evidence_for_proxy_fields;
+  rtcore_runtime_as_proxy_registry_key key;
+  rtcore_runtime_as_proxy_registry_entry entry;
+};
+
+static std::map<rtcore_runtime_as_proxy_registry_key,
+                rtcore_runtime_as_proxy_registry_entry>
+    g_rtcore_runtime_as_proxy_registry;
+
+static rtcore_runtime_as_proxy_registry_key
+rtcore_make_runtime_as_proxy_registry_key(
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot,
+    const rtcore_driver_runtime_context_window_lifetime_bridge_snapshot
+        &lifetime_bridge_snapshot,
+    const rtcore_launch_context_input_publication_record
+        &launch_context_input_publication_record) {
+  rtcore_runtime_as_proxy_registry_key key;
+  key.context_ptr = source_request.context_ptr;
+  key.handoff_window_base = source_request.handoff_window_base;
+  key.lane_slot_index = source_request.lane_slot_index;
+  key.owner_generation = lifetime_bridge_snapshot.owner_generation;
+  key.owner_hw_sid = owner_seq_snapshot.warp_metadata.owner_hw_sid;
+  key.warp_uid = owner_seq_snapshot.warp_metadata.warp_uid;
+  key.warp_id = owner_seq_snapshot.warp_metadata.warp_id;
+  key.has_top_level_as =
+      launch_context_input_publication_record.has_launch_context_input;
+  key.top_level_as =
+      launch_context_input_publication_record.bridge_trace_replay_top_level_as;
+  key.valid = owner_seq_snapshot.valid && lifetime_bridge_snapshot.valid &&
+              lifetime_bridge_snapshot.provider_lifetime_ready &&
+              rtcore_launch_context_input_publication_record_is_complete(
+                  launch_context_input_publication_record) &&
+              key.has_top_level_as && key.owner_generation != 0;
+  return key;
+}
+
+static rtcore_runtime_as_proxy_registry_entry
+rtcore_publish_runtime_as_proxy_registry_entry(
+    const rtcore_runtime_as_proxy_registry_key &key,
+    const rtcore_pre_provider_traversal_data_snapshot
+        &pre_provider_traversal_data_snapshot) {
+  rtcore_runtime_as_proxy_registry_entry entry;
+  entry.key = key;
+  entry.proxy_token_source = rtcore_top_level_as_proxy_token_source_label();
+  entry.bvh_format_version = RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  entry.profile_ref = rtcore_bvh_format_profile_ref_name(entry.bvh_format_version);
+  if (!key.valid || !pre_provider_traversal_data_snapshot.valid) {
+    return entry;
+  }
+
+  const Traversal_data &traversal =
+      pre_provider_traversal_data_snapshot.traversal_snapshot;
+  const bool traversal_top_level_as_match =
+      traversal.rtcore_trace_input_has_top_level_as != 0 &&
+      traversal.rtcore_trace_input_top_level_as == key.top_level_as;
+  entry.traversable_proxy_id = traversal.rtcore_traversable_proxy_id;
+  entry.root_proxy_id = traversal.rtcore_root_proxy_id;
+  entry.valid = traversal_top_level_as_match &&
+                entry.traversable_proxy_id != 0 && entry.root_proxy_id != 0;
+  entry.live = entry.valid;
+  entry.actual_abi_evidence_for_proxy_fields = false;
+  if (entry.valid) {
+    g_rtcore_runtime_as_proxy_registry[key] = entry;
+  }
+  return entry;
+}
+
+static void rtcore_recompute_runtime_as_proxy_registry_lookup_snapshot(
+    rtcore_runtime_as_proxy_registry_lookup_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->entry_live =
+      snapshot->entry_found && snapshot->entry.live && snapshot->entry.valid;
+  snapshot->registry_owner_match =
+      snapshot->entry_found &&
+      rtcore_runtime_as_proxy_registry_owner_equal(snapshot->key,
+                                                  snapshot->entry.key);
+  snapshot->registry_generation_match =
+      snapshot->entry_found &&
+      snapshot->key.owner_generation == snapshot->entry.key.owner_generation;
+  snapshot->top_level_as_match =
+      snapshot->entry_found && snapshot->key.has_top_level_as &&
+      snapshot->entry.key.has_top_level_as &&
+      snapshot->key.top_level_as == snapshot->entry.key.top_level_as;
+  snapshot->registry_key_match =
+      snapshot->entry_found &&
+      rtcore_runtime_as_proxy_registry_key_equal(snapshot->key,
+                                                snapshot->entry.key);
+  snapshot->has_proxy_token = snapshot->entry_live &&
+                              snapshot->entry.traversable_proxy_id != 0 &&
+                              snapshot->entry.root_proxy_id != 0;
+  snapshot->has_profile_ref =
+      snapshot->entry_live &&
+      snapshot->entry.bvh_format_version ==
+          RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT &&
+      snapshot->entry.profile_ref != NULL &&
+      strcmp(snapshot->entry.profile_ref, "unavailable") != 0;
+  snapshot->profile_ref =
+      snapshot->has_profile_ref ? snapshot->entry.profile_ref : "unavailable";
+  snapshot->proxy_token_source =
+      snapshot->entry_found && snapshot->entry.proxy_token_source != NULL &&
+              strcmp(snapshot->entry.proxy_token_source, "unavailable") != 0
+          ? snapshot->entry.proxy_token_source
+          : rtcore_top_level_as_proxy_token_source_label();
+  snapshot->registry_lookup_passed =
+      snapshot->key.valid && snapshot->entry_found && snapshot->entry_live &&
+      snapshot->registry_key_match && snapshot->registry_owner_match &&
+      snapshot->registry_generation_match && snapshot->top_level_as_match &&
+      snapshot->has_proxy_token && snapshot->has_profile_ref;
+  snapshot->valid = snapshot->registry_lookup_passed;
+  snapshot->actual_abi_evidence_for_proxy_fields = false;
+}
+
+static rtcore_runtime_as_proxy_registry_lookup_snapshot
+rtcore_lookup_runtime_as_proxy_registry_entry(
+    const rtcore_runtime_as_proxy_registry_key &key) {
+  rtcore_runtime_as_proxy_registry_lookup_snapshot snapshot;
+  snapshot.key = key;
+  std::map<rtcore_runtime_as_proxy_registry_key,
+           rtcore_runtime_as_proxy_registry_entry>::const_iterator entry =
+      g_rtcore_runtime_as_proxy_registry.find(key);
+  if (entry != g_rtcore_runtime_as_proxy_registry.end()) {
+    snapshot.entry_found = true;
+    snapshot.entry = entry->second;
+  }
+  rtcore_recompute_runtime_as_proxy_registry_lookup_snapshot(&snapshot);
+  return snapshot;
+}
+
+enum rtcore_runtime_as_proxy_registry_failpoint {
+  RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_NONE = 0,
+  RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_DROP_REGISTRY_ENTRY,
+  RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_WRONG_OWNER,
+  RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_STALE_GENERATION,
+};
+
+static const char *rtcore_runtime_as_proxy_registry_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_AS_PROXY_REGISTRY_FAILPOINT";
+}
+
+static rtcore_runtime_as_proxy_registry_failpoint
+rtcore_runtime_as_proxy_registry_failpoint_mode() {
+  const char *value =
+      getenv(rtcore_runtime_as_proxy_registry_failpoint_env_name());
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "none") == 0) {
+    return RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "drop_registry_entry") == 0) {
+    return RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_DROP_REGISTRY_ENTRY;
+  }
+  if (strcmp(value, "wrong_owner") == 0) {
+    return RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_WRONG_OWNER;
+  }
+  if (strcmp(value, "stale_generation") == 0) {
+    return RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_STALE_GENERATION;
+  }
+  return RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_NONE;
+}
+
+static const char *rtcore_runtime_as_proxy_registry_failpoint_name(
+    rtcore_runtime_as_proxy_registry_failpoint mode) {
+  switch (mode) {
+    case RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_DROP_REGISTRY_ENTRY:
+      return "drop_registry_entry";
+    case RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_WRONG_OWNER:
+      return "wrong_owner";
+    case RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_STALE_GENERATION:
+      return "stale_generation";
+    case RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void
+rtcore_apply_runtime_as_proxy_registry_failpoint_to_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    rtcore_runtime_as_proxy_registry_lookup_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  const rtcore_runtime_as_proxy_registry_failpoint mode =
+      rtcore_runtime_as_proxy_registry_failpoint_mode();
+  if (mode == RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_NONE) {
+    return;
+  }
+
+  bool drop_registry_entry = false;
+  bool wrong_owner = false;
+  bool stale_generation = false;
+  switch (mode) {
+    case RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_DROP_REGISTRY_ENTRY:
+      snapshot->entry_found = false;
+      snapshot->entry = rtcore_runtime_as_proxy_registry_entry();
+      drop_registry_entry = true;
+      break;
+    case RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_WRONG_OWNER:
+      if (snapshot->entry_found) {
+        snapshot->entry.key.owner_hw_sid = snapshot->key.owner_hw_sid + 1;
+        if (snapshot->entry.key.owner_hw_sid == snapshot->key.owner_hw_sid) {
+          snapshot->entry.key.owner_hw_sid = snapshot->key.owner_hw_sid ^ 1;
+        }
+      }
+      wrong_owner = true;
+      break;
+    case RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_STALE_GENERATION:
+      if (snapshot->entry_found) {
+        snapshot->entry.key.owner_generation = snapshot->key.owner_generation + 1;
+        if (snapshot->entry.key.owner_generation ==
+            snapshot->key.owner_generation) {
+          snapshot->entry.key.owner_generation = snapshot->key.owner_generation ^ 1;
+        }
+      }
+      stale_generation = true;
+      break;
+    case RTCORE_RUNTIME_AS_PROXY_REGISTRY_FAILPOINT_NONE:
+    default:
+      return;
+  }
+  rtcore_recompute_runtime_as_proxy_registry_lookup_snapshot(snapshot);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "runtime-as-proxy-registry-failpoint=1, "
+         "failpoint=%s, mode=%s, provider=%s, registry_source=%s, "
+         "proxy_token_source=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "owner_generation=%u, top_level_as=0x%llx, "
+         "drop_registry_entry=%u, wrong_owner=%u, stale_generation=%u, "
+         "entry_found=%u, entry_live=%u, registry_key_match=%u, "
+         "registry_owner_match=%u, registry_generation_match=%u, "
+         "top_level_as_match=%u, registry_lookup_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_runtime_as_proxy_registry_failpoint_name(mode),
+         rtcore_runtime_as_proxy_registry_failpoint_name(mode),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         rtcore_runtime_as_proxy_registry_source_label(),
+         snapshot->proxy_token_source, snapshot->key.context_ptr,
+         snapshot->key.handoff_window_base, snapshot->key.lane_slot_index,
+         snapshot->key.owner_generation,
+         (unsigned long long)snapshot->key.top_level_as,
+         drop_registry_entry ? 1 : 0, wrong_owner ? 1 : 0,
+         stale_generation ? 1 : 0, snapshot->entry_found ? 1 : 0,
+         snapshot->entry_live ? 1 : 0,
+         snapshot->registry_key_match ? 1 : 0,
+         snapshot->registry_owner_match ? 1 : 0,
+         snapshot->registry_generation_match ? 1 : 0,
+         snapshot->top_level_as_match ? 1 : 0,
+         snapshot->registry_lookup_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static void rtcore_log_runtime_as_proxy_registry_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_runtime_as_proxy_registry_lookup_snapshot &snapshot) {
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "runtime-as-proxy-registry-lookup=1, "
+         "registry_source=%s, proxy_token_source=%s, provider=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_generation=%u, owner_hw_sid=%u, "
+         "warp_uid=%u, warp_id=%u, has_top_level_as=%u, "
+         "top_level_as=0x%llx, entry_found=%u, entry_live=%u, "
+         "registry_key_match=%u, registry_owner_match=%u, "
+         "registry_generation_match=%u, top_level_as_match=%u, "
+         "has_proxy_token=%u, traversable_proxy_id=0x%llx, "
+         "root_proxy_id=0x%llx, has_profile_ref=%u, profile_ref=%s, "
+         "bvh_format_version=%u, registry_lookup_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         snapshot.registry_source, snapshot.proxy_token_source,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot.key.context_ptr, snapshot.key.handoff_window_base,
+         snapshot.key.lane_slot_index, snapshot.key.owner_generation,
+         snapshot.key.owner_hw_sid, snapshot.key.warp_uid,
+         snapshot.key.warp_id, snapshot.key.has_top_level_as ? 1 : 0,
+         (unsigned long long)snapshot.key.top_level_as,
+         snapshot.entry_found ? 1 : 0, snapshot.entry_live ? 1 : 0,
+         snapshot.registry_key_match ? 1 : 0,
+         snapshot.registry_owner_match ? 1 : 0,
+         snapshot.registry_generation_match ? 1 : 0,
+         snapshot.top_level_as_match ? 1 : 0,
+         snapshot.has_proxy_token ? 1 : 0,
+         (unsigned long long)snapshot.entry.traversable_proxy_id,
+         (unsigned long long)snapshot.entry.root_proxy_id,
+         snapshot.has_profile_ref ? 1 : 0, snapshot.profile_ref,
+         snapshot.entry.bvh_format_version,
+         snapshot.registry_lookup_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static bool rtcore_fail_closed_on_runtime_as_proxy_registry_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_runtime_as_proxy_registry_lookup_snapshot &snapshot) {
+  if (snapshot.valid) {
+    return false;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=RUNTIME_AS_PROXY_REGISTRY_NOT_READY, "
+         "registry_source=%s, proxy_token_source=%s, provider=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_generation=%u, top_level_as=0x%llx, "
+         "entry_found=%u, entry_live=%u, registry_key_match=%u, "
+         "registry_owner_match=%u, registry_generation_match=%u, "
+         "top_level_as_match=%u, has_proxy_token=%u, has_profile_ref=%u, "
+         "profile_ref=%s, registry_lookup_passed=%u, "
+         "before_top_level_as_proxy_resolve_adapter=1, "
+         "before_registry_payload_shadow=1, "
+         "before_provider_consumed_input=1, before_backend_input_route=1, "
+         "before_traversal_completion=1, before_completion_release=1, "
+         "actual_abi_evidence_for_proxy_fields=0\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0, snapshot.registry_source,
+         snapshot.proxy_token_source,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot.key.context_ptr, snapshot.key.handoff_window_base,
+         snapshot.key.lane_slot_index, snapshot.key.owner_generation,
+         (unsigned long long)snapshot.key.top_level_as,
+         snapshot.entry_found ? 1 : 0, snapshot.entry_live ? 1 : 0,
+         snapshot.registry_key_match ? 1 : 0,
+         snapshot.registry_owner_match ? 1 : 0,
+         snapshot.registry_generation_match ? 1 : 0,
+         snapshot.top_level_as_match ? 1 : 0,
+         snapshot.has_proxy_token ? 1 : 0,
+         snapshot.has_profile_ref ? 1 : 0, snapshot.profile_ref,
+         snapshot.registry_lookup_passed ? 1 : 0);
+  fflush(stdout);
+  return true;
+}
+
 struct rtcore_top_level_as_proxy_resolve_adapter_snapshot {
   rtcore_top_level_as_proxy_resolve_adapter_snapshot()
       : valid(false),
+        registry_source("unavailable"),
+        has_runtime_as_proxy_registry_lookup(false),
+        runtime_as_proxy_registry_lookup_passed(false),
         has_launch_context_top_level_as(false),
         launch_context_top_level_as(0),
         has_traversal_data_top_level_as(false),
@@ -17553,6 +18032,9 @@ struct rtcore_top_level_as_proxy_resolve_adapter_snapshot {
         actual_abi_evidence_for_proxy_fields(false) {}
 
   bool valid;
+  const char *registry_source;
+  bool has_runtime_as_proxy_registry_lookup;
+  bool runtime_as_proxy_registry_lookup_passed;
   bool has_launch_context_top_level_as;
   uint64_t launch_context_top_level_as;
   bool has_traversal_data_top_level_as;
@@ -17619,6 +18101,8 @@ static void rtcore_recompute_top_level_as_proxy_resolve_adapter_validity(
     return;
   }
   snapshot->resolve_adapter_gate_passed =
+      snapshot->has_runtime_as_proxy_registry_lookup &&
+      snapshot->runtime_as_proxy_registry_lookup_passed &&
       snapshot->has_launch_context_top_level_as &&
       snapshot->has_traversal_data_top_level_as &&
       snapshot->top_level_as_match && snapshot->has_proxy_token &&
@@ -17631,37 +18115,44 @@ static rtcore_top_level_as_proxy_resolve_adapter_snapshot
 rtcore_make_top_level_as_proxy_resolve_adapter_snapshot(
     const rtcore_launch_context_input_publication_record
         &launch_context_input_publication_record,
-    const rtcore_pre_provider_traversal_data_snapshot
-        &pre_provider_traversal_data_snapshot) {
+    const rtcore_runtime_as_proxy_registry_lookup_snapshot
+        &runtime_as_proxy_registry_lookup_snapshot) {
   rtcore_top_level_as_proxy_resolve_adapter_snapshot snapshot;
   if (!rtcore_launch_context_input_publication_record_is_complete(
           launch_context_input_publication_record) ||
-      !pre_provider_traversal_data_snapshot.valid) {
+      !runtime_as_proxy_registry_lookup_snapshot.valid) {
     return snapshot;
   }
 
-  const Traversal_data &traversal =
-      pre_provider_traversal_data_snapshot.traversal_snapshot;
+  const rtcore_runtime_as_proxy_registry_entry &entry =
+      runtime_as_proxy_registry_lookup_snapshot.entry;
+  snapshot.registry_source =
+      runtime_as_proxy_registry_lookup_snapshot.registry_source;
+  snapshot.has_runtime_as_proxy_registry_lookup = true;
+  snapshot.runtime_as_proxy_registry_lookup_passed =
+      runtime_as_proxy_registry_lookup_snapshot.registry_lookup_passed;
   snapshot.has_launch_context_top_level_as =
       launch_context_input_publication_record.has_launch_context_input;
   snapshot.launch_context_top_level_as =
       launch_context_input_publication_record.bridge_trace_replay_top_level_as;
-  snapshot.has_traversal_data_top_level_as =
-      traversal.rtcore_trace_input_has_top_level_as != 0;
-  snapshot.traversal_data_top_level_as =
-      traversal.rtcore_trace_input_top_level_as;
+  snapshot.has_traversal_data_top_level_as = entry.key.has_top_level_as;
+  snapshot.traversal_data_top_level_as = entry.key.top_level_as;
   snapshot.top_level_as_match =
       snapshot.has_launch_context_top_level_as &&
       snapshot.has_traversal_data_top_level_as &&
       snapshot.launch_context_top_level_as ==
-          snapshot.traversal_data_top_level_as;
-  snapshot.traversable_proxy_id = traversal.rtcore_traversable_proxy_id;
-  snapshot.root_proxy_id = traversal.rtcore_root_proxy_id;
-  snapshot.has_proxy_token = snapshot.top_level_as_match &&
+          snapshot.traversal_data_top_level_as &&
+      runtime_as_proxy_registry_lookup_snapshot.top_level_as_match;
+  snapshot.traversable_proxy_id = entry.traversable_proxy_id;
+  snapshot.root_proxy_id = entry.root_proxy_id;
+  snapshot.has_proxy_token =
+      runtime_as_proxy_registry_lookup_snapshot.has_proxy_token &&
                              snapshot.traversable_proxy_id != 0 &&
                              snapshot.root_proxy_id != 0;
-  snapshot.bvh_format_version = RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
-  snapshot.has_bvh_format_profile = snapshot.top_level_as_match;
+  snapshot.bvh_format_version = entry.bvh_format_version;
+  snapshot.has_bvh_format_profile =
+      runtime_as_proxy_registry_lookup_snapshot.has_profile_ref &&
+      snapshot.top_level_as_match;
   rtcore_recompute_top_level_as_proxy_resolve_adapter_validity(&snapshot);
   return snapshot;
 }
@@ -17752,9 +18243,12 @@ static void rtcore_log_top_level_as_proxy_resolve_adapter_snapshot(
     const rtcore_top_level_as_proxy_resolve_adapter_snapshot &snapshot) {
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "top-level-as-proxy-resolve-adapter=1, "
-         "adapter_source=%s, proxy_token_source=%s, provider=%s, "
+         "adapter_source=%s, registry_source=%s, proxy_token_source=%s, "
+         "provider=%s, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, valid=%u, "
+         "has_runtime_as_proxy_registry_lookup=%u, "
+         "runtime_as_proxy_registry_lookup_passed=%u, "
          "has_launch_context_top_level_as=%u, "
          "launch_context_top_level_as=0x%llx, "
          "has_traversal_data_top_level_as=%u, "
@@ -17765,10 +18259,12 @@ static void rtcore_log_top_level_as_proxy_resolve_adapter_snapshot(
          "proxy_delegation_source=%s, resolve_adapter_gate_passed=%u, "
          "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
          rtcore_top_level_as_proxy_resolve_adapter_source_label(),
-         rtcore_top_level_as_proxy_token_source_label(),
+         snapshot.registry_source, rtcore_top_level_as_proxy_token_source_label(),
          rtcore_traversal_source_provider_name(source_request.provider),
          source_request.context_ptr, source_request.handoff_window_base,
          source_request.lane_slot_index, snapshot.valid ? 1 : 0,
+         snapshot.has_runtime_as_proxy_registry_lookup ? 1 : 0,
+         snapshot.runtime_as_proxy_registry_lookup_passed ? 1 : 0,
          snapshot.has_launch_context_top_level_as ? 1 : 0,
          (unsigned long long)snapshot.launch_context_top_level_as,
          snapshot.has_traversal_data_top_level_as ? 1 : 0,
@@ -19175,11 +19671,30 @@ bool rtcore_build_traversal_completion_event(
       rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
           &event->decoded_input_snapshot,
           launch_context_input_publication_record);
+      rtcore_runtime_as_proxy_registry_key runtime_as_proxy_registry_key =
+          rtcore_make_runtime_as_proxy_registry_key(
+              source_request, event->owner_seq_snapshot,
+              event->driver_runtime_context_window_lifetime_bridge_snapshot,
+              launch_context_input_publication_record);
+      (void)rtcore_publish_runtime_as_proxy_registry_entry(
+          runtime_as_proxy_registry_key, pre_provider_traversal_data_snapshot);
+      rtcore_runtime_as_proxy_registry_lookup_snapshot
+          runtime_as_proxy_registry_lookup_snapshot =
+              rtcore_lookup_runtime_as_proxy_registry_entry(
+                  runtime_as_proxy_registry_key);
+      rtcore_apply_runtime_as_proxy_registry_failpoint_to_lookup_snapshot(
+          pI, source_request, &runtime_as_proxy_registry_lookup_snapshot);
+      rtcore_log_runtime_as_proxy_registry_lookup_snapshot(
+          pI, source_request, runtime_as_proxy_registry_lookup_snapshot);
+      if (rtcore_fail_closed_on_runtime_as_proxy_registry_lookup_snapshot(
+              pI, source_request, runtime_as_proxy_registry_lookup_snapshot)) {
+        return false;
+      }
       rtcore_top_level_as_proxy_resolve_adapter_snapshot
           top_level_as_proxy_resolve_adapter_snapshot =
               rtcore_make_top_level_as_proxy_resolve_adapter_snapshot(
                   launch_context_input_publication_record,
-                  pre_provider_traversal_data_snapshot);
+                  runtime_as_proxy_registry_lookup_snapshot);
       rtcore_apply_top_level_as_proxy_resolve_failpoint_to_adapter_snapshot(
           pI, source_request, &top_level_as_proxy_resolve_adapter_snapshot);
       rtcore_log_top_level_as_proxy_resolve_adapter_snapshot(
