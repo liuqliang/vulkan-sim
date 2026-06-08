@@ -12520,6 +12520,16 @@ struct rtcore_provider_payload_consumed_input_view {
         resolve_backend_root_descriptor_producer_contract_source("unavailable"),
         resolve_backend_root_descriptor_producer_contract(false),
         resolve_backend_root_descriptor_producer_contract_ready(false),
+        resolve_backend_root_descriptor_producer_field_source("unavailable"),
+        resolve_backend_root_descriptor_producer_field_publication(false),
+        resolve_backend_root_descriptor_producer_fields_published(false),
+        resolve_backend_root_descriptor_producer_fields_guarded(false),
+        resolve_backend_root_descriptor_producer_fields_consumed_by_traversal(false),
+        resolve_backend_root_descriptor_producer_root_metadata_handle(0),
+        resolve_backend_root_descriptor_producer_root_address_space("unavailable"),
+        resolve_backend_root_descriptor_producer_root_node_reference(0),
+        resolve_backend_root_descriptor_producer_layout_profile_reference("unavailable"),
+        resolve_backend_root_descriptor_producer_bvh_memory_binding(false),
         resolve_backend_root_descriptor_required_root_metadata_handle(false),
         resolve_backend_root_descriptor_required_root_address_space("unavailable"),
         resolve_backend_root_descriptor_required_root_node_reference(false),
@@ -12583,6 +12593,16 @@ struct rtcore_provider_payload_consumed_input_view {
   const char *resolve_backend_root_descriptor_producer_contract_source;
   bool resolve_backend_root_descriptor_producer_contract;
   bool resolve_backend_root_descriptor_producer_contract_ready;
+  const char *resolve_backend_root_descriptor_producer_field_source;
+  bool resolve_backend_root_descriptor_producer_field_publication;
+  bool resolve_backend_root_descriptor_producer_fields_published;
+  bool resolve_backend_root_descriptor_producer_fields_guarded;
+  bool resolve_backend_root_descriptor_producer_fields_consumed_by_traversal;
+  uint64_t resolve_backend_root_descriptor_producer_root_metadata_handle;
+  const char *resolve_backend_root_descriptor_producer_root_address_space;
+  uint64_t resolve_backend_root_descriptor_producer_root_node_reference;
+  const char *resolve_backend_root_descriptor_producer_layout_profile_reference;
+  bool resolve_backend_root_descriptor_producer_bvh_memory_binding;
   bool resolve_backend_root_descriptor_required_root_metadata_handle;
   const char *resolve_backend_root_descriptor_required_root_address_space;
   bool resolve_backend_root_descriptor_required_root_node_reference;
@@ -13198,6 +13218,16 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_backend_input_backend_root_descriptor_proxy_delegated(false),
         provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path(false),
         provider_backend_input_backend_root_descriptor_actual_abi_evidence(false),
+        provider_backend_input_backend_root_descriptor_producer_field_source("unavailable"),
+        provider_backend_input_backend_root_descriptor_producer_field_publication(false),
+        provider_backend_input_backend_root_descriptor_producer_fields_published(false),
+        provider_backend_input_backend_root_descriptor_producer_fields_guarded(false),
+        provider_backend_input_backend_root_descriptor_producer_fields_consumed_by_traversal(false),
+        provider_backend_input_backend_root_descriptor_producer_root_metadata_handle(0),
+        provider_backend_input_backend_root_descriptor_producer_root_address_space("unavailable"),
+        provider_backend_input_backend_root_descriptor_producer_root_node_reference(0),
+        provider_backend_input_backend_root_descriptor_producer_layout_profile_reference("unavailable"),
+        provider_backend_input_backend_root_descriptor_producer_bvh_memory_binding(false),
         provider_backend_input_root_metadata_handle(0),
         provider_backend_input_root_address_space("unavailable"),
         provider_backend_input_root_node_reference(0),
@@ -13243,6 +13273,16 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool provider_backend_input_backend_root_descriptor_proxy_delegated;
   bool provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path;
   bool provider_backend_input_backend_root_descriptor_actual_abi_evidence;
+  const char *provider_backend_input_backend_root_descriptor_producer_field_source;
+  bool provider_backend_input_backend_root_descriptor_producer_field_publication;
+  bool provider_backend_input_backend_root_descriptor_producer_fields_published;
+  bool provider_backend_input_backend_root_descriptor_producer_fields_guarded;
+  bool provider_backend_input_backend_root_descriptor_producer_fields_consumed_by_traversal;
+  uint64_t provider_backend_input_backend_root_descriptor_producer_root_metadata_handle;
+  const char *provider_backend_input_backend_root_descriptor_producer_root_address_space;
+  uint64_t provider_backend_input_backend_root_descriptor_producer_root_node_reference;
+  const char *provider_backend_input_backend_root_descriptor_producer_layout_profile_reference;
+  bool provider_backend_input_backend_root_descriptor_producer_bvh_memory_binding;
   uint64_t provider_backend_input_root_metadata_handle;
   const char *provider_backend_input_root_address_space;
   uint64_t provider_backend_input_root_node_reference;
@@ -13324,6 +13364,36 @@ rtcore_make_provider_backend_input_consumption_route_record(
         view.resolve_backend_root_descriptor_runtime_proxy_compatibility_path;
     record.provider_backend_input_backend_root_descriptor_actual_abi_evidence =
         view.resolve_backend_root_descriptor_actual_abi_evidence;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_field_source =
+        view.resolve_backend_root_descriptor_producer_field_source;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_field_publication =
+        view.resolve_backend_root_descriptor_producer_field_publication;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_fields_published =
+        view.resolve_backend_root_descriptor_producer_fields_published;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_fields_guarded =
+        view.resolve_backend_root_descriptor_producer_fields_guarded;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_fields_consumed_by_traversal =
+        view.resolve_backend_root_descriptor_producer_fields_consumed_by_traversal;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_root_metadata_handle =
+        view.resolve_backend_root_descriptor_producer_root_metadata_handle;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_root_address_space =
+        view.resolve_backend_root_descriptor_producer_root_address_space;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_root_node_reference =
+        view.resolve_backend_root_descriptor_producer_root_node_reference;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_layout_profile_reference =
+        view.resolve_backend_root_descriptor_producer_layout_profile_reference;
+    record
+        .provider_backend_input_backend_root_descriptor_producer_bvh_memory_binding =
+        view.resolve_backend_root_descriptor_producer_bvh_memory_binding;
     record.provider_backend_input_root_metadata_handle =
         view.resolve_root_metadata_handle;
     record.provider_backend_input_root_address_space =
@@ -13403,6 +13473,16 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_backend_root_descriptor_proxy_delegated=%u, "
          "provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
          "provider_backend_input_backend_root_descriptor_actual_abi_evidence=0, "
+         "backend_root_descriptor_producer_field_publication=%u, "
+         "backend_root_descriptor_producer_field_source=%s, "
+         "backend_root_descriptor_producer_fields_published=%u, "
+         "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
+         "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
+         "backend_root_descriptor_producer_root_address_space=%s, "
+         "backend_root_descriptor_producer_root_node_reference=0x%llx, "
+         "backend_root_descriptor_producer_layout_profile_reference=%s, "
+         "backend_root_descriptor_producer_bvh_memory_binding=%u, "
          "provider_backend_input_root_metadata_handle=0x%llx, "
          "provider_backend_input_root_address_space=%s, "
          "provider_backend_input_root_node_reference=0x%llx, "
@@ -13477,6 +13557,36 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
              ? 1
              : 0,
          record.provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_producer_field_publication
+             ? 1
+             : 0,
+         record
+             .provider_backend_input_backend_root_descriptor_producer_field_source,
+         record
+                 .provider_backend_input_backend_root_descriptor_producer_fields_published
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_producer_fields_guarded
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_producer_fields_consumed_by_traversal
+             ? 1
+             : 0,
+         (unsigned long long)record
+             .provider_backend_input_backend_root_descriptor_producer_root_metadata_handle,
+         record
+             .provider_backend_input_backend_root_descriptor_producer_root_address_space,
+         (unsigned long long)record
+             .provider_backend_input_backend_root_descriptor_producer_root_node_reference,
+         record
+             .provider_backend_input_backend_root_descriptor_producer_layout_profile_reference,
+         record
+                 .provider_backend_input_backend_root_descriptor_producer_bvh_memory_binding
              ? 1
              : 0,
          (unsigned long long)record.provider_backend_input_root_metadata_handle,
@@ -13982,6 +14092,16 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "backend_root_descriptor_producer_contract=%u, "
          "backend_root_descriptor_producer_contract_source=%s, "
          "backend_root_descriptor_producer_contract_ready=%u, "
+         "backend_root_descriptor_producer_field_publication=%u, "
+         "backend_root_descriptor_producer_field_source=%s, "
+         "backend_root_descriptor_producer_fields_published=%u, "
+         "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
+         "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
+         "backend_root_descriptor_producer_root_address_space=%s, "
+         "backend_root_descriptor_producer_root_node_reference=0x%llx, "
+         "backend_root_descriptor_producer_layout_profile_reference=%s, "
+         "backend_root_descriptor_producer_bvh_memory_binding=%u, "
          "backend_root_descriptor_required_root_metadata_handle=%u, "
          "backend_root_descriptor_required_root_address_space=%s, "
          "backend_root_descriptor_required_root_node_reference=%u, "
@@ -14047,6 +14167,23 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          view.resolve_backend_root_descriptor_producer_contract ? 1 : 0,
          view.resolve_backend_root_descriptor_producer_contract_source,
          view.resolve_backend_root_descriptor_producer_contract_ready ? 1 : 0,
+         view.resolve_backend_root_descriptor_producer_field_publication ? 1
+                                                                         : 0,
+         view.resolve_backend_root_descriptor_producer_field_source,
+         view.resolve_backend_root_descriptor_producer_fields_published ? 1
+                                                                        : 0,
+         view.resolve_backend_root_descriptor_producer_fields_guarded ? 1 : 0,
+         view.resolve_backend_root_descriptor_producer_fields_consumed_by_traversal
+             ? 1
+             : 0,
+         (unsigned long long)
+             view.resolve_backend_root_descriptor_producer_root_metadata_handle,
+         view.resolve_backend_root_descriptor_producer_root_address_space,
+         (unsigned long long)
+             view.resolve_backend_root_descriptor_producer_root_node_reference,
+         view.resolve_backend_root_descriptor_producer_layout_profile_reference,
+         view.resolve_backend_root_descriptor_producer_bvh_memory_binding ? 1
+                                                                          : 0,
          view.resolve_backend_root_descriptor_required_root_metadata_handle ? 1
                                                                             : 0,
          view.resolve_backend_root_descriptor_required_root_address_space,
@@ -15742,6 +15879,16 @@ struct rtcore_provider_facing_registry_payload_shadow {
         resolve_backend_root_descriptor_producer_contract_source("unavailable"),
         resolve_backend_root_descriptor_producer_contract(false),
         resolve_backend_root_descriptor_producer_contract_ready(false),
+        resolve_backend_root_descriptor_producer_field_source("unavailable"),
+        resolve_backend_root_descriptor_producer_field_publication(false),
+        resolve_backend_root_descriptor_producer_fields_published(false),
+        resolve_backend_root_descriptor_producer_fields_guarded(false),
+        resolve_backend_root_descriptor_producer_fields_consumed_by_traversal(false),
+        resolve_backend_root_descriptor_producer_root_metadata_handle(0),
+        resolve_backend_root_descriptor_producer_root_address_space("unavailable"),
+        resolve_backend_root_descriptor_producer_root_node_reference(0),
+        resolve_backend_root_descriptor_producer_layout_profile_reference("unavailable"),
+        resolve_backend_root_descriptor_producer_bvh_memory_binding(false),
         resolve_backend_root_descriptor_required_root_metadata_handle(false),
         resolve_backend_root_descriptor_required_root_address_space("unavailable"),
         resolve_backend_root_descriptor_required_root_node_reference(false),
@@ -15811,6 +15958,16 @@ struct rtcore_provider_facing_registry_payload_shadow {
   const char *resolve_backend_root_descriptor_producer_contract_source;
   bool resolve_backend_root_descriptor_producer_contract;
   bool resolve_backend_root_descriptor_producer_contract_ready;
+  const char *resolve_backend_root_descriptor_producer_field_source;
+  bool resolve_backend_root_descriptor_producer_field_publication;
+  bool resolve_backend_root_descriptor_producer_fields_published;
+  bool resolve_backend_root_descriptor_producer_fields_guarded;
+  bool resolve_backend_root_descriptor_producer_fields_consumed_by_traversal;
+  uint64_t resolve_backend_root_descriptor_producer_root_metadata_handle;
+  const char *resolve_backend_root_descriptor_producer_root_address_space;
+  uint64_t resolve_backend_root_descriptor_producer_root_node_reference;
+  const char *resolve_backend_root_descriptor_producer_layout_profile_reference;
+  bool resolve_backend_root_descriptor_producer_bvh_memory_binding;
   bool resolve_backend_root_descriptor_required_root_metadata_handle;
   const char *resolve_backend_root_descriptor_required_root_address_space;
   bool resolve_backend_root_descriptor_required_root_node_reference;
@@ -16902,6 +17059,36 @@ rtcore_make_provider_payload_consumed_input_view(
   view.resolve_backend_root_descriptor_producer_contract_ready =
       registry_payload_shadow
           ->resolve_backend_root_descriptor_producer_contract_ready;
+  view.resolve_backend_root_descriptor_producer_field_source =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_field_source;
+  view.resolve_backend_root_descriptor_producer_field_publication =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_field_publication;
+  view.resolve_backend_root_descriptor_producer_fields_published =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_fields_published;
+  view.resolve_backend_root_descriptor_producer_fields_guarded =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_fields_guarded;
+  view.resolve_backend_root_descriptor_producer_fields_consumed_by_traversal =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_fields_consumed_by_traversal;
+  view.resolve_backend_root_descriptor_producer_root_metadata_handle =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_root_metadata_handle;
+  view.resolve_backend_root_descriptor_producer_root_address_space =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_root_address_space;
+  view.resolve_backend_root_descriptor_producer_root_node_reference =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_root_node_reference;
+  view.resolve_backend_root_descriptor_producer_layout_profile_reference =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_layout_profile_reference;
+  view.resolve_backend_root_descriptor_producer_bvh_memory_binding =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_producer_bvh_memory_binding;
   view.resolve_backend_root_descriptor_required_root_metadata_handle =
       registry_payload_shadow
           ->resolve_backend_root_descriptor_required_root_metadata_handle;
@@ -17958,6 +18145,19 @@ static const char *rtcore_backend_root_descriptor_producer_contract_source_label
   return "backend_root_descriptor_producer_contract_v0";
 }
 
+static const char *rtcore_backend_root_descriptor_producer_field_source_label() {
+  // Static markers: backend_root_descriptor_producer_field_publication=1;
+  // backend_root_descriptor_producer_field_source=driver_as_resolve_table_producer_shadow;
+  // backend_root_descriptor_producer_fields_published=1;
+  // backend_root_descriptor_producer_fields_guarded=1;
+  // backend_root_descriptor_producer_fields_consumed_by_traversal=0;
+  // backend_root_descriptor_producer_root_address_space=actual_as_bvh_memory.
+  // Failpoint marker: drop_producer_fields.
+  // Fail-closed marker: BACKEND_ROOT_DESCRIPTOR_PRODUCER_FIELDS_NOT_PUBLISHED.
+  // actual_abi_evidence_for_proxy_fields=0.
+  return "driver_as_resolve_table_producer_shadow";
+}
+
 static const char *rtcore_backend_root_descriptor_required_address_space_label() {
   return "actual_as_bvh_memory";
 }
@@ -18735,6 +18935,16 @@ struct rtcore_driver_as_resolve_table_entry {
         backend_root_descriptor_producer_contract_source("unavailable"),
         backend_root_descriptor_producer_contract(false),
         backend_root_descriptor_producer_contract_ready(false),
+        backend_root_descriptor_producer_field_source("unavailable"),
+        backend_root_descriptor_producer_field_publication(false),
+        backend_root_descriptor_producer_fields_published(false),
+        backend_root_descriptor_producer_fields_guarded(false),
+        backend_root_descriptor_producer_fields_consumed_by_traversal(false),
+        backend_root_descriptor_producer_root_metadata_handle(0),
+        backend_root_descriptor_producer_root_address_space("unavailable"),
+        backend_root_descriptor_producer_root_node_reference(0),
+        backend_root_descriptor_producer_layout_profile_reference("unavailable"),
+        backend_root_descriptor_producer_bvh_memory_binding(false),
         backend_root_descriptor_required_root_metadata_handle(false),
         backend_root_descriptor_required_root_address_space("unavailable"),
         backend_root_descriptor_required_root_node_reference(false),
@@ -18772,6 +18982,16 @@ struct rtcore_driver_as_resolve_table_entry {
   const char *backend_root_descriptor_producer_contract_source;
   bool backend_root_descriptor_producer_contract;
   bool backend_root_descriptor_producer_contract_ready;
+  const char *backend_root_descriptor_producer_field_source;
+  bool backend_root_descriptor_producer_field_publication;
+  bool backend_root_descriptor_producer_fields_published;
+  bool backend_root_descriptor_producer_fields_guarded;
+  bool backend_root_descriptor_producer_fields_consumed_by_traversal;
+  uint64_t backend_root_descriptor_producer_root_metadata_handle;
+  const char *backend_root_descriptor_producer_root_address_space;
+  uint64_t backend_root_descriptor_producer_root_node_reference;
+  const char *backend_root_descriptor_producer_layout_profile_reference;
+  bool backend_root_descriptor_producer_bvh_memory_binding;
   bool backend_root_descriptor_required_root_metadata_handle;
   const char *backend_root_descriptor_required_root_address_space;
   bool backend_root_descriptor_required_root_node_reference;
@@ -18818,6 +19038,16 @@ struct rtcore_driver_as_resolve_table_lookup_snapshot {
         backend_root_descriptor_producer_contract_source("unavailable"),
         backend_root_descriptor_producer_contract(false),
         backend_root_descriptor_producer_contract_ready(false),
+        backend_root_descriptor_producer_field_source("unavailable"),
+        backend_root_descriptor_producer_field_publication(false),
+        backend_root_descriptor_producer_fields_published(false),
+        backend_root_descriptor_producer_fields_guarded(false),
+        backend_root_descriptor_producer_fields_consumed_by_traversal(false),
+        backend_root_descriptor_producer_root_metadata_handle(0),
+        backend_root_descriptor_producer_root_address_space("unavailable"),
+        backend_root_descriptor_producer_root_node_reference(0),
+        backend_root_descriptor_producer_layout_profile_reference("unavailable"),
+        backend_root_descriptor_producer_bvh_memory_binding(false),
         backend_root_descriptor_required_root_metadata_handle(false),
         backend_root_descriptor_required_root_address_space("unavailable"),
         backend_root_descriptor_required_root_node_reference(false),
@@ -18861,6 +19091,16 @@ struct rtcore_driver_as_resolve_table_lookup_snapshot {
   const char *backend_root_descriptor_producer_contract_source;
   bool backend_root_descriptor_producer_contract;
   bool backend_root_descriptor_producer_contract_ready;
+  const char *backend_root_descriptor_producer_field_source;
+  bool backend_root_descriptor_producer_field_publication;
+  bool backend_root_descriptor_producer_fields_published;
+  bool backend_root_descriptor_producer_fields_guarded;
+  bool backend_root_descriptor_producer_fields_consumed_by_traversal;
+  uint64_t backend_root_descriptor_producer_root_metadata_handle;
+  const char *backend_root_descriptor_producer_root_address_space;
+  uint64_t backend_root_descriptor_producer_root_node_reference;
+  const char *backend_root_descriptor_producer_layout_profile_reference;
+  bool backend_root_descriptor_producer_bvh_memory_binding;
   bool backend_root_descriptor_required_root_metadata_handle;
   const char *backend_root_descriptor_required_root_address_space;
   bool backend_root_descriptor_required_root_node_reference;
@@ -18958,6 +19198,42 @@ rtcore_publish_driver_as_resolve_table_entry(
       rtcore_backend_root_descriptor_producer_contract_source_label();
   entry.backend_root_descriptor_producer_contract = true;
   entry.backend_root_descriptor_producer_contract_ready = false;
+  entry.backend_root_descriptor_producer_field_source =
+      rtcore_backend_root_descriptor_producer_field_source_label();
+  entry.backend_root_descriptor_producer_field_publication = true;
+  entry.backend_root_descriptor_producer_fields_consumed_by_traversal = false;
+  entry.backend_root_descriptor_producer_root_metadata_handle =
+      key.valid ? key.registered_as_reference : 0;
+  entry.backend_root_descriptor_producer_root_address_space =
+      rtcore_backend_root_descriptor_required_address_space_label();
+  entry.backend_root_descriptor_producer_root_node_reference =
+      key.valid ? key.registered_as_reference : 0;
+  entry.backend_root_descriptor_producer_layout_profile_reference =
+      bvh_format_profile_object_bridge_snapshot.profile_ref;
+  entry.backend_root_descriptor_producer_bvh_memory_binding =
+      key.valid && key.registered_as_reference != 0 &&
+      bvh_format_profile_object_bridge_snapshot
+          .bvh_format_profile_object_bridge_passed;
+  entry.backend_root_descriptor_producer_fields_published =
+      entry.backend_root_descriptor_producer_field_publication &&
+      entry.backend_root_descriptor_producer_root_metadata_handle != 0 &&
+      entry.backend_root_descriptor_producer_root_address_space != NULL &&
+      strcmp(entry.backend_root_descriptor_producer_root_address_space,
+             rtcore_backend_root_descriptor_required_address_space_label()) ==
+          0 &&
+      entry.backend_root_descriptor_producer_root_node_reference != 0 &&
+      entry.backend_root_descriptor_producer_layout_profile_reference != NULL &&
+      strcmp(entry.backend_root_descriptor_producer_layout_profile_reference,
+             "unavailable") != 0 &&
+      entry.backend_root_descriptor_producer_bvh_memory_binding;
+  entry.backend_root_descriptor_producer_fields_guarded =
+      entry.backend_root_descriptor_producer_fields_published &&
+      !entry.backend_root_descriptor_producer_fields_consumed_by_traversal &&
+      !entry.backend_root_descriptor_producer_contract_ready &&
+      !entry.backend_root_descriptor_ready &&
+      entry.backend_root_descriptor_proxy_delegated &&
+      entry.backend_root_descriptor_runtime_proxy_compatibility_path &&
+      !entry.backend_root_descriptor_actual_abi_evidence;
   entry.backend_root_descriptor_required_root_metadata_handle = true;
   entry.backend_root_descriptor_required_root_address_space =
       rtcore_backend_root_descriptor_required_address_space_label();
@@ -19102,6 +19378,70 @@ static void rtcore_recompute_driver_as_resolve_table_lookup_snapshot(
   snapshot->backend_root_descriptor_producer_contract_ready =
       snapshot->entry_found &&
       snapshot->entry.backend_root_descriptor_producer_contract_ready;
+  snapshot->backend_root_descriptor_producer_field_source =
+      snapshot->entry_found &&
+              snapshot->entry.backend_root_descriptor_producer_field_source !=
+                  NULL
+          ? snapshot->entry.backend_root_descriptor_producer_field_source
+          : "unavailable";
+  snapshot->backend_root_descriptor_producer_field_publication =
+      snapshot->entry_found &&
+      snapshot->entry.backend_root_descriptor_producer_field_publication &&
+      snapshot->entry.backend_root_descriptor_producer_field_source != NULL &&
+      strcmp(snapshot->entry.backend_root_descriptor_producer_field_source,
+             rtcore_backend_root_descriptor_producer_field_source_label()) ==
+          0;
+  snapshot->backend_root_descriptor_producer_fields_consumed_by_traversal =
+      snapshot->entry_found &&
+      snapshot->entry.backend_root_descriptor_producer_fields_consumed_by_traversal;
+  snapshot->backend_root_descriptor_producer_root_metadata_handle =
+      snapshot->entry_found
+          ? snapshot->entry
+                .backend_root_descriptor_producer_root_metadata_handle
+          : 0;
+  snapshot->backend_root_descriptor_producer_root_address_space =
+      snapshot->entry_found &&
+              snapshot->entry
+                      .backend_root_descriptor_producer_root_address_space !=
+                  NULL
+          ? snapshot->entry.backend_root_descriptor_producer_root_address_space
+          : "unavailable";
+  snapshot->backend_root_descriptor_producer_root_node_reference =
+      snapshot->entry_found
+          ? snapshot->entry.backend_root_descriptor_producer_root_node_reference
+          : 0;
+  snapshot->backend_root_descriptor_producer_layout_profile_reference =
+      snapshot->entry_found &&
+              snapshot->entry
+                      .backend_root_descriptor_producer_layout_profile_reference !=
+                  NULL
+          ? snapshot->entry
+                .backend_root_descriptor_producer_layout_profile_reference
+          : "unavailable";
+  snapshot->backend_root_descriptor_producer_bvh_memory_binding =
+      snapshot->entry_found &&
+      snapshot->entry.backend_root_descriptor_producer_bvh_memory_binding;
+  snapshot->backend_root_descriptor_producer_fields_published =
+      snapshot->backend_root_descriptor_producer_field_publication &&
+      snapshot->backend_root_descriptor_producer_root_metadata_handle != 0 &&
+      snapshot->backend_root_descriptor_producer_root_address_space != NULL &&
+      strcmp(snapshot->backend_root_descriptor_producer_root_address_space,
+             rtcore_backend_root_descriptor_required_address_space_label()) ==
+          0 &&
+      snapshot->backend_root_descriptor_producer_root_node_reference != 0 &&
+      snapshot->backend_root_descriptor_producer_layout_profile_reference !=
+          NULL &&
+      strcmp(snapshot->backend_root_descriptor_producer_layout_profile_reference,
+             "unavailable") != 0 &&
+      snapshot->backend_root_descriptor_producer_bvh_memory_binding;
+  snapshot->backend_root_descriptor_producer_fields_guarded =
+      snapshot->backend_root_descriptor_producer_fields_published &&
+      !snapshot->backend_root_descriptor_producer_fields_consumed_by_traversal &&
+      !snapshot->backend_root_descriptor_producer_contract_ready &&
+      !snapshot->backend_root_descriptor_ready &&
+      snapshot->backend_root_descriptor_proxy_delegated &&
+      snapshot->backend_root_descriptor_runtime_proxy_compatibility_path &&
+      !snapshot->backend_root_descriptor_actual_abi_evidence;
   snapshot->backend_root_descriptor_required_root_metadata_handle =
       snapshot->entry_found &&
       snapshot->entry.backend_root_descriptor_required_root_metadata_handle;
@@ -19156,6 +19496,9 @@ static void rtcore_recompute_driver_as_resolve_table_lookup_snapshot(
       !snapshot->backend_root_descriptor_actual_abi_evidence &&
       snapshot->backend_root_descriptor_producer_contract &&
       !snapshot->backend_root_descriptor_producer_contract_ready &&
+      snapshot->backend_root_descriptor_producer_fields_published &&
+      snapshot->backend_root_descriptor_producer_fields_guarded &&
+      !snapshot->backend_root_descriptor_producer_fields_consumed_by_traversal &&
       snapshot->backend_root_descriptor_required_root_metadata_handle &&
       strcmp(snapshot->backend_root_descriptor_required_root_address_space,
              rtcore_backend_root_descriptor_required_address_space_label()) ==
@@ -19375,6 +19718,7 @@ enum rtcore_backend_root_descriptor_failpoint {
   RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_SHADOW,
   RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_MARK_ACTUAL,
   RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_CLAIM_PRODUCER_READY_WITHOUT_FIELDS,
+  RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_PRODUCER_FIELDS,
 };
 
 static rtcore_backend_root_descriptor_failpoint
@@ -19393,6 +19737,9 @@ rtcore_backend_root_descriptor_failpoint_mode() {
       strcmp(value, "claim_producer_ready") == 0) {
     return RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_CLAIM_PRODUCER_READY_WITHOUT_FIELDS;
   }
+  if (strcmp(value, "drop_producer_fields") == 0) {
+    return RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_PRODUCER_FIELDS;
+  }
   return RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_SHADOW;
 }
 
@@ -19405,6 +19752,8 @@ static const char *rtcore_backend_root_descriptor_failpoint_name(
       return "mark_actual_root_descriptor";
     case RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_CLAIM_PRODUCER_READY_WITHOUT_FIELDS:
       return "claim_producer_ready_without_fields";
+    case RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_PRODUCER_FIELDS:
+      return "drop_producer_fields";
     case RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_NONE:
     default:
       return "none";
@@ -19446,6 +19795,24 @@ static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
           rtcore_backend_root_descriptor_producer_contract_source_label();
       snapshot->entry.backend_root_descriptor_producer_contract = true;
       snapshot->entry.backend_root_descriptor_producer_contract_ready = true;
+      snapshot->entry.backend_root_descriptor_producer_field_source =
+          rtcore_backend_root_descriptor_producer_field_source_label();
+      snapshot->entry.backend_root_descriptor_producer_field_publication = true;
+      snapshot->entry.backend_root_descriptor_producer_fields_published = false;
+      snapshot->entry.backend_root_descriptor_producer_fields_guarded = false;
+      snapshot->entry
+          .backend_root_descriptor_producer_fields_consumed_by_traversal =
+          false;
+      snapshot->entry
+          .backend_root_descriptor_producer_root_metadata_handle = 0;
+      snapshot->entry.backend_root_descriptor_producer_root_address_space =
+          "unavailable";
+      snapshot->entry.backend_root_descriptor_producer_root_node_reference = 0;
+      snapshot->entry
+          .backend_root_descriptor_producer_layout_profile_reference =
+          "unavailable";
+      snapshot->entry.backend_root_descriptor_producer_bvh_memory_binding =
+          false;
       snapshot->entry.backend_root_descriptor_required_root_metadata_handle =
           true;
       snapshot->entry.backend_root_descriptor_required_root_address_space =
@@ -19456,6 +19823,26 @@ static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
           .backend_root_descriptor_required_layout_profile_reference = true;
       snapshot->entry.backend_root_descriptor_required_bvh_memory_binding =
           true;
+    } else if (mode ==
+               RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_PRODUCER_FIELDS) {
+      snapshot->entry.backend_root_descriptor_producer_field_source =
+          rtcore_backend_root_descriptor_producer_field_source_label();
+      snapshot->entry.backend_root_descriptor_producer_field_publication = true;
+      snapshot->entry.backend_root_descriptor_producer_fields_published = false;
+      snapshot->entry.backend_root_descriptor_producer_fields_guarded = false;
+      snapshot->entry
+          .backend_root_descriptor_producer_fields_consumed_by_traversal =
+          false;
+      snapshot->entry
+          .backend_root_descriptor_producer_root_metadata_handle = 0;
+      snapshot->entry.backend_root_descriptor_producer_root_address_space =
+          "unavailable";
+      snapshot->entry.backend_root_descriptor_producer_root_node_reference = 0;
+      snapshot->entry
+          .backend_root_descriptor_producer_layout_profile_reference =
+          "unavailable";
+      snapshot->entry.backend_root_descriptor_producer_bvh_memory_binding =
+          false;
     } else {
       snapshot->entry.backend_root_descriptor_source = "unavailable";
       snapshot->entry.backend_root_descriptor_shadow_attached = false;
@@ -19472,6 +19859,25 @@ static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
           "unavailable";
       snapshot->entry.backend_root_descriptor_producer_contract = false;
       snapshot->entry.backend_root_descriptor_producer_contract_ready = false;
+      snapshot->entry.backend_root_descriptor_producer_field_source =
+          "unavailable";
+      snapshot->entry.backend_root_descriptor_producer_field_publication =
+          false;
+      snapshot->entry.backend_root_descriptor_producer_fields_published = false;
+      snapshot->entry.backend_root_descriptor_producer_fields_guarded = false;
+      snapshot->entry
+          .backend_root_descriptor_producer_fields_consumed_by_traversal =
+          false;
+      snapshot->entry
+          .backend_root_descriptor_producer_root_metadata_handle = 0;
+      snapshot->entry.backend_root_descriptor_producer_root_address_space =
+          "unavailable";
+      snapshot->entry.backend_root_descriptor_producer_root_node_reference = 0;
+      snapshot->entry
+          .backend_root_descriptor_producer_layout_profile_reference =
+          "unavailable";
+      snapshot->entry.backend_root_descriptor_producer_bvh_memory_binding =
+          false;
       snapshot->entry.backend_root_descriptor_required_root_metadata_handle =
           false;
       snapshot->entry.backend_root_descriptor_required_root_address_space =
@@ -19501,6 +19907,16 @@ static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
          "backend_root_descriptor_producer_contract=%u, "
          "backend_root_descriptor_producer_contract_source=%s, "
          "backend_root_descriptor_producer_contract_ready=%u, "
+         "backend_root_descriptor_producer_field_publication=%u, "
+         "backend_root_descriptor_producer_field_source=%s, "
+         "backend_root_descriptor_producer_fields_published=%u, "
+         "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
+         "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
+         "backend_root_descriptor_producer_root_address_space=%s, "
+         "backend_root_descriptor_producer_root_node_reference=0x%llx, "
+         "backend_root_descriptor_producer_layout_profile_reference=%s, "
+         "backend_root_descriptor_producer_bvh_memory_binding=%u, "
          "backend_root_descriptor_required_root_metadata_handle=%u, "
          "backend_root_descriptor_required_root_address_space=%s, "
          "backend_root_descriptor_required_root_node_reference=%u, "
@@ -19523,6 +19939,20 @@ static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
          snapshot->backend_root_descriptor_producer_contract ? 1 : 0,
          snapshot->backend_root_descriptor_producer_contract_source,
          snapshot->backend_root_descriptor_producer_contract_ready ? 1 : 0,
+         snapshot->backend_root_descriptor_producer_field_publication ? 1 : 0,
+         snapshot->backend_root_descriptor_producer_field_source,
+         snapshot->backend_root_descriptor_producer_fields_published ? 1 : 0,
+         snapshot->backend_root_descriptor_producer_fields_guarded ? 1 : 0,
+         snapshot->backend_root_descriptor_producer_fields_consumed_by_traversal
+             ? 1
+             : 0,
+         (unsigned long long)
+             snapshot->backend_root_descriptor_producer_root_metadata_handle,
+         snapshot->backend_root_descriptor_producer_root_address_space,
+         (unsigned long long)
+             snapshot->backend_root_descriptor_producer_root_node_reference,
+         snapshot->backend_root_descriptor_producer_layout_profile_reference,
+         snapshot->backend_root_descriptor_producer_bvh_memory_binding ? 1 : 0,
          snapshot->backend_root_descriptor_required_root_metadata_handle ? 1
                                                                          : 0,
          snapshot->backend_root_descriptor_required_root_address_space,
@@ -19572,6 +20002,16 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_producer_contract=%u, "
          "backend_root_descriptor_producer_contract_source=%s, "
          "backend_root_descriptor_producer_contract_ready=%u, "
+         "backend_root_descriptor_producer_field_publication=%u, "
+         "backend_root_descriptor_producer_field_source=%s, "
+         "backend_root_descriptor_producer_fields_published=%u, "
+         "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
+         "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
+         "backend_root_descriptor_producer_root_address_space=%s, "
+         "backend_root_descriptor_producer_root_node_reference=0x%llx, "
+         "backend_root_descriptor_producer_layout_profile_reference=%s, "
+         "backend_root_descriptor_producer_bvh_memory_binding=%u, "
          "backend_root_descriptor_required_root_metadata_handle=%u, "
          "backend_root_descriptor_required_root_address_space=%s, "
          "backend_root_descriptor_required_root_node_reference=%u, "
@@ -19614,6 +20054,20 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          snapshot.backend_root_descriptor_producer_contract ? 1 : 0,
          snapshot.backend_root_descriptor_producer_contract_source,
          snapshot.backend_root_descriptor_producer_contract_ready ? 1 : 0,
+         snapshot.backend_root_descriptor_producer_field_publication ? 1 : 0,
+         snapshot.backend_root_descriptor_producer_field_source,
+         snapshot.backend_root_descriptor_producer_fields_published ? 1 : 0,
+         snapshot.backend_root_descriptor_producer_fields_guarded ? 1 : 0,
+         snapshot.backend_root_descriptor_producer_fields_consumed_by_traversal
+             ? 1
+             : 0,
+         (unsigned long long)
+             snapshot.backend_root_descriptor_producer_root_metadata_handle,
+         snapshot.backend_root_descriptor_producer_root_address_space,
+         (unsigned long long)
+             snapshot.backend_root_descriptor_producer_root_node_reference,
+         snapshot.backend_root_descriptor_producer_layout_profile_reference,
+         snapshot.backend_root_descriptor_producer_bvh_memory_binding ? 1 : 0,
          snapshot.backend_root_descriptor_required_root_metadata_handle ? 1
                                                                         : 0,
          snapshot.backend_root_descriptor_required_root_address_space,
@@ -19670,6 +20124,14 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
       snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
       snapshot.as_reference_match && snapshot.profile_state_match &&
       !snapshot.backend_root_descriptor_shadow_attached;
+  const bool backend_root_descriptor_producer_fields_not_published =
+      snapshot.entry_found && snapshot.entry_live &&
+      snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
+      snapshot.as_reference_match && snapshot.profile_state_match &&
+      snapshot.backend_root_descriptor_shadow_attached &&
+      snapshot.backend_root_descriptor_producer_contract &&
+      !snapshot.backend_root_descriptor_producer_contract_ready &&
+      !snapshot.backend_root_descriptor_producer_fields_published;
   const bool backend_root_descriptor_producer_contract_not_satisfied =
       snapshot.entry_found && snapshot.entry_live &&
       snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
@@ -19694,6 +20156,8 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
           ? "BACKEND_ROOT_DESCRIPTOR_AUTHORITY_NOT_READY"
           : backend_root_descriptor_shadow_missing
           ? "BACKEND_ROOT_DESCRIPTOR_SHADOW_NOT_READY"
+          : backend_root_descriptor_producer_fields_not_published
+          ? "BACKEND_ROOT_DESCRIPTOR_PRODUCER_FIELDS_NOT_PUBLISHED"
           : "DRIVER_AS_RESOLVE_TABLE_NOT_READY";
   printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
          "reason=%s, legacy_reason=DRIVER_AS_RESOLVE_TABLE_NOT_READY, "
@@ -19720,6 +20184,16 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_producer_contract=%u, "
          "backend_root_descriptor_producer_contract_source=%s, "
          "backend_root_descriptor_producer_contract_ready=%u, "
+         "backend_root_descriptor_producer_field_publication=%u, "
+         "backend_root_descriptor_producer_field_source=%s, "
+         "backend_root_descriptor_producer_fields_published=%u, "
+         "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
+         "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
+         "backend_root_descriptor_producer_root_address_space=%s, "
+         "backend_root_descriptor_producer_root_node_reference=0x%llx, "
+         "backend_root_descriptor_producer_layout_profile_reference=%s, "
+         "backend_root_descriptor_producer_bvh_memory_binding=%u, "
          "backend_root_descriptor_required_root_metadata_handle=%u, "
          "backend_root_descriptor_required_root_address_space=%s, "
          "backend_root_descriptor_required_root_node_reference=%u, "
@@ -19767,6 +20241,20 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          snapshot.backend_root_descriptor_producer_contract ? 1 : 0,
          snapshot.backend_root_descriptor_producer_contract_source,
          snapshot.backend_root_descriptor_producer_contract_ready ? 1 : 0,
+         snapshot.backend_root_descriptor_producer_field_publication ? 1 : 0,
+         snapshot.backend_root_descriptor_producer_field_source,
+         snapshot.backend_root_descriptor_producer_fields_published ? 1 : 0,
+         snapshot.backend_root_descriptor_producer_fields_guarded ? 1 : 0,
+         snapshot.backend_root_descriptor_producer_fields_consumed_by_traversal
+             ? 1
+             : 0,
+         (unsigned long long)
+             snapshot.backend_root_descriptor_producer_root_metadata_handle,
+         snapshot.backend_root_descriptor_producer_root_address_space,
+         (unsigned long long)
+             snapshot.backend_root_descriptor_producer_root_node_reference,
+         snapshot.backend_root_descriptor_producer_layout_profile_reference,
+         snapshot.backend_root_descriptor_producer_bvh_memory_binding ? 1 : 0,
          snapshot.backend_root_descriptor_required_root_metadata_handle ? 1
                                                                         : 0,
          snapshot.backend_root_descriptor_required_root_address_space,
@@ -21701,6 +22189,37 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
     shadow.resolve_backend_root_descriptor_producer_contract_ready =
         driver_as_resolve_table_lookup_snapshot
             ->backend_root_descriptor_producer_contract_ready;
+    shadow.resolve_backend_root_descriptor_producer_field_source =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_field_source;
+    shadow.resolve_backend_root_descriptor_producer_field_publication =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_field_publication;
+    shadow.resolve_backend_root_descriptor_producer_fields_published =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_fields_published;
+    shadow.resolve_backend_root_descriptor_producer_fields_guarded =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_fields_guarded;
+    shadow
+        .resolve_backend_root_descriptor_producer_fields_consumed_by_traversal =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_fields_consumed_by_traversal;
+    shadow.resolve_backend_root_descriptor_producer_root_metadata_handle =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_root_metadata_handle;
+    shadow.resolve_backend_root_descriptor_producer_root_address_space =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_root_address_space;
+    shadow.resolve_backend_root_descriptor_producer_root_node_reference =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_root_node_reference;
+    shadow.resolve_backend_root_descriptor_producer_layout_profile_reference =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_layout_profile_reference;
+    shadow.resolve_backend_root_descriptor_producer_bvh_memory_binding =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_bvh_memory_binding;
     shadow.resolve_backend_root_descriptor_required_root_metadata_handle =
         driver_as_resolve_table_lookup_snapshot
             ->backend_root_descriptor_required_root_metadata_handle;
@@ -21750,6 +22269,12 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
             ->backend_root_descriptor_runtime_proxy_compatibility_path &&
         !driver_as_resolve_table_lookup_snapshot
              ->backend_root_descriptor_actual_abi_evidence &&
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_fields_published &&
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_producer_fields_guarded &&
+        !driver_as_resolve_table_lookup_snapshot
+             ->backend_root_descriptor_producer_fields_consumed_by_traversal &&
         driver_as_resolve_table_lookup_snapshot
             ->traversable_root_proxy_delegated &&
         driver_as_resolve_table_lookup_snapshot
@@ -21876,6 +22401,19 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          "backend_root_descriptor_proxy_delegated=%u, "
          "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
          "backend_root_descriptor_actual_abi_evidence=0, "
+         "backend_root_descriptor_producer_contract=%u, "
+         "backend_root_descriptor_producer_contract_source=%s, "
+         "backend_root_descriptor_producer_contract_ready=%u, "
+         "backend_root_descriptor_producer_field_publication=%u, "
+         "backend_root_descriptor_producer_field_source=%s, "
+         "backend_root_descriptor_producer_fields_published=%u, "
+         "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
+         "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
+         "backend_root_descriptor_producer_root_address_space=%s, "
+         "backend_root_descriptor_producer_root_node_reference=0x%llx, "
+         "backend_root_descriptor_producer_layout_profile_reference=%s, "
+         "backend_root_descriptor_producer_bvh_memory_binding=%u, "
          "root_metadata_handle=0x%llx, root_address_space=%s, "
          "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "resolve_traversable_root_proxy_delegated=%u, "
@@ -21927,6 +22465,29 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          shadow.resolve_backend_root_descriptor_runtime_proxy_compatibility_path
              ? 1
              : 0,
+         shadow.resolve_backend_root_descriptor_producer_contract ? 1 : 0,
+         shadow.resolve_backend_root_descriptor_producer_contract_source,
+         shadow.resolve_backend_root_descriptor_producer_contract_ready ? 1
+                                                                        : 0,
+         shadow.resolve_backend_root_descriptor_producer_field_publication ? 1
+                                                                          : 0,
+         shadow.resolve_backend_root_descriptor_producer_field_source,
+         shadow.resolve_backend_root_descriptor_producer_fields_published ? 1
+                                                                          : 0,
+         shadow.resolve_backend_root_descriptor_producer_fields_guarded ? 1
+                                                                        : 0,
+         shadow
+                 .resolve_backend_root_descriptor_producer_fields_consumed_by_traversal
+             ? 1
+             : 0,
+         (unsigned long long)
+             shadow.resolve_backend_root_descriptor_producer_root_metadata_handle,
+         shadow.resolve_backend_root_descriptor_producer_root_address_space,
+         (unsigned long long)
+             shadow.resolve_backend_root_descriptor_producer_root_node_reference,
+         shadow.resolve_backend_root_descriptor_producer_layout_profile_reference,
+         shadow.resolve_backend_root_descriptor_producer_bvh_memory_binding ? 1
+                                                                            : 0,
          (unsigned long long)shadow.resolve_root_metadata_handle,
          shadow.resolve_root_address_space,
          (unsigned long long)shadow.resolve_root_node_reference,
