@@ -18163,6 +18163,34 @@ static const char *rtcore_backend_root_descriptor_producer_field_source_label() 
   return "driver_as_resolve_table_producer_shadow";
 }
 
+static const char
+    *rtcore_backend_root_descriptor_actual_producer_enablement_source_label() {
+  // Static markers: backend_root_descriptor_actual_producer_enablement_preflight=1;
+  // VULKAN_SIM_RTCORE_BACKEND_ROOT_DESCRIPTOR_PRODUCER_MODE;
+  // backend_root_descriptor_actual_producer_consumption_opt_in=0;
+  // backend_root_descriptor_actual_producer_evidence_ready=0;
+  // backend_root_descriptor_actual_producer_authority_enabled=0;
+  // actual producer consumption remains opt-in;
+  // producer sidecar requires actual AS/BVH memory evidence;
+  // BACKEND_ROOT_DESCRIPTOR_ACTUAL_PRODUCER_EVIDENCE_NOT_READY.
+  return "backend_root_descriptor_actual_producer_enablement_preflight_v0";
+}
+
+static const char
+    *rtcore_backend_root_descriptor_actual_producer_mode_env_name() {
+  return "VULKAN_SIM_RTCORE_BACKEND_ROOT_DESCRIPTOR_PRODUCER_MODE";
+}
+
+static bool
+rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested() {
+  const char *mode =
+      getenv(rtcore_backend_root_descriptor_actual_producer_mode_env_name());
+  return mode != NULL &&
+         (strcmp(mode, "actual_producer") == 0 ||
+          strcmp(mode, "consume_actual_producer") == 0 ||
+          strcmp(mode, "1") == 0 || strcmp(mode, "true") == 0);
+}
+
 static const char *rtcore_backend_root_descriptor_required_address_space_label() {
   return "actual_as_bvh_memory";
 }
@@ -19488,6 +19516,7 @@ static void rtcore_recompute_driver_as_resolve_table_lookup_snapshot(
           ? snapshot->entry.profile_layout_publication_future_producer
           : true;
   snapshot->resolve_lookup_passed =
+      !rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested() &&
       snapshot->key.valid && snapshot->entry_found && snapshot->entry_live &&
       snapshot->resolve_key_match && snapshot->resolve_owner_match &&
       snapshot->resolve_generation_match && snapshot->as_reference_match &&
@@ -20133,6 +20162,27 @@ static bool rtcore_backend_root_descriptor_producer_contract_claim_satisfied(
          snapshot.backend_root_descriptor_required_bvh_memory_binding;
 }
 
+static bool rtcore_backend_root_descriptor_actual_producer_evidence_ready(
+    const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot) {
+  return snapshot.backend_root_descriptor_producer_contract &&
+         snapshot.backend_root_descriptor_producer_contract_ready &&
+         snapshot.backend_root_descriptor_producer_fields_published &&
+         snapshot.backend_root_descriptor_producer_fields_consumed_by_traversal &&
+         snapshot.backend_root_descriptor_producer_root_metadata_handle != 0 &&
+         snapshot.backend_root_descriptor_producer_root_address_space != NULL &&
+         strcmp(snapshot.backend_root_descriptor_producer_root_address_space,
+                rtcore_backend_root_descriptor_required_address_space_label()) ==
+             0 &&
+         snapshot.backend_root_descriptor_producer_root_node_reference != 0 &&
+         snapshot.backend_root_descriptor_producer_layout_profile_reference !=
+             NULL &&
+         strcmp(snapshot.backend_root_descriptor_producer_layout_profile_reference,
+                "unavailable") != 0 &&
+         snapshot.backend_root_descriptor_producer_bvh_memory_binding &&
+         rtcore_backend_root_descriptor_producer_contract_claim_satisfied(
+             snapshot);
+}
+
 static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
     const ptx_instruction *pI,
     const rtcore_traversal_source_request &source_request,
@@ -20140,6 +20190,19 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
   if (snapshot.valid) {
     return false;
   }
+  const bool backend_root_descriptor_actual_producer_consumption_opt_in =
+      rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested();
+  const bool backend_root_descriptor_actual_producer_evidence_ready =
+      rtcore_backend_root_descriptor_actual_producer_evidence_ready(snapshot);
+  const bool backend_root_descriptor_actual_producer_authority_enabled =
+      backend_root_descriptor_actual_producer_consumption_opt_in &&
+      backend_root_descriptor_actual_producer_evidence_ready;
+  const bool backend_root_descriptor_actual_producer_evidence_not_ready =
+      snapshot.entry_found && snapshot.entry_live &&
+      snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
+      snapshot.as_reference_match && snapshot.profile_state_match &&
+      backend_root_descriptor_actual_producer_consumption_opt_in &&
+      !backend_root_descriptor_actual_producer_evidence_ready;
   const bool backend_root_descriptor_shadow_missing =
       snapshot.entry_found && snapshot.entry_live &&
       snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
@@ -20179,7 +20242,9 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
        !snapshot.backend_root_descriptor_runtime_proxy_compatibility_path ||
        snapshot.backend_root_descriptor_actual_abi_evidence);
   const char *reason =
-      backend_root_descriptor_producer_contract_not_satisfied
+      backend_root_descriptor_actual_producer_evidence_not_ready
+          ? "BACKEND_ROOT_DESCRIPTOR_ACTUAL_PRODUCER_EVIDENCE_NOT_READY"
+      : backend_root_descriptor_producer_contract_not_satisfied
           ? "BACKEND_ROOT_DESCRIPTOR_PRODUCER_CONTRACT_NOT_SATISFIED"
           : backend_root_descriptor_authority_not_ready
           ? "BACKEND_ROOT_DESCRIPTOR_AUTHORITY_NOT_READY"
@@ -20226,6 +20291,12 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_producer_root_node_reference=0x%llx, "
          "backend_root_descriptor_producer_layout_profile_reference=%s, "
          "backend_root_descriptor_producer_bvh_memory_binding=%u, "
+         "backend_root_descriptor_actual_producer_enablement_preflight=1, "
+         "backend_root_descriptor_actual_producer_enablement_source=%s, "
+         "backend_root_descriptor_actual_producer_mode_env=%s, "
+         "backend_root_descriptor_actual_producer_consumption_opt_in=%u, "
+         "backend_root_descriptor_actual_producer_evidence_ready=%u, "
+         "backend_root_descriptor_actual_producer_authority_enabled=%u, "
          "backend_root_descriptor_required_root_metadata_handle=%u, "
          "backend_root_descriptor_required_root_address_space=%s, "
          "backend_root_descriptor_required_root_node_reference=%u, "
@@ -20287,6 +20358,11 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
              snapshot.backend_root_descriptor_producer_root_node_reference,
          snapshot.backend_root_descriptor_producer_layout_profile_reference,
          snapshot.backend_root_descriptor_producer_bvh_memory_binding ? 1 : 0,
+         rtcore_backend_root_descriptor_actual_producer_enablement_source_label(),
+         rtcore_backend_root_descriptor_actual_producer_mode_env_name(),
+         backend_root_descriptor_actual_producer_consumption_opt_in ? 1 : 0,
+         backend_root_descriptor_actual_producer_evidence_ready ? 1 : 0,
+         backend_root_descriptor_actual_producer_authority_enabled ? 1 : 0,
          snapshot.backend_root_descriptor_required_root_metadata_handle ? 1
                                                                         : 0,
          snapshot.backend_root_descriptor_required_root_address_space,
