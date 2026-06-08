@@ -17540,6 +17540,12 @@ static const char *rtcore_runtime_as_proxy_registry_source_label() {
   return "runtime_as_proxy_registry_skeleton";
 }
 
+static const char *rtcore_driver_as_handle_registry_source_label() {
+  // Boundary: runtime_as_proxy_registry_skeleton remains a simulator proxy registry.
+  // Static marker: registry_source=driver_as_handle_registry_skeleton.
+  return "driver_as_handle_registry_skeleton";
+}
+
 static const char *rtcore_bvh_format_profile_object_bridge_source_label() {
   return "bvh_format_profile_object_bridge";
 }
@@ -17736,6 +17742,469 @@ static void rtcore_log_bvh_format_profile_object_bridge_snapshot(
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0);
   fflush(stdout);
+}
+
+struct rtcore_driver_as_handle_registry_key {
+  rtcore_driver_as_handle_registry_key()
+      : valid(false),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        owner_generation(0),
+        owner_hw_sid(0),
+        warp_uid(0),
+        warp_id(0),
+        has_shader_visible_as_reference(false),
+        shader_visible_as_reference(0) {}
+
+  bool valid;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  unsigned owner_generation;
+  unsigned owner_hw_sid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  bool has_shader_visible_as_reference;
+  uint64_t shader_visible_as_reference;
+
+  bool operator<(const rtcore_driver_as_handle_registry_key &other) const {
+    if (context_ptr != other.context_ptr) {
+      return context_ptr < other.context_ptr;
+    }
+    if (handoff_window_base != other.handoff_window_base) {
+      return handoff_window_base < other.handoff_window_base;
+    }
+    if (lane_slot_index != other.lane_slot_index) {
+      return lane_slot_index < other.lane_slot_index;
+    }
+    if (owner_generation != other.owner_generation) {
+      return owner_generation < other.owner_generation;
+    }
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    if (warp_uid != other.warp_uid) {
+      return warp_uid < other.warp_uid;
+    }
+    if (warp_id != other.warp_id) {
+      return warp_id < other.warp_id;
+    }
+    if (has_shader_visible_as_reference !=
+        other.has_shader_visible_as_reference) {
+      return has_shader_visible_as_reference <
+             other.has_shader_visible_as_reference;
+    }
+    return shader_visible_as_reference < other.shader_visible_as_reference;
+  }
+};
+
+static bool rtcore_driver_as_handle_registry_key_equal(
+    const rtcore_driver_as_handle_registry_key &a,
+    const rtcore_driver_as_handle_registry_key &b) {
+  return a.valid == b.valid && a.context_ptr == b.context_ptr &&
+         a.handoff_window_base == b.handoff_window_base &&
+         a.lane_slot_index == b.lane_slot_index &&
+         a.owner_generation == b.owner_generation &&
+         a.owner_hw_sid == b.owner_hw_sid &&
+         a.warp_uid == b.warp_uid && a.warp_id == b.warp_id &&
+         a.has_shader_visible_as_reference ==
+             b.has_shader_visible_as_reference &&
+         a.shader_visible_as_reference == b.shader_visible_as_reference;
+}
+
+static bool rtcore_driver_as_handle_registry_owner_equal(
+    const rtcore_driver_as_handle_registry_key &a,
+    const rtcore_driver_as_handle_registry_key &b) {
+  return a.context_ptr == b.context_ptr &&
+         a.handoff_window_base == b.handoff_window_base &&
+         a.lane_slot_index == b.lane_slot_index &&
+         a.owner_hw_sid == b.owner_hw_sid &&
+         a.warp_uid == b.warp_uid && a.warp_id == b.warp_id;
+}
+
+struct rtcore_driver_as_handle_registry_entry {
+  rtcore_driver_as_handle_registry_entry()
+      : valid(false),
+        live(false),
+        lifetime_state("unavailable"),
+        compiler_as_reference_authoritative(false),
+        driver_maintained_resolve_table_ready(false),
+        actual_abi_evidence_for_proxy_fields(false) {}
+
+  bool valid;
+  bool live;
+  const char *lifetime_state;
+  bool compiler_as_reference_authoritative;
+  bool driver_maintained_resolve_table_ready;
+  bool actual_abi_evidence_for_proxy_fields;
+  rtcore_driver_as_handle_registry_key key;
+};
+
+struct rtcore_driver_as_handle_registry_lookup_snapshot {
+  rtcore_driver_as_handle_registry_lookup_snapshot()
+      : valid(false),
+        entry_found(false),
+        entry_live(false),
+        registry_key_match(false),
+        registry_owner_match(false),
+        registry_generation_match(false),
+        as_reference_match(false),
+        registry_lookup_passed(false),
+        registry_source(rtcore_driver_as_handle_registry_source_label()),
+        lifetime_state("unavailable"),
+        compiler_as_reference_authoritative(false),
+        driver_maintained_resolve_table_ready(false),
+        actual_abi_evidence_for_proxy_fields(false) {}
+
+  bool valid;
+  bool entry_found;
+  bool entry_live;
+  bool registry_key_match;
+  bool registry_owner_match;
+  bool registry_generation_match;
+  bool as_reference_match;
+  bool registry_lookup_passed;
+  const char *registry_source;
+  const char *lifetime_state;
+  bool compiler_as_reference_authoritative;
+  bool driver_maintained_resolve_table_ready;
+  bool actual_abi_evidence_for_proxy_fields;
+  rtcore_driver_as_handle_registry_key key;
+  rtcore_driver_as_handle_registry_entry entry;
+};
+
+static std::map<rtcore_driver_as_handle_registry_key,
+                rtcore_driver_as_handle_registry_entry>
+    g_rtcore_driver_as_handle_registry;
+
+static rtcore_driver_as_handle_registry_key
+rtcore_make_driver_as_handle_registry_key(
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_context_window_owner_seq_snapshot &owner_seq_snapshot,
+    const rtcore_driver_runtime_context_window_lifetime_bridge_snapshot
+        &lifetime_bridge_snapshot,
+    const rtcore_launch_context_input_publication_record
+        &launch_context_input_publication_record) {
+  rtcore_driver_as_handle_registry_key key;
+  key.context_ptr = source_request.context_ptr;
+  key.handoff_window_base = source_request.handoff_window_base;
+  key.lane_slot_index = source_request.lane_slot_index;
+  key.owner_generation = lifetime_bridge_snapshot.owner_generation;
+  key.owner_hw_sid = owner_seq_snapshot.warp_metadata.owner_hw_sid;
+  key.warp_uid = owner_seq_snapshot.warp_metadata.warp_uid;
+  key.warp_id = owner_seq_snapshot.warp_metadata.warp_id;
+  key.has_shader_visible_as_reference =
+      launch_context_input_publication_record.has_launch_context_input;
+  key.shader_visible_as_reference =
+      launch_context_input_publication_record.bridge_trace_replay_top_level_as;
+  key.valid = owner_seq_snapshot.valid && lifetime_bridge_snapshot.valid &&
+              lifetime_bridge_snapshot.provider_lifetime_ready &&
+              rtcore_launch_context_input_publication_record_is_complete(
+                  launch_context_input_publication_record) &&
+              key.has_shader_visible_as_reference &&
+              key.shader_visible_as_reference != 0 &&
+              key.owner_generation != 0;
+  return key;
+}
+
+static rtcore_driver_as_handle_registry_entry
+rtcore_publish_driver_as_handle_registry_entry(
+    const rtcore_driver_as_handle_registry_key &key,
+    const rtcore_driver_runtime_context_window_lifetime_bridge_snapshot
+        &lifetime_bridge_snapshot) {
+  rtcore_driver_as_handle_registry_entry entry;
+  entry.key = key;
+  entry.lifetime_state =
+      lifetime_bridge_snapshot.provider_lifetime_ready ? "live" : "unavailable";
+  entry.compiler_as_reference_authoritative = false;
+  entry.driver_maintained_resolve_table_ready = false;
+  entry.actual_abi_evidence_for_proxy_fields = false;
+  entry.valid = key.valid && lifetime_bridge_snapshot.provider_lifetime_ready;
+  entry.live = entry.valid;
+  if (entry.valid) {
+    g_rtcore_driver_as_handle_registry[key] = entry;
+  }
+  return entry;
+}
+
+static void rtcore_recompute_driver_as_handle_registry_lookup_snapshot(
+    rtcore_driver_as_handle_registry_lookup_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->lifetime_state =
+      snapshot->entry_found && snapshot->entry.lifetime_state != NULL
+          ? snapshot->entry.lifetime_state
+          : "unavailable";
+  snapshot->entry_live =
+      snapshot->entry_found && snapshot->entry.valid && snapshot->entry.live &&
+      strcmp(snapshot->lifetime_state, "live") == 0;
+  snapshot->registry_owner_match =
+      snapshot->entry_found &&
+      rtcore_driver_as_handle_registry_owner_equal(snapshot->key,
+                                                  snapshot->entry.key);
+  snapshot->registry_generation_match =
+      snapshot->entry_found &&
+      snapshot->key.owner_generation == snapshot->entry.key.owner_generation;
+  snapshot->as_reference_match =
+      snapshot->entry_found && snapshot->key.has_shader_visible_as_reference &&
+      snapshot->entry.key.has_shader_visible_as_reference &&
+      snapshot->key.shader_visible_as_reference ==
+          snapshot->entry.key.shader_visible_as_reference;
+  snapshot->registry_key_match =
+      snapshot->entry_found &&
+      rtcore_driver_as_handle_registry_key_equal(snapshot->key,
+                                                snapshot->entry.key);
+  snapshot->compiler_as_reference_authoritative =
+      snapshot->entry_found && snapshot->entry.compiler_as_reference_authoritative;
+  snapshot->driver_maintained_resolve_table_ready =
+      snapshot->entry_found && snapshot->entry.driver_maintained_resolve_table_ready;
+  snapshot->registry_lookup_passed =
+      snapshot->key.valid && snapshot->entry_found && snapshot->entry_live &&
+      snapshot->registry_key_match && snapshot->registry_owner_match &&
+      snapshot->registry_generation_match && snapshot->as_reference_match &&
+      !snapshot->compiler_as_reference_authoritative &&
+      !snapshot->driver_maintained_resolve_table_ready;
+  snapshot->valid = snapshot->registry_lookup_passed;
+  snapshot->actual_abi_evidence_for_proxy_fields = false;
+}
+
+static rtcore_driver_as_handle_registry_lookup_snapshot
+rtcore_lookup_driver_as_handle_registry_entry(
+    const rtcore_driver_as_handle_registry_key &key) {
+  rtcore_driver_as_handle_registry_lookup_snapshot snapshot;
+  snapshot.key = key;
+  std::map<rtcore_driver_as_handle_registry_key,
+           rtcore_driver_as_handle_registry_entry>::const_iterator entry =
+      g_rtcore_driver_as_handle_registry.find(key);
+  if (entry != g_rtcore_driver_as_handle_registry.end()) {
+    snapshot.entry_found = true;
+    snapshot.entry = entry->second;
+  }
+  rtcore_recompute_driver_as_handle_registry_lookup_snapshot(&snapshot);
+  return snapshot;
+}
+
+enum rtcore_driver_as_handle_registry_failpoint {
+  RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_NONE = 0,
+  RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_DROP_REGISTRY_ENTRY,
+  RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_WRONG_OWNER,
+  RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_STALE_GENERATION,
+  RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_DESTROYED_LIFETIME,
+};
+
+static const char *rtcore_driver_as_handle_registry_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT";
+}
+
+static rtcore_driver_as_handle_registry_failpoint
+rtcore_driver_as_handle_registry_failpoint_mode() {
+  const char *value =
+      getenv(rtcore_driver_as_handle_registry_failpoint_env_name());
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "none") == 0) {
+    return RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "drop_registry_entry") == 0) {
+    return RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_DROP_REGISTRY_ENTRY;
+  }
+  if (strcmp(value, "wrong_owner") == 0) {
+    return RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_WRONG_OWNER;
+  }
+  if (strcmp(value, "stale_generation") == 0) {
+    return RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_STALE_GENERATION;
+  }
+  if (strcmp(value, "destroyed_lifetime") == 0) {
+    return RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_DESTROYED_LIFETIME;
+  }
+  return RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_NONE;
+}
+
+static const char *rtcore_driver_as_handle_registry_failpoint_name(
+    rtcore_driver_as_handle_registry_failpoint mode) {
+  switch (mode) {
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_DROP_REGISTRY_ENTRY:
+      return "drop_registry_entry";
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_WRONG_OWNER:
+      return "wrong_owner";
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_STALE_GENERATION:
+      return "stale_generation";
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_DESTROYED_LIFETIME:
+      return "destroyed_lifetime";
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void
+rtcore_apply_driver_as_handle_registry_failpoint_to_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    rtcore_driver_as_handle_registry_lookup_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  const rtcore_driver_as_handle_registry_failpoint mode =
+      rtcore_driver_as_handle_registry_failpoint_mode();
+  if (mode == RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_NONE) {
+    return;
+  }
+
+  bool drop_registry_entry = false;
+  bool wrong_owner = false;
+  bool stale_generation = false;
+  bool destroyed_lifetime = false;
+  switch (mode) {
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_DROP_REGISTRY_ENTRY:
+      snapshot->entry_found = false;
+      snapshot->entry = rtcore_driver_as_handle_registry_entry();
+      drop_registry_entry = true;
+      break;
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_WRONG_OWNER:
+      if (snapshot->entry_found) {
+        snapshot->entry.key.owner_hw_sid = snapshot->key.owner_hw_sid + 1;
+        if (snapshot->entry.key.owner_hw_sid == snapshot->key.owner_hw_sid) {
+          snapshot->entry.key.owner_hw_sid = snapshot->key.owner_hw_sid ^ 1;
+        }
+      }
+      wrong_owner = true;
+      break;
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_STALE_GENERATION:
+      if (snapshot->entry_found) {
+        snapshot->entry.key.owner_generation = snapshot->key.owner_generation + 1;
+        if (snapshot->entry.key.owner_generation ==
+            snapshot->key.owner_generation) {
+          snapshot->entry.key.owner_generation =
+              snapshot->key.owner_generation ^ 1;
+        }
+      }
+      stale_generation = true;
+      break;
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_DESTROYED_LIFETIME:
+      if (snapshot->entry_found) {
+        snapshot->entry.live = false;
+        snapshot->entry.lifetime_state = "destroyed";
+      }
+      destroyed_lifetime = true;
+      break;
+    case RTCORE_DRIVER_AS_HANDLE_REGISTRY_FAILPOINT_NONE:
+    default:
+      return;
+  }
+  rtcore_recompute_driver_as_handle_registry_lookup_snapshot(snapshot);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "driver-as-handle-registry-failpoint=1, "
+         "failpoint=%s, mode=%s, provider=%s, "
+         "registry_source=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "owner_generation=%u, shader_visible_as_reference=0x%llx, "
+         "drop_registry_entry=%u, wrong_owner=%u, "
+         "stale_generation=%u, destroyed_lifetime=%u, "
+         "entry_found=%u, entry_live=%u, registry_key_match=%u, "
+         "registry_owner_match=%u, registry_generation_match=%u, "
+         "as_reference_match=%u, lifetime_state=%s, "
+         "registry_lookup_passed=%u, "
+         "compiler_as_reference_authoritative=0, "
+         "driver_maintained_resolve_table_ready=0, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_driver_as_handle_registry_failpoint_name(mode),
+         rtcore_driver_as_handle_registry_failpoint_name(mode),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot->registry_source, snapshot->key.context_ptr,
+         snapshot->key.handoff_window_base, snapshot->key.lane_slot_index,
+         snapshot->key.owner_generation,
+         (unsigned long long)snapshot->key.shader_visible_as_reference,
+         drop_registry_entry ? 1 : 0, wrong_owner ? 1 : 0,
+         stale_generation ? 1 : 0, destroyed_lifetime ? 1 : 0,
+         snapshot->entry_found ? 1 : 0, snapshot->entry_live ? 1 : 0,
+         snapshot->registry_key_match ? 1 : 0,
+         snapshot->registry_owner_match ? 1 : 0,
+         snapshot->registry_generation_match ? 1 : 0,
+         snapshot->as_reference_match ? 1 : 0, snapshot->lifetime_state,
+         snapshot->registry_lookup_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static void rtcore_log_driver_as_handle_registry_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_driver_as_handle_registry_lookup_snapshot &snapshot) {
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "driver-as-handle-registry-lookup=1, "
+         "registry_source=%s, provider=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "owner_generation=%u, owner_hw_sid=%u, warp_uid=%u, "
+         "warp_id=%u, has_shader_visible_as_reference=%u, "
+         "shader_visible_as_reference=0x%llx, entry_found=%u, "
+         "entry_live=%u, registry_key_match=%u, "
+         "registry_owner_match=%u, registry_generation_match=%u, "
+         "as_reference_match=%u, lifetime_state=%s, "
+         "registry_lookup_passed=%u, "
+         "compiler_as_reference_authoritative=0, "
+         "driver_maintained_resolve_table_ready=0, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         snapshot.registry_source,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot.key.context_ptr, snapshot.key.handoff_window_base,
+         snapshot.key.lane_slot_index, snapshot.key.owner_generation,
+         snapshot.key.owner_hw_sid, snapshot.key.warp_uid,
+         snapshot.key.warp_id,
+         snapshot.key.has_shader_visible_as_reference ? 1 : 0,
+         (unsigned long long)snapshot.key.shader_visible_as_reference,
+         snapshot.entry_found ? 1 : 0, snapshot.entry_live ? 1 : 0,
+         snapshot.registry_key_match ? 1 : 0,
+         snapshot.registry_owner_match ? 1 : 0,
+         snapshot.registry_generation_match ? 1 : 0,
+         snapshot.as_reference_match ? 1 : 0, snapshot.lifetime_state,
+         snapshot.registry_lookup_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static bool rtcore_fail_closed_on_driver_as_handle_registry_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_driver_as_handle_registry_lookup_snapshot &snapshot) {
+  if (snapshot.valid) {
+    return false;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=DRIVER_AS_HANDLE_REGISTRY_NOT_READY, "
+         "registry_source=%s, provider=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "owner_generation=%u, shader_visible_as_reference=0x%llx, "
+         "entry_found=%u, entry_live=%u, registry_key_match=%u, "
+         "registry_owner_match=%u, registry_generation_match=%u, "
+         "as_reference_match=%u, lifetime_state=%s, "
+         "registry_lookup_passed=%u, "
+         "compiler_as_reference_authoritative=0, "
+         "driver_maintained_resolve_table_ready=0, "
+         "before_runtime_as_proxy_registry=1, "
+         "before_top_level_as_proxy_resolve_adapter=1, "
+         "before_registry_payload_shadow=1, "
+         "before_provider_consumed_input=1, before_backend_input_route=1, "
+         "before_traversal_completion=1, before_completion_release=1, "
+         "actual_abi_evidence_for_proxy_fields=0\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0, snapshot.registry_source,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot.key.context_ptr, snapshot.key.handoff_window_base,
+         snapshot.key.lane_slot_index, snapshot.key.owner_generation,
+         (unsigned long long)snapshot.key.shader_visible_as_reference,
+         snapshot.entry_found ? 1 : 0, snapshot.entry_live ? 1 : 0,
+         snapshot.registry_key_match ? 1 : 0,
+         snapshot.registry_owner_match ? 1 : 0,
+         snapshot.registry_generation_match ? 1 : 0,
+         snapshot.as_reference_match ? 1 : 0, snapshot.lifetime_state,
+         snapshot.registry_lookup_passed ? 1 : 0);
+  fflush(stdout);
+  return true;
 }
 
 struct rtcore_runtime_as_proxy_registry_key {
@@ -19992,6 +20461,26 @@ bool rtcore_build_traversal_completion_event(
       rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
           &event->decoded_input_snapshot,
           launch_context_input_publication_record);
+      rtcore_driver_as_handle_registry_key driver_as_handle_registry_key =
+          rtcore_make_driver_as_handle_registry_key(
+              source_request, event->owner_seq_snapshot,
+              event->driver_runtime_context_window_lifetime_bridge_snapshot,
+              launch_context_input_publication_record);
+      (void)rtcore_publish_driver_as_handle_registry_entry(
+          driver_as_handle_registry_key,
+          event->driver_runtime_context_window_lifetime_bridge_snapshot);
+      rtcore_driver_as_handle_registry_lookup_snapshot
+          driver_as_handle_registry_lookup_snapshot =
+              rtcore_lookup_driver_as_handle_registry_entry(
+                  driver_as_handle_registry_key);
+      rtcore_apply_driver_as_handle_registry_failpoint_to_lookup_snapshot(
+          pI, source_request, &driver_as_handle_registry_lookup_snapshot);
+      rtcore_log_driver_as_handle_registry_lookup_snapshot(
+          pI, source_request, driver_as_handle_registry_lookup_snapshot);
+      if (rtcore_fail_closed_on_driver_as_handle_registry_lookup_snapshot(
+              pI, source_request, driver_as_handle_registry_lookup_snapshot)) {
+        return false;
+      }
       rtcore_runtime_as_proxy_registry_key runtime_as_proxy_registry_key =
           rtcore_make_runtime_as_proxy_registry_key(
               source_request, event->owner_seq_snapshot,
