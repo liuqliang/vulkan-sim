@@ -12421,6 +12421,11 @@ static const char *rtcore_top_level_as_proxy_resolve_adapter_source_label() {
   return "top_level_as_proxy_resolve_adapter";
 }
 
+static const char *
+rtcore_resolve_table_runtime_proxy_consistency_bridge_source_label() {
+  return "resolve_table_runtime_proxy_consistency_bridge";
+}
+
 static const char *rtcore_top_level_as_proxy_token_source_label() {
   return "vulkan_sim_traversal_proxy_table";
 }
@@ -19582,6 +19587,395 @@ static bool rtcore_fail_closed_on_runtime_as_proxy_registry_lookup_snapshot(
   return true;
 }
 
+struct rtcore_resolve_table_runtime_proxy_consistency_snapshot {
+  rtcore_resolve_table_runtime_proxy_consistency_snapshot()
+      : valid(false),
+        bridge_source(
+            rtcore_resolve_table_runtime_proxy_consistency_bridge_source_label()),
+        resolve_table_source("unavailable"),
+        runtime_registry_source("unavailable"),
+        proxy_token_source("unavailable"),
+        has_driver_as_resolve_table_lookup(false),
+        driver_as_resolve_table_lookup_passed(false),
+        has_runtime_as_proxy_registry_lookup(false),
+        runtime_as_proxy_registry_lookup_passed(false),
+        registered_as_reference(0),
+        runtime_top_level_as(0),
+        registered_as_matches_runtime_top_level_as(false),
+        owner_tuple_match(false),
+        owner_generation_match(false),
+        profile_ref_match(false),
+        bvh_format_version_match(false),
+        runtime_proxy_token_ready(false),
+        runtime_proxy_bound_to_resolved_as_profile(false),
+        resolve_runtime_proxy_bridge_passed(false),
+        actual_abi_evidence_for_proxy_fields(false),
+        existing_traversal_backend_reused(true),
+        claims_new_hardware_bvh_engine(false) {}
+
+  bool valid;
+  const char *bridge_source;
+  const char *resolve_table_source;
+  const char *runtime_registry_source;
+  const char *proxy_token_source;
+  bool has_driver_as_resolve_table_lookup;
+  bool driver_as_resolve_table_lookup_passed;
+  bool has_runtime_as_proxy_registry_lookup;
+  bool runtime_as_proxy_registry_lookup_passed;
+  uint64_t registered_as_reference;
+  uint64_t runtime_top_level_as;
+  bool registered_as_matches_runtime_top_level_as;
+  bool owner_tuple_match;
+  bool owner_generation_match;
+  bool profile_ref_match;
+  bool bvh_format_version_match;
+  bool runtime_proxy_token_ready;
+  bool runtime_proxy_bound_to_resolved_as_profile;
+  bool resolve_runtime_proxy_bridge_passed;
+  bool actual_abi_evidence_for_proxy_fields;
+  bool existing_traversal_backend_reused;
+  bool claims_new_hardware_bvh_engine;
+};
+
+static void
+rtcore_recompute_resolve_table_runtime_proxy_consistency_snapshot(
+    rtcore_resolve_table_runtime_proxy_consistency_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->runtime_proxy_bound_to_resolved_as_profile =
+      snapshot->registered_as_matches_runtime_top_level_as &&
+      snapshot->profile_ref_match && snapshot->bvh_format_version_match &&
+      snapshot->runtime_proxy_token_ready &&
+      !snapshot->actual_abi_evidence_for_proxy_fields;
+  snapshot->resolve_runtime_proxy_bridge_passed =
+      snapshot->has_driver_as_resolve_table_lookup &&
+      snapshot->driver_as_resolve_table_lookup_passed &&
+      snapshot->has_runtime_as_proxy_registry_lookup &&
+      snapshot->runtime_as_proxy_registry_lookup_passed &&
+      snapshot->owner_tuple_match && snapshot->owner_generation_match &&
+      snapshot->runtime_proxy_bound_to_resolved_as_profile &&
+      snapshot->existing_traversal_backend_reused &&
+      !snapshot->claims_new_hardware_bvh_engine;
+  snapshot->valid = snapshot->resolve_runtime_proxy_bridge_passed;
+}
+
+static rtcore_resolve_table_runtime_proxy_consistency_snapshot
+rtcore_make_resolve_table_runtime_proxy_consistency_snapshot(
+    const rtcore_driver_as_resolve_table_lookup_snapshot
+        &driver_as_resolve_table_lookup_snapshot,
+    const rtcore_runtime_as_proxy_registry_lookup_snapshot
+        &runtime_as_proxy_registry_lookup_snapshot) {
+  rtcore_resolve_table_runtime_proxy_consistency_snapshot snapshot;
+  snapshot.resolve_table_source =
+      driver_as_resolve_table_lookup_snapshot.resolve_table_source;
+  snapshot.runtime_registry_source =
+      runtime_as_proxy_registry_lookup_snapshot.registry_source;
+  snapshot.proxy_token_source =
+      runtime_as_proxy_registry_lookup_snapshot.proxy_token_source;
+  snapshot.has_driver_as_resolve_table_lookup =
+      driver_as_resolve_table_lookup_snapshot.entry_found;
+  snapshot.driver_as_resolve_table_lookup_passed =
+      driver_as_resolve_table_lookup_snapshot.resolve_lookup_passed;
+  snapshot.has_runtime_as_proxy_registry_lookup =
+      runtime_as_proxy_registry_lookup_snapshot.entry_found;
+  snapshot.runtime_as_proxy_registry_lookup_passed =
+      runtime_as_proxy_registry_lookup_snapshot.registry_lookup_passed;
+  snapshot.registered_as_reference =
+      driver_as_resolve_table_lookup_snapshot.key.registered_as_reference;
+  snapshot.runtime_top_level_as =
+      runtime_as_proxy_registry_lookup_snapshot.key.top_level_as;
+  snapshot.registered_as_matches_runtime_top_level_as =
+      driver_as_resolve_table_lookup_snapshot.key.has_registered_as_reference &&
+      runtime_as_proxy_registry_lookup_snapshot.key.has_top_level_as &&
+      snapshot.registered_as_reference == snapshot.runtime_top_level_as;
+  snapshot.owner_tuple_match =
+      driver_as_resolve_table_lookup_snapshot.key.context_ptr ==
+          runtime_as_proxy_registry_lookup_snapshot.key.context_ptr &&
+      driver_as_resolve_table_lookup_snapshot.key.handoff_window_base ==
+          runtime_as_proxy_registry_lookup_snapshot.key.handoff_window_base &&
+      driver_as_resolve_table_lookup_snapshot.key.lane_slot_index ==
+          runtime_as_proxy_registry_lookup_snapshot.key.lane_slot_index &&
+      driver_as_resolve_table_lookup_snapshot.key.owner_hw_sid ==
+          runtime_as_proxy_registry_lookup_snapshot.key.owner_hw_sid &&
+      driver_as_resolve_table_lookup_snapshot.key.warp_uid ==
+          runtime_as_proxy_registry_lookup_snapshot.key.warp_uid &&
+      driver_as_resolve_table_lookup_snapshot.key.warp_id ==
+          runtime_as_proxy_registry_lookup_snapshot.key.warp_id;
+  snapshot.owner_generation_match =
+      driver_as_resolve_table_lookup_snapshot.key.owner_generation ==
+      runtime_as_proxy_registry_lookup_snapshot.key.owner_generation;
+  snapshot.profile_ref_match =
+      driver_as_resolve_table_lookup_snapshot.profile_state_match &&
+      driver_as_resolve_table_lookup_snapshot.has_bvh_format_profile_object &&
+      driver_as_resolve_table_lookup_snapshot
+          .bvh_format_profile_object_bridge_passed &&
+      runtime_as_proxy_registry_lookup_snapshot.has_profile_ref &&
+      driver_as_resolve_table_lookup_snapshot.profile_ref != NULL &&
+      runtime_as_proxy_registry_lookup_snapshot.profile_ref != NULL &&
+      strcmp(driver_as_resolve_table_lookup_snapshot.profile_ref,
+             runtime_as_proxy_registry_lookup_snapshot.profile_ref) == 0;
+  snapshot.bvh_format_version_match =
+      driver_as_resolve_table_lookup_snapshot.key.bvh_format_version ==
+          runtime_as_proxy_registry_lookup_snapshot.entry.bvh_format_version &&
+      driver_as_resolve_table_lookup_snapshot.key.bvh_format_version ==
+          RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  snapshot.runtime_proxy_token_ready =
+      runtime_as_proxy_registry_lookup_snapshot.has_proxy_token &&
+      runtime_as_proxy_registry_lookup_snapshot.entry.traversable_proxy_id != 0 &&
+      runtime_as_proxy_registry_lookup_snapshot.entry.root_proxy_id != 0 &&
+      !runtime_as_proxy_registry_lookup_snapshot
+           .actual_abi_evidence_for_proxy_fields;
+  snapshot.actual_abi_evidence_for_proxy_fields =
+      driver_as_resolve_table_lookup_snapshot
+          .actual_abi_evidence_for_proxy_fields ||
+      runtime_as_proxy_registry_lookup_snapshot
+          .actual_abi_evidence_for_proxy_fields;
+  snapshot.existing_traversal_backend_reused = true;
+  snapshot.claims_new_hardware_bvh_engine = false;
+  rtcore_recompute_resolve_table_runtime_proxy_consistency_snapshot(
+      &snapshot);
+  return snapshot;
+}
+
+enum rtcore_resolve_table_runtime_proxy_consistency_failpoint {
+  RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_NONE = 0,
+  RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_WRONG_OWNER,
+  RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_WRONG_REGISTERED_AS_REFERENCE,
+  RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_PROFILE_MISMATCH,
+  RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_DROP_PROXY_BINDING,
+};
+
+static const char *
+rtcore_resolve_table_runtime_proxy_consistency_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_BRIDGE_FAILPOINT";
+}
+
+static rtcore_resolve_table_runtime_proxy_consistency_failpoint
+rtcore_resolve_table_runtime_proxy_consistency_failpoint_mode() {
+  const char *value = getenv(
+      rtcore_resolve_table_runtime_proxy_consistency_failpoint_env_name());
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "none") == 0) {
+    return RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "wrong_owner") == 0) {
+    return RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_WRONG_OWNER;
+  }
+  if (strcmp(value, "wrong_registered_as_reference") == 0) {
+    return RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_WRONG_REGISTERED_AS_REFERENCE;
+  }
+  if (strcmp(value, "profile_mismatch") == 0) {
+    return RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_PROFILE_MISMATCH;
+  }
+  if (strcmp(value, "drop_proxy_binding") == 0) {
+    return RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_DROP_PROXY_BINDING;
+  }
+  return RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_NONE;
+}
+
+static const char *
+rtcore_resolve_table_runtime_proxy_consistency_failpoint_name(
+    rtcore_resolve_table_runtime_proxy_consistency_failpoint mode) {
+  switch (mode) {
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_WRONG_OWNER:
+      return "wrong_owner";
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_WRONG_REGISTERED_AS_REFERENCE:
+      return "wrong_registered_as_reference";
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_PROFILE_MISMATCH:
+      return "profile_mismatch";
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_DROP_PROXY_BINDING:
+      return "drop_proxy_binding";
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void rtcore_apply_resolve_table_runtime_proxy_consistency_failpoint(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    rtcore_resolve_table_runtime_proxy_consistency_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  const rtcore_resolve_table_runtime_proxy_consistency_failpoint mode =
+      rtcore_resolve_table_runtime_proxy_consistency_failpoint_mode();
+  if (mode == RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_NONE) {
+    return;
+  }
+
+  bool wrong_owner = false;
+  bool wrong_registered_as_reference = false;
+  bool profile_mismatch = false;
+  bool drop_proxy_binding = false;
+  switch (mode) {
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_WRONG_OWNER:
+      snapshot->owner_tuple_match = false;
+      wrong_owner = true;
+      break;
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_WRONG_REGISTERED_AS_REFERENCE:
+      snapshot->registered_as_matches_runtime_top_level_as = false;
+      wrong_registered_as_reference = true;
+      break;
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_PROFILE_MISMATCH:
+      snapshot->profile_ref_match = false;
+      snapshot->bvh_format_version_match = false;
+      profile_mismatch = true;
+      break;
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_DROP_PROXY_BINDING:
+      snapshot->runtime_proxy_token_ready = false;
+      drop_proxy_binding = true;
+      break;
+    case RTCORE_RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_FAILPOINT_NONE:
+    default:
+      return;
+  }
+  rtcore_recompute_resolve_table_runtime_proxy_consistency_snapshot(snapshot);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "resolve-runtime-proxy-consistency-failpoint=1, "
+         "failpoint=%s, mode=%s, provider=%s, "
+         "resolve_runtime_proxy_bridge_source=%s, "
+         "resolve_table_source=%s, runtime_registry_source=%s, "
+         "proxy_token_source=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "wrong_owner=%u, wrong_registered_as_reference=%u, "
+         "profile_mismatch=%u, drop_proxy_binding=%u, "
+         "registered_as_matches_runtime_top_level_as=%u, "
+         "owner_tuple_match=%u, owner_generation_match=%u, "
+         "profile_ref_match=%u, bvh_format_version_match=%u, "
+         "runtime_proxy_token_ready=%u, "
+         "runtime_proxy_bound_to_resolved_as_profile=%u, "
+         "resolve_runtime_proxy_bridge_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_resolve_table_runtime_proxy_consistency_failpoint_name(mode),
+         rtcore_resolve_table_runtime_proxy_consistency_failpoint_name(mode),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot->bridge_source, snapshot->resolve_table_source,
+         snapshot->runtime_registry_source, snapshot->proxy_token_source,
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index, wrong_owner ? 1 : 0,
+         wrong_registered_as_reference ? 1 : 0, profile_mismatch ? 1 : 0,
+         drop_proxy_binding ? 1 : 0,
+         snapshot->registered_as_matches_runtime_top_level_as ? 1 : 0,
+         snapshot->owner_tuple_match ? 1 : 0,
+         snapshot->owner_generation_match ? 1 : 0,
+         snapshot->profile_ref_match ? 1 : 0,
+         snapshot->bvh_format_version_match ? 1 : 0,
+         snapshot->runtime_proxy_token_ready ? 1 : 0,
+         snapshot->runtime_proxy_bound_to_resolved_as_profile ? 1 : 0,
+         snapshot->resolve_runtime_proxy_bridge_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static void rtcore_log_resolve_table_runtime_proxy_consistency_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_resolve_table_runtime_proxy_consistency_snapshot &snapshot) {
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "resolve-table-runtime-proxy-consistency=1, "
+         "resolve_runtime_proxy_bridge_source=%s, "
+         "resolve_table_source=%s, runtime_registry_source=%s, "
+         "proxy_token_source=%s, provider=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "has_driver_as_resolve_table_lookup=%u, "
+         "driver_as_resolve_table_lookup_passed=%u, "
+         "has_runtime_as_proxy_registry_lookup=%u, "
+         "runtime_as_proxy_registry_lookup_passed=%u, "
+         "registered_as_reference=0x%llx, runtime_top_level_as=0x%llx, "
+         "registered_as_matches_runtime_top_level_as=%u, "
+         "owner_tuple_match=%u, owner_generation_match=%u, "
+         "profile_ref_match=%u, bvh_format_version_match=%u, "
+         "runtime_proxy_token_ready=%u, "
+         "runtime_proxy_bound_to_resolved_as_profile=%u, "
+         "resolve_runtime_proxy_bridge_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0, "
+         "existing_traversal_backend_reused=1, "
+         "claims_new_hardware_bvh_engine=0 (%s:%u)\n",
+         snapshot.bridge_source, snapshot.resolve_table_source,
+         snapshot.runtime_registry_source, snapshot.proxy_token_source,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index,
+         snapshot.has_driver_as_resolve_table_lookup ? 1 : 0,
+         snapshot.driver_as_resolve_table_lookup_passed ? 1 : 0,
+         snapshot.has_runtime_as_proxy_registry_lookup ? 1 : 0,
+         snapshot.runtime_as_proxy_registry_lookup_passed ? 1 : 0,
+         (unsigned long long)snapshot.registered_as_reference,
+         (unsigned long long)snapshot.runtime_top_level_as,
+         snapshot.registered_as_matches_runtime_top_level_as ? 1 : 0,
+         snapshot.owner_tuple_match ? 1 : 0,
+         snapshot.owner_generation_match ? 1 : 0,
+         snapshot.profile_ref_match ? 1 : 0,
+         snapshot.bvh_format_version_match ? 1 : 0,
+         snapshot.runtime_proxy_token_ready ? 1 : 0,
+         snapshot.runtime_proxy_bound_to_resolved_as_profile ? 1 : 0,
+         snapshot.resolve_runtime_proxy_bridge_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static bool
+rtcore_fail_closed_on_resolve_table_runtime_proxy_consistency_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_resolve_table_runtime_proxy_consistency_snapshot &snapshot) {
+  if (snapshot.valid) {
+    return false;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=RESOLVE_TABLE_RUNTIME_PROXY_CONSISTENCY_NOT_READY, "
+         "resolve_runtime_proxy_bridge_source=%s, "
+         "resolve_table_source=%s, runtime_registry_source=%s, "
+         "proxy_token_source=%s, provider=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "has_driver_as_resolve_table_lookup=%u, "
+         "driver_as_resolve_table_lookup_passed=%u, "
+         "has_runtime_as_proxy_registry_lookup=%u, "
+         "runtime_as_proxy_registry_lookup_passed=%u, "
+         "registered_as_reference=0x%llx, runtime_top_level_as=0x%llx, "
+         "registered_as_matches_runtime_top_level_as=%u, "
+         "owner_tuple_match=%u, owner_generation_match=%u, "
+         "profile_ref_match=%u, bvh_format_version_match=%u, "
+         "runtime_proxy_token_ready=%u, "
+         "runtime_proxy_bound_to_resolved_as_profile=%u, "
+         "resolve_runtime_proxy_bridge_passed=%u, "
+         "before_top_level_as_proxy_resolve_adapter=1, "
+         "before_registry_payload_shadow=1, "
+         "before_provider_consumed_input=1, before_backend_input_route=1, "
+         "before_traversal_completion=1, before_completion_release=1, "
+         "actual_abi_evidence_for_proxy_fields=0, "
+         "existing_traversal_backend_reused=1, "
+         "claims_new_hardware_bvh_engine=0\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0, snapshot.bridge_source,
+         snapshot.resolve_table_source, snapshot.runtime_registry_source,
+         snapshot.proxy_token_source,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         source_request.context_ptr, source_request.handoff_window_base,
+         source_request.lane_slot_index,
+         snapshot.has_driver_as_resolve_table_lookup ? 1 : 0,
+         snapshot.driver_as_resolve_table_lookup_passed ? 1 : 0,
+         snapshot.has_runtime_as_proxy_registry_lookup ? 1 : 0,
+         snapshot.runtime_as_proxy_registry_lookup_passed ? 1 : 0,
+         (unsigned long long)snapshot.registered_as_reference,
+         (unsigned long long)snapshot.runtime_top_level_as,
+         snapshot.registered_as_matches_runtime_top_level_as ? 1 : 0,
+         snapshot.owner_tuple_match ? 1 : 0,
+         snapshot.owner_generation_match ? 1 : 0,
+         snapshot.profile_ref_match ? 1 : 0,
+         snapshot.bvh_format_version_match ? 1 : 0,
+         snapshot.runtime_proxy_token_ready ? 1 : 0,
+         snapshot.runtime_proxy_bound_to_resolved_as_profile ? 1 : 0,
+         snapshot.resolve_runtime_proxy_bridge_passed ? 1 : 0);
+  fflush(stdout);
+  return true;
+}
+
 struct rtcore_top_level_as_proxy_resolve_adapter_snapshot {
   rtcore_top_level_as_proxy_resolve_adapter_snapshot()
       : valid(false),
@@ -21425,6 +21819,22 @@ bool rtcore_build_traversal_completion_event(
           pI, source_request, runtime_as_proxy_registry_lookup_snapshot);
       if (rtcore_fail_closed_on_runtime_as_proxy_registry_lookup_snapshot(
               pI, source_request, runtime_as_proxy_registry_lookup_snapshot)) {
+        return false;
+      }
+      rtcore_resolve_table_runtime_proxy_consistency_snapshot
+          resolve_table_runtime_proxy_consistency_snapshot =
+              rtcore_make_resolve_table_runtime_proxy_consistency_snapshot(
+                  driver_as_resolve_table_lookup_snapshot,
+                  runtime_as_proxy_registry_lookup_snapshot);
+      rtcore_apply_resolve_table_runtime_proxy_consistency_failpoint(
+          pI, source_request,
+          &resolve_table_runtime_proxy_consistency_snapshot);
+      rtcore_log_resolve_table_runtime_proxy_consistency_snapshot(
+          pI, source_request,
+          resolve_table_runtime_proxy_consistency_snapshot);
+      if (rtcore_fail_closed_on_resolve_table_runtime_proxy_consistency_snapshot(
+              pI, source_request,
+              resolve_table_runtime_proxy_consistency_snapshot)) {
         return false;
       }
       rtcore_top_level_as_proxy_resolve_adapter_snapshot
