@@ -13959,10 +13959,10 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "backend_root_descriptor_shadow=1, "
          "backend_root_descriptor_source=%s, "
          "backend_root_descriptor_shadow_attached=%u, "
-         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_ready=%u, "
          "backend_root_descriptor_proxy_delegated=%u, "
          "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
-         "backend_root_descriptor_actual_abi_evidence=0, "
+         "backend_root_descriptor_actual_abi_evidence=%u, "
          "root_metadata_handle=0x%llx, root_address_space=%s, "
          "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "actual_abi_evidence_for_proxy_fields=0, "
@@ -14014,10 +14014,12 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
              : 0,
          view.resolve_backend_root_descriptor_source,
          view.resolve_backend_root_descriptor_shadow_attached ? 1 : 0,
+         view.resolve_backend_root_descriptor_ready ? 1 : 0,
          view.resolve_backend_root_descriptor_proxy_delegated ? 1 : 0,
          view.resolve_backend_root_descriptor_runtime_proxy_compatibility_path
              ? 1
              : 0,
+         view.resolve_backend_root_descriptor_actual_abi_evidence ? 1 : 0,
          (unsigned long long)view.resolve_root_metadata_handle,
          view.resolve_root_address_space,
          (unsigned long long)view.resolve_root_node_reference,
@@ -17854,6 +17856,10 @@ static const char *rtcore_backend_root_descriptor_shadow_source_label() {
   // backend_root_descriptor_proxy_delegated=1;
   // backend_root_descriptor_runtime_proxy_compatibility_path=1;
   // backend_root_descriptor_actual_abi_evidence=0.
+  // Authority guard markers: backend_root_descriptor_authority_guard=1;
+  // mark_actual_root_descriptor; backend_root_descriptor_ready=1;
+  // backend_root_descriptor_actual_abi_evidence=1;
+  // backend_root_descriptor_proxy_delegated=0.
   return rtcore_driver_as_resolve_table_source_label();
 }
 
@@ -19182,58 +19188,111 @@ static const char *rtcore_backend_root_descriptor_failpoint_env_name() {
   return "VULKAN_SIM_RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT";
 }
 
-static bool rtcore_backend_root_descriptor_drop_shadow_failpoint_enabled() {
+enum rtcore_backend_root_descriptor_failpoint {
+  RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_NONE = 0,
+  RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_SHADOW,
+  RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_MARK_ACTUAL,
+};
+
+static rtcore_backend_root_descriptor_failpoint
+rtcore_backend_root_descriptor_failpoint_mode() {
   const char *value =
       getenv(rtcore_backend_root_descriptor_failpoint_env_name());
-  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0 &&
-         strcmp(value, "none") != 0;
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "none") == 0) {
+    return RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "mark_actual_root_descriptor") == 0 ||
+      strcmp(value, "mark_actual") == 0) {
+    return RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_MARK_ACTUAL;
+  }
+  return RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_SHADOW;
+}
+
+static const char *rtcore_backend_root_descriptor_failpoint_name(
+    rtcore_backend_root_descriptor_failpoint mode) {
+  switch (mode) {
+    case RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_SHADOW:
+      return "drop_backend_root_descriptor_shadow";
+    case RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_MARK_ACTUAL:
+      return "mark_actual_root_descriptor";
+    case RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
 }
 
 static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
     const ptx_instruction *pI,
     const rtcore_traversal_source_request &source_request,
     rtcore_driver_as_resolve_table_lookup_snapshot *snapshot) {
-  if (snapshot == NULL ||
-      !rtcore_backend_root_descriptor_drop_shadow_failpoint_enabled()) {
+  if (snapshot == NULL) {
+    return;
+  }
+  const rtcore_backend_root_descriptor_failpoint mode =
+      rtcore_backend_root_descriptor_failpoint_mode();
+  if (mode == RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_NONE) {
     return;
   }
 
   if (snapshot->entry_found) {
-    snapshot->entry.backend_root_descriptor_source = "unavailable";
-    snapshot->entry.backend_root_descriptor_shadow_attached = false;
-    snapshot->entry.backend_root_descriptor_ready = false;
-    snapshot->entry.backend_root_descriptor_proxy_delegated = false;
-    snapshot->entry.backend_root_descriptor_runtime_proxy_compatibility_path =
-        false;
-    snapshot->entry.backend_root_descriptor_actual_abi_evidence = false;
-    snapshot->entry.root_metadata_handle = 0;
-    snapshot->entry.root_address_space = "unavailable";
-    snapshot->entry.root_node_reference = 0;
-    snapshot->entry.layout_profile_reference = "unavailable";
+    if (mode == RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_MARK_ACTUAL) {
+      snapshot->entry.backend_root_descriptor_source =
+          rtcore_backend_root_descriptor_shadow_source_label();
+      snapshot->entry.backend_root_descriptor_shadow_attached = true;
+      snapshot->entry.backend_root_descriptor_ready = true;
+      snapshot->entry.backend_root_descriptor_proxy_delegated = false;
+      snapshot->entry.backend_root_descriptor_runtime_proxy_compatibility_path =
+          false;
+      snapshot->entry.backend_root_descriptor_actual_abi_evidence = true;
+      snapshot->entry.root_metadata_handle = 0x471u;
+      snapshot->entry.root_address_space = "actual_root_descriptor_claim";
+      snapshot->entry.root_node_reference = 0x471u;
+      snapshot->entry.layout_profile_reference =
+          snapshot->entry.profile_ref != NULL ? snapshot->entry.profile_ref
+                                              : "unavailable";
+    } else {
+      snapshot->entry.backend_root_descriptor_source = "unavailable";
+      snapshot->entry.backend_root_descriptor_shadow_attached = false;
+      snapshot->entry.backend_root_descriptor_ready = false;
+      snapshot->entry.backend_root_descriptor_proxy_delegated = false;
+      snapshot->entry.backend_root_descriptor_runtime_proxy_compatibility_path =
+          false;
+      snapshot->entry.backend_root_descriptor_actual_abi_evidence = false;
+      snapshot->entry.root_metadata_handle = 0;
+      snapshot->entry.root_address_space = "unavailable";
+      snapshot->entry.root_node_reference = 0;
+      snapshot->entry.layout_profile_reference = "unavailable";
+    }
   }
   rtcore_recompute_driver_as_resolve_table_lookup_snapshot(snapshot);
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "backend-root-descriptor-failpoint=1, "
-         "failpoint=drop_backend_root_descriptor_shadow, "
+         "backend_root_descriptor_authority_guard=1, "
+         "failpoint=%s, mode=%s, "
          "env=%s, provider=%s, "
          "backend_root_descriptor_shadow=1, "
          "backend_root_descriptor_source=%s, "
          "backend_root_descriptor_shadow_attached=%u, "
-         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_ready=%u, "
          "backend_root_descriptor_proxy_delegated=%u, "
          "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
-         "backend_root_descriptor_actual_abi_evidence=0, "
+         "backend_root_descriptor_actual_abi_evidence=%u, "
          "root_metadata_handle=0x%llx, root_address_space=%s, "
          "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_backend_root_descriptor_failpoint_name(mode),
+         rtcore_backend_root_descriptor_failpoint_name(mode),
          rtcore_backend_root_descriptor_failpoint_env_name(),
          rtcore_traversal_source_provider_name(source_request.provider),
          snapshot->backend_root_descriptor_source,
          snapshot->backend_root_descriptor_shadow_attached ? 1 : 0,
+         snapshot->backend_root_descriptor_ready ? 1 : 0,
          snapshot->backend_root_descriptor_proxy_delegated ? 1 : 0,
          snapshot->backend_root_descriptor_runtime_proxy_compatibility_path ? 1
                                                                            : 0,
+         snapshot->backend_root_descriptor_actual_abi_evidence ? 1 : 0,
          (unsigned long long)snapshot->root_metadata_handle,
          snapshot->root_address_space,
          (unsigned long long)snapshot->root_node_reference,
@@ -19267,10 +19326,10 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_shadow=1, "
          "backend_root_descriptor_source=%s, "
          "backend_root_descriptor_shadow_attached=%u, "
-         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_ready=%u, "
          "backend_root_descriptor_proxy_delegated=%u, "
          "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
-         "backend_root_descriptor_actual_abi_evidence=0, "
+         "backend_root_descriptor_actual_abi_evidence=%u, "
          "root_metadata_handle=0x%llx, root_address_space=%s, "
          "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "traversable_root_proxy_delegated=%u, "
@@ -19300,9 +19359,11 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          snapshot.backend_root_metadata_proxy_delegated ? 1 : 0,
          snapshot.backend_root_descriptor_source,
          snapshot.backend_root_descriptor_shadow_attached ? 1 : 0,
+         snapshot.backend_root_descriptor_ready ? 1 : 0,
          snapshot.backend_root_descriptor_proxy_delegated ? 1 : 0,
          snapshot.backend_root_descriptor_runtime_proxy_compatibility_path ? 1
                                                                           : 0,
+         snapshot.backend_root_descriptor_actual_abi_evidence ? 1 : 0,
          (unsigned long long)snapshot.root_metadata_handle,
          snapshot.root_address_space,
          (unsigned long long)snapshot.root_node_reference,
@@ -19326,13 +19387,20 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
       snapshot.entry_found && snapshot.entry_live &&
       snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
       snapshot.as_reference_match && snapshot.profile_state_match &&
-      (!snapshot.backend_root_descriptor_shadow_attached ||
-       snapshot.backend_root_descriptor_ready ||
+      !snapshot.backend_root_descriptor_shadow_attached;
+  const bool backend_root_descriptor_authority_not_ready =
+      snapshot.entry_found && snapshot.entry_live &&
+      snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
+      snapshot.as_reference_match && snapshot.profile_state_match &&
+      snapshot.backend_root_descriptor_shadow_attached &&
+      (snapshot.backend_root_descriptor_ready ||
        !snapshot.backend_root_descriptor_proxy_delegated ||
        !snapshot.backend_root_descriptor_runtime_proxy_compatibility_path ||
        snapshot.backend_root_descriptor_actual_abi_evidence);
   const char *reason =
-      backend_root_descriptor_shadow_missing
+      backend_root_descriptor_authority_not_ready
+          ? "BACKEND_ROOT_DESCRIPTOR_AUTHORITY_NOT_READY"
+          : backend_root_descriptor_shadow_missing
           ? "BACKEND_ROOT_DESCRIPTOR_SHADOW_NOT_READY"
           : "DRIVER_AS_RESOLVE_TABLE_NOT_READY";
   printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
@@ -19353,10 +19421,10 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_shadow=1, "
          "backend_root_descriptor_source=%s, "
          "backend_root_descriptor_shadow_attached=%u, "
-         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_ready=%u, "
          "backend_root_descriptor_proxy_delegated=%u, "
          "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
-         "backend_root_descriptor_actual_abi_evidence=0, "
+         "backend_root_descriptor_actual_abi_evidence=%u, "
          "root_metadata_handle=0x%llx, root_address_space=%s, "
          "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "traversable_root_proxy_delegated=%u, "
@@ -19391,9 +19459,11 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          snapshot.backend_root_metadata_proxy_delegated ? 1 : 0,
          snapshot.backend_root_descriptor_source,
          snapshot.backend_root_descriptor_shadow_attached ? 1 : 0,
+         snapshot.backend_root_descriptor_ready ? 1 : 0,
          snapshot.backend_root_descriptor_proxy_delegated ? 1 : 0,
          snapshot.backend_root_descriptor_runtime_proxy_compatibility_path ? 1
                                                                           : 0,
+         snapshot.backend_root_descriptor_actual_abi_evidence ? 1 : 0,
          (unsigned long long)snapshot.root_metadata_handle,
          snapshot.root_address_space,
          (unsigned long long)snapshot.root_node_reference,
