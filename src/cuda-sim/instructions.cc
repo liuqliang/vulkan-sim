@@ -12498,6 +12498,18 @@ struct rtcore_provider_payload_consumed_input_view {
         has_bvh_format_profile(false),
         bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bvh_format_version(0),
+        has_driver_as_resolve_table_lookup(false),
+        driver_as_resolve_table_lookup_passed(false),
+        driver_as_resolve_table_source("unavailable"),
+        driver_as_resolve_registry_source("unavailable"),
+        registered_as_reference(0),
+        resolve_profile_state_match(false),
+        resolve_backend_root_metadata_ready(false),
+        resolve_backend_root_metadata_proxy_delegated(false),
+        resolve_traversable_root_proxy_delegated(false),
+        resolve_bvh_format_profile_proxy_delegated(false),
+        resolve_profile_layout_publication_future_producer(false),
+        resolved_as_profile_input_shadow_ready(false),
         provider_consumed_input_fields_all_owned_with_lifetime(false),
         provider_payload_runtime_lifetime_ready(false),
         context_window_owner_seq_matches_lifetime(false),
@@ -12531,6 +12543,18 @@ struct rtcore_provider_payload_consumed_input_view {
   bool has_bvh_format_profile;
   rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   uint32_t bvh_format_version;
+  bool has_driver_as_resolve_table_lookup;
+  bool driver_as_resolve_table_lookup_passed;
+  const char *driver_as_resolve_table_source;
+  const char *driver_as_resolve_registry_source;
+  uint64_t registered_as_reference;
+  bool resolve_profile_state_match;
+  bool resolve_backend_root_metadata_ready;
+  bool resolve_backend_root_metadata_proxy_delegated;
+  bool resolve_traversable_root_proxy_delegated;
+  bool resolve_bvh_format_profile_proxy_delegated;
+  bool resolve_profile_layout_publication_future_producer;
+  bool resolved_as_profile_input_shadow_ready;
   bool provider_consumed_input_fields_all_owned_with_lifetime;
   bool provider_payload_runtime_lifetime_ready;
   bool context_window_owner_seq_matches_lifetime;
@@ -13120,6 +13144,16 @@ struct rtcore_provider_backend_input_consumption_route_record {
         launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         traversable_root_proxy_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        provider_backend_input_resolve_table_shadow_ready(false),
+        provider_backend_input_resolve_table_source("unavailable"),
+        provider_backend_input_resolve_registry_source("unavailable"),
+        provider_backend_input_registered_as_reference(0),
+        provider_backend_input_resolve_profile_state_match(false),
+        provider_backend_input_backend_root_metadata_ready(false),
+        provider_backend_input_backend_root_metadata_proxy_delegated(false),
+        provider_backend_input_traversable_root_proxy_delegated(false),
+        provider_backend_input_bvh_format_profile_proxy_delegated(false),
+        provider_backend_input_profile_layout_publication_future_producer(false),
         existing_traversal_input_replay_requested(false),
         existing_traversal_request_replay_live_input_match(false),
         provider_backend_input_consumption_route_passed(false),
@@ -13145,6 +13179,16 @@ struct rtcore_provider_backend_input_consumption_route_record {
   rtcore_decoded_input_field_owner_class launch_context_input_owner;
   rtcore_decoded_input_field_owner_class traversable_root_proxy_owner;
   rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
+  bool provider_backend_input_resolve_table_shadow_ready;
+  const char *provider_backend_input_resolve_table_source;
+  const char *provider_backend_input_resolve_registry_source;
+  uint64_t provider_backend_input_registered_as_reference;
+  bool provider_backend_input_resolve_profile_state_match;
+  bool provider_backend_input_backend_root_metadata_ready;
+  bool provider_backend_input_backend_root_metadata_proxy_delegated;
+  bool provider_backend_input_traversable_root_proxy_delegated;
+  bool provider_backend_input_bvh_format_profile_proxy_delegated;
+  bool provider_backend_input_profile_layout_publication_future_producer;
   bool existing_traversal_input_replay_requested;
   bool existing_traversal_request_replay_live_input_match;
   bool provider_backend_input_consumption_route_passed;
@@ -13193,6 +13237,26 @@ rtcore_make_provider_backend_input_consumption_route_record(
     record.launch_context_input_owner = view.launch_context_input_owner;
     record.traversable_root_proxy_owner = view.traversable_root_proxy_owner;
     record.bvh_format_profile_owner = view.bvh_format_profile_owner;
+    record.provider_backend_input_resolve_table_shadow_ready =
+        view.resolved_as_profile_input_shadow_ready;
+    record.provider_backend_input_resolve_table_source =
+        view.driver_as_resolve_table_source;
+    record.provider_backend_input_resolve_registry_source =
+        view.driver_as_resolve_registry_source;
+    record.provider_backend_input_registered_as_reference =
+        view.registered_as_reference;
+    record.provider_backend_input_resolve_profile_state_match =
+        view.resolve_profile_state_match;
+    record.provider_backend_input_backend_root_metadata_ready =
+        view.resolve_backend_root_metadata_ready;
+    record.provider_backend_input_backend_root_metadata_proxy_delegated =
+        view.resolve_backend_root_metadata_proxy_delegated;
+    record.provider_backend_input_traversable_root_proxy_delegated =
+        view.resolve_traversable_root_proxy_delegated;
+    record.provider_backend_input_bvh_format_profile_proxy_delegated =
+        view.resolve_bvh_format_profile_proxy_delegated;
+    record.provider_backend_input_profile_layout_publication_future_producer =
+        view.resolve_profile_layout_publication_future_producer;
   }
   record.existing_traversal_input_replay_requested =
       custom_result.existing_traversal_input_replay_requested;
@@ -13245,6 +13309,17 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "traversable_root_proxy_owner=%s, bvh_format_profile_owner=%s, "
          "traversable_root_proxy_source=%s, bvh_format_profile_source=%s, "
          "proxy_delegation_source=%s, proxy_delegation_gate_passed=%u, "
+         "provider_backend_input_resolve_table_shadow_ready=%u, "
+         "provider_backend_input_resolve_table_source=%s, "
+         "provider_backend_input_resolve_registry_source=%s, "
+         "provider_backend_input_registered_as_reference=0x%llx, "
+         "provider_backend_input_resolve_profile_state_match=%u, "
+         "provider_backend_input_backend_root_metadata_ready=0, "
+         "provider_backend_input_backend_root_metadata_proxy_delegated=%u, "
+         "provider_backend_input_traversable_root_proxy_delegated=%u, "
+         "provider_backend_input_bvh_format_profile_proxy_delegated=%u, "
+         "provider_backend_input_profile_layout_publication_future_producer=%u, "
+         "provider_backend_input_actual_abi_evidence_for_proxy_fields=0, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "existing_traversal_input_replay_requested=%u, "
          "existing_traversal_request_replay_live_input_match=%u, "
@@ -13292,6 +13367,22 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          rtcore_proxy_delegation_gate_passed_for_proxy_fields(
              true, record.traversable_root_proxy_owner, true,
              record.bvh_format_profile_owner)
+             ? 1
+             : 0,
+         record.provider_backend_input_resolve_table_shadow_ready ? 1 : 0,
+         record.provider_backend_input_resolve_table_source,
+         record.provider_backend_input_resolve_registry_source,
+         (unsigned long long)
+             record.provider_backend_input_registered_as_reference,
+         record.provider_backend_input_resolve_profile_state_match ? 1 : 0,
+         record.provider_backend_input_backend_root_metadata_proxy_delegated
+             ? 1
+             : 0,
+         record.provider_backend_input_traversable_root_proxy_delegated ? 1
+                                                                        : 0,
+         record.provider_backend_input_bvh_format_profile_proxy_delegated ? 1
+                                                                          : 0,
+         record.provider_backend_input_profile_layout_publication_future_producer
              ? 1
              : 0,
          record.existing_traversal_input_replay_requested ? 1 : 0,
@@ -15487,6 +15578,18 @@ struct rtcore_provider_facing_registry_payload_shadow {
         has_bvh_format_profile(false),
         bvh_format_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         bvh_format_version(0),
+        has_driver_as_resolve_table_lookup(false),
+        driver_as_resolve_table_lookup_passed(false),
+        driver_as_resolve_table_source("unavailable"),
+        driver_as_resolve_registry_source("unavailable"),
+        registered_as_reference(0),
+        resolve_profile_state_match(false),
+        resolve_backend_root_metadata_ready(false),
+        resolve_backend_root_metadata_proxy_delegated(false),
+        resolve_traversable_root_proxy_delegated(false),
+        resolve_bvh_format_profile_proxy_delegated(false),
+        resolve_profile_layout_publication_future_producer(false),
+        resolved_as_profile_input_shadow_ready(false),
         driver_runtime_context_window_lifetime_bridge_valid(false),
         runtime_allocation_record_valid(false),
         lifetime_table_found(false),
@@ -15526,6 +15629,18 @@ struct rtcore_provider_facing_registry_payload_shadow {
   bool has_bvh_format_profile;
   rtcore_decoded_input_field_owner_class bvh_format_profile_owner;
   uint32_t bvh_format_version;
+  bool has_driver_as_resolve_table_lookup;
+  bool driver_as_resolve_table_lookup_passed;
+  const char *driver_as_resolve_table_source;
+  const char *driver_as_resolve_registry_source;
+  uint64_t registered_as_reference;
+  bool resolve_profile_state_match;
+  bool resolve_backend_root_metadata_ready;
+  bool resolve_backend_root_metadata_proxy_delegated;
+  bool resolve_traversable_root_proxy_delegated;
+  bool resolve_bvh_format_profile_proxy_delegated;
+  bool resolve_profile_layout_publication_future_producer;
+  bool resolved_as_profile_input_shadow_ready;
   bool driver_runtime_context_window_lifetime_bridge_valid;
   bool runtime_allocation_record_valid;
   bool lifetime_table_found;
@@ -16565,6 +16680,31 @@ rtcore_make_provider_payload_consumed_input_view(
   view.bvh_format_profile_owner =
       registry_payload_shadow->bvh_format_profile_owner;
   view.bvh_format_version = registry_payload_shadow->bvh_format_version;
+  view.has_driver_as_resolve_table_lookup =
+      registry_payload_shadow->has_driver_as_resolve_table_lookup;
+  view.driver_as_resolve_table_lookup_passed =
+      registry_payload_shadow->driver_as_resolve_table_lookup_passed;
+  view.driver_as_resolve_table_source =
+      registry_payload_shadow->driver_as_resolve_table_source;
+  view.driver_as_resolve_registry_source =
+      registry_payload_shadow->driver_as_resolve_registry_source;
+  view.registered_as_reference =
+      registry_payload_shadow->registered_as_reference;
+  view.resolve_profile_state_match =
+      registry_payload_shadow->resolve_profile_state_match;
+  view.resolve_backend_root_metadata_ready =
+      registry_payload_shadow->resolve_backend_root_metadata_ready;
+  view.resolve_backend_root_metadata_proxy_delegated =
+      registry_payload_shadow->resolve_backend_root_metadata_proxy_delegated;
+  view.resolve_traversable_root_proxy_delegated =
+      registry_payload_shadow->resolve_traversable_root_proxy_delegated;
+  view.resolve_bvh_format_profile_proxy_delegated =
+      registry_payload_shadow->resolve_bvh_format_profile_proxy_delegated;
+  view.resolve_profile_layout_publication_future_producer =
+      registry_payload_shadow
+          ->resolve_profile_layout_publication_future_producer;
+  view.resolved_as_profile_input_shadow_ready =
+      registry_payload_shadow->resolved_as_profile_input_shadow_ready;
   view.provider_consumed_input_fields_all_owned_with_lifetime =
       registry_payload_shadow
           ->provider_consumed_input_fields_all_owned_with_lifetime;
@@ -20294,7 +20434,9 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
     const rtcore_input_provenance_registry_read_gate_result &read_gate_result,
     const rtcore_decoded_traversal_input_snapshot &decoded_input_snapshot,
     const rtcore_driver_runtime_context_window_lifetime_bridge_snapshot
-        &driver_runtime_context_window_lifetime_bridge_snapshot) {
+        &driver_runtime_context_window_lifetime_bridge_snapshot,
+    const rtcore_driver_as_resolve_table_lookup_snapshot
+        *driver_as_resolve_table_lookup_snapshot) {
   rtcore_provider_facing_registry_payload_shadow shadow;
   if (!read_gate_result.gate_enabled || !read_gate_result.read_allowed ||
       !publication_snapshot.entry.valid) {
@@ -20373,6 +20515,47 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
   shadow.provider_payload_runtime_lifetime_ready =
       driver_runtime_context_window_lifetime_bridge_snapshot
           .provider_payload_runtime_lifetime_ready;
+  if (driver_as_resolve_table_lookup_snapshot != NULL) {
+    shadow.has_driver_as_resolve_table_lookup =
+        driver_as_resolve_table_lookup_snapshot->entry_found;
+    shadow.driver_as_resolve_table_lookup_passed =
+        driver_as_resolve_table_lookup_snapshot->resolve_lookup_passed;
+    shadow.driver_as_resolve_table_source =
+        driver_as_resolve_table_lookup_snapshot->resolve_table_source;
+    shadow.driver_as_resolve_registry_source =
+        driver_as_resolve_table_lookup_snapshot->registry_source;
+    shadow.registered_as_reference =
+        driver_as_resolve_table_lookup_snapshot->key.registered_as_reference;
+    shadow.resolve_profile_state_match =
+        driver_as_resolve_table_lookup_snapshot->profile_state_match;
+    shadow.resolve_backend_root_metadata_ready =
+        driver_as_resolve_table_lookup_snapshot->backend_root_metadata_ready;
+    shadow.resolve_backend_root_metadata_proxy_delegated =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_metadata_proxy_delegated;
+    shadow.resolve_traversable_root_proxy_delegated =
+        driver_as_resolve_table_lookup_snapshot
+            ->traversable_root_proxy_delegated;
+    shadow.resolve_bvh_format_profile_proxy_delegated =
+        driver_as_resolve_table_lookup_snapshot
+            ->bvh_format_profile_proxy_delegated;
+    shadow.resolve_profile_layout_publication_future_producer =
+        driver_as_resolve_table_lookup_snapshot
+            ->profile_layout_publication_future_producer;
+    shadow.resolved_as_profile_input_shadow_ready =
+        driver_as_resolve_table_lookup_snapshot->valid &&
+        driver_as_resolve_table_lookup_snapshot->resolve_lookup_passed &&
+        driver_as_resolve_table_lookup_snapshot->profile_state_match &&
+        !driver_as_resolve_table_lookup_snapshot->backend_root_metadata_ready &&
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_metadata_proxy_delegated &&
+        driver_as_resolve_table_lookup_snapshot
+            ->traversable_root_proxy_delegated &&
+        driver_as_resolve_table_lookup_snapshot
+            ->bvh_format_profile_proxy_delegated &&
+        driver_as_resolve_table_lookup_snapshot
+            ->profile_layout_publication_future_producer;
+  }
   shadow.valid = shadow.has_ray_origin_direction_tmin_tmax &&
                  shadow.has_ray_flags_cull_mask &&
                  shadow.has_launch_context_input &&
@@ -20475,6 +20658,19 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          "bvh_format_version=%u, traversable_root_proxy_source=%s, "
          "bvh_format_profile_source=%s, proxy_delegation_source=%s, "
          "proxy_delegation_gate_passed=%u, "
+         "resolved-as-profile-input-shadow=1, "
+         "resolved_as_profile_input_shadow_ready=%u, "
+         "has_driver_as_resolve_table_lookup=%u, "
+         "driver_as_resolve_table_lookup_passed=%u, "
+         "driver_as_resolve_table_source=%s, "
+         "driver_as_resolve_registry_source=%s, "
+         "registered_as_reference=0x%llx, "
+         "resolve_profile_state_match=%u, "
+         "resolve_backend_root_metadata_ready=%u, "
+         "resolve_backend_root_metadata_proxy_delegated=%u, "
+         "resolve_traversable_root_proxy_delegated=%u, "
+         "resolve_bvh_format_profile_proxy_delegated=%u, "
+         "resolve_profile_layout_publication_future_producer=%u, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "driver_runtime_context_window_lifetime_bridge_valid=%u, "
          "driver_runtime_context_window_lifetime_ready=%u, "
@@ -20506,6 +20702,18 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
              shadow.has_bvh_format_profile, shadow.bvh_format_profile_owner)
              ? 1
              : 0,
+         shadow.resolved_as_profile_input_shadow_ready ? 1 : 0,
+         shadow.has_driver_as_resolve_table_lookup ? 1 : 0,
+         shadow.driver_as_resolve_table_lookup_passed ? 1 : 0,
+         shadow.driver_as_resolve_table_source,
+         shadow.driver_as_resolve_registry_source,
+         (unsigned long long)shadow.registered_as_reference,
+         shadow.resolve_profile_state_match ? 1 : 0,
+         shadow.resolve_backend_root_metadata_ready ? 1 : 0,
+         shadow.resolve_backend_root_metadata_proxy_delegated ? 1 : 0,
+         shadow.resolve_traversable_root_proxy_delegated ? 1 : 0,
+         shadow.resolve_bvh_format_profile_proxy_delegated ? 1 : 0,
+         shadow.resolve_profile_layout_publication_future_producer ? 1 : 0,
          shadow.driver_runtime_context_window_lifetime_bridge_valid ? 1 : 0,
          shadow.driver_runtime_context_window_lifetime_ready ? 1 : 0,
          shadow.context_window_owner_seq_matches_lifetime ? 1 : 0,
@@ -21135,6 +21343,9 @@ bool rtcore_build_traversal_completion_event(
   rtcore_pre_provider_traversal_data_snapshot
       pre_provider_traversal_data_snapshot =
           rtcore_make_pre_provider_traversal_data_snapshot(source_request);
+  rtcore_driver_as_resolve_table_lookup_snapshot
+      driver_as_resolve_table_lookup_snapshot;
+  bool has_driver_as_resolve_table_lookup_snapshot = false;
   rtcore_launch_context_input_publication_record
       launch_context_input_publication_record =
           rtcore_make_launch_context_input_publication_record(
@@ -21184,10 +21395,10 @@ bool rtcore_build_traversal_completion_event(
           driver_as_resolve_table_key,
           driver_as_handle_registry_lookup_snapshot,
           bvh_format_profile_object_bridge_snapshot);
-      rtcore_driver_as_resolve_table_lookup_snapshot
-          driver_as_resolve_table_lookup_snapshot =
-              rtcore_lookup_driver_as_resolve_table_entry(
-                  driver_as_resolve_table_key);
+      driver_as_resolve_table_lookup_snapshot =
+          rtcore_lookup_driver_as_resolve_table_entry(
+              driver_as_resolve_table_key);
+      has_driver_as_resolve_table_lookup_snapshot = true;
       rtcore_apply_driver_as_resolve_table_failpoint_to_lookup_snapshot(
           pI, source_request, &driver_as_resolve_table_lookup_snapshot);
       rtcore_log_driver_as_resolve_table_lookup_snapshot(
@@ -21283,7 +21494,10 @@ bool rtcore_build_traversal_completion_event(
       rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
           registry_publication_snapshot, registry_read_gate_result,
           event->decoded_input_snapshot,
-          event->driver_runtime_context_window_lifetime_bridge_snapshot);
+          event->driver_runtime_context_window_lifetime_bridge_snapshot,
+          has_driver_as_resolve_table_lookup_snapshot
+              ? &driver_as_resolve_table_lookup_snapshot
+              : NULL);
   rtcore_apply_provider_decoded_abi_authority_fault_to_registry_payload_shadow(
       pI, source_request, &event->registry_payload_shadow);
   rtcore_log_provider_facing_registry_payload_shadow_before_provider(
