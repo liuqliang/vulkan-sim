@@ -17546,6 +17546,17 @@ static const char *rtcore_driver_as_handle_registry_source_label() {
   return "driver_as_handle_registry_skeleton";
 }
 
+static const char *rtcore_driver_as_resolve_table_source_label() {
+  // Boundary: runtime_as_proxy_registry_skeleton remains a simulator proxy registry.
+  // Static markers: resolve_table_source=driver_as_resolve_table_skeleton;
+  // no_root_proxy_inference_from_raw_topLevelAS.
+  // Static proxy markers: backend_root_metadata_ready=0;
+  // backend_root_metadata_proxy_delegated=1; traversable_root_proxy_delegated=1;
+  // bvh_format_profile_proxy_delegated=1;
+  // profile_layout_publication_future_producer=1.
+  return "driver_as_resolve_table_skeleton";
+}
+
 static const char *rtcore_bvh_format_profile_object_bridge_source_label() {
   return "bvh_format_profile_object_bridge";
 }
@@ -18203,6 +18214,682 @@ static bool rtcore_fail_closed_on_driver_as_handle_registry_lookup_snapshot(
          snapshot.registry_generation_match ? 1 : 0,
          snapshot.as_reference_match ? 1 : 0, snapshot.lifetime_state,
          snapshot.registry_lookup_passed ? 1 : 0);
+  fflush(stdout);
+  return true;
+}
+
+struct rtcore_driver_as_resolve_table_key {
+  rtcore_driver_as_resolve_table_key()
+      : valid(false),
+        context_ptr(0),
+        handoff_window_base(0),
+        lane_slot_index(0),
+        owner_generation(0),
+        owner_hw_sid(0),
+        warp_uid(0),
+        warp_id(0),
+        has_registered_as_reference(false),
+        registered_as_reference(0),
+        has_profile_ref(false),
+        bvh_format_version(0) {}
+
+  bool valid;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned lane_slot_index;
+  unsigned owner_generation;
+  unsigned owner_hw_sid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  bool has_registered_as_reference;
+  uint64_t registered_as_reference;
+  bool has_profile_ref;
+  uint32_t bvh_format_version;
+
+  bool operator<(const rtcore_driver_as_resolve_table_key &other) const {
+    if (context_ptr != other.context_ptr) {
+      return context_ptr < other.context_ptr;
+    }
+    if (handoff_window_base != other.handoff_window_base) {
+      return handoff_window_base < other.handoff_window_base;
+    }
+    if (lane_slot_index != other.lane_slot_index) {
+      return lane_slot_index < other.lane_slot_index;
+    }
+    if (owner_generation != other.owner_generation) {
+      return owner_generation < other.owner_generation;
+    }
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    if (warp_uid != other.warp_uid) {
+      return warp_uid < other.warp_uid;
+    }
+    if (warp_id != other.warp_id) {
+      return warp_id < other.warp_id;
+    }
+    if (has_registered_as_reference != other.has_registered_as_reference) {
+      return has_registered_as_reference < other.has_registered_as_reference;
+    }
+    if (registered_as_reference != other.registered_as_reference) {
+      return registered_as_reference < other.registered_as_reference;
+    }
+    if (has_profile_ref != other.has_profile_ref) {
+      return has_profile_ref < other.has_profile_ref;
+    }
+    return bvh_format_version < other.bvh_format_version;
+  }
+};
+
+static bool rtcore_driver_as_resolve_table_key_equal(
+    const rtcore_driver_as_resolve_table_key &a,
+    const rtcore_driver_as_resolve_table_key &b) {
+  return a.valid == b.valid && a.context_ptr == b.context_ptr &&
+         a.handoff_window_base == b.handoff_window_base &&
+         a.lane_slot_index == b.lane_slot_index &&
+         a.owner_generation == b.owner_generation &&
+         a.owner_hw_sid == b.owner_hw_sid &&
+         a.warp_uid == b.warp_uid && a.warp_id == b.warp_id &&
+         a.has_registered_as_reference == b.has_registered_as_reference &&
+         a.registered_as_reference == b.registered_as_reference &&
+         a.has_profile_ref == b.has_profile_ref &&
+         a.bvh_format_version == b.bvh_format_version;
+}
+
+static bool rtcore_driver_as_resolve_table_owner_equal(
+    const rtcore_driver_as_resolve_table_key &a,
+    const rtcore_driver_as_resolve_table_key &b) {
+  return a.context_ptr == b.context_ptr &&
+         a.handoff_window_base == b.handoff_window_base &&
+         a.lane_slot_index == b.lane_slot_index &&
+         a.owner_hw_sid == b.owner_hw_sid &&
+         a.warp_uid == b.warp_uid && a.warp_id == b.warp_id;
+}
+
+struct rtcore_driver_as_resolve_table_entry {
+  rtcore_driver_as_resolve_table_entry()
+      : valid(false),
+        live(false),
+        registry_source("unavailable"),
+        resolve_table_source(rtcore_driver_as_resolve_table_source_label()),
+        lifetime_state("unavailable"),
+        profile_object_source("unavailable"),
+        profile_ref_source("unavailable"),
+        profile_ref("unavailable"),
+        has_bvh_format_profile_object(false),
+        selected_compatibility_backend_profile(false),
+        bvh_format_profile_object_bridge_passed(false),
+        backend_root_metadata_ready(false),
+        backend_root_metadata_proxy_delegated(false),
+        traversable_root_proxy_delegated(false),
+        bvh_format_profile_proxy_delegated(false),
+        profile_layout_publication_future_producer(true),
+        actual_abi_evidence_for_proxy_fields(false) {}
+
+  bool valid;
+  bool live;
+  rtcore_driver_as_resolve_table_key key;
+  const char *registry_source;
+  const char *resolve_table_source;
+  const char *lifetime_state;
+  const char *profile_object_source;
+  const char *profile_ref_source;
+  const char *profile_ref;
+  bool has_bvh_format_profile_object;
+  bool selected_compatibility_backend_profile;
+  bool bvh_format_profile_object_bridge_passed;
+  bool backend_root_metadata_ready;
+  bool backend_root_metadata_proxy_delegated;
+  bool traversable_root_proxy_delegated;
+  bool bvh_format_profile_proxy_delegated;
+  bool profile_layout_publication_future_producer;
+  bool actual_abi_evidence_for_proxy_fields;
+};
+
+struct rtcore_driver_as_resolve_table_lookup_snapshot {
+  rtcore_driver_as_resolve_table_lookup_snapshot()
+      : valid(false),
+        entry_found(false),
+        entry_live(false),
+        resolve_key_match(false),
+        resolve_owner_match(false),
+        resolve_generation_match(false),
+        as_reference_match(false),
+        profile_state_match(false),
+        resolve_lookup_passed(false),
+        registry_source(rtcore_driver_as_handle_registry_source_label()),
+        resolve_table_source(rtcore_driver_as_resolve_table_source_label()),
+        lifetime_state("unavailable"),
+        profile_object_source("unavailable"),
+        profile_ref_source("unavailable"),
+        profile_ref("unavailable"),
+        has_bvh_format_profile_object(false),
+        selected_compatibility_backend_profile(false),
+        bvh_format_profile_object_bridge_passed(false),
+        backend_root_metadata_ready(false),
+        backend_root_metadata_proxy_delegated(false),
+        traversable_root_proxy_delegated(false),
+        bvh_format_profile_proxy_delegated(false),
+        profile_layout_publication_future_producer(true),
+        actual_abi_evidence_for_proxy_fields(false) {}
+
+  bool valid;
+  bool entry_found;
+  bool entry_live;
+  bool resolve_key_match;
+  bool resolve_owner_match;
+  bool resolve_generation_match;
+  bool as_reference_match;
+  bool profile_state_match;
+  bool resolve_lookup_passed;
+  const char *registry_source;
+  const char *resolve_table_source;
+  const char *lifetime_state;
+  const char *profile_object_source;
+  const char *profile_ref_source;
+  const char *profile_ref;
+  bool has_bvh_format_profile_object;
+  bool selected_compatibility_backend_profile;
+  bool bvh_format_profile_object_bridge_passed;
+  bool backend_root_metadata_ready;
+  bool backend_root_metadata_proxy_delegated;
+  bool traversable_root_proxy_delegated;
+  bool bvh_format_profile_proxy_delegated;
+  bool profile_layout_publication_future_producer;
+  bool actual_abi_evidence_for_proxy_fields;
+  rtcore_driver_as_resolve_table_key key;
+  rtcore_driver_as_resolve_table_entry entry;
+};
+
+static std::map<rtcore_driver_as_resolve_table_key,
+                rtcore_driver_as_resolve_table_entry>
+    g_rtcore_driver_as_resolve_table;
+
+static rtcore_driver_as_resolve_table_key
+rtcore_make_driver_as_resolve_table_key(
+    const rtcore_driver_as_handle_registry_lookup_snapshot
+        &driver_as_handle_registry_lookup_snapshot,
+    const rtcore_bvh_format_profile_object_bridge_snapshot
+        &bvh_format_profile_object_bridge_snapshot) {
+  rtcore_driver_as_resolve_table_key key;
+  const rtcore_driver_as_handle_registry_key &registry_key =
+      driver_as_handle_registry_lookup_snapshot.key;
+  key.context_ptr = registry_key.context_ptr;
+  key.handoff_window_base = registry_key.handoff_window_base;
+  key.lane_slot_index = registry_key.lane_slot_index;
+  key.owner_generation = registry_key.owner_generation;
+  key.owner_hw_sid = registry_key.owner_hw_sid;
+  key.warp_uid = registry_key.warp_uid;
+  key.warp_id = registry_key.warp_id;
+  key.has_registered_as_reference =
+      registry_key.has_shader_visible_as_reference;
+  key.registered_as_reference = registry_key.shader_visible_as_reference;
+  key.has_profile_ref =
+      bvh_format_profile_object_bridge_snapshot.has_profile_ref;
+  key.bvh_format_version =
+      bvh_format_profile_object_bridge_snapshot.bvh_format_version;
+  key.valid = driver_as_handle_registry_lookup_snapshot.valid &&
+              driver_as_handle_registry_lookup_snapshot.registry_lookup_passed &&
+              driver_as_handle_registry_lookup_snapshot.entry_live &&
+              driver_as_handle_registry_lookup_snapshot.as_reference_match &&
+              key.has_registered_as_reference &&
+              key.registered_as_reference != 0 &&
+              bvh_format_profile_object_bridge_snapshot.valid &&
+              bvh_format_profile_object_bridge_snapshot
+                  .bvh_format_profile_object_bridge_passed &&
+              key.has_profile_ref &&
+              key.bvh_format_version == RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  return key;
+}
+
+static rtcore_driver_as_resolve_table_entry
+rtcore_publish_driver_as_resolve_table_entry(
+    const rtcore_driver_as_resolve_table_key &key,
+    const rtcore_driver_as_handle_registry_lookup_snapshot
+        &driver_as_handle_registry_lookup_snapshot,
+    const rtcore_bvh_format_profile_object_bridge_snapshot
+        &bvh_format_profile_object_bridge_snapshot) {
+  rtcore_driver_as_resolve_table_entry entry;
+  entry.key = key;
+  entry.registry_source =
+      driver_as_handle_registry_lookup_snapshot.registry_source;
+  entry.lifetime_state =
+      driver_as_handle_registry_lookup_snapshot.lifetime_state;
+  entry.profile_object_source =
+      bvh_format_profile_object_bridge_snapshot.profile_object_source;
+  entry.profile_ref_source =
+      bvh_format_profile_object_bridge_snapshot.profile_ref_source;
+  entry.profile_ref = bvh_format_profile_object_bridge_snapshot.profile_ref;
+  entry.has_bvh_format_profile_object =
+      bvh_format_profile_object_bridge_snapshot.has_bvh_format_profile_object;
+  entry.selected_compatibility_backend_profile =
+      bvh_format_profile_object_bridge_snapshot
+          .selected_compatibility_backend_profile;
+  entry.bvh_format_profile_object_bridge_passed =
+      bvh_format_profile_object_bridge_snapshot
+          .bvh_format_profile_object_bridge_passed;
+  entry.backend_root_metadata_ready = false;
+  entry.backend_root_metadata_proxy_delegated = true;
+  entry.traversable_root_proxy_delegated = true;
+  entry.bvh_format_profile_proxy_delegated = true;
+  entry.profile_layout_publication_future_producer = true;
+  entry.actual_abi_evidence_for_proxy_fields = false;
+  entry.valid = key.valid && driver_as_handle_registry_lookup_snapshot.valid &&
+                bvh_format_profile_object_bridge_snapshot.valid &&
+                entry.selected_compatibility_backend_profile &&
+                entry.bvh_format_profile_object_bridge_passed;
+  entry.live = entry.valid;
+  if (entry.valid) {
+    g_rtcore_driver_as_resolve_table[key] = entry;
+  }
+  return entry;
+}
+
+static void rtcore_recompute_driver_as_resolve_table_lookup_snapshot(
+    rtcore_driver_as_resolve_table_lookup_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  snapshot->registry_source =
+      snapshot->entry_found && snapshot->entry.registry_source != NULL
+          ? snapshot->entry.registry_source
+          : rtcore_driver_as_handle_registry_source_label();
+  snapshot->resolve_table_source =
+      snapshot->entry_found && snapshot->entry.resolve_table_source != NULL
+          ? snapshot->entry.resolve_table_source
+          : rtcore_driver_as_resolve_table_source_label();
+  snapshot->lifetime_state =
+      snapshot->entry_found && snapshot->entry.lifetime_state != NULL
+          ? snapshot->entry.lifetime_state
+          : "unavailable";
+  snapshot->entry_live =
+      snapshot->entry_found && snapshot->entry.valid && snapshot->entry.live &&
+      strcmp(snapshot->lifetime_state, "live") == 0;
+  snapshot->resolve_owner_match =
+      snapshot->entry_found &&
+      rtcore_driver_as_resolve_table_owner_equal(snapshot->key,
+                                                snapshot->entry.key);
+  snapshot->resolve_generation_match =
+      snapshot->entry_found &&
+      snapshot->key.owner_generation == snapshot->entry.key.owner_generation;
+  snapshot->as_reference_match =
+      snapshot->entry_found && snapshot->key.has_registered_as_reference &&
+      snapshot->entry.key.has_registered_as_reference &&
+      snapshot->key.registered_as_reference ==
+          snapshot->entry.key.registered_as_reference;
+  snapshot->resolve_key_match =
+      snapshot->entry_found &&
+      rtcore_driver_as_resolve_table_key_equal(snapshot->key,
+                                              snapshot->entry.key);
+  snapshot->has_bvh_format_profile_object =
+      snapshot->entry_found && snapshot->entry.has_bvh_format_profile_object &&
+      snapshot->entry.profile_object_source != NULL &&
+      strcmp(snapshot->entry.profile_object_source,
+             rtcore_bvh_format_profile_object_bridge_source_label()) == 0;
+  snapshot->selected_compatibility_backend_profile =
+      snapshot->entry_found &&
+      snapshot->entry.selected_compatibility_backend_profile &&
+      snapshot->entry.key.bvh_format_version ==
+          RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  snapshot->bvh_format_profile_object_bridge_passed =
+      snapshot->has_bvh_format_profile_object &&
+      snapshot->selected_compatibility_backend_profile &&
+      snapshot->entry.bvh_format_profile_object_bridge_passed;
+  snapshot->profile_object_source =
+      snapshot->entry_found && snapshot->entry.profile_object_source != NULL
+          ? snapshot->entry.profile_object_source
+          : "unavailable";
+  snapshot->profile_ref_source =
+      snapshot->entry_found && snapshot->entry.profile_ref_source != NULL
+          ? snapshot->entry.profile_ref_source
+          : "unavailable";
+  snapshot->profile_ref =
+      snapshot->entry_found && snapshot->entry.profile_ref != NULL
+          ? snapshot->entry.profile_ref
+          : "unavailable";
+  snapshot->profile_state_match =
+      snapshot->entry_found && snapshot->key.has_profile_ref &&
+      snapshot->entry.key.has_profile_ref &&
+      snapshot->key.bvh_format_version == snapshot->entry.key.bvh_format_version &&
+      snapshot->key.bvh_format_version == RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT &&
+      snapshot->bvh_format_profile_object_bridge_passed &&
+      snapshot->entry.profile_ref_source != NULL &&
+      strcmp(snapshot->entry.profile_ref_source,
+             rtcore_bvh_format_profile_ref_source_label()) == 0 &&
+      snapshot->entry.profile_ref != NULL &&
+      strcmp(snapshot->entry.profile_ref,
+             "RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT") == 0;
+  snapshot->backend_root_metadata_ready =
+      snapshot->entry_found && snapshot->entry.backend_root_metadata_ready;
+  snapshot->backend_root_metadata_proxy_delegated =
+      snapshot->entry_found &&
+      snapshot->entry.backend_root_metadata_proxy_delegated;
+  snapshot->traversable_root_proxy_delegated =
+      snapshot->entry_found && snapshot->entry.traversable_root_proxy_delegated;
+  snapshot->bvh_format_profile_proxy_delegated =
+      snapshot->entry_found && snapshot->entry.bvh_format_profile_proxy_delegated;
+  snapshot->profile_layout_publication_future_producer =
+      snapshot->entry_found
+          ? snapshot->entry.profile_layout_publication_future_producer
+          : true;
+  snapshot->resolve_lookup_passed =
+      snapshot->key.valid && snapshot->entry_found && snapshot->entry_live &&
+      snapshot->resolve_key_match && snapshot->resolve_owner_match &&
+      snapshot->resolve_generation_match && snapshot->as_reference_match &&
+      snapshot->profile_state_match &&
+      !snapshot->backend_root_metadata_ready &&
+      snapshot->backend_root_metadata_proxy_delegated &&
+      snapshot->traversable_root_proxy_delegated &&
+      snapshot->bvh_format_profile_proxy_delegated &&
+      snapshot->profile_layout_publication_future_producer;
+  snapshot->valid = snapshot->resolve_lookup_passed;
+  snapshot->actual_abi_evidence_for_proxy_fields = false;
+}
+
+static rtcore_driver_as_resolve_table_lookup_snapshot
+rtcore_lookup_driver_as_resolve_table_entry(
+    const rtcore_driver_as_resolve_table_key &key) {
+  rtcore_driver_as_resolve_table_lookup_snapshot snapshot;
+  snapshot.key = key;
+  std::map<rtcore_driver_as_resolve_table_key,
+           rtcore_driver_as_resolve_table_entry>::const_iterator entry =
+      g_rtcore_driver_as_resolve_table.find(key);
+  if (entry != g_rtcore_driver_as_resolve_table.end()) {
+    snapshot.entry_found = true;
+    snapshot.entry = entry->second;
+  }
+  rtcore_recompute_driver_as_resolve_table_lookup_snapshot(&snapshot);
+  return snapshot;
+}
+
+enum rtcore_driver_as_resolve_table_failpoint {
+  RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_NONE = 0,
+  RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_DROP_RESOLVE_ENTRY,
+  RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_WRONG_OWNER,
+  RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_STALE_GENERATION,
+  RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_PROFILE_MISMATCH,
+  RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_DROP_PROFILE_STATE,
+};
+
+static const char *rtcore_driver_as_resolve_table_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT";
+}
+
+static rtcore_driver_as_resolve_table_failpoint
+rtcore_driver_as_resolve_table_failpoint_mode() {
+  const char *value =
+      getenv(rtcore_driver_as_resolve_table_failpoint_env_name());
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      strcmp(value, "none") == 0) {
+    return RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "drop_resolve_entry") == 0) {
+    return RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_DROP_RESOLVE_ENTRY;
+  }
+  if (strcmp(value, "wrong_owner") == 0) {
+    return RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_WRONG_OWNER;
+  }
+  if (strcmp(value, "stale_generation") == 0) {
+    return RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_STALE_GENERATION;
+  }
+  if (strcmp(value, "profile_mismatch") == 0) {
+    return RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_PROFILE_MISMATCH;
+  }
+  if (strcmp(value, "drop_profile_state") == 0) {
+    return RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_DROP_PROFILE_STATE;
+  }
+  return RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_NONE;
+}
+
+static const char *rtcore_driver_as_resolve_table_failpoint_name(
+    rtcore_driver_as_resolve_table_failpoint mode) {
+  switch (mode) {
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_DROP_RESOLVE_ENTRY:
+      return "drop_resolve_entry";
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_WRONG_OWNER:
+      return "wrong_owner";
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_STALE_GENERATION:
+      return "stale_generation";
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_PROFILE_MISMATCH:
+      return "profile_mismatch";
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_DROP_PROFILE_STATE:
+      return "drop_profile_state";
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void
+rtcore_apply_driver_as_resolve_table_failpoint_to_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    rtcore_driver_as_resolve_table_lookup_snapshot *snapshot) {
+  if (snapshot == NULL) {
+    return;
+  }
+  const rtcore_driver_as_resolve_table_failpoint mode =
+      rtcore_driver_as_resolve_table_failpoint_mode();
+  if (mode == RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_NONE) {
+    return;
+  }
+
+  bool drop_resolve_entry = false;
+  bool wrong_owner = false;
+  bool stale_generation = false;
+  bool profile_mismatch = false;
+  bool drop_profile_state = false;
+  switch (mode) {
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_DROP_RESOLVE_ENTRY:
+      snapshot->entry_found = false;
+      snapshot->entry = rtcore_driver_as_resolve_table_entry();
+      drop_resolve_entry = true;
+      break;
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_WRONG_OWNER:
+      if (snapshot->entry_found) {
+        snapshot->entry.key.owner_hw_sid = snapshot->key.owner_hw_sid + 1;
+        if (snapshot->entry.key.owner_hw_sid == snapshot->key.owner_hw_sid) {
+          snapshot->entry.key.owner_hw_sid = snapshot->key.owner_hw_sid ^ 1;
+        }
+      }
+      wrong_owner = true;
+      break;
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_STALE_GENERATION:
+      if (snapshot->entry_found) {
+        snapshot->entry.key.owner_generation =
+            snapshot->key.owner_generation + 1;
+        if (snapshot->entry.key.owner_generation ==
+            snapshot->key.owner_generation) {
+          snapshot->entry.key.owner_generation =
+              snapshot->key.owner_generation ^ 1;
+        }
+      }
+      stale_generation = true;
+      break;
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_PROFILE_MISMATCH:
+      if (snapshot->entry_found) {
+        snapshot->entry.key.bvh_format_version = 0xffffffffu;
+        snapshot->entry.profile_ref = "RTCORE_BVH_FORMAT_UNSUPPORTED";
+        snapshot->entry.selected_compatibility_backend_profile = false;
+        snapshot->entry.bvh_format_profile_object_bridge_passed = false;
+      }
+      profile_mismatch = true;
+      break;
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_DROP_PROFILE_STATE:
+      if (snapshot->entry_found) {
+        snapshot->entry.key.has_profile_ref = false;
+        snapshot->entry.has_bvh_format_profile_object = false;
+        snapshot->entry.profile_object_source = "unavailable";
+        snapshot->entry.profile_ref_source = "unavailable";
+        snapshot->entry.profile_ref = "unavailable";
+        snapshot->entry.selected_compatibility_backend_profile = false;
+        snapshot->entry.bvh_format_profile_object_bridge_passed = false;
+      }
+      drop_profile_state = true;
+      break;
+    case RTCORE_DRIVER_AS_RESOLVE_TABLE_FAILPOINT_NONE:
+    default:
+      return;
+  }
+  rtcore_recompute_driver_as_resolve_table_lookup_snapshot(snapshot);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "driver-as-resolve-table-failpoint=1, "
+         "failpoint=%s, mode=%s, provider=%s, "
+         "resolve_table_source=%s, registry_source=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_generation=%u, "
+         "registered_as_reference=0x%llx, "
+         "drop_resolve_entry=%u, wrong_owner=%u, stale_generation=%u, "
+         "profile_mismatch=%u, drop_profile_state=%u, "
+         "entry_found=%u, entry_live=%u, resolve_key_match=%u, "
+         "resolve_owner_match=%u, resolve_generation_match=%u, "
+         "as_reference_match=%u, profile_state_match=%u, "
+         "profile_object_source=%s, profile_ref_source=%s, "
+         "profile_ref=%s, selected_compatibility_backend_profile=%u, "
+         "backend_root_metadata_ready=0, "
+         "backend_root_metadata_proxy_delegated=%u, "
+         "traversable_root_proxy_delegated=%u, "
+         "bvh_format_profile_proxy_delegated=%u, "
+         "profile_layout_publication_future_producer=1, "
+         "resolve_lookup_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_driver_as_resolve_table_failpoint_name(mode),
+         rtcore_driver_as_resolve_table_failpoint_name(mode),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot->resolve_table_source, snapshot->registry_source,
+         snapshot->key.context_ptr, snapshot->key.handoff_window_base,
+         snapshot->key.lane_slot_index, snapshot->key.owner_generation,
+         (unsigned long long)snapshot->key.registered_as_reference,
+         drop_resolve_entry ? 1 : 0, wrong_owner ? 1 : 0,
+         stale_generation ? 1 : 0, profile_mismatch ? 1 : 0,
+         drop_profile_state ? 1 : 0, snapshot->entry_found ? 1 : 0,
+         snapshot->entry_live ? 1 : 0,
+         snapshot->resolve_key_match ? 1 : 0,
+         snapshot->resolve_owner_match ? 1 : 0,
+         snapshot->resolve_generation_match ? 1 : 0,
+         snapshot->as_reference_match ? 1 : 0,
+         snapshot->profile_state_match ? 1 : 0,
+         snapshot->profile_object_source, snapshot->profile_ref_source,
+         snapshot->profile_ref,
+         snapshot->selected_compatibility_backend_profile ? 1 : 0,
+         snapshot->backend_root_metadata_proxy_delegated ? 1 : 0,
+         snapshot->traversable_root_proxy_delegated ? 1 : 0,
+         snapshot->bvh_format_profile_proxy_delegated ? 1 : 0,
+         snapshot->resolve_lookup_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot) {
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "driver-as-resolve-table-lookup=1, "
+         "resolve_table_source=%s, registry_source=%s, provider=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_generation=%u, owner_hw_sid=%u, "
+         "warp_uid=%u, warp_id=%u, has_registered_as_reference=%u, "
+         "registered_as_reference=0x%llx, entry_found=%u, "
+         "entry_live=%u, resolve_key_match=%u, "
+         "resolve_owner_match=%u, resolve_generation_match=%u, "
+         "as_reference_match=%u, lifetime_state=%s, "
+         "profile_state_match=%u, profile_object_source=%s, "
+         "profile_ref_source=%s, has_bvh_format_profile_object=%u, "
+         "profile_ref=%s, bvh_format_version=%u, "
+         "selected_compatibility_backend_profile=%u, "
+         "bvh_format_profile_object_bridge_passed=%u, "
+         "backend_root_metadata_ready=0, "
+         "backend_root_metadata_proxy_delegated=%u, "
+         "traversable_root_proxy_delegated=%u, "
+         "bvh_format_profile_proxy_delegated=%u, "
+         "profile_layout_publication_future_producer=1, "
+         "resolve_lookup_passed=%u, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         snapshot.resolve_table_source, snapshot.registry_source,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot.key.context_ptr, snapshot.key.handoff_window_base,
+         snapshot.key.lane_slot_index, snapshot.key.owner_generation,
+         snapshot.key.owner_hw_sid, snapshot.key.warp_uid,
+         snapshot.key.warp_id,
+         snapshot.key.has_registered_as_reference ? 1 : 0,
+         (unsigned long long)snapshot.key.registered_as_reference,
+         snapshot.entry_found ? 1 : 0, snapshot.entry_live ? 1 : 0,
+         snapshot.resolve_key_match ? 1 : 0,
+         snapshot.resolve_owner_match ? 1 : 0,
+         snapshot.resolve_generation_match ? 1 : 0,
+         snapshot.as_reference_match ? 1 : 0, snapshot.lifetime_state,
+         snapshot.profile_state_match ? 1 : 0,
+         snapshot.profile_object_source, snapshot.profile_ref_source,
+         snapshot.has_bvh_format_profile_object ? 1 : 0,
+         snapshot.profile_ref, snapshot.key.bvh_format_version,
+         snapshot.selected_compatibility_backend_profile ? 1 : 0,
+         snapshot.bvh_format_profile_object_bridge_passed ? 1 : 0,
+         snapshot.backend_root_metadata_proxy_delegated ? 1 : 0,
+         snapshot.traversable_root_proxy_delegated ? 1 : 0,
+         snapshot.bvh_format_profile_proxy_delegated ? 1 : 0,
+         snapshot.resolve_lookup_passed ? 1 : 0,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
+static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot) {
+  if (snapshot.valid) {
+    return false;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=DRIVER_AS_RESOLVE_TABLE_NOT_READY, "
+         "resolve_table_source=%s, registry_source=%s, provider=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_generation=%u, "
+         "registered_as_reference=0x%llx, entry_found=%u, "
+         "entry_live=%u, resolve_key_match=%u, "
+         "resolve_owner_match=%u, resolve_generation_match=%u, "
+         "as_reference_match=%u, lifetime_state=%s, "
+         "profile_state_match=%u, profile_object_source=%s, "
+         "profile_ref_source=%s, has_bvh_format_profile_object=%u, "
+         "profile_ref=%s, selected_compatibility_backend_profile=%u, "
+         "bvh_format_profile_object_bridge_passed=%u, "
+         "backend_root_metadata_ready=0, "
+         "backend_root_metadata_proxy_delegated=%u, "
+         "traversable_root_proxy_delegated=%u, "
+         "bvh_format_profile_proxy_delegated=%u, "
+         "profile_layout_publication_future_producer=1, "
+         "resolve_lookup_passed=%u, "
+         "before_runtime_as_proxy_registry=1, "
+         "before_top_level_as_proxy_resolve_adapter=1, "
+         "before_registry_payload_shadow=1, "
+         "before_provider_consumed_input=1, before_backend_input_route=1, "
+         "before_traversal_completion=1, before_completion_release=1, "
+         "actual_abi_evidence_for_proxy_fields=0\n",
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0, snapshot.resolve_table_source,
+         snapshot.registry_source,
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot.key.context_ptr, snapshot.key.handoff_window_base,
+         snapshot.key.lane_slot_index, snapshot.key.owner_generation,
+         (unsigned long long)snapshot.key.registered_as_reference,
+         snapshot.entry_found ? 1 : 0, snapshot.entry_live ? 1 : 0,
+         snapshot.resolve_key_match ? 1 : 0,
+         snapshot.resolve_owner_match ? 1 : 0,
+         snapshot.resolve_generation_match ? 1 : 0,
+         snapshot.as_reference_match ? 1 : 0, snapshot.lifetime_state,
+         snapshot.profile_state_match ? 1 : 0,
+         snapshot.profile_object_source, snapshot.profile_ref_source,
+         snapshot.has_bvh_format_profile_object ? 1 : 0,
+         snapshot.profile_ref,
+         snapshot.selected_compatibility_backend_profile ? 1 : 0,
+         snapshot.bvh_format_profile_object_bridge_passed ? 1 : 0,
+         snapshot.backend_root_metadata_proxy_delegated ? 1 : 0,
+         snapshot.traversable_root_proxy_delegated ? 1 : 0,
+         snapshot.bvh_format_profile_proxy_delegated ? 1 : 0,
+         snapshot.resolve_lookup_passed ? 1 : 0);
   fflush(stdout);
   return true;
 }
@@ -20481,11 +21168,6 @@ bool rtcore_build_traversal_completion_event(
               pI, source_request, driver_as_handle_registry_lookup_snapshot)) {
         return false;
       }
-      rtcore_runtime_as_proxy_registry_key runtime_as_proxy_registry_key =
-          rtcore_make_runtime_as_proxy_registry_key(
-              source_request, event->owner_seq_snapshot,
-              event->driver_runtime_context_window_lifetime_bridge_snapshot,
-              launch_context_input_publication_record);
       rtcore_bvh_format_profile_object_bridge_snapshot
           bvh_format_profile_object_bridge_snapshot =
               rtcore_make_bvh_format_profile_object_bridge_snapshot(
@@ -20494,6 +21176,31 @@ bool rtcore_build_traversal_completion_event(
           pI, source_request, &bvh_format_profile_object_bridge_snapshot);
       rtcore_log_bvh_format_profile_object_bridge_snapshot(
           pI, source_request, bvh_format_profile_object_bridge_snapshot);
+      rtcore_driver_as_resolve_table_key driver_as_resolve_table_key =
+          rtcore_make_driver_as_resolve_table_key(
+              driver_as_handle_registry_lookup_snapshot,
+              bvh_format_profile_object_bridge_snapshot);
+      (void)rtcore_publish_driver_as_resolve_table_entry(
+          driver_as_resolve_table_key,
+          driver_as_handle_registry_lookup_snapshot,
+          bvh_format_profile_object_bridge_snapshot);
+      rtcore_driver_as_resolve_table_lookup_snapshot
+          driver_as_resolve_table_lookup_snapshot =
+              rtcore_lookup_driver_as_resolve_table_entry(
+                  driver_as_resolve_table_key);
+      rtcore_apply_driver_as_resolve_table_failpoint_to_lookup_snapshot(
+          pI, source_request, &driver_as_resolve_table_lookup_snapshot);
+      rtcore_log_driver_as_resolve_table_lookup_snapshot(
+          pI, source_request, driver_as_resolve_table_lookup_snapshot);
+      if (rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
+              pI, source_request, driver_as_resolve_table_lookup_snapshot)) {
+        return false;
+      }
+      rtcore_runtime_as_proxy_registry_key runtime_as_proxy_registry_key =
+          rtcore_make_runtime_as_proxy_registry_key(
+              source_request, event->owner_seq_snapshot,
+              event->driver_runtime_context_window_lifetime_bridge_snapshot,
+              launch_context_input_publication_record);
       (void)rtcore_publish_runtime_as_proxy_registry_entry(
           runtime_as_proxy_registry_key, pre_provider_traversal_data_snapshot,
           bvh_format_profile_object_bridge_snapshot);
