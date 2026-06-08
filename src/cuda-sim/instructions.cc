@@ -13477,6 +13477,7 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "backend_root_descriptor_producer_field_source=%s, "
          "backend_root_descriptor_producer_fields_published=%u, "
          "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_consumption_gate=1, "
          "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
          "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
          "backend_root_descriptor_producer_root_address_space=%s, "
@@ -14096,6 +14097,7 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "backend_root_descriptor_producer_field_source=%s, "
          "backend_root_descriptor_producer_fields_published=%u, "
          "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_consumption_gate=1, "
          "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
          "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
          "backend_root_descriptor_producer_root_address_space=%s, "
@@ -18150,10 +18152,13 @@ static const char *rtcore_backend_root_descriptor_producer_field_source_label() 
   // backend_root_descriptor_producer_field_source=driver_as_resolve_table_producer_shadow;
   // backend_root_descriptor_producer_fields_published=1;
   // backend_root_descriptor_producer_fields_guarded=1;
+  // backend_root_descriptor_producer_consumption_gate=1;
   // backend_root_descriptor_producer_fields_consumed_by_traversal=0;
   // backend_root_descriptor_producer_root_address_space=actual_as_bvh_memory.
   // Failpoint marker: drop_producer_fields.
+  // Failpoint marker: force_producer_field_consumption.
   // Fail-closed marker: BACKEND_ROOT_DESCRIPTOR_PRODUCER_FIELDS_NOT_PUBLISHED.
+  // Fail-closed marker: BACKEND_ROOT_DESCRIPTOR_PRODUCER_CONSUMPTION_NOT_ENABLED.
   // actual_abi_evidence_for_proxy_fields=0.
   return "driver_as_resolve_table_producer_shadow";
 }
@@ -19719,6 +19724,7 @@ enum rtcore_backend_root_descriptor_failpoint {
   RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_MARK_ACTUAL,
   RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_CLAIM_PRODUCER_READY_WITHOUT_FIELDS,
   RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_PRODUCER_FIELDS,
+  RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_FORCE_PRODUCER_FIELD_CONSUMPTION,
 };
 
 static rtcore_backend_root_descriptor_failpoint
@@ -19740,6 +19746,10 @@ rtcore_backend_root_descriptor_failpoint_mode() {
   if (strcmp(value, "drop_producer_fields") == 0) {
     return RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_PRODUCER_FIELDS;
   }
+  if (strcmp(value, "force_producer_field_consumption") == 0 ||
+      strcmp(value, "consume_producer_fields_as_traversal_authority") == 0) {
+    return RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_FORCE_PRODUCER_FIELD_CONSUMPTION;
+  }
   return RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_SHADOW;
 }
 
@@ -19754,6 +19764,8 @@ static const char *rtcore_backend_root_descriptor_failpoint_name(
       return "claim_producer_ready_without_fields";
     case RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_DROP_PRODUCER_FIELDS:
       return "drop_producer_fields";
+    case RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_FORCE_PRODUCER_FIELD_CONSUMPTION:
+      return "force_producer_field_consumption";
     case RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_NONE:
     default:
       return "none";
@@ -19843,6 +19855,13 @@ static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
           "unavailable";
       snapshot->entry.backend_root_descriptor_producer_bvh_memory_binding =
           false;
+    } else if (mode ==
+               RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT_FORCE_PRODUCER_FIELD_CONSUMPTION) {
+      snapshot->entry.backend_root_descriptor_producer_field_source =
+          rtcore_backend_root_descriptor_producer_field_source_label();
+      snapshot->entry.backend_root_descriptor_producer_field_publication = true;
+      snapshot->entry
+          .backend_root_descriptor_producer_fields_consumed_by_traversal = true;
     } else {
       snapshot->entry.backend_root_descriptor_source = "unavailable";
       snapshot->entry.backend_root_descriptor_shadow_attached = false;
@@ -19911,6 +19930,7 @@ static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
          "backend_root_descriptor_producer_field_source=%s, "
          "backend_root_descriptor_producer_fields_published=%u, "
          "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_consumption_gate=1, "
          "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
          "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
          "backend_root_descriptor_producer_root_address_space=%s, "
@@ -20006,6 +20026,7 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_producer_field_source=%s, "
          "backend_root_descriptor_producer_fields_published=%u, "
          "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_consumption_gate=1, "
          "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
          "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
          "backend_root_descriptor_producer_root_address_space=%s, "
@@ -20132,6 +20153,14 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
       snapshot.backend_root_descriptor_producer_contract &&
       !snapshot.backend_root_descriptor_producer_contract_ready &&
       !snapshot.backend_root_descriptor_producer_fields_published;
+  const bool backend_root_descriptor_producer_consumption_not_enabled =
+      snapshot.entry_found && snapshot.entry_live &&
+      snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
+      snapshot.as_reference_match && snapshot.profile_state_match &&
+      snapshot.backend_root_descriptor_shadow_attached &&
+      snapshot.backend_root_descriptor_producer_contract &&
+      snapshot.backend_root_descriptor_producer_fields_published &&
+      snapshot.backend_root_descriptor_producer_fields_consumed_by_traversal;
   const bool backend_root_descriptor_producer_contract_not_satisfied =
       snapshot.entry_found && snapshot.entry_live &&
       snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
@@ -20156,6 +20185,8 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
           ? "BACKEND_ROOT_DESCRIPTOR_AUTHORITY_NOT_READY"
           : backend_root_descriptor_shadow_missing
           ? "BACKEND_ROOT_DESCRIPTOR_SHADOW_NOT_READY"
+          : backend_root_descriptor_producer_consumption_not_enabled
+          ? "BACKEND_ROOT_DESCRIPTOR_PRODUCER_CONSUMPTION_NOT_ENABLED"
           : backend_root_descriptor_producer_fields_not_published
           ? "BACKEND_ROOT_DESCRIPTOR_PRODUCER_FIELDS_NOT_PUBLISHED"
           : "DRIVER_AS_RESOLVE_TABLE_NOT_READY";
@@ -20188,6 +20219,7 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_producer_field_source=%s, "
          "backend_root_descriptor_producer_fields_published=%u, "
          "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_consumption_gate=1, "
          "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
          "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
          "backend_root_descriptor_producer_root_address_space=%s, "
@@ -22408,6 +22440,7 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          "backend_root_descriptor_producer_field_source=%s, "
          "backend_root_descriptor_producer_fields_published=%u, "
          "backend_root_descriptor_producer_fields_guarded=%u, "
+         "backend_root_descriptor_producer_consumption_gate=1, "
          "backend_root_descriptor_producer_fields_consumed_by_traversal=%u, "
          "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
          "backend_root_descriptor_producer_root_address_space=%s, "
