@@ -12511,6 +12511,16 @@ struct rtcore_provider_payload_consumed_input_view {
         resolve_profile_state_match(false),
         resolve_backend_root_metadata_ready(false),
         resolve_backend_root_metadata_proxy_delegated(false),
+        resolve_backend_root_descriptor_source("unavailable"),
+        resolve_backend_root_descriptor_shadow_attached(false),
+        resolve_backend_root_descriptor_ready(false),
+        resolve_backend_root_descriptor_proxy_delegated(false),
+        resolve_backend_root_descriptor_runtime_proxy_compatibility_path(false),
+        resolve_backend_root_descriptor_actual_abi_evidence(false),
+        resolve_root_metadata_handle(0),
+        resolve_root_address_space("unavailable"),
+        resolve_root_node_reference(0),
+        resolve_layout_profile_reference("unavailable"),
         resolve_traversable_root_proxy_delegated(false),
         resolve_bvh_format_profile_proxy_delegated(false),
         resolve_profile_layout_publication_future_producer(false),
@@ -12556,6 +12566,16 @@ struct rtcore_provider_payload_consumed_input_view {
   bool resolve_profile_state_match;
   bool resolve_backend_root_metadata_ready;
   bool resolve_backend_root_metadata_proxy_delegated;
+  const char *resolve_backend_root_descriptor_source;
+  bool resolve_backend_root_descriptor_shadow_attached;
+  bool resolve_backend_root_descriptor_ready;
+  bool resolve_backend_root_descriptor_proxy_delegated;
+  bool resolve_backend_root_descriptor_runtime_proxy_compatibility_path;
+  bool resolve_backend_root_descriptor_actual_abi_evidence;
+  uint64_t resolve_root_metadata_handle;
+  const char *resolve_root_address_space;
+  uint64_t resolve_root_node_reference;
+  const char *resolve_layout_profile_reference;
   bool resolve_traversable_root_proxy_delegated;
   bool resolve_bvh_format_profile_proxy_delegated;
   bool resolve_profile_layout_publication_future_producer;
@@ -13156,6 +13176,16 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_backend_input_resolve_profile_state_match(false),
         provider_backend_input_backend_root_metadata_ready(false),
         provider_backend_input_backend_root_metadata_proxy_delegated(false),
+        provider_backend_input_backend_root_descriptor_source("unavailable"),
+        provider_backend_input_backend_root_descriptor_shadow_attached(false),
+        provider_backend_input_backend_root_descriptor_ready(false),
+        provider_backend_input_backend_root_descriptor_proxy_delegated(false),
+        provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path(false),
+        provider_backend_input_backend_root_descriptor_actual_abi_evidence(false),
+        provider_backend_input_root_metadata_handle(0),
+        provider_backend_input_root_address_space("unavailable"),
+        provider_backend_input_root_node_reference(0),
+        provider_backend_input_layout_profile_reference("unavailable"),
         provider_backend_input_traversable_root_proxy_delegated(false),
         provider_backend_input_bvh_format_profile_proxy_delegated(false),
         provider_backend_input_profile_layout_publication_future_producer(false),
@@ -13191,6 +13221,16 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool provider_backend_input_resolve_profile_state_match;
   bool provider_backend_input_backend_root_metadata_ready;
   bool provider_backend_input_backend_root_metadata_proxy_delegated;
+  const char *provider_backend_input_backend_root_descriptor_source;
+  bool provider_backend_input_backend_root_descriptor_shadow_attached;
+  bool provider_backend_input_backend_root_descriptor_ready;
+  bool provider_backend_input_backend_root_descriptor_proxy_delegated;
+  bool provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path;
+  bool provider_backend_input_backend_root_descriptor_actual_abi_evidence;
+  uint64_t provider_backend_input_root_metadata_handle;
+  const char *provider_backend_input_root_address_space;
+  uint64_t provider_backend_input_root_node_reference;
+  const char *provider_backend_input_layout_profile_reference;
   bool provider_backend_input_traversable_root_proxy_delegated;
   bool provider_backend_input_bvh_format_profile_proxy_delegated;
   bool provider_backend_input_profile_layout_publication_future_producer;
@@ -13256,6 +13296,26 @@ rtcore_make_provider_backend_input_consumption_route_record(
         view.resolve_backend_root_metadata_ready;
     record.provider_backend_input_backend_root_metadata_proxy_delegated =
         view.resolve_backend_root_metadata_proxy_delegated;
+    record.provider_backend_input_backend_root_descriptor_source =
+        view.resolve_backend_root_descriptor_source;
+    record.provider_backend_input_backend_root_descriptor_shadow_attached =
+        view.resolve_backend_root_descriptor_shadow_attached;
+    record.provider_backend_input_backend_root_descriptor_ready =
+        view.resolve_backend_root_descriptor_ready;
+    record.provider_backend_input_backend_root_descriptor_proxy_delegated =
+        view.resolve_backend_root_descriptor_proxy_delegated;
+    record.provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path =
+        view.resolve_backend_root_descriptor_runtime_proxy_compatibility_path;
+    record.provider_backend_input_backend_root_descriptor_actual_abi_evidence =
+        view.resolve_backend_root_descriptor_actual_abi_evidence;
+    record.provider_backend_input_root_metadata_handle =
+        view.resolve_root_metadata_handle;
+    record.provider_backend_input_root_address_space =
+        view.resolve_root_address_space;
+    record.provider_backend_input_root_node_reference =
+        view.resolve_root_node_reference;
+    record.provider_backend_input_layout_profile_reference =
+        view.resolve_layout_profile_reference;
     record.provider_backend_input_traversable_root_proxy_delegated =
         view.resolve_traversable_root_proxy_delegated;
     record.provider_backend_input_bvh_format_profile_proxy_delegated =
@@ -13321,6 +13381,16 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_resolve_profile_state_match=%u, "
          "provider_backend_input_backend_root_metadata_ready=0, "
          "provider_backend_input_backend_root_metadata_proxy_delegated=%u, "
+         "provider_backend_input_backend_root_descriptor_shadow_attached=%u, "
+         "provider_backend_input_backend_root_descriptor_source=%s, "
+         "provider_backend_input_backend_root_descriptor_ready=0, "
+         "provider_backend_input_backend_root_descriptor_proxy_delegated=%u, "
+         "provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_abi_evidence=0, "
+         "provider_backend_input_root_metadata_handle=0x%llx, "
+         "provider_backend_input_root_address_space=%s, "
+         "provider_backend_input_root_node_reference=0x%llx, "
+         "provider_backend_input_layout_profile_reference=%s, "
          "provider_backend_input_traversable_root_proxy_delegated=%u, "
          "provider_backend_input_bvh_format_profile_proxy_delegated=%u, "
          "provider_backend_input_profile_layout_publication_future_producer=%u, "
@@ -13383,6 +13453,20 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.provider_backend_input_backend_root_metadata_proxy_delegated
              ? 1
              : 0,
+         record.provider_backend_input_backend_root_descriptor_shadow_attached
+             ? 1
+             : 0,
+         record.provider_backend_input_backend_root_descriptor_source,
+         record.provider_backend_input_backend_root_descriptor_proxy_delegated
+             ? 1
+             : 0,
+         record.provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path
+             ? 1
+             : 0,
+         (unsigned long long)record.provider_backend_input_root_metadata_handle,
+         record.provider_backend_input_root_address_space,
+         (unsigned long long)record.provider_backend_input_root_node_reference,
+         record.provider_backend_input_layout_profile_reference,
          record.provider_backend_input_traversable_root_proxy_delegated ? 1
                                                                         : 0,
          record.provider_backend_input_bvh_format_profile_proxy_delegated ? 1
@@ -13872,6 +13956,15 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "root_proxy_id=0x%llx, has_bvh_format_profile=%u, "
          "bvh_format_version=%u, bvh_format_profile_source=%s, "
          "proxy_delegation_source=%s, proxy_delegation_gate_passed=%u, "
+         "backend_root_descriptor_shadow=1, "
+         "backend_root_descriptor_source=%s, "
+         "backend_root_descriptor_shadow_attached=%u, "
+         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_proxy_delegated=%u, "
+         "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
+         "backend_root_descriptor_actual_abi_evidence=0, "
+         "root_metadata_handle=0x%llx, root_address_space=%s, "
+         "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "provider_payload_backend_input_owner_lifetime_ok=%u, "
          "provider_backend_input_runtime_lifetime_ready=%u, "
@@ -13919,6 +14012,16 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
              view.has_bvh_format_profile, view.bvh_format_profile_owner)
              ? 1
              : 0,
+         view.resolve_backend_root_descriptor_source,
+         view.resolve_backend_root_descriptor_shadow_attached ? 1 : 0,
+         view.resolve_backend_root_descriptor_proxy_delegated ? 1 : 0,
+         view.resolve_backend_root_descriptor_runtime_proxy_compatibility_path
+             ? 1
+             : 0,
+         (unsigned long long)view.resolve_root_metadata_handle,
+         view.resolve_root_address_space,
+         (unsigned long long)view.resolve_root_node_reference,
+         view.resolve_layout_profile_reference,
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
          view.provider_payload_runtime_lifetime_ready ? 1 : 0,
          view.context_window_owner_seq_matches_lifetime ? 1 : 0,
@@ -15591,6 +15694,16 @@ struct rtcore_provider_facing_registry_payload_shadow {
         resolve_profile_state_match(false),
         resolve_backend_root_metadata_ready(false),
         resolve_backend_root_metadata_proxy_delegated(false),
+        resolve_backend_root_descriptor_source("unavailable"),
+        resolve_backend_root_descriptor_shadow_attached(false),
+        resolve_backend_root_descriptor_ready(false),
+        resolve_backend_root_descriptor_proxy_delegated(false),
+        resolve_backend_root_descriptor_runtime_proxy_compatibility_path(false),
+        resolve_backend_root_descriptor_actual_abi_evidence(false),
+        resolve_root_metadata_handle(0),
+        resolve_root_address_space("unavailable"),
+        resolve_root_node_reference(0),
+        resolve_layout_profile_reference("unavailable"),
         resolve_traversable_root_proxy_delegated(false),
         resolve_bvh_format_profile_proxy_delegated(false),
         resolve_profile_layout_publication_future_producer(false),
@@ -15642,6 +15755,16 @@ struct rtcore_provider_facing_registry_payload_shadow {
   bool resolve_profile_state_match;
   bool resolve_backend_root_metadata_ready;
   bool resolve_backend_root_metadata_proxy_delegated;
+  const char *resolve_backend_root_descriptor_source;
+  bool resolve_backend_root_descriptor_shadow_attached;
+  bool resolve_backend_root_descriptor_ready;
+  bool resolve_backend_root_descriptor_proxy_delegated;
+  bool resolve_backend_root_descriptor_runtime_proxy_compatibility_path;
+  bool resolve_backend_root_descriptor_actual_abi_evidence;
+  uint64_t resolve_root_metadata_handle;
+  const char *resolve_root_address_space;
+  uint64_t resolve_root_node_reference;
+  const char *resolve_layout_profile_reference;
   bool resolve_traversable_root_proxy_delegated;
   bool resolve_bvh_format_profile_proxy_delegated;
   bool resolve_profile_layout_publication_future_producer;
@@ -16701,6 +16824,28 @@ rtcore_make_provider_payload_consumed_input_view(
       registry_payload_shadow->resolve_backend_root_metadata_ready;
   view.resolve_backend_root_metadata_proxy_delegated =
       registry_payload_shadow->resolve_backend_root_metadata_proxy_delegated;
+  view.resolve_backend_root_descriptor_source =
+      registry_payload_shadow->resolve_backend_root_descriptor_source;
+  view.resolve_backend_root_descriptor_shadow_attached =
+      registry_payload_shadow->resolve_backend_root_descriptor_shadow_attached;
+  view.resolve_backend_root_descriptor_ready =
+      registry_payload_shadow->resolve_backend_root_descriptor_ready;
+  view.resolve_backend_root_descriptor_proxy_delegated =
+      registry_payload_shadow->resolve_backend_root_descriptor_proxy_delegated;
+  view.resolve_backend_root_descriptor_runtime_proxy_compatibility_path =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_runtime_proxy_compatibility_path;
+  view.resolve_backend_root_descriptor_actual_abi_evidence =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_abi_evidence;
+  view.resolve_root_metadata_handle =
+      registry_payload_shadow->resolve_root_metadata_handle;
+  view.resolve_root_address_space =
+      registry_payload_shadow->resolve_root_address_space;
+  view.resolve_root_node_reference =
+      registry_payload_shadow->resolve_root_node_reference;
+  view.resolve_layout_profile_reference =
+      registry_payload_shadow->resolve_layout_profile_reference;
   view.resolve_traversable_root_proxy_delegated =
       registry_payload_shadow->resolve_traversable_root_proxy_delegated;
   view.resolve_bvh_format_profile_proxy_delegated =
@@ -17702,6 +17847,20 @@ static const char *rtcore_driver_as_resolve_table_source_label() {
   return "driver_as_resolve_table_skeleton";
 }
 
+static const char *rtcore_backend_root_descriptor_shadow_source_label() {
+  // Static marker: backend_root_descriptor_source=driver_as_resolve_table_skeleton.
+  // Static markers: backend_root_descriptor_shadow=1;
+  // backend_root_descriptor_shadow_attached=1; backend_root_descriptor_ready=0;
+  // backend_root_descriptor_proxy_delegated=1;
+  // backend_root_descriptor_runtime_proxy_compatibility_path=1;
+  // backend_root_descriptor_actual_abi_evidence=0.
+  return rtcore_driver_as_resolve_table_source_label();
+}
+
+static const char *rtcore_backend_root_descriptor_address_space_label() {
+  return "runtime_proxy_compatibility";
+}
+
 static const char *rtcore_bvh_format_profile_object_bridge_source_label() {
   return "bvh_format_profile_object_bridge";
 }
@@ -18466,6 +18625,16 @@ struct rtcore_driver_as_resolve_table_entry {
         bvh_format_profile_object_bridge_passed(false),
         backend_root_metadata_ready(false),
         backend_root_metadata_proxy_delegated(false),
+        backend_root_descriptor_source("unavailable"),
+        backend_root_descriptor_shadow_attached(false),
+        backend_root_descriptor_ready(false),
+        backend_root_descriptor_proxy_delegated(false),
+        backend_root_descriptor_runtime_proxy_compatibility_path(false),
+        backend_root_descriptor_actual_abi_evidence(false),
+        root_metadata_handle(0),
+        root_address_space("unavailable"),
+        root_node_reference(0),
+        layout_profile_reference("unavailable"),
         traversable_root_proxy_delegated(false),
         bvh_format_profile_proxy_delegated(false),
         profile_layout_publication_future_producer(true),
@@ -18485,6 +18654,16 @@ struct rtcore_driver_as_resolve_table_entry {
   bool bvh_format_profile_object_bridge_passed;
   bool backend_root_metadata_ready;
   bool backend_root_metadata_proxy_delegated;
+  const char *backend_root_descriptor_source;
+  bool backend_root_descriptor_shadow_attached;
+  bool backend_root_descriptor_ready;
+  bool backend_root_descriptor_proxy_delegated;
+  bool backend_root_descriptor_runtime_proxy_compatibility_path;
+  bool backend_root_descriptor_actual_abi_evidence;
+  uint64_t root_metadata_handle;
+  const char *root_address_space;
+  uint64_t root_node_reference;
+  const char *layout_profile_reference;
   bool traversable_root_proxy_delegated;
   bool bvh_format_profile_proxy_delegated;
   bool profile_layout_publication_future_producer;
@@ -18513,6 +18692,16 @@ struct rtcore_driver_as_resolve_table_lookup_snapshot {
         bvh_format_profile_object_bridge_passed(false),
         backend_root_metadata_ready(false),
         backend_root_metadata_proxy_delegated(false),
+        backend_root_descriptor_source("unavailable"),
+        backend_root_descriptor_shadow_attached(false),
+        backend_root_descriptor_ready(false),
+        backend_root_descriptor_proxy_delegated(false),
+        backend_root_descriptor_runtime_proxy_compatibility_path(false),
+        backend_root_descriptor_actual_abi_evidence(false),
+        root_metadata_handle(0),
+        root_address_space("unavailable"),
+        root_node_reference(0),
+        layout_profile_reference("unavailable"),
         traversable_root_proxy_delegated(false),
         bvh_format_profile_proxy_delegated(false),
         profile_layout_publication_future_producer(true),
@@ -18538,6 +18727,16 @@ struct rtcore_driver_as_resolve_table_lookup_snapshot {
   bool bvh_format_profile_object_bridge_passed;
   bool backend_root_metadata_ready;
   bool backend_root_metadata_proxy_delegated;
+  const char *backend_root_descriptor_source;
+  bool backend_root_descriptor_shadow_attached;
+  bool backend_root_descriptor_ready;
+  bool backend_root_descriptor_proxy_delegated;
+  bool backend_root_descriptor_runtime_proxy_compatibility_path;
+  bool backend_root_descriptor_actual_abi_evidence;
+  uint64_t root_metadata_handle;
+  const char *root_address_space;
+  uint64_t root_node_reference;
+  const char *layout_profile_reference;
   bool traversable_root_proxy_delegated;
   bool bvh_format_profile_proxy_delegated;
   bool profile_layout_publication_future_producer;
@@ -18615,6 +18814,19 @@ rtcore_publish_driver_as_resolve_table_entry(
           .bvh_format_profile_object_bridge_passed;
   entry.backend_root_metadata_ready = false;
   entry.backend_root_metadata_proxy_delegated = true;
+  entry.backend_root_descriptor_source =
+      rtcore_backend_root_descriptor_shadow_source_label();
+  entry.backend_root_descriptor_shadow_attached = true;
+  entry.backend_root_descriptor_ready = false;
+  entry.backend_root_descriptor_proxy_delegated = true;
+  entry.backend_root_descriptor_runtime_proxy_compatibility_path = true;
+  entry.backend_root_descriptor_actual_abi_evidence = false;
+  entry.root_metadata_handle = 0;
+  entry.root_address_space =
+      rtcore_backend_root_descriptor_address_space_label();
+  entry.root_node_reference = 0;
+  entry.layout_profile_reference =
+      bvh_format_profile_object_bridge_snapshot.profile_ref;
   entry.traversable_root_proxy_delegated = true;
   entry.bvh_format_profile_proxy_delegated = true;
   entry.profile_layout_publication_future_producer = true;
@@ -18709,6 +18921,40 @@ static void rtcore_recompute_driver_as_resolve_table_lookup_snapshot(
   snapshot->backend_root_metadata_proxy_delegated =
       snapshot->entry_found &&
       snapshot->entry.backend_root_metadata_proxy_delegated;
+  snapshot->backend_root_descriptor_source =
+      snapshot->entry_found && snapshot->entry.backend_root_descriptor_source != NULL
+          ? snapshot->entry.backend_root_descriptor_source
+          : "unavailable";
+  snapshot->backend_root_descriptor_shadow_attached =
+      snapshot->entry_found &&
+      snapshot->entry.backend_root_descriptor_shadow_attached &&
+      snapshot->entry.backend_root_descriptor_source != NULL &&
+      strcmp(snapshot->entry.backend_root_descriptor_source,
+             rtcore_backend_root_descriptor_shadow_source_label()) == 0;
+  snapshot->backend_root_descriptor_ready =
+      snapshot->entry_found && snapshot->entry.backend_root_descriptor_ready;
+  snapshot->backend_root_descriptor_proxy_delegated =
+      snapshot->entry_found &&
+      snapshot->entry.backend_root_descriptor_proxy_delegated;
+  snapshot->backend_root_descriptor_runtime_proxy_compatibility_path =
+      snapshot->entry_found &&
+      snapshot->entry
+          .backend_root_descriptor_runtime_proxy_compatibility_path;
+  snapshot->backend_root_descriptor_actual_abi_evidence =
+      snapshot->entry_found &&
+      snapshot->entry.backend_root_descriptor_actual_abi_evidence;
+  snapshot->root_metadata_handle =
+      snapshot->entry_found ? snapshot->entry.root_metadata_handle : 0;
+  snapshot->root_address_space =
+      snapshot->entry_found && snapshot->entry.root_address_space != NULL
+          ? snapshot->entry.root_address_space
+          : "unavailable";
+  snapshot->root_node_reference =
+      snapshot->entry_found ? snapshot->entry.root_node_reference : 0;
+  snapshot->layout_profile_reference =
+      snapshot->entry_found && snapshot->entry.layout_profile_reference != NULL
+          ? snapshot->entry.layout_profile_reference
+          : "unavailable";
   snapshot->traversable_root_proxy_delegated =
       snapshot->entry_found && snapshot->entry.traversable_root_proxy_delegated;
   snapshot->bvh_format_profile_proxy_delegated =
@@ -18724,6 +18970,11 @@ static void rtcore_recompute_driver_as_resolve_table_lookup_snapshot(
       snapshot->profile_state_match &&
       !snapshot->backend_root_metadata_ready &&
       snapshot->backend_root_metadata_proxy_delegated &&
+      snapshot->backend_root_descriptor_shadow_attached &&
+      !snapshot->backend_root_descriptor_ready &&
+      snapshot->backend_root_descriptor_proxy_delegated &&
+      snapshot->backend_root_descriptor_runtime_proxy_compatibility_path &&
+      !snapshot->backend_root_descriptor_actual_abi_evidence &&
       snapshot->traversable_root_proxy_delegated &&
       snapshot->bvh_format_profile_proxy_delegated &&
       snapshot->profile_layout_publication_future_producer;
@@ -18927,6 +19178,71 @@ rtcore_apply_driver_as_resolve_table_failpoint_to_lookup_snapshot(
   fflush(stdout);
 }
 
+static const char *rtcore_backend_root_descriptor_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_BACKEND_ROOT_DESCRIPTOR_FAILPOINT";
+}
+
+static bool rtcore_backend_root_descriptor_drop_shadow_failpoint_enabled() {
+  const char *value =
+      getenv(rtcore_backend_root_descriptor_failpoint_env_name());
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0 &&
+         strcmp(value, "none") != 0;
+}
+
+static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
+    const ptx_instruction *pI,
+    const rtcore_traversal_source_request &source_request,
+    rtcore_driver_as_resolve_table_lookup_snapshot *snapshot) {
+  if (snapshot == NULL ||
+      !rtcore_backend_root_descriptor_drop_shadow_failpoint_enabled()) {
+    return;
+  }
+
+  if (snapshot->entry_found) {
+    snapshot->entry.backend_root_descriptor_source = "unavailable";
+    snapshot->entry.backend_root_descriptor_shadow_attached = false;
+    snapshot->entry.backend_root_descriptor_ready = false;
+    snapshot->entry.backend_root_descriptor_proxy_delegated = false;
+    snapshot->entry.backend_root_descriptor_runtime_proxy_compatibility_path =
+        false;
+    snapshot->entry.backend_root_descriptor_actual_abi_evidence = false;
+    snapshot->entry.root_metadata_handle = 0;
+    snapshot->entry.root_address_space = "unavailable";
+    snapshot->entry.root_node_reference = 0;
+    snapshot->entry.layout_profile_reference = "unavailable";
+  }
+  rtcore_recompute_driver_as_resolve_table_lookup_snapshot(snapshot);
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "backend-root-descriptor-failpoint=1, "
+         "failpoint=drop_backend_root_descriptor_shadow, "
+         "env=%s, provider=%s, "
+         "backend_root_descriptor_shadow=1, "
+         "backend_root_descriptor_source=%s, "
+         "backend_root_descriptor_shadow_attached=%u, "
+         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_proxy_delegated=%u, "
+         "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
+         "backend_root_descriptor_actual_abi_evidence=0, "
+         "root_metadata_handle=0x%llx, root_address_space=%s, "
+         "root_node_reference=0x%llx, layout_profile_reference=%s, "
+         "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
+         rtcore_backend_root_descriptor_failpoint_env_name(),
+         rtcore_traversal_source_provider_name(source_request.provider),
+         snapshot->backend_root_descriptor_source,
+         snapshot->backend_root_descriptor_shadow_attached ? 1 : 0,
+         snapshot->backend_root_descriptor_proxy_delegated ? 1 : 0,
+         snapshot->backend_root_descriptor_runtime_proxy_compatibility_path ? 1
+                                                                           : 0,
+         (unsigned long long)snapshot->root_metadata_handle,
+         snapshot->root_address_space,
+         (unsigned long long)snapshot->root_node_reference,
+         snapshot->layout_profile_reference,
+         pI != NULL ? pI->source_file() : "<unknown>",
+         pI != NULL ? pI->source_line() : 0);
+  fflush(stdout);
+}
+
 static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
     const ptx_instruction *pI,
     const rtcore_traversal_source_request &source_request,
@@ -18948,6 +19264,15 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          "bvh_format_profile_object_bridge_passed=%u, "
          "backend_root_metadata_ready=0, "
          "backend_root_metadata_proxy_delegated=%u, "
+         "backend_root_descriptor_shadow=1, "
+         "backend_root_descriptor_source=%s, "
+         "backend_root_descriptor_shadow_attached=%u, "
+         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_proxy_delegated=%u, "
+         "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
+         "backend_root_descriptor_actual_abi_evidence=0, "
+         "root_metadata_handle=0x%llx, root_address_space=%s, "
+         "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "traversable_root_proxy_delegated=%u, "
          "bvh_format_profile_proxy_delegated=%u, "
          "profile_layout_publication_future_producer=1, "
@@ -18973,6 +19298,15 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          snapshot.selected_compatibility_backend_profile ? 1 : 0,
          snapshot.bvh_format_profile_object_bridge_passed ? 1 : 0,
          snapshot.backend_root_metadata_proxy_delegated ? 1 : 0,
+         snapshot.backend_root_descriptor_source,
+         snapshot.backend_root_descriptor_shadow_attached ? 1 : 0,
+         snapshot.backend_root_descriptor_proxy_delegated ? 1 : 0,
+         snapshot.backend_root_descriptor_runtime_proxy_compatibility_path ? 1
+                                                                          : 0,
+         (unsigned long long)snapshot.root_metadata_handle,
+         snapshot.root_address_space,
+         (unsigned long long)snapshot.root_node_reference,
+         snapshot.layout_profile_reference,
          snapshot.traversable_root_proxy_delegated ? 1 : 0,
          snapshot.bvh_format_profile_proxy_delegated ? 1 : 0,
          snapshot.resolve_lookup_passed ? 1 : 0,
@@ -18988,8 +19322,21 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
   if (snapshot.valid) {
     return false;
   }
+  const bool backend_root_descriptor_shadow_missing =
+      snapshot.entry_found && snapshot.entry_live &&
+      snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
+      snapshot.as_reference_match && snapshot.profile_state_match &&
+      (!snapshot.backend_root_descriptor_shadow_attached ||
+       snapshot.backend_root_descriptor_ready ||
+       !snapshot.backend_root_descriptor_proxy_delegated ||
+       !snapshot.backend_root_descriptor_runtime_proxy_compatibility_path ||
+       snapshot.backend_root_descriptor_actual_abi_evidence);
+  const char *reason =
+      backend_root_descriptor_shadow_missing
+          ? "BACKEND_ROOT_DESCRIPTOR_SHADOW_NOT_READY"
+          : "DRIVER_AS_RESOLVE_TABLE_NOT_READY";
   printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
-         "reason=DRIVER_AS_RESOLVE_TABLE_NOT_READY, "
+         "reason=%s, legacy_reason=DRIVER_AS_RESOLVE_TABLE_NOT_READY, "
          "resolve_table_source=%s, registry_source=%s, provider=%s, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, owner_generation=%u, "
@@ -19003,6 +19350,15 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          "bvh_format_profile_object_bridge_passed=%u, "
          "backend_root_metadata_ready=0, "
          "backend_root_metadata_proxy_delegated=%u, "
+         "backend_root_descriptor_shadow=1, "
+         "backend_root_descriptor_source=%s, "
+         "backend_root_descriptor_shadow_attached=%u, "
+         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_proxy_delegated=%u, "
+         "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
+         "backend_root_descriptor_actual_abi_evidence=0, "
+         "root_metadata_handle=0x%llx, root_address_space=%s, "
+         "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "traversable_root_proxy_delegated=%u, "
          "bvh_format_profile_proxy_delegated=%u, "
          "profile_layout_publication_future_producer=1, "
@@ -19014,7 +19370,8 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          "before_traversal_completion=1, before_completion_release=1, "
          "actual_abi_evidence_for_proxy_fields=0\n",
          pI != NULL ? pI->source_file() : "<unknown>",
-         pI != NULL ? pI->source_line() : 0, snapshot.resolve_table_source,
+         pI != NULL ? pI->source_line() : 0, reason,
+         snapshot.resolve_table_source,
          snapshot.registry_source,
          rtcore_traversal_source_provider_name(source_request.provider),
          snapshot.key.context_ptr, snapshot.key.handoff_window_base,
@@ -19032,6 +19389,15 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          snapshot.selected_compatibility_backend_profile ? 1 : 0,
          snapshot.bvh_format_profile_object_bridge_passed ? 1 : 0,
          snapshot.backend_root_metadata_proxy_delegated ? 1 : 0,
+         snapshot.backend_root_descriptor_source,
+         snapshot.backend_root_descriptor_shadow_attached ? 1 : 0,
+         snapshot.backend_root_descriptor_proxy_delegated ? 1 : 0,
+         snapshot.backend_root_descriptor_runtime_proxy_compatibility_path ? 1
+                                                                          : 0,
+         (unsigned long long)snapshot.root_metadata_handle,
+         snapshot.root_address_space,
+         (unsigned long long)snapshot.root_node_reference,
+         snapshot.layout_profile_reference,
          snapshot.traversable_root_proxy_delegated ? 1 : 0,
          snapshot.bvh_format_profile_proxy_delegated ? 1 : 0,
          snapshot.resolve_lookup_passed ? 1 : 0);
@@ -20927,6 +21293,32 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
     shadow.resolve_backend_root_metadata_proxy_delegated =
         driver_as_resolve_table_lookup_snapshot
             ->backend_root_metadata_proxy_delegated;
+    shadow.resolve_backend_root_descriptor_source =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_source;
+    shadow.resolve_backend_root_descriptor_shadow_attached =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_shadow_attached;
+    shadow.resolve_backend_root_descriptor_ready =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_ready;
+    shadow.resolve_backend_root_descriptor_proxy_delegated =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_proxy_delegated;
+    shadow.resolve_backend_root_descriptor_runtime_proxy_compatibility_path =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_runtime_proxy_compatibility_path;
+    shadow.resolve_backend_root_descriptor_actual_abi_evidence =
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_actual_abi_evidence;
+    shadow.resolve_root_metadata_handle =
+        driver_as_resolve_table_lookup_snapshot->root_metadata_handle;
+    shadow.resolve_root_address_space =
+        driver_as_resolve_table_lookup_snapshot->root_address_space;
+    shadow.resolve_root_node_reference =
+        driver_as_resolve_table_lookup_snapshot->root_node_reference;
+    shadow.resolve_layout_profile_reference =
+        driver_as_resolve_table_lookup_snapshot->layout_profile_reference;
     shadow.resolve_traversable_root_proxy_delegated =
         driver_as_resolve_table_lookup_snapshot
             ->traversable_root_proxy_delegated;
@@ -20943,6 +21335,16 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
         !driver_as_resolve_table_lookup_snapshot->backend_root_metadata_ready &&
         driver_as_resolve_table_lookup_snapshot
             ->backend_root_metadata_proxy_delegated &&
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_shadow_attached &&
+        !driver_as_resolve_table_lookup_snapshot
+             ->backend_root_descriptor_ready &&
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_proxy_delegated &&
+        driver_as_resolve_table_lookup_snapshot
+            ->backend_root_descriptor_runtime_proxy_compatibility_path &&
+        !driver_as_resolve_table_lookup_snapshot
+             ->backend_root_descriptor_actual_abi_evidence &&
         driver_as_resolve_table_lookup_snapshot
             ->traversable_root_proxy_delegated &&
         driver_as_resolve_table_lookup_snapshot
@@ -21062,6 +21464,15 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          "resolve_profile_state_match=%u, "
          "resolve_backend_root_metadata_ready=%u, "
          "resolve_backend_root_metadata_proxy_delegated=%u, "
+         "backend_root_descriptor_shadow=1, "
+         "backend_root_descriptor_source=%s, "
+         "backend_root_descriptor_shadow_attached=%u, "
+         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_proxy_delegated=%u, "
+         "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
+         "backend_root_descriptor_actual_abi_evidence=0, "
+         "root_metadata_handle=0x%llx, root_address_space=%s, "
+         "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "resolve_traversable_root_proxy_delegated=%u, "
          "resolve_bvh_format_profile_proxy_delegated=%u, "
          "resolve_profile_layout_publication_future_producer=%u, "
@@ -21105,6 +21516,16 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          shadow.resolve_profile_state_match ? 1 : 0,
          shadow.resolve_backend_root_metadata_ready ? 1 : 0,
          shadow.resolve_backend_root_metadata_proxy_delegated ? 1 : 0,
+         shadow.resolve_backend_root_descriptor_source,
+         shadow.resolve_backend_root_descriptor_shadow_attached ? 1 : 0,
+         shadow.resolve_backend_root_descriptor_proxy_delegated ? 1 : 0,
+         shadow.resolve_backend_root_descriptor_runtime_proxy_compatibility_path
+             ? 1
+             : 0,
+         (unsigned long long)shadow.resolve_root_metadata_handle,
+         shadow.resolve_root_address_space,
+         (unsigned long long)shadow.resolve_root_node_reference,
+         shadow.resolve_layout_profile_reference,
          shadow.resolve_traversable_root_proxy_delegated ? 1 : 0,
          shadow.resolve_bvh_format_profile_proxy_delegated ? 1 : 0,
          shadow.resolve_profile_layout_publication_future_producer ? 1 : 0,
@@ -21794,6 +22215,8 @@ bool rtcore_build_traversal_completion_event(
               driver_as_resolve_table_key);
       has_driver_as_resolve_table_lookup_snapshot = true;
       rtcore_apply_driver_as_resolve_table_failpoint_to_lookup_snapshot(
+          pI, source_request, &driver_as_resolve_table_lookup_snapshot);
+      rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
           pI, source_request, &driver_as_resolve_table_lookup_snapshot);
       rtcore_log_driver_as_resolve_table_lookup_snapshot(
           pI, source_request, driver_as_resolve_table_lookup_snapshot);
