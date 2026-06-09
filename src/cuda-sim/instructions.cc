@@ -21352,6 +21352,15 @@ rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
   if (producer_contract_readiness_bridge_ready) {
     actual_producer_evidence_snapshot.producer_contract_ready = true;
   }
+  // producer_traversal_consumption_authority_bridge=1;
+  const bool producer_traversal_consumption_authority_bridge_ready =
+      producer_descriptor_claim_source_selected &&
+      actual_producer_evidence_snapshot.producer_contract_ready &&
+      actual_producer_evidence_snapshot.producer_fields_published;
+  if (producer_traversal_consumption_authority_bridge_ready) {
+    actual_producer_evidence_snapshot.producer_fields_consumed_by_traversal =
+        true;
+  }
   actual_producer_evidence_snapshot
       .contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption =
       actual_producer_evidence_snapshot
