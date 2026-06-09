@@ -18920,6 +18920,7 @@ static const char
   // backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight=1;
   // authority_switch_precondition_map=1;
   // producer_claim_source_construction_bridge=1;
+  // producer_claim_source_fail_closed_selection=1;
   // actual producer consumption remains opt-in;
   // producer sidecar requires actual AS/BVH memory evidence;
   // BACKEND_ROOT_DESCRIPTOR_ACTUAL_PRODUCER_EVIDENCE_NOT_READY.
@@ -21292,15 +21293,7 @@ rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
       !actual_producer_evidence_snapshot.contract_claim_root_address_space_actual ||
       !actual_producer_evidence_snapshot
            .contract_claim_root_node_reference_present;
-  actual_producer_evidence_snapshot.contract_claim_source_mismatch =
-      actual_producer_evidence_snapshot
-          .contract_claim_source_runtime_proxy_descriptor &&
-      !actual_producer_evidence_snapshot
-           .contract_claim_source_producer_descriptor &&
-      actual_producer_evidence_snapshot
-          .contract_claim_source_producer_candidate_root_fields_ready &&
-      actual_producer_evidence_snapshot
-          .contract_claim_source_runtime_proxy_root_fields_incomplete;
+  actual_producer_evidence_snapshot.contract_claim_source_mismatch = false;
   actual_producer_evidence_snapshot
       .contract_claim_source_producer_descriptor_preflight = true;
   actual_producer_evidence_snapshot
@@ -21339,11 +21332,32 @@ rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
       .contract_claim_source_producer_descriptor_construction_ready =
       actual_producer_evidence_snapshot
           .contract_claim_source_producer_descriptor_preflight_ready;
+  const bool producer_descriptor_claim_source_selected =
+      actual_producer_evidence_snapshot
+          .contract_claim_source_producer_descriptor_construction_requested &&
+      actual_producer_evidence_snapshot
+          .contract_claim_source_producer_descriptor_construction_ready;
   actual_producer_evidence_snapshot
-      .contract_claim_source_producer_descriptor_construction_selected = false;
+      .contract_claim_source_producer_descriptor_construction_selected =
+      producer_descriptor_claim_source_selected;
   actual_producer_evidence_snapshot
       .contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior =
       false;
+  if (producer_descriptor_claim_source_selected) {
+    actual_producer_evidence_snapshot
+        .contract_claim_source_producer_descriptor = true;
+    actual_producer_evidence_snapshot
+        .contract_claim_source_runtime_proxy_descriptor = false;
+  }
+  actual_producer_evidence_snapshot.contract_claim_source_mismatch =
+      actual_producer_evidence_snapshot
+          .contract_claim_source_runtime_proxy_descriptor &&
+      !actual_producer_evidence_snapshot
+           .contract_claim_source_producer_descriptor &&
+      actual_producer_evidence_snapshot
+          .contract_claim_source_producer_candidate_root_fields_ready &&
+      actual_producer_evidence_snapshot
+          .contract_claim_source_runtime_proxy_root_fields_incomplete;
   actual_producer_evidence_snapshot
       .contract_claim_source_producer_descriptor_authority_switch_precondition_map =
       true;
