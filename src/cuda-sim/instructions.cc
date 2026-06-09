@@ -18177,6 +18177,17 @@ static const char
 }
 
 static const char
+    *rtcore_backend_root_descriptor_actual_producer_evidence_source_label() {
+  // Static markers: backend_root_descriptor_actual_producer_evidence_bridge=1;
+  // backend_root_descriptor_actual_producer_evidence_source=driver_as_resolve_table_actual_producer_evidence_snapshot;
+  // backend_root_descriptor_actual_producer_owner_provenance_ready=0;
+  // backend_root_descriptor_actual_producer_root_metadata_handle_present=0;
+  // backend_root_descriptor_actual_producer_actual_as_memory_binding=0;
+  // backend_root_descriptor_actual_producer_layout_profile_binding=0;
+  return "driver_as_resolve_table_actual_producer_evidence_snapshot";
+}
+
+static const char
     *rtcore_backend_root_descriptor_actual_producer_mode_env_name() {
   return "VULKAN_SIM_RTCORE_BACKEND_ROOT_DESCRIPTOR_PRODUCER_MODE";
 }
@@ -20020,10 +20031,55 @@ static void rtcore_apply_backend_root_descriptor_failpoint_to_lookup_snapshot(
   fflush(stdout);
 }
 
+struct rtcore_backend_root_descriptor_actual_producer_evidence_snapshot {
+  rtcore_backend_root_descriptor_actual_producer_evidence_snapshot()
+      : evidence_source(
+            rtcore_backend_root_descriptor_actual_producer_evidence_source_label()),
+        owner_provenance_ready(false),
+        producer_contract_present(false),
+        producer_contract_ready(false),
+        producer_fields_published(false),
+        producer_fields_consumed_by_traversal(false),
+        root_metadata_handle_present(false),
+        actual_as_memory_binding(false),
+        root_node_reference_present(false),
+        layout_profile_binding(false),
+        bvh_memory_binding(false),
+        contract_claim_satisfied(false),
+        evidence_ready(false) {}
+
+  const char *evidence_source;
+  bool owner_provenance_ready;
+  bool producer_contract_present;
+  bool producer_contract_ready;
+  bool producer_fields_published;
+  bool producer_fields_consumed_by_traversal;
+  bool root_metadata_handle_present;
+  bool actual_as_memory_binding;
+  bool root_node_reference_present;
+  bool layout_profile_binding;
+  bool bvh_memory_binding;
+  bool contract_claim_satisfied;
+  bool evidence_ready;
+};
+
+static rtcore_backend_root_descriptor_actual_producer_evidence_snapshot
+rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
+    const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot);
+
 static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
     const ptx_instruction *pI,
     const rtcore_traversal_source_request &source_request,
     const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot) {
+  const rtcore_backend_root_descriptor_actual_producer_evidence_snapshot
+      actual_producer_evidence_snapshot =
+          rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
+              snapshot);
+  const bool backend_root_descriptor_actual_producer_consumption_opt_in =
+      rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested();
+  const bool backend_root_descriptor_actual_producer_authority_enabled =
+      backend_root_descriptor_actual_producer_consumption_opt_in &&
+      actual_producer_evidence_snapshot.evidence_ready;
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "driver-as-resolve-table-lookup=1, "
          "resolve_table_source=%s, registry_source=%s, provider=%s, "
@@ -20062,6 +20118,21 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_producer_root_node_reference=0x%llx, "
          "backend_root_descriptor_producer_layout_profile_reference=%s, "
          "backend_root_descriptor_producer_bvh_memory_binding=%u, "
+         "backend_root_descriptor_actual_producer_enablement_preflight=1, "
+         "backend_root_descriptor_actual_producer_enablement_source=%s, "
+         "backend_root_descriptor_actual_producer_mode_env=%s, "
+         "backend_root_descriptor_actual_producer_consumption_opt_in=%u, "
+         "backend_root_descriptor_actual_producer_evidence_bridge=1, "
+         "backend_root_descriptor_actual_producer_evidence_source=%s, "
+         "backend_root_descriptor_actual_producer_owner_provenance_ready=%u, "
+         "backend_root_descriptor_actual_producer_root_metadata_handle_present=%u, "
+         "backend_root_descriptor_actual_producer_actual_as_memory_binding=%u, "
+         "backend_root_descriptor_actual_producer_root_node_reference_present=%u, "
+         "backend_root_descriptor_actual_producer_layout_profile_binding=%u, "
+         "backend_root_descriptor_actual_producer_bvh_memory_binding=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_satisfied=%u, "
+         "backend_root_descriptor_actual_producer_evidence_ready=%u, "
+         "backend_root_descriptor_actual_producer_authority_enabled=%u, "
          "backend_root_descriptor_required_root_metadata_handle=%u, "
          "backend_root_descriptor_required_root_address_space=%s, "
          "backend_root_descriptor_required_root_node_reference=%u, "
@@ -20118,6 +20189,20 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
              snapshot.backend_root_descriptor_producer_root_node_reference,
          snapshot.backend_root_descriptor_producer_layout_profile_reference,
          snapshot.backend_root_descriptor_producer_bvh_memory_binding ? 1 : 0,
+         rtcore_backend_root_descriptor_actual_producer_enablement_source_label(),
+         rtcore_backend_root_descriptor_actual_producer_mode_env_name(),
+         backend_root_descriptor_actual_producer_consumption_opt_in ? 1 : 0,
+         actual_producer_evidence_snapshot.evidence_source,
+         actual_producer_evidence_snapshot.owner_provenance_ready ? 1 : 0,
+         actual_producer_evidence_snapshot.root_metadata_handle_present ? 1
+                                                                        : 0,
+         actual_producer_evidence_snapshot.actual_as_memory_binding ? 1 : 0,
+         actual_producer_evidence_snapshot.root_node_reference_present ? 1 : 0,
+         actual_producer_evidence_snapshot.layout_profile_binding ? 1 : 0,
+         actual_producer_evidence_snapshot.bvh_memory_binding ? 1 : 0,
+         actual_producer_evidence_snapshot.contract_claim_satisfied ? 1 : 0,
+         actual_producer_evidence_snapshot.evidence_ready ? 1 : 0,
+         backend_root_descriptor_actual_producer_authority_enabled ? 1 : 0,
          snapshot.backend_root_descriptor_required_root_metadata_handle ? 1
                                                                         : 0,
          snapshot.backend_root_descriptor_required_root_address_space,
@@ -20162,25 +20247,63 @@ static bool rtcore_backend_root_descriptor_producer_contract_claim_satisfied(
          snapshot.backend_root_descriptor_required_bvh_memory_binding;
 }
 
+static rtcore_backend_root_descriptor_actual_producer_evidence_snapshot
+rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
+    const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot) {
+  rtcore_backend_root_descriptor_actual_producer_evidence_snapshot
+      actual_producer_evidence_snapshot;
+  actual_producer_evidence_snapshot.owner_provenance_ready =
+      snapshot.entry_found && snapshot.entry_live &&
+      snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
+      snapshot.as_reference_match && snapshot.profile_state_match;
+  actual_producer_evidence_snapshot.producer_contract_present =
+      snapshot.backend_root_descriptor_producer_contract;
+  actual_producer_evidence_snapshot.producer_contract_ready =
+      snapshot.backend_root_descriptor_producer_contract_ready;
+  actual_producer_evidence_snapshot.producer_fields_published =
+      snapshot.backend_root_descriptor_producer_fields_published;
+  actual_producer_evidence_snapshot.producer_fields_consumed_by_traversal =
+      snapshot.backend_root_descriptor_producer_fields_consumed_by_traversal;
+  actual_producer_evidence_snapshot.root_metadata_handle_present =
+      snapshot.backend_root_descriptor_producer_root_metadata_handle != 0;
+  actual_producer_evidence_snapshot.actual_as_memory_binding =
+      snapshot.backend_root_descriptor_producer_root_address_space != NULL &&
+      strcmp(snapshot.backend_root_descriptor_producer_root_address_space,
+             rtcore_backend_root_descriptor_required_address_space_label()) ==
+          0;
+  actual_producer_evidence_snapshot.root_node_reference_present =
+      snapshot.backend_root_descriptor_producer_root_node_reference != 0;
+  actual_producer_evidence_snapshot.layout_profile_binding =
+      snapshot.backend_root_descriptor_producer_layout_profile_reference !=
+          NULL &&
+      strcmp(snapshot.backend_root_descriptor_producer_layout_profile_reference,
+             "unavailable") != 0;
+  actual_producer_evidence_snapshot.bvh_memory_binding =
+      snapshot.backend_root_descriptor_producer_bvh_memory_binding;
+  actual_producer_evidence_snapshot.contract_claim_satisfied =
+      rtcore_backend_root_descriptor_producer_contract_claim_satisfied(
+          snapshot);
+  actual_producer_evidence_snapshot.evidence_ready =
+      actual_producer_evidence_snapshot.owner_provenance_ready &&
+      actual_producer_evidence_snapshot.producer_contract_present &&
+      actual_producer_evidence_snapshot.producer_contract_ready &&
+      actual_producer_evidence_snapshot.producer_fields_published &&
+      actual_producer_evidence_snapshot
+          .producer_fields_consumed_by_traversal &&
+      actual_producer_evidence_snapshot.root_metadata_handle_present &&
+      actual_producer_evidence_snapshot.actual_as_memory_binding &&
+      actual_producer_evidence_snapshot.root_node_reference_present &&
+      actual_producer_evidence_snapshot.layout_profile_binding &&
+      actual_producer_evidence_snapshot.bvh_memory_binding &&
+      actual_producer_evidence_snapshot.contract_claim_satisfied;
+  return actual_producer_evidence_snapshot;
+}
+
 static bool rtcore_backend_root_descriptor_actual_producer_evidence_ready(
     const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot) {
-  return snapshot.backend_root_descriptor_producer_contract &&
-         snapshot.backend_root_descriptor_producer_contract_ready &&
-         snapshot.backend_root_descriptor_producer_fields_published &&
-         snapshot.backend_root_descriptor_producer_fields_consumed_by_traversal &&
-         snapshot.backend_root_descriptor_producer_root_metadata_handle != 0 &&
-         snapshot.backend_root_descriptor_producer_root_address_space != NULL &&
-         strcmp(snapshot.backend_root_descriptor_producer_root_address_space,
-                rtcore_backend_root_descriptor_required_address_space_label()) ==
-             0 &&
-         snapshot.backend_root_descriptor_producer_root_node_reference != 0 &&
-         snapshot.backend_root_descriptor_producer_layout_profile_reference !=
-             NULL &&
-         strcmp(snapshot.backend_root_descriptor_producer_layout_profile_reference,
-                "unavailable") != 0 &&
-         snapshot.backend_root_descriptor_producer_bvh_memory_binding &&
-         rtcore_backend_root_descriptor_producer_contract_claim_satisfied(
-             snapshot);
+  return rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
+             snapshot)
+      .evidence_ready;
 }
 
 static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
@@ -20190,17 +20313,19 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
   if (snapshot.valid) {
     return false;
   }
+  const rtcore_backend_root_descriptor_actual_producer_evidence_snapshot
+      actual_producer_evidence_snapshot =
+          rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
+              snapshot);
   const bool backend_root_descriptor_actual_producer_consumption_opt_in =
       rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested();
   const bool backend_root_descriptor_actual_producer_evidence_ready =
-      rtcore_backend_root_descriptor_actual_producer_evidence_ready(snapshot);
+      actual_producer_evidence_snapshot.evidence_ready;
   const bool backend_root_descriptor_actual_producer_authority_enabled =
       backend_root_descriptor_actual_producer_consumption_opt_in &&
       backend_root_descriptor_actual_producer_evidence_ready;
   const bool backend_root_descriptor_actual_producer_evidence_not_ready =
-      snapshot.entry_found && snapshot.entry_live &&
-      snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
-      snapshot.as_reference_match && snapshot.profile_state_match &&
+      actual_producer_evidence_snapshot.owner_provenance_ready &&
       backend_root_descriptor_actual_producer_consumption_opt_in &&
       !backend_root_descriptor_actual_producer_evidence_ready;
   const bool backend_root_descriptor_shadow_missing =
@@ -20295,6 +20420,15 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_actual_producer_enablement_source=%s, "
          "backend_root_descriptor_actual_producer_mode_env=%s, "
          "backend_root_descriptor_actual_producer_consumption_opt_in=%u, "
+         "backend_root_descriptor_actual_producer_evidence_bridge=1, "
+         "backend_root_descriptor_actual_producer_evidence_source=%s, "
+         "backend_root_descriptor_actual_producer_owner_provenance_ready=%u, "
+         "backend_root_descriptor_actual_producer_root_metadata_handle_present=%u, "
+         "backend_root_descriptor_actual_producer_actual_as_memory_binding=%u, "
+         "backend_root_descriptor_actual_producer_root_node_reference_present=%u, "
+         "backend_root_descriptor_actual_producer_layout_profile_binding=%u, "
+         "backend_root_descriptor_actual_producer_bvh_memory_binding=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_satisfied=%u, "
          "backend_root_descriptor_actual_producer_evidence_ready=%u, "
          "backend_root_descriptor_actual_producer_authority_enabled=%u, "
          "backend_root_descriptor_required_root_metadata_handle=%u, "
@@ -20361,6 +20495,15 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          rtcore_backend_root_descriptor_actual_producer_enablement_source_label(),
          rtcore_backend_root_descriptor_actual_producer_mode_env_name(),
          backend_root_descriptor_actual_producer_consumption_opt_in ? 1 : 0,
+         actual_producer_evidence_snapshot.evidence_source,
+         actual_producer_evidence_snapshot.owner_provenance_ready ? 1 : 0,
+         actual_producer_evidence_snapshot.root_metadata_handle_present ? 1
+                                                                        : 0,
+         actual_producer_evidence_snapshot.actual_as_memory_binding ? 1 : 0,
+         actual_producer_evidence_snapshot.root_node_reference_present ? 1 : 0,
+         actual_producer_evidence_snapshot.layout_profile_binding ? 1 : 0,
+         actual_producer_evidence_snapshot.bvh_memory_binding ? 1 : 0,
+         actual_producer_evidence_snapshot.contract_claim_satisfied ? 1 : 0,
          backend_root_descriptor_actual_producer_evidence_ready ? 1 : 0,
          backend_root_descriptor_actual_producer_authority_enabled ? 1 : 0,
          snapshot.backend_root_descriptor_required_root_metadata_handle ? 1
