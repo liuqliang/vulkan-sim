@@ -12538,6 +12538,19 @@ struct rtcore_provider_payload_consumed_input_view {
         resolve_backend_root_descriptor_actual_producer_root_node_reference_present(false),
         resolve_backend_root_descriptor_actual_producer_layout_profile_binding(false),
         resolve_backend_root_descriptor_actual_producer_bvh_memory_binding(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied(false),
         resolve_backend_root_descriptor_actual_producer_evidence_ready(false),
         resolve_backend_root_descriptor_actual_producer_authority_enabled(false),
@@ -12622,6 +12635,19 @@ struct rtcore_provider_payload_consumed_input_view {
   bool resolve_backend_root_descriptor_actual_producer_root_node_reference_present;
   bool resolve_backend_root_descriptor_actual_producer_layout_profile_binding;
   bool resolve_backend_root_descriptor_actual_producer_bvh_memory_binding;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied;
   bool resolve_backend_root_descriptor_actual_producer_evidence_ready;
   bool resolve_backend_root_descriptor_actual_producer_authority_enabled;
@@ -13258,6 +13284,19 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_backend_input_backend_root_descriptor_actual_producer_root_node_reference_present(false),
         provider_backend_input_backend_root_descriptor_actual_producer_layout_profile_binding(false),
         provider_backend_input_backend_root_descriptor_actual_producer_bvh_memory_binding(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding(false),
         provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_satisfied(false),
         provider_backend_input_backend_root_descriptor_actual_producer_evidence_ready(false),
         provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled(false),
@@ -13324,6 +13363,19 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool provider_backend_input_backend_root_descriptor_actual_producer_root_node_reference_present;
   bool provider_backend_input_backend_root_descriptor_actual_producer_layout_profile_binding;
   bool provider_backend_input_backend_root_descriptor_actual_producer_bvh_memory_binding;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding;
   bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_satisfied;
   bool provider_backend_input_backend_root_descriptor_actual_producer_evidence_ready;
   bool provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled;
@@ -13463,6 +13515,45 @@ rtcore_make_provider_backend_input_consumption_route_record(
         .provider_backend_input_backend_root_descriptor_actual_producer_bvh_memory_binding =
         view.resolve_backend_root_descriptor_actual_producer_bvh_memory_binding;
     record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding;
+    record
         .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_satisfied =
         view.resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied;
     record
@@ -13569,6 +13660,19 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_backend_root_descriptor_actual_producer_root_node_reference_present=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_layout_profile_binding=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_bvh_memory_binding=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_satisfied=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_evidence_ready=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled=%u, "
@@ -13706,6 +13810,58 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
              : 0,
          record
                  .provider_backend_input_backend_root_descriptor_actual_producer_bvh_memory_binding
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding
              ? 1
              : 0,
          record
@@ -16029,6 +16185,19 @@ struct rtcore_provider_facing_registry_payload_shadow {
         resolve_backend_root_descriptor_actual_producer_root_node_reference_present(false),
         resolve_backend_root_descriptor_actual_producer_layout_profile_binding(false),
         resolve_backend_root_descriptor_actual_producer_bvh_memory_binding(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied(false),
         resolve_backend_root_descriptor_actual_producer_evidence_ready(false),
         resolve_backend_root_descriptor_actual_producer_authority_enabled(false),
@@ -16119,6 +16288,19 @@ struct rtcore_provider_facing_registry_payload_shadow {
   bool resolve_backend_root_descriptor_actual_producer_root_node_reference_present;
   bool resolve_backend_root_descriptor_actual_producer_layout_profile_binding;
   bool resolve_backend_root_descriptor_actual_producer_bvh_memory_binding;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied;
   bool resolve_backend_root_descriptor_actual_producer_evidence_ready;
   bool resolve_backend_root_descriptor_actual_producer_authority_enabled;
@@ -17267,6 +17449,45 @@ rtcore_make_provider_payload_consumed_input_view(
   view.resolve_backend_root_descriptor_actual_producer_bvh_memory_binding =
       registry_payload_shadow
           ->resolve_backend_root_descriptor_actual_producer_bvh_memory_binding;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding;
   view.resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied =
       registry_payload_shadow
           ->resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied;
@@ -20230,6 +20451,19 @@ struct rtcore_backend_root_descriptor_actual_producer_evidence_snapshot {
         root_node_reference_present(false),
         layout_profile_binding(false),
         bvh_memory_binding(false),
+        contract_claim_root_descriptor_ready(false),
+        contract_claim_proxy_disabled(false),
+        contract_claim_runtime_proxy_compatibility_disabled(false),
+        contract_claim_actual_abi_evidence(false),
+        contract_claim_root_metadata_handle_present(false),
+        contract_claim_root_address_space_actual(false),
+        contract_claim_root_node_reference_present(false),
+        contract_claim_layout_profile_bound(false),
+        contract_claim_required_root_metadata_handle(false),
+        contract_claim_required_root_address_space_actual(false),
+        contract_claim_required_root_node_reference(false),
+        contract_claim_required_layout_profile_reference(false),
+        contract_claim_required_bvh_memory_binding(false),
         contract_claim_satisfied(false),
         evidence_ready(false) {}
 
@@ -20244,6 +20478,19 @@ struct rtcore_backend_root_descriptor_actual_producer_evidence_snapshot {
   bool root_node_reference_present;
   bool layout_profile_binding;
   bool bvh_memory_binding;
+  bool contract_claim_root_descriptor_ready;
+  bool contract_claim_proxy_disabled;
+  bool contract_claim_runtime_proxy_compatibility_disabled;
+  bool contract_claim_actual_abi_evidence;
+  bool contract_claim_root_metadata_handle_present;
+  bool contract_claim_root_address_space_actual;
+  bool contract_claim_root_node_reference_present;
+  bool contract_claim_layout_profile_bound;
+  bool contract_claim_required_root_metadata_handle;
+  bool contract_claim_required_root_address_space_actual;
+  bool contract_claim_required_root_node_reference;
+  bool contract_claim_required_layout_profile_reference;
+  bool contract_claim_required_bvh_memory_binding;
   bool contract_claim_satisfied;
   bool evidence_ready;
 };
@@ -20315,6 +20562,19 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_actual_producer_root_node_reference_present=%u, "
          "backend_root_descriptor_actual_producer_layout_profile_binding=%u, "
          "backend_root_descriptor_actual_producer_bvh_memory_binding=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_proxy_disabled=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_satisfied=%u, "
          "backend_root_descriptor_actual_producer_evidence_ready=%u, "
          "backend_root_descriptor_actual_producer_authority_enabled=%u, "
@@ -20385,6 +20645,52 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          actual_producer_evidence_snapshot.root_node_reference_present ? 1 : 0,
          actual_producer_evidence_snapshot.layout_profile_binding ? 1 : 0,
          actual_producer_evidence_snapshot.bvh_memory_binding ? 1 : 0,
+         actual_producer_evidence_snapshot.contract_claim_root_descriptor_ready
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot.contract_claim_proxy_disabled ? 1
+                                                                         : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_runtime_proxy_compatibility_disabled
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot.contract_claim_actual_abi_evidence
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_root_metadata_handle_present
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot.contract_claim_root_address_space_actual
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_root_node_reference_present
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot.contract_claim_layout_profile_bound
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_root_metadata_handle
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_root_address_space_actual
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_root_node_reference
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_layout_profile_reference
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_bvh_memory_binding
+             ? 1
+             : 0,
          actual_producer_evidence_snapshot.contract_claim_satisfied ? 1 : 0,
          actual_producer_evidence_snapshot.evidence_ready ? 1 : 0,
          backend_root_descriptor_actual_producer_authority_enabled ? 1 : 0,
@@ -20406,30 +20712,6 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0);
   fflush(stdout);
-}
-
-static bool rtcore_backend_root_descriptor_producer_contract_claim_satisfied(
-    const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot) {
-  return snapshot.backend_root_descriptor_ready &&
-         !snapshot.backend_root_descriptor_proxy_delegated &&
-         !snapshot.backend_root_descriptor_runtime_proxy_compatibility_path &&
-         snapshot.backend_root_descriptor_actual_abi_evidence &&
-         snapshot.root_metadata_handle != 0 &&
-         snapshot.root_address_space != NULL &&
-         strcmp(snapshot.root_address_space,
-                rtcore_backend_root_descriptor_required_address_space_label()) ==
-             0 &&
-         snapshot.root_node_reference != 0 &&
-         snapshot.layout_profile_reference != NULL &&
-         strcmp(snapshot.layout_profile_reference, "unavailable") != 0 &&
-         snapshot.backend_root_descriptor_required_root_metadata_handle &&
-         snapshot.backend_root_descriptor_required_root_address_space != NULL &&
-         strcmp(snapshot.backend_root_descriptor_required_root_address_space,
-                rtcore_backend_root_descriptor_required_address_space_label()) ==
-             0 &&
-         snapshot.backend_root_descriptor_required_root_node_reference &&
-         snapshot.backend_root_descriptor_required_layout_profile_reference &&
-         snapshot.backend_root_descriptor_required_bvh_memory_binding;
 }
 
 static rtcore_backend_root_descriptor_actual_producer_evidence_snapshot
@@ -20465,9 +20747,69 @@ rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
              "unavailable") != 0;
   actual_producer_evidence_snapshot.bvh_memory_binding =
       snapshot.backend_root_descriptor_producer_bvh_memory_binding;
+  actual_producer_evidence_snapshot.contract_claim_root_descriptor_ready =
+      snapshot.backend_root_descriptor_ready;
+  actual_producer_evidence_snapshot.contract_claim_proxy_disabled =
+      !snapshot.backend_root_descriptor_proxy_delegated;
+  actual_producer_evidence_snapshot
+      .contract_claim_runtime_proxy_compatibility_disabled =
+      !snapshot.backend_root_descriptor_runtime_proxy_compatibility_path;
+  actual_producer_evidence_snapshot.contract_claim_actual_abi_evidence =
+      snapshot.backend_root_descriptor_actual_abi_evidence;
+  actual_producer_evidence_snapshot
+      .contract_claim_root_metadata_handle_present =
+      snapshot.root_metadata_handle != 0;
+  actual_producer_evidence_snapshot.contract_claim_root_address_space_actual =
+      snapshot.root_address_space != NULL &&
+      strcmp(snapshot.root_address_space,
+             rtcore_backend_root_descriptor_required_address_space_label()) ==
+          0;
+  actual_producer_evidence_snapshot
+      .contract_claim_root_node_reference_present =
+      snapshot.root_node_reference != 0;
+  actual_producer_evidence_snapshot.contract_claim_layout_profile_bound =
+      snapshot.layout_profile_reference != NULL &&
+      strcmp(snapshot.layout_profile_reference, "unavailable") != 0;
+  actual_producer_evidence_snapshot
+      .contract_claim_required_root_metadata_handle =
+      snapshot.backend_root_descriptor_required_root_metadata_handle;
+  actual_producer_evidence_snapshot
+      .contract_claim_required_root_address_space_actual =
+      snapshot.backend_root_descriptor_required_root_address_space != NULL &&
+      strcmp(snapshot.backend_root_descriptor_required_root_address_space,
+             rtcore_backend_root_descriptor_required_address_space_label()) ==
+          0;
+  actual_producer_evidence_snapshot
+      .contract_claim_required_root_node_reference =
+      snapshot.backend_root_descriptor_required_root_node_reference;
+  actual_producer_evidence_snapshot
+      .contract_claim_required_layout_profile_reference =
+      snapshot.backend_root_descriptor_required_layout_profile_reference;
+  actual_producer_evidence_snapshot.contract_claim_required_bvh_memory_binding =
+      snapshot.backend_root_descriptor_required_bvh_memory_binding;
   actual_producer_evidence_snapshot.contract_claim_satisfied =
-      rtcore_backend_root_descriptor_producer_contract_claim_satisfied(
-          snapshot);
+      actual_producer_evidence_snapshot
+          .contract_claim_root_descriptor_ready &&
+      actual_producer_evidence_snapshot.contract_claim_proxy_disabled &&
+      actual_producer_evidence_snapshot
+          .contract_claim_runtime_proxy_compatibility_disabled &&
+      actual_producer_evidence_snapshot.contract_claim_actual_abi_evidence &&
+      actual_producer_evidence_snapshot
+          .contract_claim_root_metadata_handle_present &&
+      actual_producer_evidence_snapshot.contract_claim_root_address_space_actual &&
+      actual_producer_evidence_snapshot
+          .contract_claim_root_node_reference_present &&
+      actual_producer_evidence_snapshot.contract_claim_layout_profile_bound &&
+      actual_producer_evidence_snapshot
+          .contract_claim_required_root_metadata_handle &&
+      actual_producer_evidence_snapshot
+          .contract_claim_required_root_address_space_actual &&
+      actual_producer_evidence_snapshot
+          .contract_claim_required_root_node_reference &&
+      actual_producer_evidence_snapshot
+          .contract_claim_required_layout_profile_reference &&
+      actual_producer_evidence_snapshot
+          .contract_claim_required_bvh_memory_binding;
   actual_producer_evidence_snapshot.evidence_ready =
       actual_producer_evidence_snapshot.owner_provenance_ready &&
       actual_producer_evidence_snapshot.producer_contract_present &&
@@ -20540,8 +20882,7 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
       snapshot.as_reference_match && snapshot.profile_state_match &&
       snapshot.backend_root_descriptor_producer_contract &&
       snapshot.backend_root_descriptor_producer_contract_ready &&
-      !rtcore_backend_root_descriptor_producer_contract_claim_satisfied(
-          snapshot);
+      !actual_producer_evidence_snapshot.contract_claim_satisfied;
   const bool backend_root_descriptor_authority_not_ready =
       snapshot.entry_found && snapshot.entry_live &&
       snapshot.resolve_owner_match && snapshot.resolve_generation_match &&
@@ -20613,6 +20954,19 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_actual_producer_root_node_reference_present=%u, "
          "backend_root_descriptor_actual_producer_layout_profile_binding=%u, "
          "backend_root_descriptor_actual_producer_bvh_memory_binding=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_proxy_disabled=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_satisfied=%u, "
          "backend_root_descriptor_actual_producer_evidence_ready=%u, "
          "backend_root_descriptor_actual_producer_authority_enabled=%u, "
@@ -20688,6 +21042,52 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          actual_producer_evidence_snapshot.root_node_reference_present ? 1 : 0,
          actual_producer_evidence_snapshot.layout_profile_binding ? 1 : 0,
          actual_producer_evidence_snapshot.bvh_memory_binding ? 1 : 0,
+         actual_producer_evidence_snapshot.contract_claim_root_descriptor_ready
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot.contract_claim_proxy_disabled ? 1
+                                                                         : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_runtime_proxy_compatibility_disabled
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot.contract_claim_actual_abi_evidence
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_root_metadata_handle_present
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot.contract_claim_root_address_space_actual
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_root_node_reference_present
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot.contract_claim_layout_profile_bound
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_root_metadata_handle
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_root_address_space_actual
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_root_node_reference
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_layout_profile_reference
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_required_bvh_memory_binding
+             ? 1
+             : 0,
          actual_producer_evidence_snapshot.contract_claim_satisfied ? 1 : 0,
          backend_root_descriptor_actual_producer_evidence_ready ? 1 : 0,
          backend_root_descriptor_actual_producer_authority_enabled ? 1 : 0,
@@ -22678,6 +23078,41 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
         actual_producer_evidence_snapshot.layout_profile_binding;
     shadow.resolve_backend_root_descriptor_actual_producer_bvh_memory_binding =
         actual_producer_evidence_snapshot.bvh_memory_binding;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_root_descriptor_ready =
+        actual_producer_evidence_snapshot.contract_claim_root_descriptor_ready;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_proxy_disabled =
+        actual_producer_evidence_snapshot.contract_claim_proxy_disabled;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_runtime_proxy_compatibility_disabled =
+        actual_producer_evidence_snapshot
+            .contract_claim_runtime_proxy_compatibility_disabled;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence =
+        actual_producer_evidence_snapshot.contract_claim_actual_abi_evidence;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_root_metadata_handle_present =
+        actual_producer_evidence_snapshot
+            .contract_claim_root_metadata_handle_present;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_root_address_space_actual =
+        actual_producer_evidence_snapshot
+            .contract_claim_root_address_space_actual;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_root_node_reference_present =
+        actual_producer_evidence_snapshot
+            .contract_claim_root_node_reference_present;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_layout_profile_bound =
+        actual_producer_evidence_snapshot.contract_claim_layout_profile_bound;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_metadata_handle =
+        actual_producer_evidence_snapshot
+            .contract_claim_required_root_metadata_handle;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_address_space_actual =
+        actual_producer_evidence_snapshot
+            .contract_claim_required_root_address_space_actual;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_required_root_node_reference =
+        actual_producer_evidence_snapshot
+            .contract_claim_required_root_node_reference;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_required_layout_profile_reference =
+        actual_producer_evidence_snapshot
+            .contract_claim_required_layout_profile_reference;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_required_bvh_memory_binding =
+        actual_producer_evidence_snapshot
+            .contract_claim_required_bvh_memory_binding;
     shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied =
         actual_producer_evidence_snapshot.contract_claim_satisfied;
     shadow.resolve_backend_root_descriptor_actual_producer_evidence_ready =
