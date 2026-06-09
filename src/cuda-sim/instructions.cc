@@ -12561,6 +12561,11 @@ struct rtcore_provider_payload_consumed_input_view {
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_requested(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_ready(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption(false),
@@ -12673,6 +12678,11 @@ struct rtcore_provider_payload_consumed_input_view {
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_requested;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_ready;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption;
@@ -13337,6 +13347,11 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_requested(false),
         provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_ready(false),
         provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected(false),
+        provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior(false),
         provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map(false),
         provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready(false),
         provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption(false),
@@ -13431,6 +13446,11 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_requested;
   bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_ready;
   bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected;
+  bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior;
   bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map;
   bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready;
   bool provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption;
@@ -13644,6 +13664,21 @@ rtcore_make_provider_backend_input_consumption_route_record(
         .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption =
         view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption;
     record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected;
+    record
+        .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior =
+        view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior;
+    record
         .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map =
         view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map;
     record
@@ -13788,6 +13823,11 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_requested=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_ready=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected=%u, "
+         "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready=%u, "
          "provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption=%u, "
@@ -14022,6 +14062,26 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
              : 0,
          record
                  .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior
              ? 1
              : 0,
          record
@@ -16388,6 +16448,11 @@ struct rtcore_provider_facing_registry_payload_shadow {
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_requested(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_ready(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected(false),
+        resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready(false),
         resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption(false),
@@ -16506,6 +16571,11 @@ struct rtcore_provider_facing_registry_payload_shadow {
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_requested;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_ready;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected;
+  bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready;
   bool resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption;
@@ -17728,6 +17798,21 @@ rtcore_make_provider_payload_consumed_input_view(
   view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption =
       registry_payload_shadow
           ->resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected;
+  view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior =
+      registry_payload_shadow
+          ->resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior;
   view.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map =
       registry_payload_shadow
           ->resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map;
@@ -18834,6 +18919,7 @@ static const char
   // producer_descriptor_preflight=1;
   // backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight=1;
   // authority_switch_precondition_map=1;
+  // producer_claim_source_construction_bridge=1;
   // actual producer consumption remains opt-in;
   // producer sidecar requires actual AS/BVH memory evidence;
   // BACKEND_ROOT_DESCRIPTOR_ACTUAL_PRODUCER_EVIDENCE_NOT_READY.
@@ -20732,6 +20818,11 @@ struct rtcore_backend_root_descriptor_actual_producer_evidence_snapshot {
         contract_claim_source_producer_descriptor_preflight_requested(false),
         contract_claim_source_producer_descriptor_preflight_ready(false),
         contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption(false),
+        contract_claim_source_producer_descriptor_construction_bridge(false),
+        contract_claim_source_producer_descriptor_construction_requested(false),
+        contract_claim_source_producer_descriptor_construction_ready(false),
+        contract_claim_source_producer_descriptor_construction_selected(false),
+        contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior(false),
         contract_claim_source_producer_descriptor_authority_switch_precondition_map(false),
         contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready(false),
         contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption(false),
@@ -20774,6 +20865,11 @@ struct rtcore_backend_root_descriptor_actual_producer_evidence_snapshot {
   bool contract_claim_source_producer_descriptor_preflight_requested;
   bool contract_claim_source_producer_descriptor_preflight_ready;
   bool contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption;
+  bool contract_claim_source_producer_descriptor_construction_bridge;
+  bool contract_claim_source_producer_descriptor_construction_requested;
+  bool contract_claim_source_producer_descriptor_construction_ready;
+  bool contract_claim_source_producer_descriptor_construction_selected;
+  bool contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior;
   bool contract_claim_source_producer_descriptor_authority_switch_precondition_map;
   bool contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready;
   bool contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption;
@@ -20873,6 +20969,11 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_requested=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_ready=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption=%u, "
@@ -21028,6 +21129,26 @@ static void rtcore_log_driver_as_resolve_table_lookup_snapshot(
              : 0,
          actual_producer_evidence_snapshot
                  .contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_bridge
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_requested
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_ready
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_selected
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior
              ? 1
              : 0,
          actual_producer_evidence_snapshot
@@ -21209,6 +21330,20 @@ rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
       (!actual_producer_evidence_snapshot.producer_contract_ready ||
        !actual_producer_evidence_snapshot
             .producer_fields_consumed_by_traversal);
+  actual_producer_evidence_snapshot
+      .contract_claim_source_producer_descriptor_construction_bridge = true;
+  actual_producer_evidence_snapshot
+      .contract_claim_source_producer_descriptor_construction_requested =
+      rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested();
+  actual_producer_evidence_snapshot
+      .contract_claim_source_producer_descriptor_construction_ready =
+      actual_producer_evidence_snapshot
+          .contract_claim_source_producer_descriptor_preflight_ready;
+  actual_producer_evidence_snapshot
+      .contract_claim_source_producer_descriptor_construction_selected = false;
+  actual_producer_evidence_snapshot
+      .contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior =
+      false;
   actual_producer_evidence_snapshot
       .contract_claim_source_producer_descriptor_authority_switch_precondition_map =
       true;
@@ -21421,6 +21556,11 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_requested=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_ready=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected=%u, "
+         "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_contract_ready=%u, "
          "backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption=%u, "
@@ -21581,6 +21721,26 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
              : 0,
          actual_producer_evidence_snapshot
                  .contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_bridge
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_requested
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_ready
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_selected
+             ? 1
+             : 0,
+         actual_producer_evidence_snapshot
+                 .contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior
              ? 1
              : 0,
          actual_producer_evidence_snapshot
@@ -23656,6 +23816,21 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
     shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption =
         actual_producer_evidence_snapshot
             .contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_bridge =
+        actual_producer_evidence_snapshot
+            .contract_claim_source_producer_descriptor_construction_bridge;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_requested =
+        actual_producer_evidence_snapshot
+            .contract_claim_source_producer_descriptor_construction_requested;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_ready =
+        actual_producer_evidence_snapshot
+            .contract_claim_source_producer_descriptor_construction_ready;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_selected =
+        actual_producer_evidence_snapshot
+            .contract_claim_source_producer_descriptor_construction_selected;
+    shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior =
+        actual_producer_evidence_snapshot
+            .contract_claim_source_producer_descriptor_construction_consumes_traversal_behavior;
     shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_source_producer_descriptor_authority_switch_precondition_map =
         actual_producer_evidence_snapshot
             .contract_claim_source_producer_descriptor_authority_switch_precondition_map;
