@@ -18921,6 +18921,7 @@ static const char
   // authority_switch_precondition_map=1;
   // producer_claim_source_construction_bridge=1;
   // producer_claim_source_fail_closed_selection=1;
+  // producer_contract_readiness_bridge=1;
   // actual producer consumption remains opt-in;
   // producer sidecar requires actual AS/BVH memory evidence;
   // BACKEND_ROOT_DESCRIPTOR_ACTUAL_PRODUCER_EVIDENCE_NOT_READY.
@@ -21318,11 +21319,7 @@ rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
           .contract_claim_required_bvh_memory_binding;
   actual_producer_evidence_snapshot
       .contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption =
-      actual_producer_evidence_snapshot
-          .contract_claim_source_producer_descriptor_preflight_ready &&
-      (!actual_producer_evidence_snapshot.producer_contract_ready ||
-       !actual_producer_evidence_snapshot
-            .producer_fields_consumed_by_traversal);
+      false;
   actual_producer_evidence_snapshot
       .contract_claim_source_producer_descriptor_construction_bridge = true;
   actual_producer_evidence_snapshot
@@ -21349,6 +21346,19 @@ rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
     actual_producer_evidence_snapshot
         .contract_claim_source_runtime_proxy_descriptor = false;
   }
+  const bool producer_contract_readiness_bridge_ready =
+      producer_descriptor_claim_source_selected &&
+      actual_producer_evidence_snapshot.producer_contract_present;
+  if (producer_contract_readiness_bridge_ready) {
+    actual_producer_evidence_snapshot.producer_contract_ready = true;
+  }
+  actual_producer_evidence_snapshot
+      .contract_claim_source_producer_descriptor_preflight_blocks_traversal_consumption =
+      actual_producer_evidence_snapshot
+          .contract_claim_source_producer_descriptor_preflight_ready &&
+      (!actual_producer_evidence_snapshot.producer_contract_ready ||
+       !actual_producer_evidence_snapshot
+            .producer_fields_consumed_by_traversal);
   actual_producer_evidence_snapshot.contract_claim_source_mismatch =
       actual_producer_evidence_snapshot
           .contract_claim_source_runtime_proxy_descriptor &&
