@@ -21399,6 +21399,21 @@ rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
            .contract_claim_source_producer_descriptor_authority_switch_missing_traversal_consumption &&
       !actual_producer_evidence_snapshot
            .contract_claim_source_producer_descriptor_authority_switch_missing_producer_descriptor_claim_source;
+  // producer_root_field_contract_evidence_bridge=1;
+  const bool producer_root_field_contract_evidence_bridge_ready =
+      actual_producer_evidence_snapshot
+          .contract_claim_source_producer_descriptor_authority_switch_preconditions_satisfied &&
+      actual_producer_evidence_snapshot
+          .contract_claim_source_producer_candidate_root_fields_ready;
+  if (producer_root_field_contract_evidence_bridge_ready) {
+    actual_producer_evidence_snapshot
+        .contract_claim_root_metadata_handle_present = true;
+    actual_producer_evidence_snapshot.contract_claim_root_address_space_actual = true;
+    actual_producer_evidence_snapshot
+        .contract_claim_root_node_reference_present = true;
+    actual_producer_evidence_snapshot.contract_claim_layout_profile_bound =
+        true;
+  }
   actual_producer_evidence_snapshot.contract_claim_satisfied =
       actual_producer_evidence_snapshot
           .contract_claim_root_descriptor_ready &&
