@@ -12324,6 +12324,16 @@ struct rtcore_traversal_source_request {
         replay_context_window_owner_seq_matches_lifetime(false),
         replay_context_window_bound_to_provider_decoded_abi(false),
         replay_token_lifetime_key_ready(false),
+        replay_runtime_proxy_compatibility_path(false),
+        replay_traversable_root_proxy_authority("unavailable"),
+        replay_bvh_format_profile_authority("unavailable"),
+        replay_proxy_fields_authority("unavailable"),
+        replay_proxy_fields_retired_by_actual_producer(false),
+        replay_proxy_fields_compatibility_observation_only(false),
+        replay_actual_abi_evidence_for_proxy_fields(false),
+        replay_root_profile_abi_gap_open(false),
+        replay_remaining_compatibility_fields("unavailable"),
+        replay_root_profile_abi_gap_reason("unavailable"),
         replay_ray_flags(0),
         replay_cull_mask(0),
         replay_ray_tmin(0.0f),
@@ -12387,6 +12397,16 @@ struct rtcore_traversal_source_request {
   bool replay_context_window_owner_seq_matches_lifetime;
   bool replay_context_window_bound_to_provider_decoded_abi;
   bool replay_token_lifetime_key_ready;
+  bool replay_runtime_proxy_compatibility_path;
+  const char *replay_traversable_root_proxy_authority;
+  const char *replay_bvh_format_profile_authority;
+  const char *replay_proxy_fields_authority;
+  bool replay_proxy_fields_retired_by_actual_producer;
+  bool replay_proxy_fields_compatibility_observation_only;
+  bool replay_actual_abi_evidence_for_proxy_fields;
+  bool replay_root_profile_abi_gap_open;
+  const char *replay_remaining_compatibility_fields;
+  const char *replay_root_profile_abi_gap_reason;
   float3 replay_ray_origin;
   float3 replay_ray_direction;
   uint32_t replay_ray_flags;
@@ -12526,6 +12546,13 @@ static const char *rtcore_proxy_fields_authority_label(
   return proxy_fields_retired_by_actual_producer
              ? "actual_producer_descriptor"
              : "simulator_proxy";
+}
+
+static const char *rtcore_remaining_compatibility_fields_label(
+    bool proxy_fields_retired_by_actual_producer) {
+  return proxy_fields_retired_by_actual_producer
+             ? "proxy_fields_compatibility_observation,bridge_trace_replay_top_level_as_compatibility_observation"
+             : "traversable_root_proxy,bvh_format_profile,bridge_trace_replay_top_level_as";
 }
 
 static const char *rtcore_selected_root_descriptor_label_failpoint_env_name() {
@@ -13210,6 +13237,34 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
       view.provider_payload_runtime_lifetime_ready &&
       view.context_window_owner_seq_matches_lifetime &&
       view.token_lifetime_key_ready;
+  const bool proxy_fields_retired_by_actual_producer =
+      rtcore_provider_payload_view_proxy_fields_retired_by_actual_producer(
+          view);
+  request->replay_runtime_proxy_compatibility_path =
+      view.resolve_backend_root_descriptor_runtime_proxy_compatibility_path;
+  request->replay_traversable_root_proxy_authority =
+      rtcore_decoded_input_field_owner_class_name(
+          view.traversable_root_proxy_owner);
+  request->replay_bvh_format_profile_authority =
+      rtcore_decoded_input_field_owner_class_name(
+          view.bvh_format_profile_owner);
+  request->replay_proxy_fields_authority =
+      rtcore_proxy_fields_authority_label(
+          proxy_fields_retired_by_actual_producer);
+  request->replay_proxy_fields_retired_by_actual_producer =
+      proxy_fields_retired_by_actual_producer;
+  request->replay_proxy_fields_compatibility_observation_only =
+      proxy_fields_retired_by_actual_producer;
+  request->replay_actual_abi_evidence_for_proxy_fields = false;
+  request->replay_root_profile_abi_gap_open =
+      !request->replay_actual_abi_evidence_for_proxy_fields;
+  request->replay_remaining_compatibility_fields =
+      rtcore_remaining_compatibility_fields_label(
+          proxy_fields_retired_by_actual_producer);
+  request->replay_root_profile_abi_gap_reason =
+      request->replay_root_profile_abi_gap_open
+          ? "actual_abi_evidence_for_proxy_fields_unavailable"
+          : "none";
   request->replay_ray_origin = view.ray_origin;
   request->replay_ray_direction = view.ray_direction;
   request->replay_ray_tmin = view.ray_tmin;
@@ -13313,6 +13368,17 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "existing_traversal_replay_context_window_owner_seq_matches_lifetime=%u, "
          "existing_traversal_replay_context_window_bound_to_provider_decoded_abi=%u, "
          "existing_traversal_replay_token_lifetime_key_ready=%u, "
+         "existing_traversal_replay_backend_input_root_profile_gap_map=1, "
+         "existing_traversal_replay_runtime_proxy_compatibility_path=%u, "
+         "existing_traversal_replay_traversable_root_proxy_authority=%s, "
+         "existing_traversal_replay_bvh_format_profile_authority=%s, "
+         "existing_traversal_replay_proxy_fields_authority=%s, "
+         "existing_traversal_replay_proxy_fields_retired_by_actual_producer=%u, "
+         "existing_traversal_replay_proxy_fields_compatibility_observation_only=%u, "
+         "existing_traversal_replay_actual_abi_evidence_for_proxy_fields=%u, "
+         "existing_traversal_replay_root_profile_abi_gap_open=%u, "
+         "existing_traversal_replay_remaining_compatibility_fields=%s, "
+         "existing_traversal_replay_root_profile_abi_gap_reason=%s, "
          "has_launch_context_input=%u, bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "existing_traversal_replay_selected_descriptor_source_bridge=1, "
@@ -13357,6 +13423,16 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          request->replay_context_window_owner_seq_matches_lifetime ? 1 : 0,
          request->replay_context_window_bound_to_provider_decoded_abi ? 1 : 0,
          request->replay_token_lifetime_key_ready ? 1 : 0,
+         request->replay_runtime_proxy_compatibility_path ? 1 : 0,
+         request->replay_traversable_root_proxy_authority,
+         request->replay_bvh_format_profile_authority,
+         request->replay_proxy_fields_authority,
+         request->replay_proxy_fields_retired_by_actual_producer ? 1 : 0,
+         request->replay_proxy_fields_compatibility_observation_only ? 1 : 0,
+         request->replay_actual_abi_evidence_for_proxy_fields ? 1 : 0,
+         request->replay_root_profile_abi_gap_open ? 1 : 0,
+         request->replay_remaining_compatibility_fields,
+         request->replay_root_profile_abi_gap_reason,
          request->has_replay_launch_context_input ? 1 : 0,
          (unsigned long long)request->replay_bridge_trace_replay_top_level_as,
          request->replay_sbt_record_offset, request->replay_sbt_record_stride,
@@ -13429,6 +13505,16 @@ struct rtcore_existing_traversal_replay_input_match_record {
         context_window_owner_seq_matches_lifetime(false),
         context_window_bound_to_provider_decoded_abi(false),
         token_lifetime_key_ready(false),
+        runtime_proxy_compatibility_path(false),
+        traversable_root_proxy_authority("unavailable"),
+        bvh_format_profile_authority("unavailable"),
+        proxy_fields_authority("unavailable"),
+        proxy_fields_retired_by_actual_producer(false),
+        proxy_fields_compatibility_observation_only(false),
+        actual_abi_evidence_for_proxy_fields(false),
+        root_profile_abi_gap_open(false),
+        remaining_compatibility_fields("unavailable"),
+        root_profile_abi_gap_reason("unavailable"),
         launch_context_sbt_match(false),
         ray_origin_direction_tmin_tmax_match(false),
         ray_flags_cull_mask_match(false),
@@ -13451,6 +13537,16 @@ struct rtcore_existing_traversal_replay_input_match_record {
   bool context_window_owner_seq_matches_lifetime;
   bool context_window_bound_to_provider_decoded_abi;
   bool token_lifetime_key_ready;
+  bool runtime_proxy_compatibility_path;
+  const char *traversable_root_proxy_authority;
+  const char *bvh_format_profile_authority;
+  const char *proxy_fields_authority;
+  bool proxy_fields_retired_by_actual_producer;
+  bool proxy_fields_compatibility_observation_only;
+  bool actual_abi_evidence_for_proxy_fields;
+  bool root_profile_abi_gap_open;
+  const char *remaining_compatibility_fields;
+  const char *root_profile_abi_gap_reason;
   bool launch_context_sbt_match;
   bool ray_origin_direction_tmin_tmax_match;
   bool ray_flags_cull_mask_match;
@@ -13488,6 +13584,25 @@ rtcore_make_existing_traversal_replay_input_match_record(
   record.context_window_bound_to_provider_decoded_abi =
       request.replay_context_window_bound_to_provider_decoded_abi;
   record.token_lifetime_key_ready = request.replay_token_lifetime_key_ready;
+  record.runtime_proxy_compatibility_path =
+      request.replay_runtime_proxy_compatibility_path;
+  record.traversable_root_proxy_authority =
+      request.replay_traversable_root_proxy_authority;
+  record.bvh_format_profile_authority =
+      request.replay_bvh_format_profile_authority;
+  record.proxy_fields_authority = request.replay_proxy_fields_authority;
+  record.proxy_fields_retired_by_actual_producer =
+      request.replay_proxy_fields_retired_by_actual_producer;
+  record.proxy_fields_compatibility_observation_only =
+      request.replay_proxy_fields_compatibility_observation_only;
+  record.actual_abi_evidence_for_proxy_fields =
+      request.replay_actual_abi_evidence_for_proxy_fields;
+  record.root_profile_abi_gap_open =
+      request.replay_root_profile_abi_gap_open;
+  record.remaining_compatibility_fields =
+      request.replay_remaining_compatibility_fields;
+  record.root_profile_abi_gap_reason =
+      request.replay_root_profile_abi_gap_reason;
   record.provider_decoded_abi_authority_complete =
       record.provider_decoded_abi_fields_consumed &&
       strcmp(request.replay_ray_origin_direction_tmin_tmax_authority,
@@ -13564,6 +13679,17 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          "existing_traversal_replay_context_window_owner_seq_matches_lifetime=%u, "
          "existing_traversal_replay_context_window_bound_to_provider_decoded_abi=%u, "
          "existing_traversal_replay_token_lifetime_key_ready=%u, "
+         "existing_traversal_replay_backend_input_root_profile_gap_map=1, "
+         "existing_traversal_replay_runtime_proxy_compatibility_path=%u, "
+         "existing_traversal_replay_traversable_root_proxy_authority=%s, "
+         "existing_traversal_replay_bvh_format_profile_authority=%s, "
+         "existing_traversal_replay_proxy_fields_authority=%s, "
+         "existing_traversal_replay_proxy_fields_retired_by_actual_producer=%u, "
+         "existing_traversal_replay_proxy_fields_compatibility_observation_only=%u, "
+         "existing_traversal_replay_actual_abi_evidence_for_proxy_fields=%u, "
+         "existing_traversal_replay_root_profile_abi_gap_open=%u, "
+         "existing_traversal_replay_remaining_compatibility_fields=%s, "
+         "existing_traversal_replay_root_profile_abi_gap_reason=%s, "
          "existing_traversal_replay_all_fields_match=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
@@ -13588,6 +13714,16 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          record.context_window_owner_seq_matches_lifetime ? 1 : 0,
          record.context_window_bound_to_provider_decoded_abi ? 1 : 0,
          record.token_lifetime_key_ready ? 1 : 0,
+         record.runtime_proxy_compatibility_path ? 1 : 0,
+         record.traversable_root_proxy_authority,
+         record.bvh_format_profile_authority,
+         record.proxy_fields_authority,
+         record.proxy_fields_retired_by_actual_producer ? 1 : 0,
+         record.proxy_fields_compatibility_observation_only ? 1 : 0,
+         record.actual_abi_evidence_for_proxy_fields ? 1 : 0,
+         record.root_profile_abi_gap_open ? 1 : 0,
+         record.remaining_compatibility_fields,
+         record.root_profile_abi_gap_reason,
          record.all_fields_match ? 1 : 0);
   fflush(stdout);
 }
