@@ -5393,6 +5393,15 @@ rt_unit::rtcore_make_shadow_table_release_snapshot(
   snapshot.warp_id = release_snapshot.warp_id;
   snapshot.static_inst_pc = release_snapshot.static_inst_pc;
   snapshot.issued_active_mask = release_snapshot.issued_active_mask;
+  snapshot.has_provider_materialized_traversal_input_snapshot =
+      release_snapshot.has_provider_materialized_traversal_input_snapshot;
+  snapshot.provider_materialized_traversal_input_snapshot_valid =
+      release_snapshot.provider_materialized_traversal_input_snapshot_valid;
+  snapshot.provider_materialized_traversal_input_snapshot_source =
+      release_snapshot.provider_materialized_traversal_input_snapshot_source;
+  snapshot.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      release_snapshot
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
   snapshot.release_attempted = snapshot.enabled;
   snapshot.entry_found = snapshot.enabled;
   snapshot.would_release_owner_tuple = snapshot.enabled;
@@ -5424,6 +5433,13 @@ void rt_unit::rtcore_apply_shadow_table_release_snapshot(
          "would_release_owner_tuple=%u, owner_tuple_released=%u, "
          "would_reclaim_capacity=%u, capacity_reclaimed=%u, "
          "capacity_mutated=%u, reusable_slot_published=%u, "
+         "scheduler_credit_ledger_shadow_table_release_materialized_input_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+         "shadow_table_release_materialized_input_consumes_mutation=0, "
          "release_result=%s, transition_reason=%s\n",
          snapshot.owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
          static_cast<unsigned long long>(snapshot.static_inst_pc),
@@ -5434,7 +5450,14 @@ void rt_unit::rtcore_apply_shadow_table_release_snapshot(
          snapshot.would_reclaim_capacity ? 1 : 0,
          snapshot.capacity_reclaimed ? 1 : 0,
          snapshot.capacity_mutated ? 1 : 0,
-         snapshot.reusable_slot_published ? 1 : 0, snapshot.release_result,
+         snapshot.reusable_slot_published ? 1 : 0,
+         snapshot.has_provider_materialized_traversal_input_snapshot ? 1 : 0,
+         snapshot.provider_materialized_traversal_input_snapshot_valid ? 1 : 0,
+         snapshot.provider_materialized_traversal_input_snapshot_source,
+         snapshot.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0,
+         snapshot.release_result,
          snapshot.transition_reason);
   fflush(stdout);
 }

@@ -1624,6 +1624,12 @@ class rt_unit : public pipelined_simd_unit {
               warp_id(0),
               static_inst_pc(0),
               issued_active_mask(0),
+              has_provider_materialized_traversal_input_snapshot(false),
+              provider_materialized_traversal_input_snapshot_valid(false),
+              provider_materialized_traversal_input_snapshot_source(
+                  "unavailable"),
+              provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+                  false),
               release_result("shadow_table_release_skeleton_default_off"),
               transition_reason("shadow_table_release_skeleton_default_off") {}
 
@@ -1642,6 +1648,10 @@ class rt_unit : public pipelined_simd_unit {
         unsigned warp_id;
         unsigned long long static_inst_pc;
         unsigned issued_active_mask;
+        bool has_provider_materialized_traversal_input_snapshot;
+        bool provider_materialized_traversal_input_snapshot_valid;
+        const char *provider_materialized_traversal_input_snapshot_source;
+        bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
         const char *release_result;
         const char *transition_reason;
       };
