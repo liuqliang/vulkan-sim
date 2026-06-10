@@ -16488,6 +16488,38 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
       request.thread == NULL || request.pI == NULL) {
     return false;
   }
+  const bool actual_abi_source_snapshot_admitted =
+      request.replay_actual_abi_source_snapshot_admitted &&
+      strcmp(request.replay_backend_input_source_snapshot,
+             "provider_actual_abi_source_snapshot") == 0;
+  const bool root_field_consumed =
+      actual_abi_source_snapshot_admitted &&
+      request.has_replay_selected_root_descriptor &&
+      request.replay_selected_root_descriptor_matches_producer_root_fields &&
+      request.replay_backend_root_descriptor_producer_bvh_memory_binding;
+  const bool ray_origin_direction_tmin_tmax_consumed =
+      actual_abi_source_snapshot_admitted &&
+      request.has_replay_ray_origin_direction_tmin_tmax;
+  const bool ray_flags_cull_mask_consumed =
+      actual_abi_source_snapshot_admitted &&
+      request.has_replay_ray_flags_cull_mask;
+  const bool launch_context_sbt_consumed =
+      actual_abi_source_snapshot_admitted &&
+      request.has_replay_launch_context_input;
+  const bool full_abi_fields_consumed =
+      root_field_consumed && ray_origin_direction_tmin_tmax_consumed &&
+      ray_flags_cull_mask_consumed && launch_context_sbt_consumed;
+  const bool full_abi_field_guard_passed = full_abi_fields_consumed;
+  const char *traversal_input_block_reason =
+      full_abi_field_guard_passed
+          ? "none"
+          : (strcmp(request.replay_actual_abi_source_snapshot_block_reason,
+                    "none") == 0
+                 ? "full_abi_field_guard_failed"
+                 : request.replay_actual_abi_source_snapshot_block_reason);
+  if (!full_abi_field_guard_passed) {
+    return false;
+  }
 
   ptx_thread_info *thread = request.thread;
   const ptx_instruction *pI = request.pI;
@@ -16530,6 +16562,8 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
       request.replay_selected_root_descriptor_layout_profile_reference_match;
   const bool producer_root_descriptor_replay_root_fields_match =
       request.replay_selected_root_descriptor_matches_producer_root_fields;
+  const bool actual_abi_source_snapshot_consumed =
+      full_abi_field_guard_passed && materialized;
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-producer-root-authority-adapter=1, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -16553,6 +16587,16 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "bridge_trace_replay_top_level_as_authority=compatibility_observation, "
          "bridge_trace_replay_top_level_as_compatibility_observation_only=1, "
          "producer_root_descriptor_traversal_input_source=provider_consumed_producer_descriptor_fields, "
+         "producer_root_descriptor_traversal_input_source_snapshot=%s, "
+         "producer_root_descriptor_traversal_input_actual_abi_source_snapshot_admitted=%u, "
+         "producer_root_descriptor_traversal_input_actual_abi_source_snapshot_consumed=%u, "
+         "producer_root_descriptor_traversal_input_root_field_consumed=%u, "
+         "producer_root_descriptor_traversal_input_ray_origin_direction_tmin_tmax_consumed=%u, "
+         "producer_root_descriptor_traversal_input_ray_flags_cull_mask_consumed=%u, "
+         "producer_root_descriptor_traversal_input_launch_context_sbt_consumed=%u, "
+         "producer_root_descriptor_traversal_input_full_abi_fields_consumed=%u, "
+         "producer_root_descriptor_traversal_input_full_abi_field_guard_passed=%u, "
+         "producer_root_descriptor_traversal_input_block_reason=%s, "
          "producer_root_descriptor_traversal_input_top_level_as=0x%llx, "
          "producer_root_descriptor_traversal_input_top_level_as_match=%u, "
          "producer_root_descriptor_traversal_input_layout_profile_reference=%s, "
@@ -16584,6 +16628,15 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          request.replay_root_address_space,
          (unsigned long long)request.replay_root_metadata_handle,
          named_top_level_as_matches_bridge_trace_replay_top_level_as ? 1 : 0,
+         request.replay_backend_input_source_snapshot,
+         actual_abi_source_snapshot_admitted ? 1 : 0,
+         actual_abi_source_snapshot_consumed ? 1 : 0,
+         root_field_consumed ? 1 : 0,
+         ray_origin_direction_tmin_tmax_consumed ? 1 : 0,
+         ray_flags_cull_mask_consumed ? 1 : 0,
+         launch_context_sbt_consumed ? 1 : 0,
+         full_abi_fields_consumed ? 1 : 0,
+         full_abi_field_guard_passed ? 1 : 0, traversal_input_block_reason,
          (unsigned long long)request.replay_bridge_trace_replay_top_level_as,
          traversal_input_top_level_as_match ? 1 : 0,
          request.replay_layout_profile_reference,
@@ -16598,7 +16651,7 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          traversal_stack_depth_after_reset,
          traversal_stack_depth_after_materialize, materialized ? 1 : 0);
   fflush(stdout);
-  return materialized;
+  return materialized && full_abi_field_guard_passed;
 }
 
 static rtcore_custom_backend_result
