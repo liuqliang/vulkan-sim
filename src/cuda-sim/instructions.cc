@@ -13058,6 +13058,10 @@ struct rtcore_decoded_trace_ray_value_record {
         token_lifetime_key_ready(false),
         top_level_as(0),
         root_metadata_handle(0),
+        root_address_space("unavailable"),
+        root_node_reference(0),
+        layout_profile_reference("unavailable"),
+        bvh_memory_binding(false),
         ray_flags(0),
         cull_mask(0),
         ray_tmin(0.0f),
@@ -13092,6 +13096,10 @@ struct rtcore_decoded_trace_ray_value_record {
   bool token_lifetime_key_ready;
   uint64_t top_level_as;
   uint64_t root_metadata_handle;
+  const char *root_address_space;
+  uint64_t root_node_reference;
+  const char *layout_profile_reference;
+  bool bvh_memory_binding;
   float3 ray_origin;
   float3 ray_direction;
   uint32_t ray_flags;
@@ -13279,6 +13287,11 @@ rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
   record.token_lifetime_key_ready = view.token_lifetime_key_ready;
   record.top_level_as = view.resolve_root_metadata_handle;
   record.root_metadata_handle = view.resolve_root_metadata_handle;
+  record.root_address_space = view.resolve_root_address_space;
+  record.root_node_reference = view.resolve_root_node_reference;
+  record.layout_profile_reference = view.resolve_layout_profile_reference;
+  record.bvh_memory_binding =
+      view.resolve_backend_root_descriptor_producer_bvh_memory_binding;
   record.ray_origin = view.ray_origin;
   record.ray_direction = view.ray_direction;
   record.ray_flags = view.ray_flags;
@@ -13292,9 +13305,32 @@ rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
                  record.has_ray_flags_cull_mask &&
                  record.has_launch_context_input &&
                  record.has_selected_root_descriptor &&
-                 record.root_metadata_handle != 0;
+                 record.root_metadata_handle != 0 &&
+                 record.root_node_reference != 0 &&
+                 record.root_address_space != NULL &&
+                 record.layout_profile_reference != NULL;
   rtcore_apply_decoded_trace_ray_value_record_failpoint(&record);
   return record;
+}
+
+static bool
+rtcore_decoded_trace_ray_value_record_root_descriptor_fields_match_request(
+    const rtcore_decoded_trace_ray_value_record &record,
+    const rtcore_traversal_source_request &request) {
+  return record.valid && record.has_selected_root_descriptor &&
+         record.root_metadata_handle == request.replay_root_metadata_handle &&
+         record.top_level_as == request.replay_root_metadata_handle &&
+         record.root_node_reference == request.replay_root_node_reference &&
+         record.root_address_space != NULL &&
+         request.replay_root_address_space != NULL &&
+         strcmp(record.root_address_space, request.replay_root_address_space) ==
+             0 &&
+         record.layout_profile_reference != NULL &&
+         request.replay_layout_profile_reference != NULL &&
+         strcmp(record.layout_profile_reference,
+                request.replay_layout_profile_reference) == 0 &&
+         record.bvh_memory_binding ==
+             request.replay_backend_root_descriptor_producer_bvh_memory_binding;
 }
 
 static bool
@@ -13367,6 +13403,17 @@ static bool rtcore_decoded_trace_ray_value_record_matches_request(
          record.has_selected_root_descriptor &&
          record.root_metadata_handle == request.replay_root_metadata_handle &&
          record.top_level_as == request.replay_root_metadata_handle &&
+         record.root_node_reference == request.replay_root_node_reference &&
+         record.root_address_space != NULL &&
+         request.replay_root_address_space != NULL &&
+         strcmp(record.root_address_space, request.replay_root_address_space) ==
+             0 &&
+         record.layout_profile_reference != NULL &&
+         request.replay_layout_profile_reference != NULL &&
+         strcmp(record.layout_profile_reference,
+                request.replay_layout_profile_reference) == 0 &&
+         record.bvh_memory_binding ==
+             request.replay_backend_root_descriptor_producer_bvh_memory_binding &&
          record.ray_origin.x == request.replay_ray_origin.x &&
          record.ray_origin.y == request.replay_ray_origin.y &&
          record.ray_origin.z == request.replay_ray_origin.z &&
@@ -17121,6 +17168,7 @@ struct rtcore_materialized_traversal_input {
         decoded_value_record_authority_matches_request(false),
         decoded_value_record_selected_root_descriptor_authority_matches_request(
             false),
+        decoded_value_record_root_descriptor_fields_match_request(false),
         top_level_as((VkAccelerationStructureKHR)0),
         ray_flags(0),
         cull_mask(0),
@@ -17168,6 +17216,7 @@ struct rtcore_materialized_traversal_input {
   bool decoded_value_record_matches_request;
   bool decoded_value_record_authority_matches_request;
   bool decoded_value_record_selected_root_descriptor_authority_matches_request;
+  bool decoded_value_record_root_descriptor_fields_match_request;
   rtcore_decoded_trace_ray_value_record decoded_trace_ray_value_record;
   VkAccelerationStructureKHR top_level_as;
   uint32_t ray_flags;
@@ -17217,6 +17266,7 @@ struct rtcore_trace_ray_argument_audit {
         decoded_value_record_authority_matches_request(false),
         decoded_value_record_selected_root_descriptor_authority_matches_request(
             false),
+        decoded_value_record_root_descriptor_fields_match_request(false),
         values_match_decoded_value_record(false),
         matches_typed_object(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
@@ -17250,6 +17300,7 @@ struct rtcore_trace_ray_argument_audit {
   bool decoded_value_record_matches_request;
   bool decoded_value_record_authority_matches_request;
   bool decoded_value_record_selected_root_descriptor_authority_matches_request;
+  bool decoded_value_record_root_descriptor_fields_match_request;
   bool values_match_decoded_value_record;
   bool matches_typed_object;
 };
@@ -17304,6 +17355,8 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
       .decoded_value_record_selected_root_descriptor_authority_matches_request =
       input
           .decoded_value_record_selected_root_descriptor_authority_matches_request;
+  trace_ray_arguments.decoded_value_record_root_descriptor_fields_match_request =
+      input.decoded_value_record_root_descriptor_fields_match_request;
   trace_ray_arguments.values_match_decoded_value_record =
       trace_ray_arguments.valid && input.decoded_value_record_valid &&
       trace_ray_arguments.root_metadata_handle ==
@@ -17416,6 +17469,21 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
       ->decoded_value_record_selected_root_descriptor_authority_matches_request =
       rtcore_decoded_trace_ray_value_record_selected_root_descriptor_authority_matches_request(
           decoded_value_record, request);
+  input->decoded_value_record_root_descriptor_fields_match_request =
+      rtcore_decoded_trace_ray_value_record_root_descriptor_fields_match_request(
+          decoded_value_record, request) &&
+      decoded_value_record.root_metadata_handle == snapshot.root_metadata_handle &&
+      decoded_value_record.top_level_as == snapshot.root_metadata_handle &&
+      decoded_value_record.root_node_reference == snapshot.root_node_reference &&
+      decoded_value_record.root_address_space != NULL &&
+      snapshot.root_address_space != NULL &&
+      strcmp(decoded_value_record.root_address_space,
+             snapshot.root_address_space) == 0 &&
+      decoded_value_record.layout_profile_reference != NULL &&
+      snapshot.layout_profile_reference != NULL &&
+      strcmp(decoded_value_record.layout_profile_reference,
+             snapshot.layout_profile_reference) == 0 &&
+      decoded_value_record.bvh_memory_binding == snapshot.bvh_memory_binding;
   input->decoded_source_provenance_match =
       snapshot.valid &&
       strcmp(rtcore_decoded_input_field_source_label(
@@ -17461,6 +17529,7 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
       input->decoded_value_record_authority_matches_request &&
       input
           ->decoded_value_record_selected_root_descriptor_authority_matches_request &&
+      input->decoded_value_record_root_descriptor_fields_match_request &&
       input->decoded_source_provenance_match;
   if (!input->work_descriptor_snapshot_fields_match_request) {
     if (!input->decoded_value_record_matches_request) {
@@ -17501,6 +17570,39 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
              rtcore_decoded_input_field_source_label(
                  decoded_value_record.ray_flags_cull_mask_owner),
              request.replay_ray_flags_cull_mask_source);
+      fflush(stdout);
+    }
+    if (!input->decoded_value_record_root_descriptor_fields_match_request) {
+      printf("GPGPU-Sim PTX: RT_SUBMIT "
+             "decoded-value-record-root-descriptor-field-bundle-mismatch-rejected=1, "
+             "decoded_value_record_root_descriptor_field_bundle_mismatch_rejected=1, "
+             "decoded_value_record_valid=%u, "
+             "decoded_value_record_source=%s, "
+             "decoded_value_record_root_descriptor_fields_match_request=0, "
+             "decoded_value_record_root_metadata_handle=0x%llx, "
+             "request_root_metadata_handle=0x%llx, "
+             "decoded_value_record_root_address_space=%s, "
+             "request_root_address_space=%s, "
+             "decoded_value_record_root_node_reference=0x%llx, "
+             "request_root_node_reference=0x%llx, "
+             "decoded_value_record_layout_profile_reference=%s, "
+             "request_layout_profile_reference=%s, "
+             "decoded_value_record_bvh_memory_binding=%u, "
+             "request_bvh_memory_binding=%u\n",
+             input->decoded_value_record_valid ? 1 : 0,
+             input->decoded_value_record_source,
+             (unsigned long long)decoded_value_record.root_metadata_handle,
+             (unsigned long long)request.replay_root_metadata_handle,
+             decoded_value_record.root_address_space,
+             request.replay_root_address_space,
+             (unsigned long long)decoded_value_record.root_node_reference,
+             (unsigned long long)request.replay_root_node_reference,
+             decoded_value_record.layout_profile_reference,
+             request.replay_layout_profile_reference,
+             decoded_value_record.bvh_memory_binding ? 1 : 0,
+             request.replay_backend_root_descriptor_producer_bvh_memory_binding
+                 ? 1
+                 : 0);
       fflush(stdout);
     }
     if (!input
@@ -17561,8 +17663,9 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
   input->root_metadata_handle = decoded_value_record.root_metadata_handle;
   input->bridge_trace_replay_top_level_as =
       request.replay_bridge_trace_replay_top_level_as;
-  input->layout_profile_reference = snapshot.layout_profile_reference;
-  input->bvh_memory_binding = snapshot.bvh_memory_binding;
+  input->layout_profile_reference =
+      decoded_value_record.layout_profile_reference;
+  input->bvh_memory_binding = decoded_value_record.bvh_memory_binding;
   input->root_fields_match =
       request.replay_selected_root_descriptor_matches_producer_root_fields;
   input->top_level_as_match =
@@ -17770,6 +17873,11 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "trace_ray_argument_decoded_value_record_matches_request=%u, "
          "trace_ray_argument_decoded_value_record_authority_match=%u, "
          "trace_ray_argument_decoded_value_record_selected_root_descriptor_authority_match=%u, "
+         "trace_ray_argument_decoded_value_record_root_descriptor_field_bundle_match=%u, "
+         "trace_ray_argument_decoded_value_record_root_address_space=%s, "
+         "trace_ray_argument_decoded_value_record_root_node_reference=0x%llx, "
+         "trace_ray_argument_decoded_value_record_layout_profile_reference=%s, "
+         "trace_ray_argument_decoded_value_record_bvh_memory_binding=%u, "
          "trace_ray_argument_decoded_value_record_selected_root_descriptor_owner=%s, "
          "trace_ray_argument_decoded_value_record_selected_root_descriptor_source=%s, "
          "trace_ray_argument_decoded_value_record_payload_selected_root_descriptor_owner=%s, "
@@ -17874,6 +17982,18 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
                                                                             : 0,
          trace_ray_arguments
                  .decoded_value_record_selected_root_descriptor_authority_matches_request
+             ? 1
+             : 0,
+         trace_ray_arguments
+                 .decoded_value_record_root_descriptor_fields_match_request
+             ? 1
+             : 0,
+         materialized_input.decoded_trace_ray_value_record.root_address_space,
+         (unsigned long long)materialized_input.decoded_trace_ray_value_record
+             .root_node_reference,
+         materialized_input.decoded_trace_ray_value_record
+             .layout_profile_reference,
+         materialized_input.decoded_trace_ray_value_record.bvh_memory_binding
              ? 1
              : 0,
          materialized_input.decoded_trace_ray_value_record
