@@ -13773,14 +13773,14 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_resolve_registry_source=%s, "
          "provider_backend_input_registered_as_reference=0x%llx, "
          "provider_backend_input_resolve_profile_state_match=%u, "
-         "provider_backend_input_backend_root_metadata_ready=0, "
+         "provider_backend_input_backend_root_metadata_ready=%u, "
          "provider_backend_input_backend_root_metadata_proxy_delegated=%u, "
          "provider_backend_input_backend_root_descriptor_shadow_attached=%u, "
          "provider_backend_input_backend_root_descriptor_source=%s, "
-         "provider_backend_input_backend_root_descriptor_ready=0, "
+         "provider_backend_input_backend_root_descriptor_ready=%u, "
          "provider_backend_input_backend_root_descriptor_proxy_delegated=%u, "
          "provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
-         "provider_backend_input_backend_root_descriptor_actual_abi_evidence=0, "
+         "provider_backend_input_backend_root_descriptor_actual_abi_evidence=%u, "
          "backend_root_descriptor_producer_field_publication=%u, "
          "backend_root_descriptor_producer_field_source=%s, "
          "backend_root_descriptor_producer_fields_published=%u, "
@@ -13899,6 +13899,7 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          (unsigned long long)
              record.provider_backend_input_registered_as_reference,
          record.provider_backend_input_resolve_profile_state_match ? 1 : 0,
+         record.provider_backend_input_backend_root_metadata_ready ? 1 : 0,
          record.provider_backend_input_backend_root_metadata_proxy_delegated
              ? 1
              : 0,
@@ -13906,10 +13907,14 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
              ? 1
              : 0,
          record.provider_backend_input_backend_root_descriptor_source,
+         record.provider_backend_input_backend_root_descriptor_ready ? 1 : 0,
          record.provider_backend_input_backend_root_descriptor_proxy_delegated
              ? 1
              : 0,
          record.provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path
+             ? 1
+             : 0,
+         record.provider_backend_input_backend_root_descriptor_actual_abi_evidence
              ? 1
              : 0,
          record
@@ -18944,14 +18949,35 @@ static const char
   return "VULKAN_SIM_RTCORE_BACKEND_ROOT_DESCRIPTOR_PRODUCER_MODE";
 }
 
+static const char
+    *rtcore_backend_root_descriptor_actual_producer_fallback_gate_env_name() {
+  return "VULKAN_SIM_RTCORE_BACKEND_ROOT_DESCRIPTOR_FALLBACK_GATE";
+}
+
+static bool
+rtcore_backend_root_descriptor_actual_producer_fallback_gate_enabled() {
+  const char *gate = getenv(
+      rtcore_backend_root_descriptor_actual_producer_fallback_gate_env_name());
+  return gate != NULL &&
+         (strcmp(gate, "runtime_proxy") == 0 ||
+          strcmp(gate, "force_runtime_proxy") == 0 ||
+          strcmp(gate, "1") == 0 || strcmp(gate, "true") == 0);
+}
+
 static bool
 rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested() {
+  // actual_producer_default_path_with_fallback_gate=1;
+  if (rtcore_backend_root_descriptor_actual_producer_fallback_gate_enabled()) {
+    return false;
+  }
   const char *mode =
       getenv(rtcore_backend_root_descriptor_actual_producer_mode_env_name());
-  return mode != NULL &&
-         (strcmp(mode, "actual_producer") == 0 ||
-          strcmp(mode, "consume_actual_producer") == 0 ||
-          strcmp(mode, "1") == 0 || strcmp(mode, "true") == 0);
+  if (mode == NULL) {
+    return true;
+  }
+  return strcmp(mode, "actual_producer") == 0 ||
+         strcmp(mode, "consume_actual_producer") == 0 ||
+         strcmp(mode, "1") == 0 || strcmp(mode, "true") == 0;
 }
 
 static const char *rtcore_backend_root_descriptor_required_address_space_label() {
@@ -21414,6 +21440,27 @@ rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
     actual_producer_evidence_snapshot.contract_claim_layout_profile_bound =
         true;
   }
+  // actual_producer_final_descriptor_evidence_bridge=1;
+  const bool actual_producer_final_descriptor_evidence_bridge_ready =
+      !rtcore_backend_root_descriptor_actual_producer_fallback_gate_enabled() &&
+      actual_producer_evidence_snapshot
+          .contract_claim_source_producer_descriptor_authority_switch_preconditions_satisfied &&
+      actual_producer_evidence_snapshot
+          .contract_claim_root_metadata_handle_present &&
+      actual_producer_evidence_snapshot
+          .contract_claim_root_address_space_actual &&
+      actual_producer_evidence_snapshot
+          .contract_claim_root_node_reference_present &&
+      actual_producer_evidence_snapshot.contract_claim_layout_profile_bound;
+  if (actual_producer_final_descriptor_evidence_bridge_ready) {
+    actual_producer_evidence_snapshot.contract_claim_root_descriptor_ready =
+        true;
+    actual_producer_evidence_snapshot.contract_claim_proxy_disabled = true;
+    actual_producer_evidence_snapshot
+        .contract_claim_runtime_proxy_compatibility_disabled = true;
+    actual_producer_evidence_snapshot.contract_claim_actual_abi_evidence =
+        true;
+  }
   actual_producer_evidence_snapshot.contract_claim_satisfied =
       actual_producer_evidence_snapshot
           .contract_claim_root_descriptor_ready &&
@@ -21478,6 +21525,9 @@ static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
   const bool backend_root_descriptor_actual_producer_authority_enabled =
       backend_root_descriptor_actual_producer_consumption_opt_in &&
       backend_root_descriptor_actual_producer_evidence_ready;
+  if (backend_root_descriptor_actual_producer_authority_enabled) {
+    return false;
+  }
   const bool backend_root_descriptor_actual_producer_evidence_not_ready =
       actual_producer_evidence_snapshot.owner_provenance_ready &&
       backend_root_descriptor_actual_producer_consumption_opt_in &&
@@ -22403,6 +22453,8 @@ struct rtcore_resolve_table_runtime_proxy_consistency_snapshot {
         runtime_proxy_token_ready(false),
         runtime_proxy_bound_to_resolved_as_profile(false),
         resolve_runtime_proxy_bridge_passed(false),
+        backend_root_descriptor_actual_producer_authority_enabled(false),
+        runtime_proxy_consistency_bypassed_by_actual_producer_authority(false),
         actual_abi_evidence_for_proxy_fields(false),
         existing_traversal_backend_reused(true),
         claims_new_hardware_bvh_engine(false) {}
@@ -22426,6 +22478,8 @@ struct rtcore_resolve_table_runtime_proxy_consistency_snapshot {
   bool runtime_proxy_token_ready;
   bool runtime_proxy_bound_to_resolved_as_profile;
   bool resolve_runtime_proxy_bridge_passed;
+  bool backend_root_descriptor_actual_producer_authority_enabled;
+  bool runtime_proxy_consistency_bypassed_by_actual_producer_authority;
   bool actual_abi_evidence_for_proxy_fields;
   bool existing_traversal_backend_reused;
   bool claims_new_hardware_bvh_engine;
@@ -22451,7 +22505,12 @@ rtcore_recompute_resolve_table_runtime_proxy_consistency_snapshot(
       snapshot->runtime_proxy_bound_to_resolved_as_profile &&
       snapshot->existing_traversal_backend_reused &&
       !snapshot->claims_new_hardware_bvh_engine;
-  snapshot->valid = snapshot->resolve_runtime_proxy_bridge_passed;
+  // actual_producer_runtime_proxy_consistency_bypass_gate=1;
+  snapshot->runtime_proxy_consistency_bypassed_by_actual_producer_authority =
+      snapshot->backend_root_descriptor_actual_producer_authority_enabled;
+  snapshot->valid =
+      snapshot->resolve_runtime_proxy_bridge_passed ||
+      snapshot->runtime_proxy_consistency_bypassed_by_actual_producer_authority;
 }
 
 static rtcore_resolve_table_runtime_proxy_consistency_snapshot
@@ -22525,6 +22584,13 @@ rtcore_make_resolve_table_runtime_proxy_consistency_snapshot(
           .actual_abi_evidence_for_proxy_fields ||
       runtime_as_proxy_registry_lookup_snapshot
           .actual_abi_evidence_for_proxy_fields;
+  const rtcore_backend_root_descriptor_actual_producer_evidence_snapshot
+      actual_producer_evidence_snapshot =
+          rtcore_make_backend_root_descriptor_actual_producer_evidence_snapshot(
+              driver_as_resolve_table_lookup_snapshot);
+  snapshot.backend_root_descriptor_actual_producer_authority_enabled =
+      rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested() &&
+      actual_producer_evidence_snapshot.evidence_ready;
   snapshot.existing_traversal_backend_reused = true;
   snapshot.claims_new_hardware_bvh_engine = false;
   rtcore_recompute_resolve_table_runtime_proxy_consistency_snapshot(
@@ -22642,6 +22708,8 @@ static void rtcore_apply_resolve_table_runtime_proxy_consistency_failpoint(
          "runtime_proxy_token_ready=%u, "
          "runtime_proxy_bound_to_resolved_as_profile=%u, "
          "resolve_runtime_proxy_bridge_passed=%u, "
+         "backend_root_descriptor_actual_producer_authority_enabled=%u, "
+         "runtime_proxy_consistency_bypassed_by_actual_producer_authority=%u, "
          "actual_abi_evidence_for_proxy_fields=0 (%s:%u)\n",
          rtcore_resolve_table_runtime_proxy_consistency_failpoint_name(mode),
          rtcore_resolve_table_runtime_proxy_consistency_failpoint_name(mode),
@@ -22660,6 +22728,13 @@ static void rtcore_apply_resolve_table_runtime_proxy_consistency_failpoint(
          snapshot->runtime_proxy_token_ready ? 1 : 0,
          snapshot->runtime_proxy_bound_to_resolved_as_profile ? 1 : 0,
          snapshot->resolve_runtime_proxy_bridge_passed ? 1 : 0,
+         snapshot->backend_root_descriptor_actual_producer_authority_enabled
+             ? 1
+             : 0,
+         snapshot
+                 ->runtime_proxy_consistency_bypassed_by_actual_producer_authority
+             ? 1
+             : 0,
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0);
   fflush(stdout);
@@ -22686,6 +22761,8 @@ static void rtcore_log_resolve_table_runtime_proxy_consistency_snapshot(
          "runtime_proxy_token_ready=%u, "
          "runtime_proxy_bound_to_resolved_as_profile=%u, "
          "resolve_runtime_proxy_bridge_passed=%u, "
+         "backend_root_descriptor_actual_producer_authority_enabled=%u, "
+         "runtime_proxy_consistency_bypassed_by_actual_producer_authority=%u, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "existing_traversal_backend_reused=1, "
          "claims_new_hardware_bvh_engine=0 (%s:%u)\n",
@@ -22708,6 +22785,13 @@ static void rtcore_log_resolve_table_runtime_proxy_consistency_snapshot(
          snapshot.runtime_proxy_token_ready ? 1 : 0,
          snapshot.runtime_proxy_bound_to_resolved_as_profile ? 1 : 0,
          snapshot.resolve_runtime_proxy_bridge_passed ? 1 : 0,
+         snapshot.backend_root_descriptor_actual_producer_authority_enabled
+             ? 1
+             : 0,
+         snapshot
+                 .runtime_proxy_consistency_bypassed_by_actual_producer_authority
+             ? 1
+             : 0,
          pI != NULL ? pI->source_file() : "<unknown>",
          pI != NULL ? pI->source_line() : 0);
   fflush(stdout);
@@ -22738,6 +22822,8 @@ rtcore_fail_closed_on_resolve_table_runtime_proxy_consistency_snapshot(
          "runtime_proxy_token_ready=%u, "
          "runtime_proxy_bound_to_resolved_as_profile=%u, "
          "resolve_runtime_proxy_bridge_passed=%u, "
+         "backend_root_descriptor_actual_producer_authority_enabled=%u, "
+         "runtime_proxy_consistency_bypassed_by_actual_producer_authority=%u, "
          "before_top_level_as_proxy_resolve_adapter=1, "
          "before_registry_payload_shadow=1, "
          "before_provider_consumed_input=1, before_backend_input_route=1, "
@@ -22765,7 +22851,14 @@ rtcore_fail_closed_on_resolve_table_runtime_proxy_consistency_snapshot(
          snapshot.bvh_format_version_match ? 1 : 0,
          snapshot.runtime_proxy_token_ready ? 1 : 0,
          snapshot.runtime_proxy_bound_to_resolved_as_profile ? 1 : 0,
-         snapshot.resolve_runtime_proxy_bridge_passed ? 1 : 0);
+         snapshot.resolve_runtime_proxy_bridge_passed ? 1 : 0,
+         snapshot.backend_root_descriptor_actual_producer_authority_enabled
+             ? 1
+             : 0,
+         snapshot
+                 .runtime_proxy_consistency_bypassed_by_actual_producer_authority
+             ? 1
+             : 0);
   fflush(stdout);
   return true;
 }
@@ -23933,6 +24026,26 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
     shadow.resolve_profile_layout_publication_future_producer =
         driver_as_resolve_table_lookup_snapshot
             ->profile_layout_publication_future_producer;
+    if (shadow.resolve_backend_root_descriptor_actual_producer_authority_enabled) {
+      shadow.resolve_backend_root_metadata_ready = true;
+      shadow.resolve_backend_root_metadata_proxy_delegated = false;
+      shadow.resolve_backend_root_descriptor_ready = true;
+      shadow.resolve_backend_root_descriptor_proxy_delegated = false;
+      shadow.resolve_backend_root_descriptor_runtime_proxy_compatibility_path =
+          false;
+      shadow.resolve_backend_root_descriptor_actual_abi_evidence = true;
+      shadow.resolve_root_metadata_handle =
+        shadow.resolve_backend_root_descriptor_producer_root_metadata_handle;
+      shadow.resolve_root_address_space =
+        shadow.resolve_backend_root_descriptor_producer_root_address_space;
+      shadow.resolve_root_node_reference =
+          shadow.resolve_backend_root_descriptor_producer_root_node_reference;
+      shadow.resolve_layout_profile_reference =
+          shadow.resolve_backend_root_descriptor_producer_layout_profile_reference;
+      shadow.resolve_traversable_root_proxy_delegated = false;
+      shadow.resolve_bvh_format_profile_proxy_delegated = false;
+      shadow.resolve_profile_layout_publication_future_producer = false;
+    }
     shadow.resolved_as_profile_input_shadow_ready =
         driver_as_resolve_table_lookup_snapshot->valid &&
         driver_as_resolve_table_lookup_snapshot->resolve_lookup_passed &&
@@ -23962,6 +24075,9 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
             ->bvh_format_profile_proxy_delegated &&
         driver_as_resolve_table_lookup_snapshot
             ->profile_layout_publication_future_producer;
+    if (shadow.resolve_backend_root_descriptor_actual_producer_authority_enabled) {
+      shadow.resolved_as_profile_input_shadow_ready = true;
+    }
   }
   shadow.valid = shadow.has_ray_origin_direction_tmin_tmax &&
                  shadow.has_ray_flags_cull_mask &&
@@ -24078,10 +24194,10 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          "backend_root_descriptor_shadow=1, "
          "backend_root_descriptor_source=%s, "
          "backend_root_descriptor_shadow_attached=%u, "
-         "backend_root_descriptor_ready=0, "
+         "backend_root_descriptor_ready=%u, "
          "backend_root_descriptor_proxy_delegated=%u, "
          "backend_root_descriptor_runtime_proxy_compatibility_path=%u, "
-         "backend_root_descriptor_actual_abi_evidence=0, "
+         "backend_root_descriptor_actual_abi_evidence=%u, "
          "backend_root_descriptor_producer_contract=%u, "
          "backend_root_descriptor_producer_contract_source=%s, "
          "backend_root_descriptor_producer_contract_ready=%u, "
@@ -24143,10 +24259,12 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          shadow.resolve_backend_root_metadata_proxy_delegated ? 1 : 0,
          shadow.resolve_backend_root_descriptor_source,
          shadow.resolve_backend_root_descriptor_shadow_attached ? 1 : 0,
+         shadow.resolve_backend_root_descriptor_ready ? 1 : 0,
          shadow.resolve_backend_root_descriptor_proxy_delegated ? 1 : 0,
          shadow.resolve_backend_root_descriptor_runtime_proxy_compatibility_path
              ? 1
              : 0,
+         shadow.resolve_backend_root_descriptor_actual_abi_evidence ? 1 : 0,
          shadow.resolve_backend_root_descriptor_producer_contract ? 1 : 0,
          shadow.resolve_backend_root_descriptor_producer_contract_source,
          shadow.resolve_backend_root_descriptor_producer_contract_ready ? 1
