@@ -12497,6 +12497,13 @@ static const char *rtcore_backend_root_descriptor_selected_source_label(
              : "runtime_proxy_compatibility";
 }
 
+static const char *rtcore_proxy_fields_authority_label(
+    bool proxy_fields_retired_by_actual_producer) {
+  return proxy_fields_retired_by_actual_producer
+             ? "actual_producer_descriptor"
+             : "simulator_proxy";
+}
+
 static const char *rtcore_selected_root_descriptor_label_failpoint_env_name() {
   return "VULKAN_SIM_RTCORE_SELECTED_ROOT_DESCRIPTOR_LABEL_FAILPOINT";
 }
@@ -12808,6 +12815,21 @@ struct rtcore_provider_payload_consumed_input_view {
   bool context_window_owner_seq_matches_lifetime;
   bool token_lifetime_key_ready;
 };
+
+static bool
+rtcore_provider_payload_view_proxy_fields_retired_by_actual_producer(
+    const rtcore_provider_payload_consumed_input_view &view) {
+  return view.valid &&
+         view.resolve_backend_root_descriptor_actual_producer_authority_enabled &&
+         view.resolve_backend_root_descriptor_actual_abi_evidence &&
+         view.resolve_backend_root_descriptor_ready &&
+         view.resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied &&
+         !view
+              .resolve_backend_root_descriptor_runtime_proxy_compatibility_path &&
+         !view.resolve_traversable_root_proxy_delegated &&
+         !view.resolve_bvh_format_profile_proxy_delegated &&
+         !view.resolve_profile_layout_publication_future_producer;
+}
 
 struct rtcore_provider_decoded_input_observation {
   rtcore_provider_decoded_input_observation()
@@ -13758,6 +13780,7 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_backend_input_traversable_root_proxy_delegated(false),
         provider_backend_input_bvh_format_profile_proxy_delegated(false),
         provider_backend_input_profile_layout_publication_future_producer(false),
+        provider_backend_input_proxy_fields_retired_by_actual_producer(false),
         existing_traversal_input_replay_requested(false),
         existing_traversal_request_replay_live_input_match(false),
         existing_traversal_backend_path_selected(false),
@@ -13892,6 +13915,7 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool provider_backend_input_traversable_root_proxy_delegated;
   bool provider_backend_input_bvh_format_profile_proxy_delegated;
   bool provider_backend_input_profile_layout_publication_future_producer;
+  bool provider_backend_input_proxy_fields_retired_by_actual_producer;
   bool existing_traversal_input_replay_requested;
   bool existing_traversal_request_replay_live_input_match;
   bool existing_traversal_backend_path_selected;
@@ -14205,6 +14229,9 @@ rtcore_make_provider_backend_input_consumption_route_record(
         view.resolve_bvh_format_profile_proxy_delegated;
     record.provider_backend_input_profile_layout_publication_future_producer =
         view.resolve_profile_layout_publication_future_producer;
+    record.provider_backend_input_proxy_fields_retired_by_actual_producer =
+        rtcore_provider_payload_view_proxy_fields_retired_by_actual_producer(
+            view);
   }
   record.existing_traversal_input_replay_requested =
       custom_result.existing_traversal_input_replay_requested;
@@ -14456,6 +14483,11 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_traversable_root_proxy_delegated=%u, "
          "provider_backend_input_bvh_format_profile_proxy_delegated=%u, "
          "provider_backend_input_profile_layout_publication_future_producer=%u, "
+         "provider_backend_input_proxy_fields_retired_by_actual_producer=%u, "
+         "provider_backend_input_proxy_fields_authority=%s, "
+         "proxy_fields_authority=%s, "
+         "provider_backend_input_proxy_fields_compatibility_observation_only=%u, "
+         "proxy_fields_compatibility_observation_only=%u, "
          "provider_backend_input_actual_abi_evidence_for_proxy_fields=0, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "existing_traversal_input_replay_requested=%u, "
@@ -14787,6 +14819,24 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.provider_backend_input_bvh_format_profile_proxy_delegated ? 1
                                                                           : 0,
          record.provider_backend_input_profile_layout_publication_future_producer
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_proxy_fields_retired_by_actual_producer
+             ? 1
+             : 0,
+         rtcore_proxy_fields_authority_label(
+             record
+                 .provider_backend_input_proxy_fields_retired_by_actual_producer),
+         rtcore_proxy_fields_authority_label(
+             record
+                 .provider_backend_input_proxy_fields_retired_by_actual_producer),
+         record
+                 .provider_backend_input_proxy_fields_retired_by_actual_producer
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_proxy_fields_retired_by_actual_producer
              ? 1
              : 0,
          record.existing_traversal_input_replay_requested ? 1 : 0,
@@ -17688,6 +17738,21 @@ struct rtcore_provider_facing_registry_payload_shadow {
   bool provider_payload_runtime_lifetime_ready;
   bool provider_consumed_input_fields_all_owned_with_lifetime;
 };
+
+static bool
+rtcore_registry_payload_shadow_proxy_fields_retired_by_actual_producer(
+    const rtcore_provider_facing_registry_payload_shadow &shadow) {
+  return shadow.valid &&
+         shadow.resolve_backend_root_descriptor_actual_producer_authority_enabled &&
+         shadow.resolve_backend_root_descriptor_actual_abi_evidence &&
+         shadow.resolve_backend_root_descriptor_ready &&
+         shadow.resolve_backend_root_descriptor_actual_producer_contract_claim_satisfied &&
+         !shadow
+              .resolve_backend_root_descriptor_runtime_proxy_compatibility_path &&
+         !shadow.resolve_traversable_root_proxy_delegated &&
+         !shadow.resolve_bvh_format_profile_proxy_delegated &&
+         !shadow.resolve_profile_layout_publication_future_producer;
+}
 
 struct rtcore_provider_facing_registry_payload_admission_mirror {
   rtcore_provider_facing_registry_payload_admission_mirror()
@@ -25250,6 +25315,9 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
     return;
   }
 
+  const bool proxy_fields_retired_by_actual_producer =
+      rtcore_registry_payload_shadow_proxy_fields_retired_by_actual_producer(
+          shadow);
   printf("GPGPU-Sim PTX: RT_SUBMIT registry-payload-shadow (%s:%u), "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, provider-facing-registry-payload-shadow=1, "
@@ -25300,6 +25368,9 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          "resolve_traversable_root_proxy_delegated=%u, "
          "resolve_bvh_format_profile_proxy_delegated=%u, "
          "resolve_profile_layout_publication_future_producer=%u, "
+         "proxy_fields_retired_by_actual_producer=%u, "
+         "proxy_fields_authority=%s, "
+         "proxy_fields_compatibility_observation_only=%u, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "driver_runtime_context_window_lifetime_bridge_valid=%u, "
          "driver_runtime_context_window_lifetime_ready=%u, "
@@ -25378,6 +25449,10 @@ rtcore_log_provider_facing_registry_payload_shadow_before_provider(
          shadow.resolve_traversable_root_proxy_delegated ? 1 : 0,
          shadow.resolve_bvh_format_profile_proxy_delegated ? 1 : 0,
          shadow.resolve_profile_layout_publication_future_producer ? 1 : 0,
+         proxy_fields_retired_by_actual_producer ? 1 : 0,
+         rtcore_proxy_fields_authority_label(
+             proxy_fields_retired_by_actual_producer),
+         proxy_fields_retired_by_actual_producer ? 1 : 0,
          shadow.driver_runtime_context_window_lifetime_bridge_valid ? 1 : 0,
          shadow.driver_runtime_context_window_lifetime_ready ? 1 : 0,
          shadow.context_window_owner_seq_matches_lifetime ? 1 : 0,
@@ -25395,6 +25470,11 @@ static void rtcore_log_provider_decoded_input_observation(
 
   const rtcore_provider_decoded_input_observation &observation =
       descriptor.provider_decoded_input_observation;
+  const bool proxy_fields_retired_by_actual_producer =
+      descriptor.has_registry_payload_shadow &&
+      descriptor.registry_payload_shadow != NULL &&
+      rtcore_registry_payload_shadow_proxy_fields_retired_by_actual_producer(
+          *descriptor.registry_payload_shadow);
   printf("GPGPU-Sim PTX: RT_SUBMIT provider-decoded-input-observation=1, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, provider_decoded_input_observed=1, "
@@ -25423,6 +25503,9 @@ static void rtcore_log_provider_decoded_input_observation(
          "bvh_format_profile_owner=%s, bvh_format_version=%u, "
          "bvh_format_profile_source=%s, "
          "proxy_delegation_source=%s, proxy_delegation_gate_passed=%u, "
+         "proxy_fields_retired_by_actual_producer=%u, "
+         "proxy_fields_authority=%s, "
+         "proxy_fields_compatibility_observation_only=%u, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
          "provider_payload_runtime_lifetime_ready=%u, "
@@ -25480,6 +25563,10 @@ static void rtcore_log_provider_decoded_input_observation(
              observation.bvh_format_profile_owner)
              ? 1
              : 0,
+         proxy_fields_retired_by_actual_producer ? 1 : 0,
+         rtcore_proxy_fields_authority_label(
+             proxy_fields_retired_by_actual_producer),
+         proxy_fields_retired_by_actual_producer ? 1 : 0,
          observation.provider_consumed_input_fields_all_owned_with_lifetime ? 1
                                                                            : 0,
          observation.provider_payload_runtime_lifetime_ready ? 1 : 0,
@@ -25538,6 +25625,9 @@ static void rtcore_log_provider_payload_consumed_input_view(
 
   const rtcore_provider_payload_consumed_input_view &view =
       descriptor.provider_payload_consumed_input;
+  const bool proxy_fields_retired_by_actual_producer =
+      rtcore_provider_payload_view_proxy_fields_retired_by_actual_producer(
+          view);
   printf("GPGPU-Sim PTX: RT_SUBMIT provider-payload-consumed-input, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, provider-payload-consumed-input-view=1, "
@@ -25566,6 +25656,9 @@ static void rtcore_log_provider_payload_consumed_input_view(
          "bvh_format_profile_owner=%s, bvh_format_version=%u, "
          "bvh_format_profile_source=%s, "
          "proxy_delegation_source=%s, proxy_delegation_gate_passed=%u, "
+         "proxy_fields_retired_by_actual_producer=%u, "
+         "proxy_fields_authority=%s, "
+         "proxy_fields_compatibility_observation_only=%u, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
          "provider_payload_runtime_lifetime_ready=%u, "
@@ -25615,6 +25708,10 @@ static void rtcore_log_provider_payload_consumed_input_view(
              view.has_bvh_format_profile, view.bvh_format_profile_owner)
              ? 1
              : 0,
+         proxy_fields_retired_by_actual_producer ? 1 : 0,
+         rtcore_proxy_fields_authority_label(
+             proxy_fields_retired_by_actual_producer),
+         proxy_fields_retired_by_actual_producer ? 1 : 0,
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
          view.provider_payload_runtime_lifetime_ready ? 1 : 0,
          view.context_window_owner_seq_matches_lifetime ? 1 : 0,
