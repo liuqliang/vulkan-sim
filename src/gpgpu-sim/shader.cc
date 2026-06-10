@@ -28,6 +28,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "shader.h"
+#include <deque>
 #include <float.h>
 #include <limits.h>
 #include <set>
@@ -290,12 +291,58 @@ static unsigned &rtcore_scheduler_credit_ledger_reusable_credit_shadow_count() {
   return reusable_credit_shadow_count;
 }
 
+struct rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance {
+  rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance()
+      : available(false),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot_valid(false),
+        provider_materialized_traversal_input_snapshot_source("unavailable"),
+        provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+            false) {}
+
+  bool available;
+  bool has_provider_materialized_traversal_input_snapshot;
+  bool provider_materialized_traversal_input_snapshot_valid;
+  const char *provider_materialized_traversal_input_snapshot_source;
+  bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+};
+
+static std::deque<
+    rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance>
+    &rtcore_scheduler_credit_ledger_reusable_credit_provenance_queue() {
+  static std::deque<
+      rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance>
+      reusable_credit_provenance_queue;
+  return reusable_credit_provenance_queue;
+}
+
 static void rtcore_scheduler_credit_ledger_publish_reusable_credit_preflight() {
   unsigned &reusable_credit_shadow_count =
       rtcore_scheduler_credit_ledger_reusable_credit_shadow_count();
   if (reusable_credit_shadow_count < UINT_MAX) {
     ++reusable_credit_shadow_count;
   }
+}
+
+static void
+rtcore_scheduler_credit_ledger_publish_reusable_credit_provenance_preflight(
+    bool has_provider_materialized_traversal_input_snapshot,
+    bool provider_materialized_traversal_input_snapshot_valid,
+    const char *provider_materialized_traversal_input_snapshot_source,
+    bool provider_materialized_traversal_input_actual_abi_snapshot_admitted) {
+  rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance
+      provenance;
+  provenance.available = true;
+  provenance.has_provider_materialized_traversal_input_snapshot =
+      has_provider_materialized_traversal_input_snapshot;
+  provenance.provider_materialized_traversal_input_snapshot_valid =
+      provider_materialized_traversal_input_snapshot_valid;
+  provenance.provider_materialized_traversal_input_snapshot_source =
+      provider_materialized_traversal_input_snapshot_source;
+  provenance.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  rtcore_scheduler_credit_ledger_reusable_credit_provenance_queue().push_back(
+      provenance);
 }
 
 static bool rtcore_scheduler_credit_ledger_consume_reusable_credit_preflight() {
@@ -308,6 +355,28 @@ static bool rtcore_scheduler_credit_ledger_consume_reusable_credit_preflight() {
   return true;
 }
 
+static bool
+rtcore_scheduler_credit_ledger_consume_reusable_credit_provenance_preflight(
+    rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance
+        *provenance) {
+  std::deque<
+      rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance>
+      &queue =
+          rtcore_scheduler_credit_ledger_reusable_credit_provenance_queue();
+  if (queue.empty()) {
+    if (provenance != NULL) {
+      *provenance =
+          rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance();
+    }
+    return false;
+  }
+  if (provenance != NULL) {
+    *provenance = queue.front();
+  }
+  queue.pop_front();
+  return true;
+}
+
 static bool rtcore_scheduler_credit_ledger_refund_reusable_credit_preflight() {
   unsigned &reusable_credit_shadow_count =
       rtcore_scheduler_credit_ledger_reusable_credit_shadow_count();
@@ -316,6 +385,17 @@ static bool rtcore_scheduler_credit_ledger_refund_reusable_credit_preflight() {
   }
   ++reusable_credit_shadow_count;
   return true;
+}
+
+static void
+rtcore_scheduler_credit_ledger_refund_reusable_credit_provenance_preflight(
+    const rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance
+        &provenance) {
+  if (!provenance.available) {
+    return;
+  }
+  rtcore_scheduler_credit_ledger_reusable_credit_provenance_queue().push_front(
+      provenance);
 }
 
 static std::set<rtcore_scheduler_credit_ledger_shadow_table_owner_key>
@@ -2589,6 +2669,8 @@ void scheduler_unit::cycle() {
                       0;
               const char *rtcore_scheduler_credit_ledger_issue_gate_consumer_result =
                   "reusable_credit_consumer_not_observed";
+              rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance;
               rtcore_scheduler_credit_ledger_shadow_table_owner_key
                   rtcore_scheduler_credit_ledger_shadow_table_key;
               bool rtcore_scheduler_credit_ledger_shadow_table_key_valid =
@@ -2679,6 +2761,10 @@ void scheduler_unit::cycle() {
                       rtcore_scheduler_credit_ledger_credit_observed_before > 0) {
                     rtcore_scheduler_credit_ledger_credit_consumed =
                         rtcore_scheduler_credit_ledger_consume_reusable_credit_preflight();
+                    if (rtcore_scheduler_credit_ledger_credit_consumed) {
+                      rtcore_scheduler_credit_ledger_consume_reusable_credit_provenance_preflight(
+                          &rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance);
+                    }
                   }
                   const unsigned
                       rtcore_scheduler_credit_ledger_credit_observed_after =
@@ -2715,6 +2801,13 @@ void scheduler_unit::cycle() {
                          "credit_observed_before=%u, credit_consumed=%u, "
                          "credit_observed_after=%u, "
                          "publication_credit_source=%s, consumer_result=%s, "
+                         "scheduler_credit_ledger_reusable_credit_consumer_materialized_input_provenance=1, "
+                         "consumer_materialized_input_provenance_available=%u, "
+                         "has_provider_materialized_traversal_input_snapshot=%u, "
+                         "provider_materialized_traversal_input_snapshot_valid=%u, "
+                         "provider_materialized_traversal_input_snapshot_source=%s, "
+                         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+                         "consumer_materialized_input_consumes_credit_behavior=0, "
                          "transition_reason=%s\n",
                          rtcore_scheduler_credit_ledger_shadow_table
                              .owner_hw_sid,
@@ -2734,6 +2827,24 @@ void scheduler_unit::cycle() {
                          rtcore_scheduler_credit_ledger_credit_observed_after,
                          rtcore_scheduler_credit_ledger_publication_credit_source,
                          rtcore_scheduler_credit_ledger_consumer_result,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .available
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .has_provider_materialized_traversal_input_snapshot
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_snapshot_valid
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                             .provider_materialized_traversal_input_snapshot_source,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_actual_abi_snapshot_admitted
+                             ? 1
+                             : 0,
                          "reusable_credit_consumer_preflight");
                   fflush(stdout);
                 }
@@ -3066,6 +3177,10 @@ void scheduler_unit::cycle() {
                     if (credit_was_consumed) {
                       credit_refunded =
                           rtcore_scheduler_credit_ledger_refund_reusable_credit_preflight();
+                      if (credit_refunded) {
+                        rtcore_scheduler_credit_ledger_refund_reusable_credit_provenance_preflight(
+                            rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance);
+                      }
                     }
                     if (owner_tuple_was_reserved &&
                         rtcore_scheduler_credit_ledger_shadow_table_key_valid) {
@@ -5332,6 +5447,18 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
                .transition_reason);
     fflush(stdout);
     if (rtcore_scheduler_credit_ledger_reusable_slot_publication_preflight_enabled()) {
+      if (rtcore_scheduler_credit_ledger_shadow_table_mutation
+              .reusable_slot_published) {
+        rtcore_scheduler_credit_ledger_publish_reusable_credit_provenance_preflight(
+            shadow_table_release
+                .has_provider_materialized_traversal_input_snapshot,
+            shadow_table_release
+                .provider_materialized_traversal_input_snapshot_valid,
+            shadow_table_release
+                .provider_materialized_traversal_input_snapshot_source,
+            shadow_table_release
+                .provider_materialized_traversal_input_actual_abi_snapshot_admitted);
+      }
       const bool rtcore_scheduler_credit_ledger_publication_negative_fault =
           rtcore_scheduler_credit_ledger_shadow_table_real_mutation_duplicate_fault_enabled() ||
           rtcore_scheduler_credit_ledger_shadow_table_real_mutation_capacity_full_fault_enabled();
