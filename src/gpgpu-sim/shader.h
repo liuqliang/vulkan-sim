@@ -1473,6 +1473,22 @@ struct rtcore_resident_gate_materialized_input_provenance_snapshot {
   bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 };
 
+struct rtcore_completion_queue_gate_materialized_input_provenance_snapshot {
+  rtcore_completion_queue_gate_materialized_input_provenance_snapshot()
+      : available(false),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot_valid(false),
+        provider_materialized_traversal_input_snapshot_source("unavailable"),
+        provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+            false) {}
+
+  bool available;
+  bool has_provider_materialized_traversal_input_snapshot;
+  bool provider_materialized_traversal_input_snapshot_valid;
+  const char *provider_materialized_traversal_input_snapshot_source;
+  bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+};
+
 class rt_unit : public pipelined_simd_unit {
     public:
         rt_unit(mem_fetch_interface *icnt,
@@ -1511,7 +1527,9 @@ class rt_unit : public pipelined_simd_unit {
         bool rtcore_completion_queue_reserve_issue_slot(
             const warp_inst_t &inst, unsigned warp_id,
             unsigned owner_hw_sid, unsigned long long static_inst_pc,
-            unsigned issued_active_mask) const;
+            unsigned issued_active_mask,
+            const rtcore_completion_queue_gate_materialized_input_provenance_snapshot
+                &materialized_input_provenance) const;
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -2950,7 +2968,9 @@ class shader_core_ctx : public core_t {
           &materialized_input_provenance) const;
   bool rtcore_submit_completion_queue_reserve_issue_slot(
       const warp_inst_t &inst, unsigned warp_id,
-      unsigned issued_active_mask) const;
+      unsigned issued_active_mask,
+      const rtcore_completion_queue_gate_materialized_input_provenance_snapshot
+          &materialized_input_provenance) const;
 
   void create_front_pipeline();
   void create_schedulers();
