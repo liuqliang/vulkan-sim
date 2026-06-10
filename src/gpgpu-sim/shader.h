@@ -1557,6 +1557,10 @@ class rt_unit : public pipelined_simd_unit {
         unsigned adapter_static_inst_uid;
         unsigned adapter_max_node_visits;
         unsigned adapter_max_primitive_tests;
+        bool has_provider_materialized_traversal_input_snapshot;
+        bool provider_materialized_traversal_input_snapshot_valid;
+        const char *provider_materialized_traversal_input_snapshot_source;
+        bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
         unsigned completion_latency;
@@ -1641,7 +1645,13 @@ class rt_unit : public pipelined_simd_unit {
               adapter_completed_lane_mask(0),
               adapter_static_inst_uid(0),
               adapter_max_node_visits(0),
-              adapter_max_primitive_tests(0) {}
+              adapter_max_primitive_tests(0),
+              has_provider_materialized_traversal_input_snapshot(false),
+              provider_materialized_traversal_input_snapshot_valid(false),
+              provider_materialized_traversal_input_snapshot_source(
+                  "unavailable"),
+              provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+                  false) {}
 
         bool claim_accepted;
         bool issue_mask_match;
@@ -1652,6 +1662,10 @@ class rt_unit : public pipelined_simd_unit {
         unsigned adapter_static_inst_uid;
         unsigned adapter_max_node_visits;
         unsigned adapter_max_primitive_tests;
+        bool has_provider_materialized_traversal_input_snapshot;
+        bool provider_materialized_traversal_input_snapshot_valid;
+        const char *provider_materialized_traversal_input_snapshot_source;
+        bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
       };
       struct rtcore_completion_timing_snapshot {
         rtcore_completion_timing_snapshot()

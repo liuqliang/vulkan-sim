@@ -4974,6 +4974,15 @@ rt_unit::rtcore_make_adapter_readiness_snapshot(
   snapshot.adapter_static_inst_uid = claim_snapshot.static_inst_uid;
   snapshot.adapter_max_node_visits = claim_snapshot.max_node_visits;
   snapshot.adapter_max_primitive_tests = claim_snapshot.max_primitive_tests;
+  snapshot.has_provider_materialized_traversal_input_snapshot =
+      claim_snapshot.has_provider_materialized_traversal_input_snapshot;
+  snapshot.provider_materialized_traversal_input_snapshot_valid =
+      claim_snapshot.provider_materialized_traversal_input_snapshot_valid;
+  snapshot.provider_materialized_traversal_input_snapshot_source =
+      claim_snapshot.provider_materialized_traversal_input_snapshot_source;
+  snapshot.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      claim_snapshot
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
   snapshot.issue_mask_match =
       snapshot.adapter_active_mask == issued_active_mask;
   snapshot.issued_lanes_complete =
@@ -4998,6 +5007,15 @@ void rt_unit::rtcore_apply_adapter_readiness_snapshot(
   event->adapter_static_inst_uid = snapshot.adapter_static_inst_uid;
   event->adapter_max_node_visits = snapshot.adapter_max_node_visits;
   event->adapter_max_primitive_tests = snapshot.adapter_max_primitive_tests;
+  event->has_provider_materialized_traversal_input_snapshot =
+      snapshot.has_provider_materialized_traversal_input_snapshot;
+  event->provider_materialized_traversal_input_snapshot_valid =
+      snapshot.provider_materialized_traversal_input_snapshot_valid;
+  event->provider_materialized_traversal_input_snapshot_source =
+      snapshot.provider_materialized_traversal_input_snapshot_source;
+  event->provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      snapshot
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
   event->adapter_completion_issue_mask_match = snapshot.issue_mask_match;
   event->adapter_completion_issued_lanes_complete =
       snapshot.issued_lanes_complete;
@@ -5075,6 +5093,13 @@ bool rt_unit::claim_adapter_completion_for_issue(
          "adapter_max_node_visits=%u, "
          "adapter_max_primitive_tests=%u, "
          "claimed=%u, issue_mask_match=%u, issued_lanes_complete=%u, "
+         "rt_unit_materialized_traversal_input_readiness_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+         "rt_unit_readiness_materialized_input_consumes_adapter_ready=0, "
          "accepted=%u\n",
          event->warp_uid, event->warp_id, m_sid, event->issued_active_mask,
          event->adapter_active_mask, event->adapter_completed_lane_mask,
@@ -5084,6 +5109,12 @@ bool rt_unit::claim_adapter_completion_for_issue(
          event->adapter_completion_claimed ? 1 : 0,
          event->adapter_completion_issue_mask_match ? 1 : 0,
          event->adapter_completion_issued_lanes_complete ? 1 : 0,
+         event->has_provider_materialized_traversal_input_snapshot ? 1 : 0,
+         event->provider_materialized_traversal_input_snapshot_valid ? 1 : 0,
+         event->provider_materialized_traversal_input_snapshot_source,
+         event->provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0,
          event->adapter_completion_ready ? 1 : 0);
   fflush(stdout);
 
@@ -5121,6 +5152,11 @@ void rt_unit::enqueue_synthetic_completion(
   event.adapter_static_inst_uid = 0;
   event.adapter_max_node_visits = 0;
   event.adapter_max_primitive_tests = 0;
+  event.has_provider_materialized_traversal_input_snapshot = false;
+  event.provider_materialized_traversal_input_snapshot_valid = false;
+  event.provider_materialized_traversal_input_snapshot_source = "unavailable";
+  event.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      false;
   event.adapter_completion_ready = false;
   event.adapter_completion_claimed = false;
   event.adapter_completion_issue_mask_match = false;
