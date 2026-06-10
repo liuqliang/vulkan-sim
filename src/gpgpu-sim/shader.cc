@@ -3137,6 +3137,13 @@ void scheduler_unit::cycle() {
                        "owner_tuple_reserved=%u, credit_consumed=%u, "
                        "credit_observed_before=%u, credit_observed_after=%u, "
                        "consumer_result=%s, issue_gate_result=%s, "
+                       "scheduler_credit_ledger_reusable_credit_issue_gate_materialized_input_provenance=1, "
+                       "issue_gate_materialized_input_provenance_available=%u, "
+                       "has_provider_materialized_traversal_input_snapshot=%u, "
+                       "provider_materialized_traversal_input_snapshot_valid=%u, "
+                       "provider_materialized_traversal_input_snapshot_source=%s, "
+                       "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+                       "issue_gate_materialized_input_consumes_issue_readiness=0, "
                        "transition_reason=%s\n",
                        rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
@@ -3160,6 +3167,24 @@ void scheduler_unit::cycle() {
                        rtcore_scheduler_credit_ledger_issue_gate_credit_observed_after,
                        rtcore_scheduler_credit_ledger_issue_gate_consumer_result,
                        rtcore_scheduler_credit_ledger_issue_gate_result,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .available
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .has_provider_materialized_traversal_input_snapshot
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_snapshot_valid
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                           .provider_materialized_traversal_input_snapshot_source,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_actual_abi_snapshot_admitted
+                           ? 1
+                           : 0,
                        "reusable_credit_issue_gate_preflight");
                 fflush(stdout);
               }
