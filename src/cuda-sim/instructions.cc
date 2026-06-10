@@ -13032,6 +13032,99 @@ struct rtcore_provider_payload_consumed_input_view {
   bool token_lifetime_key_ready;
 };
 
+struct rtcore_decoded_trace_ray_value_record {
+  rtcore_decoded_trace_ray_value_record()
+      : valid(false),
+        source("unavailable"),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
+        has_selected_root_descriptor(false),
+        top_level_as(0),
+        root_metadata_handle(0),
+        ray_flags(0),
+        cull_mask(0),
+        ray_tmin(0.0f),
+        ray_tmax(0.0f),
+        sbt_record_offset(0),
+        sbt_record_stride(0),
+        miss_index(0) {
+    memset(&ray_origin, 0, sizeof(ray_origin));
+    memset(&ray_direction, 0, sizeof(ray_direction));
+  }
+
+  bool valid;
+  const char *source;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
+  bool has_selected_root_descriptor;
+  uint64_t top_level_as;
+  uint64_t root_metadata_handle;
+  float3 ray_origin;
+  float3 ray_direction;
+  uint32_t ray_flags;
+  uint32_t cull_mask;
+  float ray_tmin;
+  float ray_tmax;
+  uint32_t sbt_record_offset;
+  uint32_t sbt_record_stride;
+  uint32_t miss_index;
+};
+
+static rtcore_decoded_trace_ray_value_record
+rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
+    const rtcore_provider_payload_consumed_input_view &view) {
+  rtcore_decoded_trace_ray_value_record record;
+  record.source = "decoded_context_window_abi_value_record";
+  record.has_ray_origin_direction_tmin_tmax =
+      view.has_ray_origin_direction_tmin_tmax;
+  record.has_ray_flags_cull_mask = view.has_ray_flags_cull_mask;
+  record.has_launch_context_input = view.has_launch_context_input;
+  record.has_selected_root_descriptor =
+      view.resolve_backend_root_descriptor_ready;
+  record.top_level_as = view.resolve_root_metadata_handle;
+  record.root_metadata_handle = view.resolve_root_metadata_handle;
+  record.ray_origin = view.ray_origin;
+  record.ray_direction = view.ray_direction;
+  record.ray_flags = view.ray_flags;
+  record.cull_mask = view.cull_mask;
+  record.ray_tmin = view.ray_tmin;
+  record.ray_tmax = view.ray_tmax;
+  record.sbt_record_offset = view.sbt_record_offset;
+  record.sbt_record_stride = view.sbt_record_stride;
+  record.miss_index = view.miss_index;
+  record.valid = view.valid && record.has_ray_origin_direction_tmin_tmax &&
+                 record.has_ray_flags_cull_mask &&
+                 record.has_launch_context_input &&
+                 record.has_selected_root_descriptor &&
+                 record.root_metadata_handle != 0;
+  return record;
+}
+
+static bool rtcore_decoded_trace_ray_value_record_matches_request(
+    const rtcore_decoded_trace_ray_value_record &record,
+    const rtcore_traversal_source_request &request) {
+  return record.valid && record.has_ray_origin_direction_tmin_tmax &&
+         record.has_ray_flags_cull_mask && record.has_launch_context_input &&
+         record.has_selected_root_descriptor &&
+         record.root_metadata_handle == request.replay_root_metadata_handle &&
+         record.top_level_as == request.replay_root_metadata_handle &&
+         record.ray_origin.x == request.replay_ray_origin.x &&
+         record.ray_origin.y == request.replay_ray_origin.y &&
+         record.ray_origin.z == request.replay_ray_origin.z &&
+         record.ray_direction.x == request.replay_ray_direction.x &&
+         record.ray_direction.y == request.replay_ray_direction.y &&
+         record.ray_direction.z == request.replay_ray_direction.z &&
+         record.ray_tmin == request.replay_ray_tmin &&
+         record.ray_tmax == request.replay_ray_tmax &&
+         record.ray_flags == request.replay_ray_flags &&
+         record.cull_mask == request.replay_cull_mask &&
+         record.sbt_record_offset == request.replay_sbt_record_offset &&
+         record.sbt_record_stride == request.replay_sbt_record_stride &&
+         record.miss_index == request.replay_miss_index;
+}
+
 struct rtcore_provider_materialized_traversal_input_snapshot {
   rtcore_provider_materialized_traversal_input_snapshot()
       : valid(false),
@@ -13089,6 +13182,7 @@ struct rtcore_provider_materialized_traversal_input_snapshot {
   bool provider_payload_runtime_lifetime_ready;
   bool context_window_owner_seq_matches_lifetime;
   bool token_lifetime_key_ready;
+  rtcore_decoded_trace_ray_value_record decoded_trace_ray_value_record;
 };
 
 static rtcore_provider_materialized_traversal_input_snapshot
@@ -13127,6 +13221,9 @@ rtcore_make_provider_materialized_traversal_input_snapshot(
   snapshot.context_window_owner_seq_matches_lifetime =
       view.context_window_owner_seq_matches_lifetime;
   snapshot.token_lifetime_key_ready = view.token_lifetime_key_ready;
+  snapshot.decoded_trace_ray_value_record =
+      rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
+          view);
   snapshot.valid = view.valid &&
                    snapshot.has_ray_origin_direction_tmin_tmax &&
                    snapshot.has_ray_flags_cull_mask &&
@@ -16760,6 +16857,10 @@ struct rtcore_materialized_traversal_input {
         token_lifetime_key_ready(false),
         context_window_bound_to_provider_decoded_abi(false),
         decoded_source_provenance_match(false),
+        decoded_value_record_valid(false),
+        decoded_value_record_source("unavailable"),
+        decoded_value_record_consumed_by_materialization(false),
+        decoded_value_record_matches_request(false),
         top_level_as((VkAccelerationStructureKHR)0),
         ray_flags(0),
         cull_mask(0),
@@ -16801,6 +16902,11 @@ struct rtcore_materialized_traversal_input {
   bool token_lifetime_key_ready;
   bool context_window_bound_to_provider_decoded_abi;
   bool decoded_source_provenance_match;
+  bool decoded_value_record_valid;
+  const char *decoded_value_record_source;
+  bool decoded_value_record_consumed_by_materialization;
+  bool decoded_value_record_matches_request;
+  rtcore_decoded_trace_ray_value_record decoded_trace_ray_value_record;
   VkAccelerationStructureKHR top_level_as;
   uint32_t ray_flags;
   uint32_t cull_mask;
@@ -16842,6 +16948,11 @@ struct rtcore_trace_ray_argument_audit {
         token_lifetime_key_ready(false),
         context_window_bound_to_provider_decoded_abi(false),
         decoded_source_provenance_match(false),
+        decoded_value_record_valid(false),
+        decoded_value_record_source("unavailable"),
+        decoded_value_record_consumed(false),
+        decoded_value_record_matches_request(false),
+        values_match_decoded_value_record(false),
         matches_typed_object(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
     memset(&ray_direction, 0, sizeof(ray_direction));
@@ -16868,6 +16979,11 @@ struct rtcore_trace_ray_argument_audit {
   bool token_lifetime_key_ready;
   bool context_window_bound_to_provider_decoded_abi;
   bool decoded_source_provenance_match;
+  bool decoded_value_record_valid;
+  const char *decoded_value_record_source;
+  bool decoded_value_record_consumed;
+  bool decoded_value_record_matches_request;
+  bool values_match_decoded_value_record;
   bool matches_typed_object;
 };
 
@@ -16907,6 +17023,46 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
       input.context_window_bound_to_provider_decoded_abi;
   trace_ray_arguments.decoded_source_provenance_match =
       input.decoded_source_provenance_match;
+  trace_ray_arguments.decoded_value_record_valid =
+      input.decoded_value_record_valid;
+  trace_ray_arguments.decoded_value_record_source =
+      input.decoded_value_record_source;
+  trace_ray_arguments.decoded_value_record_consumed =
+      input.decoded_value_record_consumed_by_materialization;
+  trace_ray_arguments.decoded_value_record_matches_request =
+      input.decoded_value_record_matches_request;
+  trace_ray_arguments.values_match_decoded_value_record =
+      trace_ray_arguments.valid && input.decoded_value_record_valid &&
+      trace_ray_arguments.root_metadata_handle ==
+          input.decoded_trace_ray_value_record.root_metadata_handle &&
+      (uint64_t)trace_ray_arguments.top_level_as ==
+          input.decoded_trace_ray_value_record.top_level_as &&
+      trace_ray_arguments.ray_flags ==
+          input.decoded_trace_ray_value_record.ray_flags &&
+      trace_ray_arguments.cull_mask ==
+          input.decoded_trace_ray_value_record.cull_mask &&
+      trace_ray_arguments.ray_origin.x ==
+          input.decoded_trace_ray_value_record.ray_origin.x &&
+      trace_ray_arguments.ray_origin.y ==
+          input.decoded_trace_ray_value_record.ray_origin.y &&
+      trace_ray_arguments.ray_origin.z ==
+          input.decoded_trace_ray_value_record.ray_origin.z &&
+      trace_ray_arguments.ray_direction.x ==
+          input.decoded_trace_ray_value_record.ray_direction.x &&
+      trace_ray_arguments.ray_direction.y ==
+          input.decoded_trace_ray_value_record.ray_direction.y &&
+      trace_ray_arguments.ray_direction.z ==
+          input.decoded_trace_ray_value_record.ray_direction.z &&
+      trace_ray_arguments.ray_tmin ==
+          input.decoded_trace_ray_value_record.ray_tmin &&
+      trace_ray_arguments.ray_tmax ==
+          input.decoded_trace_ray_value_record.ray_tmax &&
+      trace_ray_arguments.sbt_record_offset ==
+          input.decoded_trace_ray_value_record.sbt_record_offset &&
+      trace_ray_arguments.sbt_record_stride ==
+          input.decoded_trace_ray_value_record.sbt_record_stride &&
+      trace_ray_arguments.miss_index ==
+          input.decoded_trace_ray_value_record.miss_index;
   trace_ray_arguments.matches_typed_object =
       trace_ray_arguments.valid &&
       (uint64_t)trace_ray_arguments.top_level_as == input.root_metadata_handle &&
@@ -16958,6 +17114,28 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
   }
   input->work_descriptor_snapshot_valid = snapshot.valid;
   input->work_descriptor_snapshot_source = snapshot.source;
+  const rtcore_decoded_trace_ray_value_record &decoded_value_record =
+      snapshot.decoded_trace_ray_value_record;
+  input->decoded_value_record_valid = decoded_value_record.valid;
+  input->decoded_value_record_source = decoded_value_record.source;
+  input->decoded_value_record_matches_request =
+      rtcore_decoded_trace_ray_value_record_matches_request(
+          decoded_value_record, request) &&
+      decoded_value_record.root_metadata_handle == snapshot.root_metadata_handle &&
+      decoded_value_record.top_level_as == snapshot.root_metadata_handle &&
+      decoded_value_record.ray_origin.x == snapshot.ray_origin.x &&
+      decoded_value_record.ray_origin.y == snapshot.ray_origin.y &&
+      decoded_value_record.ray_origin.z == snapshot.ray_origin.z &&
+      decoded_value_record.ray_direction.x == snapshot.ray_direction.x &&
+      decoded_value_record.ray_direction.y == snapshot.ray_direction.y &&
+      decoded_value_record.ray_direction.z == snapshot.ray_direction.z &&
+      decoded_value_record.ray_tmin == snapshot.ray_tmin &&
+      decoded_value_record.ray_tmax == snapshot.ray_tmax &&
+      decoded_value_record.ray_flags == snapshot.ray_flags &&
+      decoded_value_record.cull_mask == snapshot.cull_mask &&
+      decoded_value_record.sbt_record_offset == snapshot.sbt_record_offset &&
+      decoded_value_record.sbt_record_stride == snapshot.sbt_record_stride &&
+      decoded_value_record.miss_index == snapshot.miss_index;
   input->decoded_source_provenance_match =
       snapshot.valid &&
       strcmp(rtcore_decoded_input_field_source_label(
@@ -16999,19 +17177,7 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
              request.replay_layout_profile_reference) == 0 &&
       snapshot.bvh_memory_binding ==
           request.replay_backend_root_descriptor_producer_bvh_memory_binding &&
-      snapshot.ray_origin.x == request.replay_ray_origin.x &&
-      snapshot.ray_origin.y == request.replay_ray_origin.y &&
-      snapshot.ray_origin.z == request.replay_ray_origin.z &&
-      snapshot.ray_direction.x == request.replay_ray_direction.x &&
-      snapshot.ray_direction.y == request.replay_ray_direction.y &&
-      snapshot.ray_direction.z == request.replay_ray_direction.z &&
-      snapshot.ray_tmin == request.replay_ray_tmin &&
-      snapshot.ray_tmax == request.replay_ray_tmax &&
-      snapshot.ray_flags == request.replay_ray_flags &&
-      snapshot.cull_mask == request.replay_cull_mask &&
-      snapshot.sbt_record_offset == request.replay_sbt_record_offset &&
-      snapshot.sbt_record_stride == request.replay_sbt_record_stride &&
-      snapshot.miss_index == request.replay_miss_index &&
+      input->decoded_value_record_matches_request &&
       input->decoded_source_provenance_match;
   if (!input->work_descriptor_snapshot_fields_match_request) {
     return false;
@@ -17028,17 +17194,19 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
   input->token_lifetime_key_ready = snapshot.token_lifetime_key_ready;
   input->context_window_bound_to_provider_decoded_abi =
       request.replay_context_window_bound_to_provider_decoded_abi;
-  input->top_level_as = (VkAccelerationStructureKHR)snapshot.root_metadata_handle;
-  input->ray_flags = snapshot.ray_flags;
-  input->cull_mask = snapshot.cull_mask;
-  input->ray_origin = snapshot.ray_origin;
-  input->ray_direction = snapshot.ray_direction;
-  input->ray_tmin = snapshot.ray_tmin;
-  input->ray_tmax = snapshot.ray_tmax;
-  input->sbt_record_offset = snapshot.sbt_record_offset;
-  input->sbt_record_stride = snapshot.sbt_record_stride;
-  input->miss_index = snapshot.miss_index;
-  input->root_metadata_handle = snapshot.root_metadata_handle;
+  input->decoded_trace_ray_value_record = decoded_value_record;
+  input->decoded_value_record_consumed_by_materialization = true;
+  input->top_level_as = (VkAccelerationStructureKHR)decoded_value_record.top_level_as;
+  input->ray_flags = decoded_value_record.ray_flags;
+  input->cull_mask = decoded_value_record.cull_mask;
+  input->ray_origin = decoded_value_record.ray_origin;
+  input->ray_direction = decoded_value_record.ray_direction;
+  input->ray_tmin = decoded_value_record.ray_tmin;
+  input->ray_tmax = decoded_value_record.ray_tmax;
+  input->sbt_record_offset = decoded_value_record.sbt_record_offset;
+  input->sbt_record_stride = decoded_value_record.sbt_record_stride;
+  input->miss_index = decoded_value_record.miss_index;
+  input->root_metadata_handle = decoded_value_record.root_metadata_handle;
   input->bridge_trace_replay_top_level_as =
       request.replay_bridge_trace_replay_top_level_as;
   input->layout_profile_reference = snapshot.layout_profile_reference;
@@ -17243,6 +17411,12 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "trace_ray_argument_token_lifetime_key_ready=%u, "
          "trace_ray_argument_context_window_bound_to_provider_decoded_abi=%u, "
          "trace_ray_argument_decoded_source_provenance_match=%u, "
+         "trace_ray_argument_decoded_value_record_bridge=1, "
+         "trace_ray_argument_decoded_value_record_source=%s, "
+         "trace_ray_argument_decoded_value_record_valid=%u, "
+         "trace_ray_argument_decoded_value_record_consumed=%u, "
+         "trace_ray_argument_decoded_value_record_matches_request=%u, "
+         "trace_ray_argument_values_match_decoded_value_record=%u, "
          "traversal_stack_depth_before=%zu, "
          "traversal_stack_depth_after_reset=%zu, "
          "traversal_stack_depth_after_materialize=%zu, "
@@ -17325,6 +17499,11 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          trace_ray_arguments.context_window_bound_to_provider_decoded_abi ? 1
                                                                          : 0,
          trace_ray_arguments.decoded_source_provenance_match ? 1 : 0,
+         trace_ray_arguments.decoded_value_record_source,
+         trace_ray_arguments.decoded_value_record_valid ? 1 : 0,
+         trace_ray_arguments.decoded_value_record_consumed ? 1 : 0,
+         trace_ray_arguments.decoded_value_record_matches_request ? 1 : 0,
+         trace_ray_arguments.values_match_decoded_value_record ? 1 : 0,
          traversal_stack_depth_before,
          traversal_stack_depth_after_reset,
          traversal_stack_depth_after_materialize, materialized ? 1 : 0);
