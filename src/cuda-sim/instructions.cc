@@ -13044,6 +13044,15 @@ struct rtcore_decoded_trace_ray_value_record {
         has_launch_context_input(false),
         launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_selected_root_descriptor(false),
+        selected_root_descriptor_owner("unavailable"),
+        selected_root_descriptor_source("unavailable"),
+        payload_selected_root_descriptor_owner("unavailable"),
+        payload_selected_root_descriptor_source("unavailable"),
+        selected_root_descriptor_actual_producer_authority_enabled(false),
+        selected_root_descriptor_matches_producer_root_fields(false),
+        selected_root_descriptor_root_field_consistency_policy_passed(false),
+        selected_root_descriptor_payload_route_consistent(false),
+        selected_root_descriptor_policy_passed(false),
         provider_payload_runtime_lifetime_ready(false),
         context_window_owner_seq_matches_lifetime(false),
         token_lifetime_key_ready(false),
@@ -13069,6 +13078,15 @@ struct rtcore_decoded_trace_ray_value_record {
   bool has_launch_context_input;
   rtcore_decoded_input_field_owner_class launch_context_input_owner;
   bool has_selected_root_descriptor;
+  const char *selected_root_descriptor_owner;
+  const char *selected_root_descriptor_source;
+  const char *payload_selected_root_descriptor_owner;
+  const char *payload_selected_root_descriptor_source;
+  bool selected_root_descriptor_actual_producer_authority_enabled;
+  bool selected_root_descriptor_matches_producer_root_fields;
+  bool selected_root_descriptor_root_field_consistency_policy_passed;
+  bool selected_root_descriptor_payload_route_consistent;
+  bool selected_root_descriptor_policy_passed;
   bool provider_payload_runtime_lifetime_ready;
   bool context_window_owner_seq_matches_lifetime;
   bool token_lifetime_key_ready;
@@ -13175,6 +13193,43 @@ rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
   record.launch_context_input_owner = view.launch_context_input_owner;
   record.has_selected_root_descriptor =
       view.resolve_backend_root_descriptor_ready;
+  record.selected_root_descriptor_actual_producer_authority_enabled =
+      view.resolve_backend_root_descriptor_actual_producer_authority_enabled;
+  record.selected_root_descriptor_owner =
+      rtcore_backend_root_descriptor_selected_owner_label(
+          record.selected_root_descriptor_actual_producer_authority_enabled);
+  record.selected_root_descriptor_source =
+      rtcore_backend_root_descriptor_selected_source_label(
+          record.selected_root_descriptor_actual_producer_authority_enabled);
+  record.payload_selected_root_descriptor_owner =
+      rtcore_backend_root_descriptor_payload_selected_owner_label(
+          record.selected_root_descriptor_actual_producer_authority_enabled);
+  record.payload_selected_root_descriptor_source =
+      rtcore_backend_root_descriptor_selected_source_label(
+          record.selected_root_descriptor_actual_producer_authority_enabled);
+  record.selected_root_descriptor_matches_producer_root_fields =
+      view.resolve_root_metadata_handle ==
+          view.resolve_backend_root_descriptor_producer_root_metadata_handle &&
+      strcmp(view.resolve_root_address_space,
+             view.resolve_backend_root_descriptor_producer_root_address_space) ==
+          0 &&
+      view.resolve_root_node_reference ==
+          view.resolve_backend_root_descriptor_producer_root_node_reference &&
+      strcmp(view.resolve_layout_profile_reference,
+             view
+                 .resolve_backend_root_descriptor_producer_layout_profile_reference) ==
+          0;
+  record.selected_root_descriptor_root_field_consistency_policy_passed =
+      !record.selected_root_descriptor_actual_producer_authority_enabled ||
+      record.selected_root_descriptor_matches_producer_root_fields;
+  record.selected_root_descriptor_payload_route_consistent =
+      strcmp(record.selected_root_descriptor_owner,
+             record.payload_selected_root_descriptor_owner) == 0 &&
+      strcmp(record.selected_root_descriptor_source,
+             record.payload_selected_root_descriptor_source) == 0;
+  record.selected_root_descriptor_policy_passed =
+      !record.selected_root_descriptor_actual_producer_authority_enabled ||
+      record.selected_root_descriptor_payload_route_consistent;
   record.provider_payload_runtime_lifetime_ready =
       view.provider_payload_runtime_lifetime_ready;
   record.context_window_owner_seq_matches_lifetime =
@@ -13198,6 +13253,37 @@ rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
                  record.root_metadata_handle != 0;
   rtcore_apply_decoded_trace_ray_value_record_failpoint(&record);
   return record;
+}
+
+static bool
+rtcore_decoded_trace_ray_value_record_selected_root_descriptor_authority_matches_request(
+    const rtcore_decoded_trace_ray_value_record &record,
+    const rtcore_traversal_source_request &request) {
+  return record.valid &&
+         record.has_selected_root_descriptor ==
+             request.has_replay_selected_root_descriptor &&
+         strcmp(record.selected_root_descriptor_owner,
+                request.replay_selected_root_descriptor_owner) == 0 &&
+         strcmp(record.selected_root_descriptor_source,
+                request.replay_selected_root_descriptor_source) == 0 &&
+         strcmp(record.payload_selected_root_descriptor_owner,
+                request.replay_payload_selected_root_descriptor_owner) == 0 &&
+         strcmp(record.payload_selected_root_descriptor_source,
+                request.replay_payload_selected_root_descriptor_source) == 0 &&
+         record.selected_root_descriptor_actual_producer_authority_enabled ==
+             request
+                 .replay_selected_root_descriptor_actual_producer_authority_enabled &&
+         record.selected_root_descriptor_matches_producer_root_fields ==
+             request.replay_selected_root_descriptor_matches_producer_root_fields &&
+         record
+                 .selected_root_descriptor_root_field_consistency_policy_passed ==
+             request
+                 .replay_selected_root_descriptor_root_field_consistency_policy_passed &&
+         record.selected_root_descriptor_payload_route_consistent ==
+             request
+                 .replay_selected_root_descriptor_payload_route_consistent &&
+         record.selected_root_descriptor_policy_passed ==
+             request.replay_selected_root_descriptor_policy_passed;
 }
 
 static bool rtcore_decoded_trace_ray_value_record_authority_matches_request(
@@ -16991,6 +17077,8 @@ struct rtcore_materialized_traversal_input {
         decoded_value_record_consumed_by_materialization(false),
         decoded_value_record_matches_request(false),
         decoded_value_record_authority_matches_request(false),
+        decoded_value_record_selected_root_descriptor_authority_matches_request(
+            false),
         top_level_as((VkAccelerationStructureKHR)0),
         ray_flags(0),
         cull_mask(0),
@@ -17037,6 +17125,7 @@ struct rtcore_materialized_traversal_input {
   bool decoded_value_record_consumed_by_materialization;
   bool decoded_value_record_matches_request;
   bool decoded_value_record_authority_matches_request;
+  bool decoded_value_record_selected_root_descriptor_authority_matches_request;
   rtcore_decoded_trace_ray_value_record decoded_trace_ray_value_record;
   VkAccelerationStructureKHR top_level_as;
   uint32_t ray_flags;
@@ -17084,6 +17173,8 @@ struct rtcore_trace_ray_argument_audit {
         decoded_value_record_consumed(false),
         decoded_value_record_matches_request(false),
         decoded_value_record_authority_matches_request(false),
+        decoded_value_record_selected_root_descriptor_authority_matches_request(
+            false),
         values_match_decoded_value_record(false),
         matches_typed_object(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
@@ -17116,6 +17207,7 @@ struct rtcore_trace_ray_argument_audit {
   bool decoded_value_record_consumed;
   bool decoded_value_record_matches_request;
   bool decoded_value_record_authority_matches_request;
+  bool decoded_value_record_selected_root_descriptor_authority_matches_request;
   bool values_match_decoded_value_record;
   bool matches_typed_object;
 };
@@ -17166,6 +17258,10 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
       input.decoded_value_record_matches_request;
   trace_ray_arguments.decoded_value_record_authority_matches_request =
       input.decoded_value_record_authority_matches_request;
+  trace_ray_arguments
+      .decoded_value_record_selected_root_descriptor_authority_matches_request =
+      input
+          .decoded_value_record_selected_root_descriptor_authority_matches_request;
   trace_ray_arguments.values_match_decoded_value_record =
       trace_ray_arguments.valid && input.decoded_value_record_valid &&
       trace_ray_arguments.root_metadata_handle ==
@@ -17274,6 +17370,10 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
   input->decoded_value_record_authority_matches_request =
       rtcore_decoded_trace_ray_value_record_authority_matches_request(
           decoded_value_record, request);
+  input
+      ->decoded_value_record_selected_root_descriptor_authority_matches_request =
+      rtcore_decoded_trace_ray_value_record_selected_root_descriptor_authority_matches_request(
+          decoded_value_record, request);
   input->decoded_source_provenance_match =
       snapshot.valid &&
       strcmp(rtcore_decoded_input_field_source_label(
@@ -17317,6 +17417,8 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
           request.replay_backend_root_descriptor_producer_bvh_memory_binding &&
       input->decoded_value_record_matches_request &&
       input->decoded_value_record_authority_matches_request &&
+      input
+          ->decoded_value_record_selected_root_descriptor_authority_matches_request &&
       input->decoded_source_provenance_match;
   if (!input->work_descriptor_snapshot_fields_match_request) {
     if (!input->decoded_value_record_matches_request) {
@@ -17357,6 +17459,31 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
              rtcore_decoded_input_field_source_label(
                  decoded_value_record.ray_flags_cull_mask_owner),
              request.replay_ray_flags_cull_mask_source);
+      fflush(stdout);
+    }
+    if (!input
+             ->decoded_value_record_selected_root_descriptor_authority_matches_request) {
+      printf("GPGPU-Sim PTX: RT_SUBMIT "
+             "decoded-value-record-selected-root-descriptor-authority-mismatch-rejected=1, "
+             "decoded_value_record_selected_root_descriptor_authority_mismatch_rejected=1, "
+             "decoded_value_record_valid=%u, "
+             "decoded_value_record_source=%s, "
+             "decoded_value_record_selected_root_descriptor_authority_matches_request=0, "
+             "decoded_value_record_selected_root_descriptor_owner=%s, "
+             "request_selected_root_descriptor_owner=%s, "
+             "decoded_value_record_selected_root_descriptor_source=%s, "
+             "request_selected_root_descriptor_source=%s, "
+             "decoded_value_record_selected_root_descriptor_policy_passed=%u, "
+             "request_selected_root_descriptor_policy_passed=%u\n",
+             input->decoded_value_record_valid ? 1 : 0,
+             input->decoded_value_record_source,
+             decoded_value_record.selected_root_descriptor_owner,
+             request.replay_selected_root_descriptor_owner,
+             decoded_value_record.selected_root_descriptor_source,
+             request.replay_selected_root_descriptor_source,
+             decoded_value_record.selected_root_descriptor_policy_passed ? 1
+                                                                        : 0,
+             request.replay_selected_root_descriptor_policy_passed ? 1 : 0);
       fflush(stdout);
     }
     return false;
@@ -17596,6 +17723,14 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "trace_ray_argument_decoded_value_record_consumed=%u, "
          "trace_ray_argument_decoded_value_record_matches_request=%u, "
          "trace_ray_argument_decoded_value_record_authority_match=%u, "
+         "trace_ray_argument_decoded_value_record_selected_root_descriptor_authority_match=%u, "
+         "trace_ray_argument_decoded_value_record_selected_root_descriptor_owner=%s, "
+         "trace_ray_argument_decoded_value_record_selected_root_descriptor_source=%s, "
+         "trace_ray_argument_decoded_value_record_payload_selected_root_descriptor_owner=%s, "
+         "trace_ray_argument_decoded_value_record_payload_selected_root_descriptor_source=%s, "
+         "trace_ray_argument_decoded_value_record_selected_root_descriptor_actual_producer_authority_enabled=%u, "
+         "trace_ray_argument_decoded_value_record_selected_root_descriptor_payload_route_consistent=%u, "
+         "trace_ray_argument_decoded_value_record_selected_root_descriptor_policy_passed=%u, "
          "trace_ray_argument_decoded_value_record_ray_origin_direction_tmin_tmax_owner=%s, "
          "trace_ray_argument_decoded_value_record_ray_flags_cull_mask_owner=%s, "
          "trace_ray_argument_decoded_value_record_launch_context_input_owner=%s, "
@@ -17691,6 +17826,30 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          trace_ray_arguments.decoded_value_record_matches_request ? 1 : 0,
          trace_ray_arguments.decoded_value_record_authority_matches_request ? 1
                                                                             : 0,
+         trace_ray_arguments
+                 .decoded_value_record_selected_root_descriptor_authority_matches_request
+             ? 1
+             : 0,
+         materialized_input.decoded_trace_ray_value_record
+             .selected_root_descriptor_owner,
+         materialized_input.decoded_trace_ray_value_record
+             .selected_root_descriptor_source,
+         materialized_input.decoded_trace_ray_value_record
+             .payload_selected_root_descriptor_owner,
+         materialized_input.decoded_trace_ray_value_record
+             .payload_selected_root_descriptor_source,
+         materialized_input.decoded_trace_ray_value_record
+                 .selected_root_descriptor_actual_producer_authority_enabled
+             ? 1
+             : 0,
+         materialized_input.decoded_trace_ray_value_record
+                 .selected_root_descriptor_payload_route_consistent
+             ? 1
+             : 0,
+         materialized_input.decoded_trace_ray_value_record
+                 .selected_root_descriptor_policy_passed
+             ? 1
+             : 0,
          rtcore_decoded_input_field_owner_class_name(
              materialized_input.decoded_trace_ray_value_record
                  .ray_origin_direction_tmin_tmax_owner),
