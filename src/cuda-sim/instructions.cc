@@ -13412,6 +13412,9 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
       request->replay_root_profile_producer_fields_consumed_by_traversal;
   request->replay_root_profile_actual_abi_gap_closure_candidate =
       request->replay_root_profile_actual_abi_evidence_available &&
+      request
+          ->replay_selected_root_descriptor_root_field_consistency_policy_passed &&
+      request->replay_selected_root_descriptor_policy_passed &&
       !request->replay_runtime_proxy_compatibility_path;
   request->replay_actual_abi_evidence_for_proxy_fields =
       request->replay_root_profile_actual_abi_gap_closure_candidate;
