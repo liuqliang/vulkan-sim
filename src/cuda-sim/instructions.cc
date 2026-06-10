@@ -12320,7 +12320,17 @@ struct rtcore_traversal_source_request {
         replay_sbt_record_offset(0),
         replay_sbt_record_stride(0),
         replay_miss_index(0),
+        replay_root_metadata_handle(0),
         replay_root_address_space("unavailable"),
+        replay_root_node_reference(0),
+        replay_layout_profile_reference("unavailable"),
+        replay_backend_root_descriptor_producer_root_metadata_handle(0),
+        replay_backend_root_descriptor_producer_root_address_space(
+            "unavailable"),
+        replay_backend_root_descriptor_producer_root_node_reference(0),
+        replay_backend_root_descriptor_producer_layout_profile_reference(
+            "unavailable"),
+        replay_backend_root_descriptor_producer_bvh_memory_binding(false),
         replay_selected_root_descriptor_owner("unavailable"),
         replay_selected_root_descriptor_source("unavailable"),
         replay_payload_selected_root_descriptor_owner("unavailable"),
@@ -12354,7 +12364,15 @@ struct rtcore_traversal_source_request {
   uint32_t replay_sbt_record_offset;
   uint32_t replay_sbt_record_stride;
   uint32_t replay_miss_index;
+  uint64_t replay_root_metadata_handle;
   const char *replay_root_address_space;
+  uint64_t replay_root_node_reference;
+  const char *replay_layout_profile_reference;
+  uint64_t replay_backend_root_descriptor_producer_root_metadata_handle;
+  const char *replay_backend_root_descriptor_producer_root_address_space;
+  uint64_t replay_backend_root_descriptor_producer_root_node_reference;
+  const char *replay_backend_root_descriptor_producer_layout_profile_reference;
+  bool replay_backend_root_descriptor_producer_bvh_memory_binding;
   const char *replay_selected_root_descriptor_owner;
   const char *replay_selected_root_descriptor_source;
   const char *replay_payload_selected_root_descriptor_owner;
@@ -13096,7 +13114,21 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
   request->replay_miss_index = view.miss_index;
   request->has_replay_selected_root_descriptor =
       view.resolve_backend_root_descriptor_ready;
+  request->replay_root_metadata_handle = view.resolve_root_metadata_handle;
   request->replay_root_address_space = view.resolve_root_address_space;
+  request->replay_root_node_reference = view.resolve_root_node_reference;
+  request->replay_layout_profile_reference =
+      view.resolve_layout_profile_reference;
+  request->replay_backend_root_descriptor_producer_root_metadata_handle =
+      view.resolve_backend_root_descriptor_producer_root_metadata_handle;
+  request->replay_backend_root_descriptor_producer_root_address_space =
+      view.resolve_backend_root_descriptor_producer_root_address_space;
+  request->replay_backend_root_descriptor_producer_root_node_reference =
+      view.resolve_backend_root_descriptor_producer_root_node_reference;
+  request->replay_backend_root_descriptor_producer_layout_profile_reference =
+      view.resolve_backend_root_descriptor_producer_layout_profile_reference;
+  request->replay_backend_root_descriptor_producer_bvh_memory_binding =
+      view.resolve_backend_root_descriptor_producer_bvh_memory_binding;
   request->replay_selected_root_descriptor_actual_producer_authority_enabled =
       view.resolve_backend_root_descriptor_actual_producer_authority_enabled;
   request->replay_selected_root_descriptor_owner =
@@ -13131,7 +13163,16 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "existing_traversal_replay_selected_descriptor_source_bridge=1, "
          "has_replay_selected_root_descriptor=%u, "
+         "existing_traversal_replay_root_field_source_bridge=1, "
+         "replay_root_metadata_handle=0x%llx, "
          "replay_root_address_space=%s, "
+         "replay_root_node_reference=0x%llx, "
+         "replay_layout_profile_reference=%s, "
+         "replay_backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
+         "replay_backend_root_descriptor_producer_root_address_space=%s, "
+         "replay_backend_root_descriptor_producer_root_node_reference=0x%llx, "
+         "replay_backend_root_descriptor_producer_layout_profile_reference=%s, "
+         "replay_backend_root_descriptor_producer_bvh_memory_binding=%u, "
          "replay_selected_root_descriptor_owner=%s, "
          "replay_selected_root_descriptor_source=%s, "
          "replay_payload_selected_root_descriptor_owner=%s, "
@@ -13148,7 +13189,19 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          request->replay_sbt_record_offset, request->replay_sbt_record_stride,
          request->replay_miss_index,
          request->has_replay_selected_root_descriptor ? 1 : 0,
+         (unsigned long long)request->replay_root_metadata_handle,
          request->replay_root_address_space,
+         (unsigned long long)request->replay_root_node_reference,
+         request->replay_layout_profile_reference,
+         (unsigned long long)request
+             ->replay_backend_root_descriptor_producer_root_metadata_handle,
+         request->replay_backend_root_descriptor_producer_root_address_space,
+         (unsigned long long)request
+             ->replay_backend_root_descriptor_producer_root_node_reference,
+         request
+             ->replay_backend_root_descriptor_producer_layout_profile_reference,
+         request->replay_backend_root_descriptor_producer_bvh_memory_binding ? 1
+                                                                             : 0,
          request->replay_selected_root_descriptor_owner,
          request->replay_selected_root_descriptor_source,
          request->replay_payload_selected_root_descriptor_owner,
