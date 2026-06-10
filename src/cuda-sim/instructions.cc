@@ -13115,7 +13115,8 @@ enum rtcore_decoded_trace_ray_value_record_failpoint {
   RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE = 0,
   RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH,
   RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH,
-  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SELECTED_ROOT_OWNER_MISMATCH
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SELECTED_ROOT_OWNER_MISMATCH,
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_ROOT_DESCRIPTOR_FIELD_BUNDLE_MISMATCH
 };
 
 static rtcore_decoded_trace_ray_value_record_failpoint
@@ -13133,6 +13134,9 @@ rtcore_decoded_trace_ray_value_record_failpoint_mode() {
   if (strcmp(value, "selected_root_owner_mismatch") == 0) {
     return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SELECTED_ROOT_OWNER_MISMATCH;
   }
+  if (strcmp(value, "root_descriptor_field_bundle_mismatch") == 0) {
+    return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_ROOT_DESCRIPTOR_FIELD_BUNDLE_MISMATCH;
+  }
   return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE;
 }
 
@@ -13145,6 +13149,8 @@ static const char *rtcore_decoded_trace_ray_value_record_failpoint_name(
       return "ray_flags_owner_mismatch";
     case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SELECTED_ROOT_OWNER_MISMATCH:
       return "selected_root_owner_mismatch";
+    case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_ROOT_DESCRIPTOR_FIELD_BUNDLE_MISMATCH:
+      return "root_descriptor_field_bundle_mismatch";
     case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE:
     default:
       return "none";
@@ -13224,6 +13230,33 @@ static void rtcore_apply_decoded_trace_ray_value_record_failpoint(
            record->selected_root_descriptor_payload_route_consistent ? 1 : 0,
            original_policy_passed ? 1 : 0,
            record->selected_root_descriptor_policy_passed ? 1 : 0);
+    fflush(stdout);
+  }
+  if (mode ==
+      RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_ROOT_DESCRIPTOR_FIELD_BUNDLE_MISMATCH) {
+    const uint64_t original_root_node_reference = record->root_node_reference;
+    record->root_node_reference = original_root_node_reference ^ 0x40ull;
+    if (record->root_node_reference == 0 ||
+        record->root_node_reference == original_root_node_reference) {
+      record->root_node_reference = original_root_node_reference + 0x40ull;
+    }
+    printf("GPGPU-Sim PTX: RT_SUBMIT decoded-value-record-failpoint, "
+           "decoded_value_record_failpoint_applied=1, "
+           "decoded_value_record_failpoint_mode=%s, "
+           "decoded_value_record_source=%s, "
+           "decoded_value_record_original_root_node_reference=0x%llx, "
+           "decoded_value_record_mutated_root_node_reference=0x%llx, "
+           "decoded_value_record_root_metadata_handle=0x%llx, "
+           "decoded_value_record_root_address_space=%s, "
+           "decoded_value_record_layout_profile_reference=%s, "
+           "decoded_value_record_bvh_memory_binding=%u\n",
+           rtcore_decoded_trace_ray_value_record_failpoint_name(mode),
+           record->source,
+           (unsigned long long)original_root_node_reference,
+           (unsigned long long)record->root_node_reference,
+           (unsigned long long)record->root_metadata_handle,
+           record->root_address_space, record->layout_profile_reference,
+           record->bvh_memory_binding ? 1 : 0);
     fflush(stdout);
   }
 }
