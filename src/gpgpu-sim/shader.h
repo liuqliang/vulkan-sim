@@ -1298,6 +1298,11 @@ struct rtcore_adapter_completion_claim_snapshot {
         has_provider_payload_backend_input_snapshot(false),
         provider_payload_backend_input_snapshot_valid(false),
         provider_payload_backend_input_snapshot_accepted(false),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot_valid(false),
+        provider_materialized_traversal_input_snapshot_source("unavailable"),
+        provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+            false),
         reject_reason("missing_record") {}
 
   bool found;
@@ -1318,6 +1323,10 @@ struct rtcore_adapter_completion_claim_snapshot {
   bool has_provider_payload_backend_input_snapshot;
   bool provider_payload_backend_input_snapshot_valid;
   bool provider_payload_backend_input_snapshot_accepted;
+  bool has_provider_materialized_traversal_input_snapshot;
+  bool provider_materialized_traversal_input_snapshot_valid;
+  const char *provider_materialized_traversal_input_snapshot_source;
+  bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
   const char *reject_reason;
 };
 

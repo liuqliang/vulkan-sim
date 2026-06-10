@@ -7766,7 +7766,12 @@ struct rtcore_traversal_completion_provider_backend_input_annotation {
         backend_input_snapshot_required(false),
         has_provider_payload_backend_input_snapshot(false),
         provider_payload_backend_input_snapshot_valid(false),
-        provider_payload_backend_input_snapshot_accepted(false) {}
+        provider_payload_backend_input_snapshot_accepted(false),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot_valid(false),
+        provider_materialized_traversal_input_snapshot_source("unavailable"),
+        provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+            false) {}
 
   bool valid;
   bool provider_payload_consumption_enabled;
@@ -7774,6 +7779,10 @@ struct rtcore_traversal_completion_provider_backend_input_annotation {
   bool has_provider_payload_backend_input_snapshot;
   bool provider_payload_backend_input_snapshot_valid;
   bool provider_payload_backend_input_snapshot_accepted;
+  bool has_provider_materialized_traversal_input_snapshot;
+  bool provider_materialized_traversal_input_snapshot_valid;
+  const char *provider_materialized_traversal_input_snapshot_source;
+  bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 };
 
 struct rtcore_adapter_completion_record {
@@ -7852,6 +7861,11 @@ struct rtcore_adapter_completion_claim_status {
         has_provider_payload_backend_input_snapshot(false),
         provider_payload_backend_input_snapshot_valid(false),
         provider_payload_backend_input_snapshot_accepted(false),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot_valid(false),
+        provider_materialized_traversal_input_snapshot_source("unavailable"),
+        provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+            false),
         reject_reason("missing_record") {}
 
   bool found;
@@ -7872,6 +7886,10 @@ struct rtcore_adapter_completion_claim_status {
   bool has_provider_payload_backend_input_snapshot;
   bool provider_payload_backend_input_snapshot_valid;
   bool provider_payload_backend_input_snapshot_accepted;
+  bool has_provider_materialized_traversal_input_snapshot;
+  bool provider_materialized_traversal_input_snapshot_valid;
+  const char *provider_materialized_traversal_input_snapshot_source;
+  bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
   const char *reject_reason;
 };
 
@@ -7990,7 +8008,16 @@ static bool rtcore_backend_input_completion_annotation_values_match(
          lhs.provider_payload_backend_input_snapshot_valid ==
              rhs.provider_payload_backend_input_snapshot_valid &&
          lhs.provider_payload_backend_input_snapshot_accepted ==
-             rhs.provider_payload_backend_input_snapshot_accepted;
+             rhs.provider_payload_backend_input_snapshot_accepted &&
+         lhs.has_provider_materialized_traversal_input_snapshot ==
+             rhs.has_provider_materialized_traversal_input_snapshot &&
+         lhs.provider_materialized_traversal_input_snapshot_valid ==
+             rhs.provider_materialized_traversal_input_snapshot_valid &&
+         strcmp(lhs.provider_materialized_traversal_input_snapshot_source,
+                rhs.provider_materialized_traversal_input_snapshot_source) ==
+             0 &&
+         lhs.provider_materialized_traversal_input_actual_abi_snapshot_admitted ==
+             rhs.provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 }
 
 static void
@@ -8100,6 +8127,12 @@ static bool rtcore_publish_adapter_completion_record(
          "has_provider_payload_backend_input_snapshot=%u, "
          "provider_payload_backend_input_snapshot_valid=%u, "
          "provider_payload_backend_input_snapshot_accepted=%u, "
+         "provider_materialized_traversal_input_publication_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
          "adapter_completion_backend_input_annotation_consumes_completion_behavior=0\n",
          publication.warp_uid, publication.warp_id, publication.owner_hw_sid,
          publication.active_mask, record.completed_lane_mask,
@@ -8118,6 +8151,20 @@ static bool rtcore_publish_adapter_completion_record(
              : 0,
          backend_input_annotation
                  .provider_payload_backend_input_snapshot_accepted
+             ? 1
+             : 0,
+         backend_input_annotation
+                 .has_provider_materialized_traversal_input_snapshot
+             ? 1
+             : 0,
+         backend_input_annotation
+                 .provider_materialized_traversal_input_snapshot_valid
+             ? 1
+             : 0,
+         backend_input_annotation
+             .provider_materialized_traversal_input_snapshot_source,
+         backend_input_annotation
+                 .provider_materialized_traversal_input_actual_abi_snapshot_admitted
              ? 1
              : 0);
   fflush(stdout);
@@ -8258,6 +8305,15 @@ static rtcore_adapter_completion_claim_status rtcore_query_adapter_completion_st
       backend_input_annotation.provider_payload_backend_input_snapshot_valid;
   status.provider_payload_backend_input_snapshot_accepted =
       backend_input_annotation.provider_payload_backend_input_snapshot_accepted;
+  status.has_provider_materialized_traversal_input_snapshot =
+      backend_input_annotation.has_provider_materialized_traversal_input_snapshot;
+  status.provider_materialized_traversal_input_snapshot_valid =
+      backend_input_annotation.provider_materialized_traversal_input_snapshot_valid;
+  status.provider_materialized_traversal_input_snapshot_source =
+      backend_input_annotation.provider_materialized_traversal_input_snapshot_source;
+  status.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      backend_input_annotation
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
   status.metadata_match =
       record.valid && record.warp_uid == warp_uid &&
       record.warp_id == warp_id && record.owner_hw_sid == owner_hw_sid;
@@ -8308,6 +8364,14 @@ static void rtcore_fill_adapter_completion_claim_snapshot(
       status.provider_payload_backend_input_snapshot_valid;
   snapshot->provider_payload_backend_input_snapshot_accepted =
       status.provider_payload_backend_input_snapshot_accepted;
+  snapshot->has_provider_materialized_traversal_input_snapshot =
+      status.has_provider_materialized_traversal_input_snapshot;
+  snapshot->provider_materialized_traversal_input_snapshot_valid =
+      status.provider_materialized_traversal_input_snapshot_valid;
+  snapshot->provider_materialized_traversal_input_snapshot_source =
+      status.provider_materialized_traversal_input_snapshot_source;
+  snapshot->provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      status.provider_materialized_traversal_input_actual_abi_snapshot_admitted;
   snapshot->reject_reason = status.reject_reason;
 }
 
@@ -8335,6 +8399,12 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
            "has_provider_payload_backend_input_snapshot=%u, "
            "provider_payload_backend_input_snapshot_valid=%u, "
            "provider_payload_backend_input_snapshot_accepted=%u, "
+           "provider_materialized_traversal_input_claim_provenance=1, "
+           "provider_materialized_traversal_input_snapshot=1, "
+           "has_provider_materialized_traversal_input_snapshot=%u, "
+           "provider_materialized_traversal_input_snapshot_valid=%u, "
+           "provider_materialized_traversal_input_snapshot_source=%s, "
+           "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
            "adapter_completion_claim_backend_input_annotation_consumes_readiness_behavior=0\n",
            warp_uid, warp_id, owner_hw_sid, status.active_mask,
            status.completed_lane_mask, status.static_inst_uid,
@@ -8350,7 +8420,13 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
            status.backend_input_snapshot_required ? 1 : 0,
            status.has_provider_payload_backend_input_snapshot ? 1 : 0,
            status.provider_payload_backend_input_snapshot_valid ? 1 : 0,
-           status.provider_payload_backend_input_snapshot_accepted ? 1 : 0);
+           status.provider_payload_backend_input_snapshot_accepted ? 1 : 0,
+           status.has_provider_materialized_traversal_input_snapshot ? 1 : 0,
+           status.provider_materialized_traversal_input_snapshot_valid ? 1 : 0,
+           status.provider_materialized_traversal_input_snapshot_source,
+           status.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+               ? 1
+               : 0);
     fflush(stdout);
     return false;
   }
@@ -8375,6 +8451,12 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
          "has_provider_payload_backend_input_snapshot=%u, "
          "provider_payload_backend_input_snapshot_valid=%u, "
          "provider_payload_backend_input_snapshot_accepted=%u, "
+         "provider_materialized_traversal_input_claim_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
          "adapter_completion_claim_backend_input_annotation_consumes_readiness_behavior=0\n",
          warp_uid, warp_id, owner_hw_sid, status.active_mask,
          status.completed_lane_mask, status.static_inst_uid,
@@ -8390,7 +8472,13 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
          status.backend_input_snapshot_required ? 1 : 0,
          status.has_provider_payload_backend_input_snapshot ? 1 : 0,
          status.provider_payload_backend_input_snapshot_valid ? 1 : 0,
-         status.provider_payload_backend_input_snapshot_accepted ? 1 : 0);
+         status.provider_payload_backend_input_snapshot_accepted ? 1 : 0,
+         status.has_provider_materialized_traversal_input_snapshot ? 1 : 0,
+         status.provider_materialized_traversal_input_snapshot_valid ? 1 : 0,
+         status.provider_materialized_traversal_input_snapshot_source,
+         status.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0);
   fflush(stdout);
   return status.accepted;
 }
@@ -27008,6 +27096,15 @@ rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
       source_annotation.provider_payload_backend_input_snapshot_valid;
   annotation.provider_payload_backend_input_snapshot_accepted =
       source_annotation.provider_payload_backend_input_snapshot_accepted;
+  annotation.has_provider_materialized_traversal_input_snapshot =
+      source_annotation.has_provider_materialized_traversal_input_snapshot;
+  annotation.provider_materialized_traversal_input_snapshot_valid =
+      source_annotation.provider_materialized_traversal_input_snapshot_valid;
+  annotation.provider_materialized_traversal_input_snapshot_source =
+      source_annotation.provider_materialized_traversal_input_snapshot_source;
+  annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      source_annotation
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "traversal-completion-provider-backend-input-annotation, "
@@ -27020,6 +27117,12 @@ rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
          "has_provider_payload_backend_input_snapshot=%u, "
          "provider_payload_backend_input_snapshot_valid=%u, "
          "provider_payload_backend_input_snapshot_accepted=%u, "
+         "provider_materialized_traversal_input_completion_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
          "completion_event_backend_input_annotation_consumes_traversal_behavior=0\n",
          event->context_ptr, event->handoff_window_base,
          event->lane_slot_index,
@@ -27027,7 +27130,14 @@ rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
          annotation.backend_input_snapshot_required ? 1 : 0,
          annotation.has_provider_payload_backend_input_snapshot ? 1 : 0,
          annotation.provider_payload_backend_input_snapshot_valid ? 1 : 0,
-         annotation.provider_payload_backend_input_snapshot_accepted ? 1 : 0);
+         annotation.provider_payload_backend_input_snapshot_accepted ? 1 : 0,
+         annotation.has_provider_materialized_traversal_input_snapshot ? 1 : 0,
+         annotation.provider_materialized_traversal_input_snapshot_valid ? 1
+                                                                         : 0,
+         annotation.provider_materialized_traversal_input_snapshot_source,
+         annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0);
   fflush(stdout);
 }
 
@@ -27069,6 +27179,15 @@ rtcore_copy_completion_backend_input_annotation_to_pending(
       event_annotation.provider_payload_backend_input_snapshot_valid;
   annotation.provider_payload_backend_input_snapshot_accepted =
       event_annotation.provider_payload_backend_input_snapshot_accepted;
+  annotation.has_provider_materialized_traversal_input_snapshot =
+      event_annotation.has_provider_materialized_traversal_input_snapshot;
+  annotation.provider_materialized_traversal_input_snapshot_valid =
+      event_annotation.provider_materialized_traversal_input_snapshot_valid;
+  annotation.provider_materialized_traversal_input_snapshot_source =
+      event_annotation.provider_materialized_traversal_input_snapshot_source;
+  annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      event_annotation
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 }
 
 rtcore_pending_traversal_completion
@@ -27122,6 +27241,15 @@ rtcore_copy_completion_backend_input_annotation_to_publication(
       event_annotation.provider_payload_backend_input_snapshot_valid;
   annotation.provider_payload_backend_input_snapshot_accepted =
       event_annotation.provider_payload_backend_input_snapshot_accepted;
+  annotation.has_provider_materialized_traversal_input_snapshot =
+      event_annotation.has_provider_materialized_traversal_input_snapshot;
+  annotation.provider_materialized_traversal_input_snapshot_valid =
+      event_annotation.provider_materialized_traversal_input_snapshot_valid;
+  annotation.provider_materialized_traversal_input_snapshot_source =
+      event_annotation.provider_materialized_traversal_input_snapshot_source;
+  annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      event_annotation
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 }
 
 rtcore_adapter_completion_publication
@@ -27178,6 +27306,12 @@ static bool rtcore_enqueue_pending_traversal_completion(
          "has_provider_payload_backend_input_snapshot=%u, "
          "provider_payload_backend_input_snapshot_valid=%u, "
          "provider_payload_backend_input_snapshot_accepted=%u, "
+         "provider_materialized_traversal_input_pending_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
          "delayed_completion_backend_input_annotation_consumes_completion_behavior=0\n",
          record.warp_uid, record.warp_id, record.owner_hw_sid,
          record.active_mask, record.static_inst_uid,
@@ -27195,6 +27329,20 @@ static bool rtcore_enqueue_pending_traversal_completion(
              : 0,
          backend_input_annotation
                  .provider_payload_backend_input_snapshot_accepted
+             ? 1
+             : 0,
+         backend_input_annotation
+                 .has_provider_materialized_traversal_input_snapshot
+             ? 1
+             : 0,
+         backend_input_annotation
+                 .provider_materialized_traversal_input_snapshot_valid
+             ? 1
+             : 0,
+         backend_input_annotation
+             .provider_materialized_traversal_input_snapshot_source,
+         backend_input_annotation
+                 .provider_materialized_traversal_input_actual_abi_snapshot_admitted
              ? 1
              : 0);
   fflush(stdout);
