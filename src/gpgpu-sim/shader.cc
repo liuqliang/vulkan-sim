@@ -5351,6 +5351,13 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
              "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
              "publication_attempted=%u, owner_tuple_released=%u, "
              "capacity_reclaimed=%u, reusable_slot_published=%u, "
+             "scheduler_credit_ledger_reusable_slot_publication_materialized_input_provenance=1, "
+             "provider_materialized_traversal_input_snapshot=1, "
+             "has_provider_materialized_traversal_input_snapshot=%u, "
+             "provider_materialized_traversal_input_snapshot_valid=%u, "
+             "provider_materialized_traversal_input_snapshot_source=%s, "
+             "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+             "publication_materialized_input_consumes_publication_behavior=0, "
              "publication_result=%s, transition_reason=%s\n",
              snapshot.owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
              static_cast<unsigned long long>(snapshot.static_inst_pc),
@@ -5365,6 +5372,20 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
                  : 0,
              rtcore_scheduler_credit_ledger_shadow_table_mutation
                      .reusable_slot_published
+                 ? 1
+                 : 0,
+             shadow_table_release
+                     .has_provider_materialized_traversal_input_snapshot
+                 ? 1
+                 : 0,
+             shadow_table_release
+                     .provider_materialized_traversal_input_snapshot_valid
+                 ? 1
+                 : 0,
+             shadow_table_release
+                 .provider_materialized_traversal_input_snapshot_source,
+             shadow_table_release
+                     .provider_materialized_traversal_input_actual_abi_snapshot_admitted
                  ? 1
                  : 0,
              rtcore_scheduler_credit_ledger_publication_result,
