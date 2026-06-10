@@ -12315,6 +12315,9 @@ struct rtcore_traversal_source_request {
         replay_ray_origin_direction_tmin_tmax_source("unavailable"),
         replay_ray_flags_cull_mask_source("unavailable"),
         replay_launch_context_input_source("unavailable"),
+        replay_ray_origin_direction_tmin_tmax_authority("unavailable"),
+        replay_ray_flags_cull_mask_authority("unavailable"),
+        replay_launch_context_input_authority("unavailable"),
         replay_ray_flags(0),
         replay_cull_mask(0),
         replay_ray_tmin(0.0f),
@@ -12369,6 +12372,9 @@ struct rtcore_traversal_source_request {
   const char *replay_ray_origin_direction_tmin_tmax_source;
   const char *replay_ray_flags_cull_mask_source;
   const char *replay_launch_context_input_source;
+  const char *replay_ray_origin_direction_tmin_tmax_authority;
+  const char *replay_ray_flags_cull_mask_authority;
+  const char *replay_launch_context_input_authority;
   float3 replay_ray_origin;
   float3 replay_ray_direction;
   uint32_t replay_ray_flags;
@@ -13169,6 +13175,15 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
       rtcore_decoded_input_field_source_label(view.ray_flags_cull_mask_owner);
   request->replay_launch_context_input_source =
       rtcore_decoded_input_field_source_label(view.launch_context_input_owner);
+  request->replay_ray_origin_direction_tmin_tmax_authority =
+      rtcore_decoded_input_field_owner_class_name(
+          view.ray_origin_direction_tmin_tmax_owner);
+  request->replay_ray_flags_cull_mask_authority =
+      rtcore_decoded_input_field_owner_class_name(
+          view.ray_flags_cull_mask_owner);
+  request->replay_launch_context_input_authority =
+      rtcore_decoded_input_field_owner_class_name(
+          view.launch_context_input_owner);
   request->replay_ray_origin = view.ray_origin;
   request->replay_ray_direction = view.ray_direction;
   request->replay_ray_tmin = view.ray_tmin;
@@ -13361,9 +13376,15 @@ struct rtcore_existing_traversal_replay_input_match_record {
   rtcore_existing_traversal_replay_input_match_record()
       : requested(false),
         has_traversal_data(false),
+        input_authority("unavailable"),
+        provider_decoded_abi_fields_consumed(false),
+        provider_decoded_abi_authority_complete(false),
         ray_origin_direction_tmin_tmax_source("unavailable"),
+        ray_origin_direction_tmin_tmax_authority("unavailable"),
         ray_flags_cull_mask_source("unavailable"),
+        ray_flags_cull_mask_authority("unavailable"),
         launch_context_input_source("unavailable"),
+        launch_context_input_authority("unavailable"),
         launch_context_sbt_match(false),
         ray_origin_direction_tmin_tmax_match(false),
         ray_flags_cull_mask_match(false),
@@ -13371,9 +13392,15 @@ struct rtcore_existing_traversal_replay_input_match_record {
 
   bool requested;
   bool has_traversal_data;
+  const char *input_authority;
+  bool provider_decoded_abi_fields_consumed;
+  bool provider_decoded_abi_authority_complete;
   const char *ray_origin_direction_tmin_tmax_source;
+  const char *ray_origin_direction_tmin_tmax_authority;
   const char *ray_flags_cull_mask_source;
+  const char *ray_flags_cull_mask_authority;
   const char *launch_context_input_source;
+  const char *launch_context_input_authority;
   bool launch_context_sbt_match;
   bool ray_origin_direction_tmin_tmax_match;
   bool ray_flags_cull_mask_match;
@@ -13387,12 +13414,29 @@ rtcore_make_existing_traversal_replay_input_match_record(
   rtcore_existing_traversal_replay_input_match_record record;
   record.requested = request.from_provider_backend_input_snapshot;
   record.has_traversal_data = response.has_traversal_data;
+  record.input_authority = record.requested ? "provider_decoded_abi_fields"
+                                            : "unavailable";
+  record.provider_decoded_abi_fields_consumed = record.requested;
+  record.provider_decoded_abi_authority_complete =
+      record.provider_decoded_abi_fields_consumed &&
+      strcmp(request.replay_ray_origin_direction_tmin_tmax_authority,
+             "compiler_driver_publication") == 0 &&
+      strcmp(request.replay_ray_flags_cull_mask_authority,
+             "compiler_driver_publication") == 0 &&
+      strcmp(request.replay_launch_context_input_authority,
+             "compiler_driver_publication") == 0;
   record.ray_origin_direction_tmin_tmax_source =
       request.replay_ray_origin_direction_tmin_tmax_source;
+  record.ray_origin_direction_tmin_tmax_authority =
+      request.replay_ray_origin_direction_tmin_tmax_authority;
   record.ray_flags_cull_mask_source =
       request.replay_ray_flags_cull_mask_source;
+  record.ray_flags_cull_mask_authority =
+      request.replay_ray_flags_cull_mask_authority;
   record.launch_context_input_source =
       request.replay_launch_context_input_source;
+  record.launch_context_input_authority =
+      request.replay_launch_context_input_authority;
   if (!request.from_provider_backend_input_snapshot) {
     record.all_fields_match = true;
     return record;
@@ -13440,24 +13484,36 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
          "existing_traversal_replay_input_source=provider_backend_input_snapshot, "
+         "existing_traversal_replay_input_authority=%s, "
+         "existing_traversal_replay_provider_decoded_abi_fields_consumed=%u, "
+         "existing_traversal_replay_provider_decoded_abi_authority_complete=%u, "
          "existing_traversal_replay_has_traversal_data=%u, "
          "existing_traversal_replay_ray_origin_direction_tmin_tmax_source=%s, "
+         "existing_traversal_replay_ray_origin_direction_tmin_tmax_authority=%s, "
          "existing_traversal_replay_ray_origin_direction_tmin_tmax_match=%u, "
          "existing_traversal_replay_ray_flags_cull_mask_source=%s, "
+         "existing_traversal_replay_ray_flags_cull_mask_authority=%s, "
          "existing_traversal_replay_ray_flags_cull_mask_match=%u, "
          "existing_traversal_replay_launch_context_input_source=%s, "
+         "existing_traversal_replay_launch_context_input_authority=%s, "
          "existing_traversal_replay_launch_context_sbt_match=%u, "
          "existing_traversal_replay_all_fields_match=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
          descriptor.warp_metadata.active_mask,
+         record.input_authority,
+         record.provider_decoded_abi_fields_consumed ? 1 : 0,
+         record.provider_decoded_abi_authority_complete ? 1 : 0,
          record.has_traversal_data ? 1 : 0,
          record.ray_origin_direction_tmin_tmax_source,
+         record.ray_origin_direction_tmin_tmax_authority,
          record.ray_origin_direction_tmin_tmax_match ? 1 : 0,
          record.ray_flags_cull_mask_source,
+         record.ray_flags_cull_mask_authority,
          record.ray_flags_cull_mask_match ? 1 : 0,
          record.launch_context_input_source,
+         record.launch_context_input_authority,
          record.launch_context_sbt_match ? 1 : 0,
          record.all_fields_match ? 1 : 0);
   fflush(stdout);
