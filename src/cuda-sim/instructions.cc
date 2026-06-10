@@ -12944,6 +12944,87 @@ struct rtcore_provider_payload_consumed_input_view {
   bool token_lifetime_key_ready;
 };
 
+struct rtcore_provider_materialized_traversal_input_snapshot {
+  rtcore_provider_materialized_traversal_input_snapshot()
+      : valid(false),
+        source("unavailable"),
+        has_ray_origin_direction_tmin_tmax(false),
+        has_ray_flags_cull_mask(false),
+        has_launch_context_input(false),
+        has_selected_root_descriptor(false),
+        ray_flags(0),
+        cull_mask(0),
+        ray_tmin(0.0f),
+        ray_tmax(0.0f),
+        sbt_record_offset(0),
+        sbt_record_stride(0),
+        miss_index(0),
+        root_metadata_handle(0),
+        root_address_space("unavailable"),
+        root_node_reference(0),
+        layout_profile_reference("unavailable"),
+        bvh_memory_binding(false) {
+    memset(&ray_origin, 0, sizeof(ray_origin));
+    memset(&ray_direction, 0, sizeof(ray_direction));
+  }
+
+  bool valid;
+  const char *source;
+  bool has_ray_origin_direction_tmin_tmax;
+  bool has_ray_flags_cull_mask;
+  bool has_launch_context_input;
+  bool has_selected_root_descriptor;
+  float3 ray_origin;
+  float3 ray_direction;
+  uint32_t ray_flags;
+  uint32_t cull_mask;
+  float ray_tmin;
+  float ray_tmax;
+  uint32_t sbt_record_offset;
+  uint32_t sbt_record_stride;
+  uint32_t miss_index;
+  uint64_t root_metadata_handle;
+  const char *root_address_space;
+  uint64_t root_node_reference;
+  const char *layout_profile_reference;
+  bool bvh_memory_binding;
+};
+
+static rtcore_provider_materialized_traversal_input_snapshot
+rtcore_make_provider_materialized_traversal_input_snapshot(
+    const rtcore_provider_payload_consumed_input_view &view) {
+  rtcore_provider_materialized_traversal_input_snapshot snapshot;
+  snapshot.source =
+      "provider_backend_work_descriptor_materialized_input_snapshot";
+  snapshot.has_ray_origin_direction_tmin_tmax =
+      view.has_ray_origin_direction_tmin_tmax;
+  snapshot.has_ray_flags_cull_mask = view.has_ray_flags_cull_mask;
+  snapshot.has_launch_context_input = view.has_launch_context_input;
+  snapshot.has_selected_root_descriptor =
+      view.resolve_backend_root_descriptor_ready;
+  snapshot.ray_origin = view.ray_origin;
+  snapshot.ray_direction = view.ray_direction;
+  snapshot.ray_flags = view.ray_flags;
+  snapshot.cull_mask = view.cull_mask;
+  snapshot.ray_tmin = view.ray_tmin;
+  snapshot.ray_tmax = view.ray_tmax;
+  snapshot.sbt_record_offset = view.sbt_record_offset;
+  snapshot.sbt_record_stride = view.sbt_record_stride;
+  snapshot.miss_index = view.miss_index;
+  snapshot.root_metadata_handle = view.resolve_root_metadata_handle;
+  snapshot.root_address_space = view.resolve_root_address_space;
+  snapshot.root_node_reference = view.resolve_root_node_reference;
+  snapshot.layout_profile_reference = view.resolve_layout_profile_reference;
+  snapshot.bvh_memory_binding =
+      view.resolve_backend_root_descriptor_producer_bvh_memory_binding;
+  snapshot.valid = view.valid &&
+                   snapshot.has_ray_origin_direction_tmin_tmax &&
+                   snapshot.has_ray_flags_cull_mask &&
+                   snapshot.has_launch_context_input &&
+                   snapshot.has_selected_root_descriptor;
+  return snapshot;
+}
+
 static bool
 rtcore_provider_payload_view_proxy_fields_retired_by_actual_producer(
     const rtcore_provider_payload_consumed_input_view &view) {
@@ -13054,6 +13135,8 @@ struct rtcore_traversal_work_descriptor {
         provider_payload_consumption_enabled(false),
         has_provider_payload_consumed_input(false),
         provider_payload_consumed_input(),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot(),
         registry_payload_shadow(NULL) {}
 
   bool valid;
@@ -13069,6 +13152,9 @@ struct rtcore_traversal_work_descriptor {
   bool provider_payload_consumption_enabled;
   bool has_provider_payload_consumed_input;
   rtcore_provider_payload_consumed_input_view provider_payload_consumed_input;
+  bool has_provider_materialized_traversal_input_snapshot;
+  rtcore_provider_materialized_traversal_input_snapshot
+      provider_materialized_traversal_input_snapshot;
   const rtcore_provider_facing_registry_payload_shadow *registry_payload_shadow;
 };
 
@@ -13103,6 +13189,11 @@ rtcore_make_traversal_work_descriptor(
       rtcore_make_provider_payload_consumed_input_view(
           registry_payload_shadow,
           descriptor.provider_payload_consumption_enabled);
+  descriptor.provider_materialized_traversal_input_snapshot =
+      rtcore_make_provider_materialized_traversal_input_snapshot(
+          descriptor.provider_payload_consumed_input);
+  descriptor.has_provider_materialized_traversal_input_snapshot =
+      descriptor.provider_materialized_traversal_input_snapshot.valid;
   descriptor.registry_payload_shadow = registry_payload_shadow;
   return descriptor;
 }
@@ -16468,6 +16559,10 @@ struct rtcore_materialized_traversal_input {
         full_abi_fields_consumed(false),
         full_abi_field_guard_passed(false),
         block_reason("unavailable"),
+        work_descriptor_snapshot_valid(false),
+        work_descriptor_snapshot_source("unavailable"),
+        work_descriptor_snapshot_fields_match_request(false),
+        work_descriptor_snapshot_consumed_by_materialization(false),
         top_level_as((VkAccelerationStructureKHR)0),
         ray_flags(0),
         cull_mask(0),
@@ -16497,6 +16592,10 @@ struct rtcore_materialized_traversal_input {
   bool full_abi_fields_consumed;
   bool full_abi_field_guard_passed;
   const char *block_reason;
+  bool work_descriptor_snapshot_valid;
+  const char *work_descriptor_snapshot_source;
+  bool work_descriptor_snapshot_fields_match_request;
+  bool work_descriptor_snapshot_consumed_by_materialization;
   VkAccelerationStructureKHR top_level_as;
   uint32_t ray_flags;
   uint32_t cull_mask;
@@ -16537,28 +16636,107 @@ rtcore_producer_root_descriptor_traversal_authority_request_ready(
          request.replay_selected_root_descriptor_matches_producer_root_fields;
 }
 
+static bool
+rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
+    rtcore_materialized_traversal_input *input,
+    const rtcore_traversal_source_request &request,
+    const rtcore_provider_materialized_traversal_input_snapshot &snapshot) {
+  if (input == NULL) {
+    return false;
+  }
+  input->work_descriptor_snapshot_valid = snapshot.valid;
+  input->work_descriptor_snapshot_source = snapshot.source;
+  input->work_descriptor_snapshot_fields_match_request =
+      snapshot.valid &&
+      snapshot.has_ray_origin_direction_tmin_tmax &&
+      snapshot.has_ray_flags_cull_mask &&
+      snapshot.has_launch_context_input &&
+      snapshot.has_selected_root_descriptor &&
+      snapshot.root_metadata_handle == request.replay_root_metadata_handle &&
+      snapshot.root_node_reference == request.replay_root_node_reference &&
+      strcmp(snapshot.root_address_space, request.replay_root_address_space) ==
+          0 &&
+      strcmp(snapshot.layout_profile_reference,
+             request.replay_layout_profile_reference) == 0 &&
+      snapshot.bvh_memory_binding ==
+          request.replay_backend_root_descriptor_producer_bvh_memory_binding &&
+      snapshot.ray_origin.x == request.replay_ray_origin.x &&
+      snapshot.ray_origin.y == request.replay_ray_origin.y &&
+      snapshot.ray_origin.z == request.replay_ray_origin.z &&
+      snapshot.ray_direction.x == request.replay_ray_direction.x &&
+      snapshot.ray_direction.y == request.replay_ray_direction.y &&
+      snapshot.ray_direction.z == request.replay_ray_direction.z &&
+      snapshot.ray_tmin == request.replay_ray_tmin &&
+      snapshot.ray_tmax == request.replay_ray_tmax &&
+      snapshot.ray_flags == request.replay_ray_flags &&
+      snapshot.cull_mask == request.replay_cull_mask &&
+      snapshot.sbt_record_offset == request.replay_sbt_record_offset &&
+      snapshot.sbt_record_stride == request.replay_sbt_record_stride &&
+      snapshot.miss_index == request.replay_miss_index;
+  if (!input->work_descriptor_snapshot_fields_match_request) {
+    return false;
+  }
+
+  input->top_level_as = (VkAccelerationStructureKHR)snapshot.root_metadata_handle;
+  input->ray_flags = snapshot.ray_flags;
+  input->cull_mask = snapshot.cull_mask;
+  input->ray_origin = snapshot.ray_origin;
+  input->ray_direction = snapshot.ray_direction;
+  input->ray_tmin = snapshot.ray_tmin;
+  input->ray_tmax = snapshot.ray_tmax;
+  input->sbt_record_offset = snapshot.sbt_record_offset;
+  input->sbt_record_stride = snapshot.sbt_record_stride;
+  input->miss_index = snapshot.miss_index;
+  input->root_metadata_handle = snapshot.root_metadata_handle;
+  input->bridge_trace_replay_top_level_as =
+      request.replay_bridge_trace_replay_top_level_as;
+  input->layout_profile_reference = snapshot.layout_profile_reference;
+  input->bvh_memory_binding = snapshot.bvh_memory_binding;
+  input->root_fields_match =
+      request.replay_selected_root_descriptor_matches_producer_root_fields;
+  input->top_level_as_match =
+      request.replay_bridge_trace_replay_top_level_as ==
+          snapshot.root_metadata_handle &&
+      request.replay_bridge_trace_replay_top_level_as ==
+          request
+              .replay_backend_root_descriptor_producer_root_metadata_handle;
+  input->layout_profile_match =
+      request.replay_selected_root_descriptor_layout_profile_reference_match;
+  return true;
+}
+
 static rtcore_materialized_traversal_input
 rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
-    const rtcore_traversal_source_request &request) {
+    const rtcore_traversal_source_request &request,
+    const rtcore_traversal_work_descriptor &descriptor) {
   rtcore_materialized_traversal_input input;
   input.source_snapshot = request.replay_backend_input_source_snapshot;
   input.actual_abi_source_snapshot_admitted =
       request.replay_actual_abi_source_snapshot_admitted &&
       strcmp(request.replay_backend_input_source_snapshot,
              "provider_actual_abi_source_snapshot") == 0;
+  const bool materialized_from_work_descriptor =
+      descriptor.has_provider_materialized_traversal_input_snapshot &&
+      rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
+          &input, request,
+          descriptor.provider_materialized_traversal_input_snapshot);
   input.root_field_consumed =
       input.actual_abi_source_snapshot_admitted &&
+      materialized_from_work_descriptor &&
       request.has_replay_selected_root_descriptor &&
       request.replay_selected_root_descriptor_matches_producer_root_fields &&
-      request.replay_backend_root_descriptor_producer_bvh_memory_binding;
+      input.bvh_memory_binding;
   input.ray_origin_direction_tmin_tmax_consumed =
       input.actual_abi_source_snapshot_admitted &&
+      materialized_from_work_descriptor &&
       request.has_replay_ray_origin_direction_tmin_tmax;
   input.ray_flags_cull_mask_consumed =
       input.actual_abi_source_snapshot_admitted &&
+      materialized_from_work_descriptor &&
       request.has_replay_ray_flags_cull_mask;
   input.launch_context_sbt_consumed =
       input.actual_abi_source_snapshot_admitted &&
+      materialized_from_work_descriptor &&
       request.has_replay_launch_context_input;
   input.full_abi_fields_consumed =
       input.root_field_consumed &&
@@ -16566,6 +16744,8 @@ rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
       input.ray_flags_cull_mask_consumed &&
       input.launch_context_sbt_consumed;
   input.full_abi_field_guard_passed = input.full_abi_fields_consumed;
+  input.work_descriptor_snapshot_consumed_by_materialization =
+      materialized_from_work_descriptor && input.full_abi_field_guard_passed;
   input.block_reason =
       input.full_abi_field_guard_passed
           ? "none"
@@ -16574,33 +16754,6 @@ rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
                  ? "full_abi_field_guard_failed"
                  : request.replay_actual_abi_source_snapshot_block_reason);
   input.valid = input.full_abi_field_guard_passed;
-  input.top_level_as =
-      (VkAccelerationStructureKHR)request.replay_root_metadata_handle;
-  input.ray_flags = request.replay_ray_flags;
-  input.cull_mask = request.replay_cull_mask;
-  input.ray_origin = request.replay_ray_origin;
-  input.ray_direction = request.replay_ray_direction;
-  input.ray_tmin = request.replay_ray_tmin;
-  input.ray_tmax = request.replay_ray_tmax;
-  input.sbt_record_offset = request.replay_sbt_record_offset;
-  input.sbt_record_stride = request.replay_sbt_record_stride;
-  input.miss_index = request.replay_miss_index;
-  input.root_metadata_handle = request.replay_root_metadata_handle;
-  input.bridge_trace_replay_top_level_as =
-      request.replay_bridge_trace_replay_top_level_as;
-  input.layout_profile_reference = request.replay_layout_profile_reference;
-  input.bvh_memory_binding =
-      request.replay_backend_root_descriptor_producer_bvh_memory_binding;
-  input.root_fields_match =
-      request.replay_selected_root_descriptor_matches_producer_root_fields;
-  input.top_level_as_match =
-      request.replay_bridge_trace_replay_top_level_as ==
-          request.replay_root_metadata_handle &&
-      request.replay_bridge_trace_replay_top_level_as ==
-          request
-              .replay_backend_root_descriptor_producer_root_metadata_handle;
-  input.layout_profile_match =
-      request.replay_selected_root_descriptor_layout_profile_reference_match;
   return input;
 }
 
@@ -16617,7 +16770,7 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
   }
   const rtcore_materialized_traversal_input materialized_input =
       rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
-          request);
+          request, descriptor);
   if (!materialized_input.valid) {
     return false;
   }
@@ -16654,6 +16807,9 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
   const bool actual_abi_source_snapshot_consumed =
       materialized_input.full_abi_field_guard_passed && materialized;
   const bool typed_object_consumed_by_trace_ray = materialized;
+  const bool work_descriptor_snapshot_consumed_by_materialization =
+      materialized_input.work_descriptor_snapshot_consumed_by_materialization &&
+      materialized;
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-producer-root-authority-adapter=1, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -16681,6 +16837,11 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "producer_root_descriptor_traversal_input_typed_object_source=%s, "
          "producer_root_descriptor_traversal_input_trace_ray_parameter_source=typed_materialized_traversal_input, "
          "producer_root_descriptor_traversal_input_typed_object_consumed_by_trace_ray=%u, "
+         "producer_root_descriptor_traversal_input_work_descriptor_snapshot=1, "
+         "producer_root_descriptor_traversal_input_work_descriptor_snapshot_valid=%u, "
+         "producer_root_descriptor_traversal_input_work_descriptor_snapshot_source=%s, "
+         "producer_root_descriptor_traversal_input_work_descriptor_snapshot_fields_match_request=%u, "
+         "producer_root_descriptor_traversal_input_work_descriptor_snapshot_consumed_by_materialization=%u, "
          "producer_root_descriptor_traversal_input_source_snapshot=%s, "
          "producer_root_descriptor_traversal_input_actual_abi_source_snapshot_admitted=%u, "
          "producer_root_descriptor_traversal_input_actual_abi_source_snapshot_consumed=%u, "
@@ -16724,6 +16885,11 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          named_top_level_as_matches_bridge_trace_replay_top_level_as ? 1 : 0,
          materialized_input.source_snapshot,
          typed_object_consumed_by_trace_ray ? 1 : 0,
+         materialized_input.work_descriptor_snapshot_valid ? 1 : 0,
+         materialized_input.work_descriptor_snapshot_source,
+         materialized_input.work_descriptor_snapshot_fields_match_request ? 1
+                                                                         : 0,
+         work_descriptor_snapshot_consumed_by_materialization ? 1 : 0,
          materialized_input.source_snapshot,
          materialized_input.actual_abi_source_snapshot_admitted ? 1 : 0,
          actual_abi_source_snapshot_consumed ? 1 : 0,
