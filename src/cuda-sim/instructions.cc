@@ -14321,6 +14321,11 @@ struct rtcore_provider_backend_input_consumption_route_record {
         producer_root_descriptor_traversal_authority_request_rejected(false),
         producer_root_descriptor_traversal_authority_block_reason(
             "unavailable"),
+        provider_backend_input_full_backend_input_abi_ready_gate(false),
+        provider_backend_input_actual_abi_evidence_for_proxy_fields(false),
+        provider_backend_input_full_backend_input_abi_ready_admitted(false),
+        provider_backend_input_full_backend_input_abi_ready_block_reason(
+            "unavailable"),
         provider_backend_input_consumption_route_passed(false),
         reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED) {}
 
@@ -14454,9 +14459,30 @@ struct rtcore_provider_backend_input_consumption_route_record {
   const char *producer_root_descriptor_traversal_authority_request_source;
   bool producer_root_descriptor_traversal_authority_request_rejected;
   const char *producer_root_descriptor_traversal_authority_block_reason;
+  bool provider_backend_input_full_backend_input_abi_ready_gate;
+  bool provider_backend_input_actual_abi_evidence_for_proxy_fields;
+  bool provider_backend_input_full_backend_input_abi_ready_admitted;
+  const char *provider_backend_input_full_backend_input_abi_ready_block_reason;
   bool provider_backend_input_consumption_route_passed;
   rtcore_traversal_provider_reject_reason reject_reason;
 };
+
+static const char *
+rtcore_provider_backend_input_full_ready_block_reason_label(
+    const rtcore_provider_backend_input_consumption_route_record &record) {
+  if (record.provider_backend_input_full_backend_input_abi_ready_admitted) {
+    return "none";
+  }
+  if (!record.provider_backend_input_consumption_route_passed) {
+    return "provider_backend_input_route_not_passed";
+  }
+  if (!record.provider_backend_input_actual_abi_evidence_for_proxy_fields ||
+      record
+          .provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path) {
+    return "root_profile_abi_gap_open";
+  }
+  return "unavailable";
+}
 
 static rtcore_provider_backend_input_consumption_route_record
 rtcore_make_provider_backend_input_consumption_route_record(
@@ -14893,6 +14919,28 @@ rtcore_make_provider_backend_input_consumption_route_record(
            .provider_backend_input_selected_root_descriptor_payload_route_consistency_fail_closed &&
       (!record.existing_traversal_input_replay_requested ||
        record.existing_traversal_request_replay_live_input_match);
+  record.provider_backend_input_full_backend_input_abi_ready_gate =
+      record.existing_traversal_input_replay_requested;
+  record.provider_backend_input_actual_abi_evidence_for_proxy_fields =
+      record.provider_backend_input_proxy_fields_retired_by_actual_producer &&
+      record.provider_backend_input_backend_root_descriptor_actual_abi_evidence &&
+      record
+          .provider_backend_input_backend_root_descriptor_actual_producer_evidence_ready &&
+      record
+          .provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled &&
+      record
+          .provider_backend_input_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence &&
+      record
+          .provider_backend_input_backend_root_descriptor_producer_fields_consumed_by_traversal &&
+      !record
+           .provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path &&
+      !record
+           .provider_backend_input_selected_root_descriptor_payload_route_consistency_fail_closed;
+  record.provider_backend_input_full_backend_input_abi_ready_admitted =
+      record.provider_backend_input_consumption_route_passed &&
+      record.provider_backend_input_actual_abi_evidence_for_proxy_fields;
+  record.provider_backend_input_full_backend_input_abi_ready_block_reason =
+      rtcore_provider_backend_input_full_ready_block_reason_label(record);
   return record;
 }
 
@@ -15018,8 +15066,11 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "proxy_fields_authority=%s, "
          "provider_backend_input_proxy_fields_compatibility_observation_only=%u, "
          "proxy_fields_compatibility_observation_only=%u, "
-         "provider_backend_input_actual_abi_evidence_for_proxy_fields=0, "
-         "actual_abi_evidence_for_proxy_fields=0, "
+         "provider_backend_input_full_backend_input_abi_ready_gate=%u, "
+         "provider_backend_input_actual_abi_evidence_for_proxy_fields=%u, "
+         "actual_abi_evidence_for_proxy_fields=%u, "
+         "provider_backend_input_full_backend_input_abi_ready_admitted=%u, "
+         "provider_backend_input_full_backend_input_abi_ready_block_reason=%s, "
          "existing_traversal_input_replay_requested=%u, "
          "existing_traversal_request_replay_live_input_match=%u, "
          "provider_backend_input_consumption_route_passed=%u, "
@@ -15373,6 +15424,17 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
                  .provider_backend_input_proxy_fields_retired_by_actual_producer
              ? 1
              : 0,
+         record.provider_backend_input_full_backend_input_abi_ready_gate ? 1
+                                                                         : 0,
+         record.provider_backend_input_actual_abi_evidence_for_proxy_fields ? 1
+                                                                            : 0,
+         record.provider_backend_input_actual_abi_evidence_for_proxy_fields ? 1
+                                                                            : 0,
+         record.provider_backend_input_full_backend_input_abi_ready_admitted
+             ? 1
+             : 0,
+         record
+             .provider_backend_input_full_backend_input_abi_ready_block_reason,
          record.existing_traversal_input_replay_requested ? 1 : 0,
          record.existing_traversal_request_replay_live_input_match ? 1 : 0,
          record.provider_backend_input_consumption_route_passed ? 1 : 0,
