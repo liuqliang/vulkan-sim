@@ -12598,7 +12598,11 @@ static const char *rtcore_proxy_fields_authority_label(
 }
 
 static const char *rtcore_remaining_compatibility_fields_label(
-    bool proxy_fields_retired_by_actual_producer) {
+    bool proxy_fields_retired_by_actual_producer,
+    bool actual_abi_evidence_for_proxy_fields) {
+  if (actual_abi_evidence_for_proxy_fields) {
+    return "none";
+  }
   return proxy_fields_retired_by_actual_producer
              ? "proxy_fields_compatibility_observation,bridge_trace_replay_top_level_as_compatibility_observation"
              : "traversable_root_proxy,bvh_format_profile,bridge_trace_replay_top_level_as";
@@ -13302,30 +13306,7 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
           proxy_fields_retired_by_actual_producer);
   request->replay_proxy_fields_retired_by_actual_producer =
       proxy_fields_retired_by_actual_producer;
-  request->replay_proxy_fields_compatibility_observation_only =
-      proxy_fields_retired_by_actual_producer;
-  request->replay_actual_abi_evidence_for_proxy_fields = false;
-  request->replay_root_profile_abi_gap_open =
-      !request->replay_actual_abi_evidence_for_proxy_fields;
-  request->replay_remaining_compatibility_fields =
-      rtcore_remaining_compatibility_fields_label(
-          proxy_fields_retired_by_actual_producer);
-  request->replay_root_profile_abi_gap_reason =
-      request->replay_root_profile_abi_gap_open
-          ? "actual_abi_evidence_for_proxy_fields_unavailable"
-          : "none";
-  const bool provider_decoded_abi_authority_complete =
-      rtcore_replay_provider_decoded_abi_authority_complete(*request);
-  request->replay_full_backend_input_abi_ready_gate = true;
-  request->replay_full_backend_input_abi_ready =
-      provider_decoded_abi_authority_complete &&
-      !request->replay_root_profile_abi_gap_open &&
-      request->replay_actual_abi_evidence_for_proxy_fields;
-  request->replay_full_backend_input_abi_block_reason =
-      rtcore_full_backend_input_abi_block_reason_label(
-          provider_decoded_abi_authority_complete,
-          request->replay_root_profile_abi_gap_open,
-          request->replay_actual_abi_evidence_for_proxy_fields);
+  request->replay_proxy_fields_compatibility_observation_only = false;
   request->replay_root_profile_actual_abi_evidence_bridge =
       view.resolve_backend_root_descriptor_actual_producer_evidence_bridge;
   request->replay_root_profile_actual_abi_evidence_source =
@@ -13432,6 +13413,33 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
   request->replay_root_profile_actual_abi_gap_closure_candidate =
       request->replay_root_profile_actual_abi_evidence_available &&
       !request->replay_runtime_proxy_compatibility_path;
+  request->replay_actual_abi_evidence_for_proxy_fields =
+      request->replay_root_profile_actual_abi_gap_closure_candidate;
+  request->replay_proxy_fields_compatibility_observation_only =
+      proxy_fields_retired_by_actual_producer &&
+      !request->replay_actual_abi_evidence_for_proxy_fields;
+  request->replay_root_profile_abi_gap_open =
+      !request->replay_actual_abi_evidence_for_proxy_fields;
+  request->replay_remaining_compatibility_fields =
+      rtcore_remaining_compatibility_fields_label(
+          proxy_fields_retired_by_actual_producer,
+          request->replay_actual_abi_evidence_for_proxy_fields);
+  request->replay_root_profile_abi_gap_reason =
+      request->replay_root_profile_abi_gap_open
+          ? "actual_abi_evidence_for_proxy_fields_unavailable"
+          : "none";
+  const bool provider_decoded_abi_authority_complete =
+      rtcore_replay_provider_decoded_abi_authority_complete(*request);
+  request->replay_full_backend_input_abi_ready_gate = true;
+  request->replay_full_backend_input_abi_ready =
+      provider_decoded_abi_authority_complete &&
+      !request->replay_root_profile_abi_gap_open &&
+      request->replay_actual_abi_evidence_for_proxy_fields;
+  request->replay_full_backend_input_abi_block_reason =
+      rtcore_full_backend_input_abi_block_reason_label(
+          provider_decoded_abi_authority_complete,
+          request->replay_root_profile_abi_gap_open,
+          request->replay_actual_abi_evidence_for_proxy_fields);
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-input-replay, "
