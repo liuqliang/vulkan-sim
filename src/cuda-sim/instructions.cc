@@ -12318,6 +12318,12 @@ struct rtcore_traversal_source_request {
         replay_ray_origin_direction_tmin_tmax_authority("unavailable"),
         replay_ray_flags_cull_mask_authority("unavailable"),
         replay_launch_context_input_authority("unavailable"),
+        replay_context_window_source("unavailable"),
+        replay_context_window_authority("unavailable"),
+        replay_context_window_lifetime_ready(false),
+        replay_context_window_owner_seq_matches_lifetime(false),
+        replay_context_window_bound_to_provider_decoded_abi(false),
+        replay_token_lifetime_key_ready(false),
         replay_ray_flags(0),
         replay_cull_mask(0),
         replay_ray_tmin(0.0f),
@@ -12375,6 +12381,12 @@ struct rtcore_traversal_source_request {
   const char *replay_ray_origin_direction_tmin_tmax_authority;
   const char *replay_ray_flags_cull_mask_authority;
   const char *replay_launch_context_input_authority;
+  const char *replay_context_window_source;
+  const char *replay_context_window_authority;
+  bool replay_context_window_lifetime_ready;
+  bool replay_context_window_owner_seq_matches_lifetime;
+  bool replay_context_window_bound_to_provider_decoded_abi;
+  bool replay_token_lifetime_key_ready;
   float3 replay_ray_origin;
   float3 replay_ray_direction;
   uint32_t replay_ray_flags;
@@ -13184,6 +13196,20 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
   request->replay_launch_context_input_authority =
       rtcore_decoded_input_field_owner_class_name(
           view.launch_context_input_owner);
+  request->replay_context_window_source =
+      "driver_runtime_context_window_lifetime_bridge";
+  request->replay_context_window_authority =
+      rtcore_decoded_input_field_owner_class_name(
+          RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME);
+  request->replay_context_window_lifetime_ready =
+      view.provider_payload_runtime_lifetime_ready;
+  request->replay_context_window_owner_seq_matches_lifetime =
+      view.context_window_owner_seq_matches_lifetime;
+  request->replay_token_lifetime_key_ready = view.token_lifetime_key_ready;
+  request->replay_context_window_bound_to_provider_decoded_abi =
+      view.provider_payload_runtime_lifetime_ready &&
+      view.context_window_owner_seq_matches_lifetime &&
+      view.token_lifetime_key_ready;
   request->replay_ray_origin = view.ray_origin;
   request->replay_ray_direction = view.ray_direction;
   request->replay_ray_tmin = view.ray_tmin;
@@ -13281,6 +13307,12 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "existing_traversal_replay_ray_origin_direction_tmin_tmax_source=%s, "
          "existing_traversal_replay_ray_flags_cull_mask_source=%s, "
          "existing_traversal_replay_launch_context_input_source=%s, "
+         "existing_traversal_replay_context_window_source=%s, "
+         "existing_traversal_replay_context_window_authority=%s, "
+         "existing_traversal_replay_context_window_lifetime_ready=%u, "
+         "existing_traversal_replay_context_window_owner_seq_matches_lifetime=%u, "
+         "existing_traversal_replay_context_window_bound_to_provider_decoded_abi=%u, "
+         "existing_traversal_replay_token_lifetime_key_ready=%u, "
          "has_launch_context_input=%u, bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "existing_traversal_replay_selected_descriptor_source_bridge=1, "
@@ -13319,6 +13351,12 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          request->replay_ray_origin_direction_tmin_tmax_source,
          request->replay_ray_flags_cull_mask_source,
          request->replay_launch_context_input_source,
+         request->replay_context_window_source,
+         request->replay_context_window_authority,
+         request->replay_context_window_lifetime_ready ? 1 : 0,
+         request->replay_context_window_owner_seq_matches_lifetime ? 1 : 0,
+         request->replay_context_window_bound_to_provider_decoded_abi ? 1 : 0,
+         request->replay_token_lifetime_key_ready ? 1 : 0,
          request->has_replay_launch_context_input ? 1 : 0,
          (unsigned long long)request->replay_bridge_trace_replay_top_level_as,
          request->replay_sbt_record_offset, request->replay_sbt_record_stride,
@@ -13385,6 +13423,12 @@ struct rtcore_existing_traversal_replay_input_match_record {
         ray_flags_cull_mask_authority("unavailable"),
         launch_context_input_source("unavailable"),
         launch_context_input_authority("unavailable"),
+        context_window_source("unavailable"),
+        context_window_authority("unavailable"),
+        context_window_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        context_window_bound_to_provider_decoded_abi(false),
+        token_lifetime_key_ready(false),
         launch_context_sbt_match(false),
         ray_origin_direction_tmin_tmax_match(false),
         ray_flags_cull_mask_match(false),
@@ -13401,6 +13445,12 @@ struct rtcore_existing_traversal_replay_input_match_record {
   const char *ray_flags_cull_mask_authority;
   const char *launch_context_input_source;
   const char *launch_context_input_authority;
+  const char *context_window_source;
+  const char *context_window_authority;
+  bool context_window_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool context_window_bound_to_provider_decoded_abi;
+  bool token_lifetime_key_ready;
   bool launch_context_sbt_match;
   bool ray_origin_direction_tmin_tmax_match;
   bool ray_flags_cull_mask_match;
@@ -13417,14 +13467,6 @@ rtcore_make_existing_traversal_replay_input_match_record(
   record.input_authority = record.requested ? "provider_decoded_abi_fields"
                                             : "unavailable";
   record.provider_decoded_abi_fields_consumed = record.requested;
-  record.provider_decoded_abi_authority_complete =
-      record.provider_decoded_abi_fields_consumed &&
-      strcmp(request.replay_ray_origin_direction_tmin_tmax_authority,
-             "compiler_driver_publication") == 0 &&
-      strcmp(request.replay_ray_flags_cull_mask_authority,
-             "compiler_driver_publication") == 0 &&
-      strcmp(request.replay_launch_context_input_authority,
-             "compiler_driver_publication") == 0;
   record.ray_origin_direction_tmin_tmax_source =
       request.replay_ray_origin_direction_tmin_tmax_source;
   record.ray_origin_direction_tmin_tmax_authority =
@@ -13437,6 +13479,25 @@ rtcore_make_existing_traversal_replay_input_match_record(
       request.replay_launch_context_input_source;
   record.launch_context_input_authority =
       request.replay_launch_context_input_authority;
+  record.context_window_source = request.replay_context_window_source;
+  record.context_window_authority = request.replay_context_window_authority;
+  record.context_window_lifetime_ready =
+      request.replay_context_window_lifetime_ready;
+  record.context_window_owner_seq_matches_lifetime =
+      request.replay_context_window_owner_seq_matches_lifetime;
+  record.context_window_bound_to_provider_decoded_abi =
+      request.replay_context_window_bound_to_provider_decoded_abi;
+  record.token_lifetime_key_ready = request.replay_token_lifetime_key_ready;
+  record.provider_decoded_abi_authority_complete =
+      record.provider_decoded_abi_fields_consumed &&
+      strcmp(request.replay_ray_origin_direction_tmin_tmax_authority,
+             "compiler_driver_publication") == 0 &&
+      strcmp(request.replay_ray_flags_cull_mask_authority,
+             "compiler_driver_publication") == 0 &&
+      strcmp(request.replay_launch_context_input_authority,
+             "compiler_driver_publication") == 0 &&
+      strcmp(request.replay_context_window_authority, "driver_runtime") == 0 &&
+      request.replay_context_window_bound_to_provider_decoded_abi;
   if (!request.from_provider_backend_input_snapshot) {
     record.all_fields_match = true;
     return record;
@@ -13497,6 +13558,12 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          "existing_traversal_replay_launch_context_input_source=%s, "
          "existing_traversal_replay_launch_context_input_authority=%s, "
          "existing_traversal_replay_launch_context_sbt_match=%u, "
+         "existing_traversal_replay_context_window_source=%s, "
+         "existing_traversal_replay_context_window_authority=%s, "
+         "existing_traversal_replay_context_window_lifetime_ready=%u, "
+         "existing_traversal_replay_context_window_owner_seq_matches_lifetime=%u, "
+         "existing_traversal_replay_context_window_bound_to_provider_decoded_abi=%u, "
+         "existing_traversal_replay_token_lifetime_key_ready=%u, "
          "existing_traversal_replay_all_fields_match=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
@@ -13515,6 +13582,12 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          record.launch_context_input_source,
          record.launch_context_input_authority,
          record.launch_context_sbt_match ? 1 : 0,
+         record.context_window_source,
+         record.context_window_authority,
+         record.context_window_lifetime_ready ? 1 : 0,
+         record.context_window_owner_seq_matches_lifetime ? 1 : 0,
+         record.context_window_bound_to_provider_decoded_abi ? 1 : 0,
+         record.token_lifetime_key_ready ? 1 : 0,
          record.all_fields_match ? 1 : 0);
   fflush(stdout);
 }
