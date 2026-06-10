@@ -15323,6 +15323,19 @@ rtcore_provider_backend_input_full_ready_block_reason_label(
   return "unavailable";
 }
 
+static const char *rtcore_bridge_trace_replay_top_level_as_authority_label(
+    bool producer_root_materialized_trace_input) {
+  return producer_root_materialized_trace_input
+             ? "producer_root_descriptor_materialized_trace_input"
+             : "compatibility_observation";
+}
+
+static bool
+rtcore_bridge_trace_replay_top_level_as_compatibility_observation_only(
+    bool producer_root_materialized_trace_input) {
+  return !producer_root_materialized_trace_input;
+}
+
 static rtcore_provider_backend_input_consumption_route_record
 rtcore_make_provider_backend_input_consumption_route_record(
     const rtcore_custom_backend_result &custom_result,
@@ -15670,12 +15683,14 @@ rtcore_make_provider_backend_input_consumption_route_record(
     record.existing_traversal_backend_named_top_level_as_source =
         "producer_root_metadata_handle";
     record
-        .existing_traversal_backend_bridge_trace_replay_top_level_as_compatibility_observation_only =
-        true;
-    record
         .existing_traversal_backend_named_top_level_as_matches_root_authority =
         record.existing_traversal_backend_root_authority_top_level_as ==
         record.provider_backend_input_root_metadata_handle;
+    record
+        .existing_traversal_backend_bridge_trace_replay_top_level_as_compatibility_observation_only =
+        rtcore_bridge_trace_replay_top_level_as_compatibility_observation_only(
+            record
+                .existing_traversal_backend_named_top_level_as_matches_root_authority);
   }
   record.producer_root_descriptor_traversal_authority_preflight =
       record.existing_traversal_backend_path_selected;
@@ -18056,6 +18071,11 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
       request.replay_bridge_trace_replay_top_level_as;
   const bool actual_abi_source_snapshot_consumed =
       materialized_input.full_abi_field_guard_passed && materialized;
+  const bool bridge_trace_replay_top_level_as_materialized_by_producer_root =
+      actual_abi_source_snapshot_consumed &&
+      named_top_level_as_matches_bridge_trace_replay_top_level_as &&
+      materialized_input.top_level_as_match &&
+      trace_ray_arguments.values_match_decoded_value_record;
   const bool typed_object_consumed_by_trace_ray = materialized;
   const bool work_descriptor_snapshot_consumed_by_materialization =
       materialized_input.work_descriptor_snapshot_consumed_by_materialization &&
@@ -18080,8 +18100,8 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "producer_root_descriptor_named_top_level_as_authority=actual_producer_descriptor, "
          "producer_root_descriptor_named_top_level_as=0x%llx, "
          "producer_root_descriptor_named_top_level_as_matches_bridge_trace_replay_top_level_as=%u, "
-         "bridge_trace_replay_top_level_as_authority=compatibility_observation, "
-         "bridge_trace_replay_top_level_as_compatibility_observation_only=1, "
+         "bridge_trace_replay_top_level_as_authority=%s, "
+         "bridge_trace_replay_top_level_as_compatibility_observation_only=%u, "
          "producer_root_descriptor_traversal_input_source=provider_consumed_producer_descriptor_fields, "
          "producer_root_descriptor_traversal_input_typed_object=1, "
          "producer_root_descriptor_traversal_input_typed_object_source=%s, "
@@ -18187,6 +18207,12 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          request.replay_root_address_space,
          (unsigned long long)request.replay_root_metadata_handle,
          named_top_level_as_matches_bridge_trace_replay_top_level_as ? 1 : 0,
+         rtcore_bridge_trace_replay_top_level_as_authority_label(
+             bridge_trace_replay_top_level_as_materialized_by_producer_root),
+         rtcore_bridge_trace_replay_top_level_as_compatibility_observation_only(
+             bridge_trace_replay_top_level_as_materialized_by_producer_root)
+             ? 1
+             : 0,
          materialized_input.source_snapshot,
          typed_object_consumed_by_trace_ray ? 1 : 0,
          materialized_input.work_descriptor_snapshot_valid ? 1 : 0,
