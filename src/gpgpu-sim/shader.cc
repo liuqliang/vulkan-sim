@@ -3090,7 +3090,15 @@ void scheduler_unit::cycle() {
                        "consumer_attempted=%u, owner_tuple_reserved=%u, "
                        "credit_consumed=%u, rollback_attempted=%u, "
                        "credit_refunded=%u, owner_tuple_cancelled=%u, "
-                       "bridge_result=%s, transition_reason=%s\n",
+                       "bridge_result=%s, transition_reason=%s, "
+                       "scheduler_credit_ledger_reusable_credit_scheduler_bridge_materialized_input_provenance=1, "
+                       "scheduler_bridge_materialized_input_provenance_available=%u, "
+                       "has_provider_materialized_traversal_input_snapshot=%u, "
+                       "provider_materialized_traversal_input_snapshot_valid=%u, "
+                       "provider_materialized_traversal_input_snapshot_source=%s, "
+                       "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+                       "scheduler_bridge_materialized_input_consumes_bridge_policy=0, "
+                       "scheduler_bridge_materialized_input_consumes_issue_behavior=0\n",
                        rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_id,
@@ -3116,7 +3124,25 @@ void scheduler_unit::cycle() {
                            : 0,
                        0, 0, 0,
                        rtcore_scheduler_credit_ledger_scheduler_bridge_decision_result,
-                       "reusable_credit_scheduler_bridge_decision");
+                       "reusable_credit_scheduler_bridge_decision",
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .available
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .has_provider_materialized_traversal_input_snapshot
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_snapshot_valid
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                           .provider_materialized_traversal_input_snapshot_source,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_actual_abi_snapshot_admitted
+                           ? 1
+                           : 0);
                 fflush(stdout);
               }
               if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
@@ -3224,7 +3250,15 @@ void scheduler_unit::cycle() {
                            "consumer_attempted=%u, owner_tuple_reserved=%u, "
                            "credit_consumed=%u, rollback_attempted=%u, "
                            "credit_refunded=%u, owner_tuple_cancelled=%u, "
-                           "bridge_result=%s, transition_reason=%s\n",
+                           "bridge_result=%s, transition_reason=%s, "
+                           "scheduler_credit_ledger_reusable_credit_scheduler_bridge_materialized_input_provenance=1, "
+                           "scheduler_bridge_materialized_input_provenance_available=%u, "
+                           "has_provider_materialized_traversal_input_snapshot=%u, "
+                           "provider_materialized_traversal_input_snapshot_valid=%u, "
+                           "provider_materialized_traversal_input_snapshot_source=%s, "
+                           "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+                           "scheduler_bridge_materialized_input_consumes_bridge_policy=0, "
+                           "scheduler_bridge_materialized_input_consumes_issue_behavior=0\n",
                            rtcore_scheduler_credit_ledger_shadow_table
                                .owner_hw_sid,
                            rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
@@ -3249,7 +3283,25 @@ void scheduler_unit::cycle() {
                            credit_refunded ? 1 : 0,
                            owner_tuple_cancelled ? 1 : 0,
                            bridge_result,
-                           "reusable_credit_scheduler_bridge_rollback");
+                           "reusable_credit_scheduler_bridge_rollback",
+                           rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                   .available
+                               ? 1
+                               : 0,
+                           rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                   .has_provider_materialized_traversal_input_snapshot
+                               ? 1
+                               : 0,
+                           rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                   .provider_materialized_traversal_input_snapshot_valid
+                               ? 1
+                               : 0,
+                           rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_snapshot_source,
+                           rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                   .provider_materialized_traversal_input_actual_abi_snapshot_admitted
+                               ? 1
+                               : 0);
                     fflush(stdout);
                     if (credit_refunded) {
                       rtcore_scheduler_credit_ledger_issue_gate_credit_consumed =
@@ -3344,7 +3396,15 @@ void scheduler_unit::cycle() {
                          "consumer_attempted=%u, owner_tuple_reserved=%u, "
                          "credit_consumed=%u, rollback_attempted=%u, "
                          "credit_refunded=%u, owner_tuple_cancelled=%u, "
-                         "bridge_result=%s, transition_reason=%s\n",
+                         "bridge_result=%s, transition_reason=%s, "
+                         "scheduler_credit_ledger_reusable_credit_scheduler_bridge_materialized_input_provenance=1, "
+                         "scheduler_bridge_materialized_input_provenance_available=%u, "
+                         "has_provider_materialized_traversal_input_snapshot=%u, "
+                         "provider_materialized_traversal_input_snapshot_valid=%u, "
+                         "provider_materialized_traversal_input_snapshot_source=%s, "
+                         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+                         "scheduler_bridge_materialized_input_consumes_bridge_policy=0, "
+                         "scheduler_bridge_materialized_input_consumes_issue_behavior=0\n",
                          rtcore_scheduler_credit_ledger_shadow_table
                              .owner_hw_sid,
                          rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
@@ -3371,7 +3431,25 @@ void scheduler_unit::cycle() {
                              : 0,
                          0, 0, 0,
                          "scheduler_bridge_issue_committed",
-                         "reusable_credit_scheduler_bridge_issue_commit");
+                         "reusable_credit_scheduler_bridge_issue_commit",
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .available
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .has_provider_materialized_traversal_input_snapshot
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_snapshot_valid
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                             .provider_materialized_traversal_input_snapshot_source,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_actual_abi_snapshot_admitted
+                             ? 1
+                             : 0);
                   fflush(stdout);
                 }
                 issued++;
