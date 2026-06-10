@@ -13087,7 +13087,8 @@ struct rtcore_decoded_trace_ray_value_record {
 
 enum rtcore_decoded_trace_ray_value_record_failpoint {
   RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE = 0,
-  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH,
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH
 };
 
 static rtcore_decoded_trace_ray_value_record_failpoint
@@ -13099,6 +13100,9 @@ rtcore_decoded_trace_ray_value_record_failpoint_mode() {
   if (strcmp(value, "ray_flags_mismatch") == 0) {
     return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH;
   }
+  if (strcmp(value, "ray_flags_owner_mismatch") == 0) {
+    return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH;
+  }
   return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE;
 }
 
@@ -13107,6 +13111,8 @@ static const char *rtcore_decoded_trace_ray_value_record_failpoint_name(
   switch (mode) {
     case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH:
       return "ray_flags_mismatch";
+    case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH:
+      return "ray_flags_owner_mismatch";
     case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE:
     default:
       return "none";
@@ -13132,6 +13138,24 @@ static void rtcore_apply_decoded_trace_ray_value_record_failpoint(
            "decoded_value_record_mutated_ray_flags=%u\n",
            rtcore_decoded_trace_ray_value_record_failpoint_name(mode),
            record->source, original_ray_flags, record->ray_flags);
+    fflush(stdout);
+  }
+  if (mode ==
+      RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH) {
+    const rtcore_decoded_input_field_owner_class original_owner =
+        record->ray_flags_cull_mask_owner;
+    record->ray_flags_cull_mask_owner = RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+    printf("GPGPU-Sim PTX: RT_SUBMIT decoded-value-record-failpoint, "
+           "decoded_value_record_failpoint_applied=1, "
+           "decoded_value_record_failpoint_mode=%s, "
+           "decoded_value_record_source=%s, "
+           "decoded_value_record_original_ray_flags_owner=%s, "
+           "decoded_value_record_mutated_ray_flags_owner=%s\n",
+           rtcore_decoded_trace_ray_value_record_failpoint_name(mode),
+           record->source,
+           rtcore_decoded_input_field_owner_class_name(original_owner),
+           rtcore_decoded_input_field_owner_class_name(
+               record->ray_flags_cull_mask_owner));
     fflush(stdout);
   }
 }
@@ -17310,6 +17334,29 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
              input->decoded_value_record_source,
              decoded_value_record.ray_flags, snapshot.ray_flags,
              request.replay_ray_flags);
+      fflush(stdout);
+    }
+    if (!input->decoded_value_record_authority_matches_request) {
+      printf("GPGPU-Sim PTX: RT_SUBMIT "
+             "decoded-value-record-authority-mismatch-rejected=1, "
+             "decoded_value_record_authority_mismatch_rejected=1, "
+             "decoded_value_record_valid=%u, "
+             "decoded_value_record_source=%s, "
+             "decoded_value_record_matches_request=%u, "
+             "decoded_value_record_authority_matches_request=0, "
+             "decoded_value_record_ray_flags_owner=%s, "
+             "request_ray_flags_authority=%s, "
+             "decoded_value_record_ray_flags_source=%s, "
+             "request_ray_flags_source=%s\n",
+             input->decoded_value_record_valid ? 1 : 0,
+             input->decoded_value_record_source,
+             input->decoded_value_record_matches_request ? 1 : 0,
+             rtcore_decoded_input_field_owner_class_name(
+                 decoded_value_record.ray_flags_cull_mask_owner),
+             request.replay_ray_flags_cull_mask_authority,
+             rtcore_decoded_input_field_source_label(
+                 decoded_value_record.ray_flags_cull_mask_owner),
+             request.replay_ray_flags_cull_mask_source);
       fflush(stdout);
     }
     return false;
