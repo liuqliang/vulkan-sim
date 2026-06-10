@@ -12331,6 +12331,13 @@ struct rtcore_traversal_source_request {
         replay_backend_root_descriptor_producer_layout_profile_reference(
             "unavailable"),
         replay_backend_root_descriptor_producer_bvh_memory_binding(false),
+        replay_selected_root_descriptor_root_metadata_handle_match(false),
+        replay_selected_root_descriptor_root_address_space_match(false),
+        replay_selected_root_descriptor_root_node_reference_match(false),
+        replay_selected_root_descriptor_layout_profile_reference_match(false),
+        replay_selected_root_descriptor_matches_producer_root_fields(false),
+        replay_selected_root_descriptor_root_field_consistency_policy_passed(
+            false),
         replay_selected_root_descriptor_owner("unavailable"),
         replay_selected_root_descriptor_source("unavailable"),
         replay_payload_selected_root_descriptor_owner("unavailable"),
@@ -12373,6 +12380,12 @@ struct rtcore_traversal_source_request {
   uint64_t replay_backend_root_descriptor_producer_root_node_reference;
   const char *replay_backend_root_descriptor_producer_layout_profile_reference;
   bool replay_backend_root_descriptor_producer_bvh_memory_binding;
+  bool replay_selected_root_descriptor_root_metadata_handle_match;
+  bool replay_selected_root_descriptor_root_address_space_match;
+  bool replay_selected_root_descriptor_root_node_reference_match;
+  bool replay_selected_root_descriptor_layout_profile_reference_match;
+  bool replay_selected_root_descriptor_matches_producer_root_fields;
+  bool replay_selected_root_descriptor_root_field_consistency_policy_passed;
   const char *replay_selected_root_descriptor_owner;
   const char *replay_selected_root_descriptor_source;
   const char *replay_payload_selected_root_descriptor_owner;
@@ -13131,6 +13144,32 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
       view.resolve_backend_root_descriptor_producer_bvh_memory_binding;
   request->replay_selected_root_descriptor_actual_producer_authority_enabled =
       view.resolve_backend_root_descriptor_actual_producer_authority_enabled;
+  request->replay_selected_root_descriptor_root_metadata_handle_match =
+      request->replay_root_metadata_handle ==
+      request->replay_backend_root_descriptor_producer_root_metadata_handle;
+  request->replay_selected_root_descriptor_root_address_space_match =
+      strcmp(request->replay_root_address_space,
+             request
+                 ->replay_backend_root_descriptor_producer_root_address_space) ==
+      0;
+  request->replay_selected_root_descriptor_root_node_reference_match =
+      request->replay_root_node_reference ==
+      request->replay_backend_root_descriptor_producer_root_node_reference;
+  request->replay_selected_root_descriptor_layout_profile_reference_match =
+      strcmp(request->replay_layout_profile_reference,
+             request
+                 ->replay_backend_root_descriptor_producer_layout_profile_reference) ==
+      0;
+  request->replay_selected_root_descriptor_matches_producer_root_fields =
+      request->replay_selected_root_descriptor_root_metadata_handle_match &&
+      request->replay_selected_root_descriptor_root_address_space_match &&
+      request->replay_selected_root_descriptor_root_node_reference_match &&
+      request->replay_selected_root_descriptor_layout_profile_reference_match;
+  request
+      ->replay_selected_root_descriptor_root_field_consistency_policy_passed =
+      !request
+           ->replay_selected_root_descriptor_actual_producer_authority_enabled ||
+      request->replay_selected_root_descriptor_matches_producer_root_fields;
   request->replay_selected_root_descriptor_owner =
       rtcore_backend_root_descriptor_selected_owner_label(
           view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
@@ -13173,6 +13212,14 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "replay_backend_root_descriptor_producer_root_node_reference=0x%llx, "
          "replay_backend_root_descriptor_producer_layout_profile_reference=%s, "
          "replay_backend_root_descriptor_producer_bvh_memory_binding=%u, "
+         "existing_traversal_replay_root_field_consistency_bridge=1, "
+         "replay_selected_root_descriptor_root_metadata_handle_match=%u, "
+         "replay_selected_root_descriptor_root_address_space_match=%u, "
+         "replay_selected_root_descriptor_root_node_reference_match=%u, "
+         "replay_selected_root_descriptor_layout_profile_reference_match=%u, "
+         "replay_selected_root_descriptor_matches_producer_root_fields=%u, "
+         "replay_selected_root_descriptor_root_field_consistency_policy=actual_producer_must_match_fallback_may_diverge, "
+         "replay_selected_root_descriptor_root_field_consistency_policy_passed=%u, "
          "replay_selected_root_descriptor_owner=%s, "
          "replay_selected_root_descriptor_source=%s, "
          "replay_payload_selected_root_descriptor_owner=%s, "
@@ -13202,6 +13249,22 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
              ->replay_backend_root_descriptor_producer_layout_profile_reference,
          request->replay_backend_root_descriptor_producer_bvh_memory_binding ? 1
                                                                              : 0,
+         request->replay_selected_root_descriptor_root_metadata_handle_match ? 1
+                                                                            : 0,
+         request->replay_selected_root_descriptor_root_address_space_match ? 1
+                                                                          : 0,
+         request->replay_selected_root_descriptor_root_node_reference_match ? 1
+                                                                           : 0,
+         request->replay_selected_root_descriptor_layout_profile_reference_match
+             ? 1
+             : 0,
+         request->replay_selected_root_descriptor_matches_producer_root_fields
+             ? 1
+             : 0,
+         request
+                 ->replay_selected_root_descriptor_root_field_consistency_policy_passed
+             ? 1
+             : 0,
          request->replay_selected_root_descriptor_owner,
          request->replay_selected_root_descriptor_source,
          request->replay_payload_selected_root_descriptor_owner,
