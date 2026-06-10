@@ -12312,6 +12312,9 @@ struct rtcore_traversal_source_request {
         has_replay_ray_flags_cull_mask(false),
         has_replay_launch_context_input(false),
         has_replay_selected_root_descriptor(false),
+        replay_ray_origin_direction_tmin_tmax_source("unavailable"),
+        replay_ray_flags_cull_mask_source("unavailable"),
+        replay_launch_context_input_source("unavailable"),
         replay_ray_flags(0),
         replay_cull_mask(0),
         replay_ray_tmin(0.0f),
@@ -12363,6 +12366,9 @@ struct rtcore_traversal_source_request {
   bool has_replay_ray_flags_cull_mask;
   bool has_replay_launch_context_input;
   bool has_replay_selected_root_descriptor;
+  const char *replay_ray_origin_direction_tmin_tmax_source;
+  const char *replay_ray_flags_cull_mask_source;
+  const char *replay_launch_context_input_source;
   float3 replay_ray_origin;
   float3 replay_ray_direction;
   uint32_t replay_ray_flags;
@@ -13156,6 +13162,13 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
       view.has_ray_origin_direction_tmin_tmax;
   request->has_replay_ray_flags_cull_mask = view.has_ray_flags_cull_mask;
   request->has_replay_launch_context_input = view.has_launch_context_input;
+  request->replay_ray_origin_direction_tmin_tmax_source =
+      rtcore_decoded_input_field_source_label(
+          view.ray_origin_direction_tmin_tmax_owner);
+  request->replay_ray_flags_cull_mask_source =
+      rtcore_decoded_input_field_source_label(view.ray_flags_cull_mask_owner);
+  request->replay_launch_context_input_source =
+      rtcore_decoded_input_field_source_label(view.launch_context_input_owner);
   request->replay_ray_origin = view.ray_origin;
   request->replay_ray_direction = view.ray_direction;
   request->replay_ray_tmin = view.ray_tmin;
@@ -13250,6 +13263,9 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
          "custom-rtcore-backend-existing-traversal-input-replay=1, "
          "existing_traversal_input_replay_source=provider_backend_input_snapshot, "
+         "existing_traversal_replay_ray_origin_direction_tmin_tmax_source=%s, "
+         "existing_traversal_replay_ray_flags_cull_mask_source=%s, "
+         "existing_traversal_replay_launch_context_input_source=%s, "
          "has_launch_context_input=%u, bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "existing_traversal_replay_selected_descriptor_source_bridge=1, "
@@ -13285,6 +13301,9 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
          descriptor.warp_metadata.active_mask,
+         request->replay_ray_origin_direction_tmin_tmax_source,
+         request->replay_ray_flags_cull_mask_source,
+         request->replay_launch_context_input_source,
          request->has_replay_launch_context_input ? 1 : 0,
          (unsigned long long)request->replay_bridge_trace_replay_top_level_as,
          request->replay_sbt_record_offset, request->replay_sbt_record_stride,
@@ -13338,18 +13357,51 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
   return true;
 }
 
-static bool
-rtcore_existing_traversal_replay_request_matches_response_input(
+struct rtcore_existing_traversal_replay_input_match_record {
+  rtcore_existing_traversal_replay_input_match_record()
+      : requested(false),
+        has_traversal_data(false),
+        ray_origin_direction_tmin_tmax_source("unavailable"),
+        ray_flags_cull_mask_source("unavailable"),
+        launch_context_input_source("unavailable"),
+        launch_context_sbt_match(false),
+        ray_origin_direction_tmin_tmax_match(false),
+        ray_flags_cull_mask_match(false),
+        all_fields_match(false) {}
+
+  bool requested;
+  bool has_traversal_data;
+  const char *ray_origin_direction_tmin_tmax_source;
+  const char *ray_flags_cull_mask_source;
+  const char *launch_context_input_source;
+  bool launch_context_sbt_match;
+  bool ray_origin_direction_tmin_tmax_match;
+  bool ray_flags_cull_mask_match;
+  bool all_fields_match;
+};
+
+static rtcore_existing_traversal_replay_input_match_record
+rtcore_make_existing_traversal_replay_input_match_record(
     const rtcore_traversal_source_request &request,
     const rtcore_traversal_provider_response &response) {
+  rtcore_existing_traversal_replay_input_match_record record;
+  record.requested = request.from_provider_backend_input_snapshot;
+  record.has_traversal_data = response.has_traversal_data;
+  record.ray_origin_direction_tmin_tmax_source =
+      request.replay_ray_origin_direction_tmin_tmax_source;
+  record.ray_flags_cull_mask_source =
+      request.replay_ray_flags_cull_mask_source;
+  record.launch_context_input_source =
+      request.replay_launch_context_input_source;
   if (!request.from_provider_backend_input_snapshot) {
-    return true;
+    record.all_fields_match = true;
+    return record;
   }
   if (!response.has_traversal_data) {
-    return false;
+    return record;
   }
   const Traversal_data &traversal = response.traversal_snapshot;
-  const bool launch_context_matches =
+  record.launch_context_sbt_match =
       request.has_replay_launch_context_input &&
       traversal.rtcore_trace_input_has_top_level_as != 0 &&
       traversal.rtcore_trace_input_top_level_as ==
@@ -13357,7 +13409,7 @@ rtcore_existing_traversal_replay_request_matches_response_input(
       traversal.sbtRecordOffset == request.replay_sbt_record_offset &&
       traversal.sbtRecordStride == request.replay_sbt_record_stride &&
       traversal.missIndex == request.replay_miss_index;
-  const bool ray_input_matches =
+  record.ray_origin_direction_tmin_tmax_match =
       request.has_replay_ray_origin_direction_tmin_tmax &&
       traversal.ray_world_origin.x == request.replay_ray_origin.x &&
       traversal.ray_world_origin.y == request.replay_ray_origin.y &&
@@ -13367,11 +13419,48 @@ rtcore_existing_traversal_replay_request_matches_response_input(
       traversal.ray_world_direction.z == request.replay_ray_direction.z &&
       traversal.Tmin == request.replay_ray_tmin &&
       traversal.Tmax == request.replay_ray_tmax;
-  const bool flags_mask_matches =
+  record.ray_flags_cull_mask_match =
       request.has_replay_ray_flags_cull_mask &&
       traversal.rayFlags == request.replay_ray_flags &&
       traversal.cullMask == request.replay_cull_mask;
-  return launch_context_matches && ray_input_matches && flags_mask_matches;
+  record.all_fields_match = record.launch_context_sbt_match &&
+                            record.ray_origin_direction_tmin_tmax_match &&
+                            record.ray_flags_cull_mask_match;
+  return record;
+}
+
+static void rtcore_log_existing_traversal_replay_input_match_record(
+    const rtcore_traversal_work_descriptor &descriptor,
+    const rtcore_existing_traversal_replay_input_match_record &record) {
+  if (!record.requested) {
+    return;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "custom-rtcore-backend-existing-traversal-input-replay-field-breakdown=1, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "existing_traversal_replay_input_source=provider_backend_input_snapshot, "
+         "existing_traversal_replay_has_traversal_data=%u, "
+         "existing_traversal_replay_ray_origin_direction_tmin_tmax_source=%s, "
+         "existing_traversal_replay_ray_origin_direction_tmin_tmax_match=%u, "
+         "existing_traversal_replay_ray_flags_cull_mask_source=%s, "
+         "existing_traversal_replay_ray_flags_cull_mask_match=%u, "
+         "existing_traversal_replay_launch_context_input_source=%s, "
+         "existing_traversal_replay_launch_context_sbt_match=%u, "
+         "existing_traversal_replay_all_fields_match=%u\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
+         descriptor.warp_metadata.active_mask,
+         record.has_traversal_data ? 1 : 0,
+         record.ray_origin_direction_tmin_tmax_source,
+         record.ray_origin_direction_tmin_tmax_match ? 1 : 0,
+         record.ray_flags_cull_mask_source,
+         record.ray_flags_cull_mask_match ? 1 : 0,
+         record.launch_context_input_source,
+         record.launch_context_sbt_match ? 1 : 0,
+         record.all_fields_match ? 1 : 0);
+  fflush(stdout);
 }
 
 struct rtcore_traversal_source_registry_payload_annotation {
@@ -16244,9 +16333,13 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
   rtcore_traversal_provider_response existing_response =
       rtcore_make_legacy_functional_traversal_provider_response(effective_request);
   if (existing_traversal_input_replay_requested) {
-    existing_traversal_request_replay_live_input_match =
-        rtcore_existing_traversal_replay_request_matches_response_input(
+    const rtcore_existing_traversal_replay_input_match_record match_record =
+        rtcore_make_existing_traversal_replay_input_match_record(
             effective_request, existing_response);
+    rtcore_log_existing_traversal_replay_input_match_record(descriptor,
+                                                           match_record);
+    existing_traversal_request_replay_live_input_match =
+        match_record.all_fields_match;
     printf("GPGPU-Sim PTX: RT_SUBMIT "
            "custom-rtcore-backend-existing-traversal-input-replay-check, "
            "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
