@@ -15843,6 +15843,16 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
       traversal_stack_depth_after_materialize ==
           traversal_stack_depth_after_reset + 1 &&
       traversal_stack_depth_after_materialize > 0;
+  const bool traversal_input_top_level_as_match =
+      request.replay_bridge_trace_replay_top_level_as ==
+          request.replay_root_metadata_handle &&
+      request.replay_bridge_trace_replay_top_level_as ==
+          request
+              .replay_backend_root_descriptor_producer_root_metadata_handle;
+  const bool traversal_input_layout_profile_match =
+      request.replay_selected_root_descriptor_layout_profile_reference_match;
+  const bool producer_root_descriptor_replay_root_fields_match =
+      request.replay_selected_root_descriptor_matches_producer_root_fields;
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-producer-root-authority-adapter=1, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -15859,6 +15869,13 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "producer_root_metadata_handle=0x%llx, "
          "producer_root_node_reference=0x%llx, "
          "producer_root_address_space=%s, "
+         "producer_root_descriptor_traversal_input_source=provider_consumed_producer_descriptor_fields, "
+         "producer_root_descriptor_traversal_input_top_level_as=0x%llx, "
+         "producer_root_descriptor_traversal_input_top_level_as_match=%u, "
+         "producer_root_descriptor_traversal_input_layout_profile_reference=%s, "
+         "producer_root_descriptor_traversal_input_layout_profile_match=%u, "
+         "producer_root_descriptor_traversal_input_bvh_memory_binding=%u, "
+         "producer_root_descriptor_replay_root_fields_match=%u, "
          "bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "ray_flags=%u, cull_mask=%u, "
@@ -15882,6 +15899,13 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          (unsigned long long)request.replay_root_metadata_handle,
          (unsigned long long)request.replay_root_node_reference,
          request.replay_root_address_space,
+         (unsigned long long)request.replay_bridge_trace_replay_top_level_as,
+         traversal_input_top_level_as_match ? 1 : 0,
+         request.replay_layout_profile_reference,
+         traversal_input_layout_profile_match ? 1 : 0,
+         request.replay_backend_root_descriptor_producer_bvh_memory_binding ? 1
+                                                                            : 0,
+         producer_root_descriptor_replay_root_fields_match ? 1 : 0,
          (unsigned long long)request.replay_bridge_trace_replay_top_level_as,
          request.replay_sbt_record_offset, request.replay_sbt_record_stride,
          request.replay_miss_index, request.replay_ray_flags,
