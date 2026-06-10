@@ -12311,6 +12311,7 @@ struct rtcore_traversal_source_request {
         has_replay_ray_origin_direction_tmin_tmax(false),
         has_replay_ray_flags_cull_mask(false),
         has_replay_launch_context_input(false),
+        has_replay_selected_root_descriptor(false),
         replay_ray_flags(0),
         replay_cull_mask(0),
         replay_ray_tmin(0.0f),
@@ -12318,7 +12319,15 @@ struct rtcore_traversal_source_request {
         replay_bridge_trace_replay_top_level_as(0),
         replay_sbt_record_offset(0),
         replay_sbt_record_stride(0),
-        replay_miss_index(0) {
+        replay_miss_index(0),
+        replay_root_address_space("unavailable"),
+        replay_selected_root_descriptor_owner("unavailable"),
+        replay_selected_root_descriptor_source("unavailable"),
+        replay_payload_selected_root_descriptor_owner("unavailable"),
+        replay_payload_selected_root_descriptor_source("unavailable"),
+        replay_selected_root_descriptor_actual_producer_authority_enabled(false),
+        replay_selected_root_descriptor_payload_route_consistent(false),
+        replay_selected_root_descriptor_policy_passed(false) {
     memset(&replay_ray_origin, 0, sizeof(replay_ray_origin));
     memset(&replay_ray_direction, 0, sizeof(replay_ray_direction));
   }
@@ -12334,6 +12343,7 @@ struct rtcore_traversal_source_request {
   bool has_replay_ray_origin_direction_tmin_tmax;
   bool has_replay_ray_flags_cull_mask;
   bool has_replay_launch_context_input;
+  bool has_replay_selected_root_descriptor;
   float3 replay_ray_origin;
   float3 replay_ray_direction;
   uint32_t replay_ray_flags;
@@ -12344,6 +12354,14 @@ struct rtcore_traversal_source_request {
   uint32_t replay_sbt_record_offset;
   uint32_t replay_sbt_record_stride;
   uint32_t replay_miss_index;
+  const char *replay_root_address_space;
+  const char *replay_selected_root_descriptor_owner;
+  const char *replay_selected_root_descriptor_source;
+  const char *replay_payload_selected_root_descriptor_owner;
+  const char *replay_payload_selected_root_descriptor_source;
+  bool replay_selected_root_descriptor_actual_producer_authority_enabled;
+  bool replay_selected_root_descriptor_payload_route_consistent;
+  bool replay_selected_root_descriptor_policy_passed;
 };
 
 static rtcore_traversal_source_request
@@ -13076,6 +13094,32 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
   request->replay_sbt_record_offset = view.sbt_record_offset;
   request->replay_sbt_record_stride = view.sbt_record_stride;
   request->replay_miss_index = view.miss_index;
+  request->has_replay_selected_root_descriptor =
+      view.resolve_backend_root_descriptor_ready;
+  request->replay_root_address_space = view.resolve_root_address_space;
+  request->replay_selected_root_descriptor_actual_producer_authority_enabled =
+      view.resolve_backend_root_descriptor_actual_producer_authority_enabled;
+  request->replay_selected_root_descriptor_owner =
+      rtcore_backend_root_descriptor_selected_owner_label(
+          view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+  request->replay_selected_root_descriptor_source =
+      rtcore_backend_root_descriptor_selected_source_label(
+          view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+  request->replay_payload_selected_root_descriptor_owner =
+      rtcore_backend_root_descriptor_payload_selected_owner_label(
+          view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+  request->replay_payload_selected_root_descriptor_source =
+      rtcore_backend_root_descriptor_selected_source_label(
+          view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+  request->replay_selected_root_descriptor_payload_route_consistent =
+      strcmp(request->replay_selected_root_descriptor_owner,
+             request->replay_payload_selected_root_descriptor_owner) == 0 &&
+      strcmp(request->replay_selected_root_descriptor_source,
+             request->replay_payload_selected_root_descriptor_source) == 0;
+  request->replay_selected_root_descriptor_policy_passed =
+      !request
+           ->replay_selected_root_descriptor_actual_producer_authority_enabled ||
+      request->replay_selected_root_descriptor_payload_route_consistent;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-input-replay, "
@@ -13084,7 +13128,17 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "custom-rtcore-backend-existing-traversal-input-replay=1, "
          "existing_traversal_input_replay_source=provider_backend_input_snapshot, "
          "has_launch_context_input=%u, bridge_trace_replay_top_level_as=0x%llx, "
-         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u\n",
+         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
+         "existing_traversal_replay_selected_descriptor_source_bridge=1, "
+         "has_replay_selected_root_descriptor=%u, "
+         "replay_root_address_space=%s, "
+         "replay_selected_root_descriptor_owner=%s, "
+         "replay_selected_root_descriptor_source=%s, "
+         "replay_payload_selected_root_descriptor_owner=%s, "
+         "replay_payload_selected_root_descriptor_source=%s, "
+         "replay_selected_root_descriptor_actual_producer_authority_enabled=%u, "
+         "replay_selected_root_descriptor_payload_route_consistent=%u, "
+         "replay_selected_root_descriptor_policy_passed=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
@@ -13092,7 +13146,20 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          request->has_replay_launch_context_input ? 1 : 0,
          (unsigned long long)request->replay_bridge_trace_replay_top_level_as,
          request->replay_sbt_record_offset, request->replay_sbt_record_stride,
-         request->replay_miss_index);
+         request->replay_miss_index,
+         request->has_replay_selected_root_descriptor ? 1 : 0,
+         request->replay_root_address_space,
+         request->replay_selected_root_descriptor_owner,
+         request->replay_selected_root_descriptor_source,
+         request->replay_payload_selected_root_descriptor_owner,
+         request->replay_payload_selected_root_descriptor_source,
+         request
+                 ->replay_selected_root_descriptor_actual_producer_authority_enabled
+             ? 1
+             : 0,
+         request->replay_selected_root_descriptor_payload_route_consistent ? 1
+                                                                           : 0,
+         request->replay_selected_root_descriptor_policy_passed ? 1 : 0);
   fflush(stdout);
   return true;
 }
