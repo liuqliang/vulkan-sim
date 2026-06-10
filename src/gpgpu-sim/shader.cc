@@ -1742,7 +1742,9 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
 
 bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
     const warp_inst_t &inst, unsigned warp_id,
-    unsigned rt_core_out_pending_warps) const {
+    unsigned rt_core_out_pending_warps,
+    const rtcore_resident_gate_materialized_input_provenance_snapshot
+        &materialized_input_provenance) const {
   if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
     return true;
   }
@@ -1753,7 +1755,7 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
       m_rt_unit->rtcore_make_resident_warp_demand_snapshot(
           rt_core_out_pending_warps);
   return m_rt_unit->rtcore_resident_warp_capacity_available(
-      inst, warp_id, m_sid, inst.pc, snapshot);
+      inst, warp_id, m_sid, inst.pc, snapshot, materialized_input_provenance);
 }
 
 bool shader_core_ctx::rtcore_submit_completion_queue_reserve_issue_slot(
@@ -3382,10 +3384,32 @@ void scheduler_unit::cycle() {
               }
               const unsigned rt_core_out_pending_warps =
                   m_rt_core_out->count_ready_rt_subop(RT_CORE_SUBOP_SUBMIT);
+              rtcore_resident_gate_materialized_input_provenance_snapshot
+                  rtcore_resident_gate_materialized_input_provenance;
+              rtcore_resident_gate_materialized_input_provenance.available =
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                      .available;
+              rtcore_resident_gate_materialized_input_provenance
+                  .has_provider_materialized_traversal_input_snapshot =
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                      .has_provider_materialized_traversal_input_snapshot;
+              rtcore_resident_gate_materialized_input_provenance
+                  .provider_materialized_traversal_input_snapshot_valid =
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                      .provider_materialized_traversal_input_snapshot_valid;
+              rtcore_resident_gate_materialized_input_provenance
+                  .provider_materialized_traversal_input_snapshot_source =
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                      .provider_materialized_traversal_input_snapshot_source;
+              rtcore_resident_gate_materialized_input_provenance
+                  .provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                      .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
               const bool rtcore_resident_warp_capacity_ready =
                   pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
                   m_shader->rtcore_submit_resident_warp_capacity_available(
-                      *pI, warp_id, rt_core_out_pending_warps);
+                      *pI, warp_id, rt_core_out_pending_warps,
+                      rtcore_resident_gate_materialized_input_provenance);
               if (!rtcore_resident_warp_capacity_ready) {
                 rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
                     "scheduler_bridge_rollback_after_resident_gate");
@@ -4733,7 +4757,9 @@ rt_unit::rtcore_make_resident_warp_demand_snapshot(
 bool rt_unit::rtcore_resident_warp_capacity_available(
     const warp_inst_t &inst, unsigned warp_id, unsigned owner_hw_sid,
     unsigned long long static_inst_pc,
-    const rtcore_resident_warp_demand_snapshot &snapshot) const {
+    const rtcore_resident_warp_demand_snapshot &snapshot,
+    const rtcore_resident_gate_materialized_input_provenance_snapshot
+        &materialized_input_provenance) const {
   if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
     return true;
   }
@@ -4748,12 +4774,35 @@ bool rt_unit::rtcore_resident_warp_capacity_available(
            "resident_dispatch_pending_warps=%u, "
            "resident_rt_core_out_pending_warps=%u, "
            "resident_live_plus_demand_warps=%u, "
-           "capacity_available=0, action=stall\n",
+           "capacity_available=0, action=stall, "
+           "scheduler_credit_ledger_reusable_credit_resident_gate_materialized_input_provenance=1, "
+           "resident_gate_materialized_input_provenance_available=%u, "
+           "has_provider_materialized_traversal_input_snapshot=%u, "
+           "provider_materialized_traversal_input_snapshot_valid=%u, "
+           "provider_materialized_traversal_input_snapshot_source=%s, "
+           "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+           "resident_gate_materialized_input_consumes_capacity_decision=0, "
+           "resident_gate_materialized_input_consumes_backpressure_behavior=0\n",
            warp_id, owner_hw_sid, static_inst_pc,
            snapshot.resident_live_warps, snapshot.resident_warp_capacity,
            snapshot.dispatch_pending_warps,
            snapshot.rt_core_out_pending_warps,
-           snapshot.resident_live_plus_demand_warps);
+           snapshot.resident_live_plus_demand_warps,
+           materialized_input_provenance.available ? 1 : 0,
+           materialized_input_provenance
+                   .has_provider_materialized_traversal_input_snapshot
+               ? 1
+               : 0,
+           materialized_input_provenance
+                   .provider_materialized_traversal_input_snapshot_valid
+               ? 1
+               : 0,
+           materialized_input_provenance
+               .provider_materialized_traversal_input_snapshot_source,
+           materialized_input_provenance
+                   .provider_materialized_traversal_input_actual_abi_snapshot_admitted
+               ? 1
+               : 0);
     fflush(stdout);
     return false;
   }

@@ -1457,6 +1457,22 @@ struct rtcore_resident_warp_demand_snapshot {
   bool capacity_available;
 };
 
+struct rtcore_resident_gate_materialized_input_provenance_snapshot {
+  rtcore_resident_gate_materialized_input_provenance_snapshot()
+      : available(false),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot_valid(false),
+        provider_materialized_traversal_input_snapshot_source("unavailable"),
+        provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+            false) {}
+
+  bool available;
+  bool has_provider_materialized_traversal_input_snapshot;
+  bool provider_materialized_traversal_input_snapshot_valid;
+  const char *provider_materialized_traversal_input_snapshot_source;
+  bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+};
+
 class rt_unit : public pipelined_simd_unit {
     public:
         rt_unit(mem_fetch_interface *icnt,
@@ -1489,7 +1505,9 @@ class rt_unit : public pipelined_simd_unit {
         bool rtcore_resident_warp_capacity_available(
             const warp_inst_t &inst, unsigned warp_id,
             unsigned owner_hw_sid, unsigned long long static_inst_pc,
-            const rtcore_resident_warp_demand_snapshot &snapshot) const;
+            const rtcore_resident_warp_demand_snapshot &snapshot,
+            const rtcore_resident_gate_materialized_input_provenance_snapshot
+                &materialized_input_provenance) const;
         bool rtcore_completion_queue_reserve_issue_slot(
             const warp_inst_t &inst, unsigned warp_id,
             unsigned owner_hw_sid, unsigned long long static_inst_pc,
@@ -2927,7 +2945,9 @@ class shader_core_ctx : public core_t {
                   unsigned sch_id);
   bool rtcore_submit_resident_warp_capacity_available(
       const warp_inst_t &inst, unsigned warp_id,
-      unsigned rt_core_out_pending_warps) const;
+      unsigned rt_core_out_pending_warps,
+      const rtcore_resident_gate_materialized_input_provenance_snapshot
+          &materialized_input_provenance) const;
   bool rtcore_submit_completion_queue_reserve_issue_slot(
       const warp_inst_t &inst, unsigned warp_id,
       unsigned issued_active_mask) const;
