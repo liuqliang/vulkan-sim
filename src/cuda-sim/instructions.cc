@@ -12308,6 +12308,10 @@ struct rtcore_traversal_source_request {
         lane_slot_index(0),
         provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
         from_provider_backend_input_snapshot(false),
+        replay_backend_input_source_snapshot("unavailable"),
+        replay_actual_abi_source_snapshot_admitted(false),
+        replay_actual_abi_source_snapshot_consumed_by_existing_traversal(false),
+        replay_actual_abi_source_snapshot_block_reason("unavailable"),
         has_replay_ray_origin_direction_tmin_tmax(false),
         has_replay_ray_flags_cull_mask(false),
         has_replay_launch_context_input(false),
@@ -12389,6 +12393,10 @@ struct rtcore_traversal_source_request {
   ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
   rtcore_traversal_source_provider provider;
   bool from_provider_backend_input_snapshot;
+  const char *replay_backend_input_source_snapshot;
+  bool replay_actual_abi_source_snapshot_admitted;
+  bool replay_actual_abi_source_snapshot_consumed_by_existing_traversal;
+  const char *replay_actual_abi_source_snapshot_block_reason;
   bool has_replay_ray_origin_direction_tmin_tmax;
   bool has_replay_ray_flags_cull_mask;
   bool has_replay_launch_context_input;
@@ -12490,6 +12498,22 @@ static const char *rtcore_full_backend_input_abi_block_reason_label(
     return "actual_abi_evidence_for_proxy_fields_unavailable";
   }
   return "none";
+}
+
+static const char *
+rtcore_existing_traversal_backend_input_source_snapshot_label(
+    bool actual_abi_source_snapshot_admitted) {
+  return actual_abi_source_snapshot_admitted
+             ? "provider_actual_abi_source_snapshot"
+             : "provider_backend_input_compatibility_snapshot";
+}
+
+static const char *rtcore_actual_abi_source_snapshot_block_reason_label(
+    bool actual_abi_source_snapshot_admitted,
+    const char *full_backend_input_abi_block_reason) {
+  return actual_abi_source_snapshot_admitted
+             ? "none"
+             : full_backend_input_abi_block_reason;
 }
 
 static rtcore_traversal_source_request
@@ -13443,6 +13467,17 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
           provider_decoded_abi_authority_complete,
           request->replay_root_profile_abi_gap_open,
           request->replay_actual_abi_evidence_for_proxy_fields);
+  request->replay_actual_abi_source_snapshot_admitted =
+      request->replay_full_backend_input_abi_ready;
+  request->replay_backend_input_source_snapshot =
+      rtcore_existing_traversal_backend_input_source_snapshot_label(
+          request->replay_actual_abi_source_snapshot_admitted);
+  request->replay_actual_abi_source_snapshot_consumed_by_existing_traversal =
+      false;
+  request->replay_actual_abi_source_snapshot_block_reason =
+      rtcore_actual_abi_source_snapshot_block_reason_label(
+          request->replay_actual_abi_source_snapshot_admitted,
+          request->replay_full_backend_input_abi_block_reason);
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-input-replay, "
@@ -13473,6 +13508,9 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "existing_traversal_replay_full_backend_input_abi_ready_gate=%u, "
          "existing_traversal_replay_full_backend_input_abi_ready=%u, "
          "existing_traversal_replay_full_backend_input_abi_block_reason=%s, "
+         "existing_traversal_replay_backend_input_source_snapshot=%s, "
+         "existing_traversal_replay_actual_abi_source_snapshot_admitted=%u, "
+         "existing_traversal_replay_actual_abi_source_snapshot_block_reason=%s, "
          "existing_traversal_replay_root_profile_actual_abi_evidence_bridge=%u, "
          "existing_traversal_replay_root_profile_actual_abi_evidence_available=%u, "
          "existing_traversal_replay_root_profile_actual_abi_evidence_source=%s, "
@@ -13535,6 +13573,9 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          request->replay_full_backend_input_abi_ready_gate ? 1 : 0,
          request->replay_full_backend_input_abi_ready ? 1 : 0,
          request->replay_full_backend_input_abi_block_reason,
+         request->replay_backend_input_source_snapshot,
+         request->replay_actual_abi_source_snapshot_admitted ? 1 : 0,
+         request->replay_actual_abi_source_snapshot_block_reason,
          request->replay_root_profile_actual_abi_evidence_bridge ? 1 : 0,
          request->replay_root_profile_actual_abi_evidence_available ? 1 : 0,
          request->replay_root_profile_actual_abi_evidence_source,
@@ -13632,6 +13673,10 @@ struct rtcore_existing_traversal_replay_input_match_record {
         root_profile_actual_abi_evidence_source("unavailable"),
         root_profile_producer_fields_consumed_by_traversal(false),
         root_profile_actual_abi_gap_closure_candidate(false),
+        backend_input_source_snapshot("unavailable"),
+        actual_abi_source_snapshot_admitted(false),
+        actual_abi_source_snapshot_consumed_by_existing_traversal(false),
+        actual_abi_source_snapshot_block_reason("unavailable"),
         launch_context_sbt_match(false),
         ray_origin_direction_tmin_tmax_match(false),
         ray_flags_cull_mask_match(false),
@@ -13672,6 +13717,10 @@ struct rtcore_existing_traversal_replay_input_match_record {
   const char *root_profile_actual_abi_evidence_source;
   bool root_profile_producer_fields_consumed_by_traversal;
   bool root_profile_actual_abi_gap_closure_candidate;
+  const char *backend_input_source_snapshot;
+  bool actual_abi_source_snapshot_admitted;
+  bool actual_abi_source_snapshot_consumed_by_existing_traversal;
+  const char *actual_abi_source_snapshot_block_reason;
   bool launch_context_sbt_match;
   bool ray_origin_direction_tmin_tmax_match;
   bool ray_flags_cull_mask_match;
@@ -13751,8 +13800,16 @@ rtcore_make_existing_traversal_replay_input_match_record(
       request.replay_root_profile_producer_fields_consumed_by_traversal;
   record.root_profile_actual_abi_gap_closure_candidate =
       request.replay_root_profile_actual_abi_gap_closure_candidate;
+  record.backend_input_source_snapshot =
+      request.replay_backend_input_source_snapshot;
+  record.actual_abi_source_snapshot_admitted =
+      request.replay_actual_abi_source_snapshot_admitted;
+  record.actual_abi_source_snapshot_block_reason =
+      request.replay_actual_abi_source_snapshot_block_reason;
   if (!request.from_provider_backend_input_snapshot) {
     record.all_fields_match = true;
+    record.actual_abi_source_snapshot_consumed_by_existing_traversal =
+        record.actual_abi_source_snapshot_admitted && record.all_fields_match;
     return record;
   }
   if (!response.has_traversal_data) {
@@ -13784,6 +13841,8 @@ rtcore_make_existing_traversal_replay_input_match_record(
   record.all_fields_match = record.launch_context_sbt_match &&
                             record.ray_origin_direction_tmin_tmax_match &&
                             record.ray_flags_cull_mask_match;
+  record.actual_abi_source_snapshot_consumed_by_existing_traversal =
+      record.actual_abi_source_snapshot_admitted && record.all_fields_match;
   return record;
 }
 
@@ -13831,6 +13890,10 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          "existing_traversal_replay_full_backend_input_abi_ready_gate=%u, "
          "existing_traversal_replay_full_backend_input_abi_ready=%u, "
          "existing_traversal_replay_full_backend_input_abi_block_reason=%s, "
+         "existing_traversal_replay_backend_input_source_snapshot=%s, "
+         "existing_traversal_replay_actual_abi_source_snapshot_admitted=%u, "
+         "existing_traversal_replay_actual_abi_source_snapshot_consumed_by_existing_traversal=%u, "
+         "existing_traversal_replay_actual_abi_source_snapshot_block_reason=%s, "
          "existing_traversal_replay_root_profile_actual_abi_evidence_bridge=%u, "
          "existing_traversal_replay_root_profile_actual_abi_evidence_available=%u, "
          "existing_traversal_replay_root_profile_actual_abi_evidence_source=%s, "
@@ -13873,6 +13936,11 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          record.full_backend_input_abi_ready_gate ? 1 : 0,
          record.full_backend_input_abi_ready ? 1 : 0,
          record.full_backend_input_abi_block_reason,
+         record.backend_input_source_snapshot,
+         record.actual_abi_source_snapshot_admitted ? 1 : 0,
+         record.actual_abi_source_snapshot_consumed_by_existing_traversal ? 1
+                                                                          : 0,
+         record.actual_abi_source_snapshot_block_reason,
          record.root_profile_actual_abi_evidence_bridge ? 1 : 0,
          record.root_profile_actual_abi_evidence_available ? 1 : 0,
          record.root_profile_actual_abi_evidence_source,
@@ -16826,12 +16894,22 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
            "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
            "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
            "existing_traversal_request_replay_live_input_match=%u, "
+           "existing_traversal_replay_backend_input_source_snapshot=%s, "
+           "existing_traversal_replay_actual_abi_source_snapshot_admitted=%u, "
+           "existing_traversal_replay_actual_abi_source_snapshot_consumed_by_existing_traversal=%u, "
+           "existing_traversal_replay_actual_abi_source_snapshot_block_reason=%s, "
            "existing_traversal_input_replay_source=provider_backend_input_snapshot\n",
            rtcore_traversal_source_provider_name(descriptor.provider),
            descriptor.context_ptr, descriptor.handoff_window_base,
            descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
            descriptor.warp_metadata.active_mask,
-           existing_traversal_request_replay_live_input_match ? 1 : 0);
+           existing_traversal_request_replay_live_input_match ? 1 : 0,
+           match_record.backend_input_source_snapshot,
+           match_record.actual_abi_source_snapshot_admitted ? 1 : 0,
+           match_record.actual_abi_source_snapshot_consumed_by_existing_traversal
+               ? 1
+               : 0,
+           match_record.actual_abi_source_snapshot_block_reason);
     fflush(stdout);
     if (!existing_traversal_request_replay_live_input_match) {
       return rtcore_make_custom_rtcore_existing_traversal_replay_missing_response(
