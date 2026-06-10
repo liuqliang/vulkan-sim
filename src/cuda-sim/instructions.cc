@@ -13479,7 +13479,8 @@ struct rtcore_custom_backend_result {
         has_provider_payload_backend_input_snapshot(false),
         provider_payload_backend_input_snapshot(),
         existing_traversal_input_replay_requested(false),
-        existing_traversal_request_replay_live_input_match(false) {
+        existing_traversal_request_replay_live_input_match(false),
+        existing_traversal_backend_invoked(false) {
     memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
   }
 
@@ -13500,6 +13501,7 @@ struct rtcore_custom_backend_result {
       provider_payload_backend_input_snapshot;
   bool existing_traversal_input_replay_requested;
   bool existing_traversal_request_replay_live_input_match;
+  bool existing_traversal_backend_invoked;
 };
 
 static bool
@@ -13633,6 +13635,9 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_backend_input_profile_layout_publication_future_producer(false),
         existing_traversal_input_replay_requested(false),
         existing_traversal_request_replay_live_input_match(false),
+        existing_traversal_backend_path_selected(false),
+        existing_traversal_backend_invoked(false),
+        existing_traversal_backend_invocation_skipped(false),
         provider_backend_input_consumption_route_passed(false),
         reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED) {}
 
@@ -13741,6 +13746,9 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool provider_backend_input_profile_layout_publication_future_producer;
   bool existing_traversal_input_replay_requested;
   bool existing_traversal_request_replay_live_input_match;
+  bool existing_traversal_backend_path_selected;
+  bool existing_traversal_backend_invoked;
+  bool existing_traversal_backend_invocation_skipped;
   bool provider_backend_input_consumption_route_passed;
   rtcore_traversal_provider_reject_reason reject_reason;
 };
@@ -14037,6 +14045,14 @@ rtcore_make_provider_backend_input_consumption_route_record(
       custom_result.existing_traversal_input_replay_requested;
   record.existing_traversal_request_replay_live_input_match =
       custom_result.existing_traversal_request_replay_live_input_match;
+  record.existing_traversal_backend_path_selected =
+      custom_result.provider ==
+      RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_EXISTING_TRAVERSAL;
+  record.existing_traversal_backend_invoked =
+      custom_result.existing_traversal_backend_invoked;
+  record.existing_traversal_backend_invocation_skipped =
+      record.existing_traversal_backend_path_selected &&
+      !record.existing_traversal_backend_invoked;
   record.reject_reason = response.reject_reason;
   record.provider_backend_input_consumption_route_passed =
       response.provider_supported && response.provider_accepted &&
@@ -14176,6 +14192,9 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "existing_traversal_input_replay_requested=%u, "
          "existing_traversal_request_replay_live_input_match=%u, "
          "provider_backend_input_consumption_route_passed=%u, "
+         "existing_traversal_backend_path_selected=%u, "
+         "existing_traversal_backend_invoked=%u, "
+         "existing_traversal_backend_invocation_skipped=%u, "
          "reject_reason=%s, existing_traversal_backend_reused=1, "
          "claims_new_hardware_bvh_engine=0\n",
          rtcore_traversal_source_provider_name(record.provider),
@@ -14487,6 +14506,9 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.existing_traversal_input_replay_requested ? 1 : 0,
          record.existing_traversal_request_replay_live_input_match ? 1 : 0,
          record.provider_backend_input_consumption_route_passed ? 1 : 0,
+         record.existing_traversal_backend_path_selected ? 1 : 0,
+         record.existing_traversal_backend_invoked ? 1 : 0,
+         record.existing_traversal_backend_invocation_skipped ? 1 : 0,
          rtcore_traversal_provider_reject_reason_name(record.reject_reason));
   fflush(stdout);
 }
@@ -15397,6 +15419,7 @@ rtcore_make_custom_rtcore_existing_traversal_backend_result(
   result.has_traversal_data = existing_response.has_traversal_data;
   result.initialized_default_miss = existing_response.initialized_default_miss;
   result.hit_geometry = existing_response.hit_geometry;
+  result.existing_traversal_backend_invoked = true;
   const bool payload =
       result.has_traversal_data || result.initialized_default_miss;
   printf("GPGPU-Sim PTX: RT_SUBMIT custom-rtcore-backend-existing-traversal, "
