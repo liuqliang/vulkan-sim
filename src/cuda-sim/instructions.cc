@@ -12430,6 +12430,20 @@ static const char *rtcore_top_level_as_proxy_token_source_label() {
   return "vulkan_sim_traversal_proxy_table";
 }
 
+// provider_backend_input_selected_root_descriptor_authority_labels=1;
+static const char *rtcore_backend_root_descriptor_selected_owner_label(
+    bool actual_producer_authority_enabled) {
+  return actual_producer_authority_enabled ? "actual_producer_descriptor"
+                                           : "simulator_proxy";
+}
+
+static const char *rtcore_backend_root_descriptor_selected_source_label(
+    bool actual_producer_authority_enabled) {
+  return actual_producer_authority_enabled
+             ? "driver_as_resolve_table_producer_shadow"
+             : "runtime_proxy_compatibility";
+}
+
 static bool rtcore_decoded_input_field_owner_has_lifetime(
     rtcore_decoded_input_field_owner_class owner) {
   return owner == RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME ||
@@ -13364,6 +13378,8 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_backend_input_root_address_space("unavailable"),
         provider_backend_input_root_node_reference(0),
         provider_backend_input_layout_profile_reference("unavailable"),
+        provider_backend_input_selected_root_descriptor_owner("unavailable"),
+        provider_backend_input_selected_root_descriptor_source("unavailable"),
         provider_backend_input_traversable_root_proxy_delegated(false),
         provider_backend_input_bvh_format_profile_proxy_delegated(false),
         provider_backend_input_profile_layout_publication_future_producer(false),
@@ -13463,6 +13479,8 @@ struct rtcore_provider_backend_input_consumption_route_record {
   const char *provider_backend_input_root_address_space;
   uint64_t provider_backend_input_root_node_reference;
   const char *provider_backend_input_layout_profile_reference;
+  const char *provider_backend_input_selected_root_descriptor_owner;
+  const char *provider_backend_input_selected_root_descriptor_source;
   bool provider_backend_input_traversable_root_proxy_delegated;
   bool provider_backend_input_bvh_format_profile_proxy_delegated;
   bool provider_backend_input_profile_layout_publication_future_producer;
@@ -13710,6 +13728,14 @@ rtcore_make_provider_backend_input_consumption_route_record(
         view.resolve_root_node_reference;
     record.provider_backend_input_layout_profile_reference =
         view.resolve_layout_profile_reference;
+    record.provider_backend_input_selected_root_descriptor_owner =
+        rtcore_backend_root_descriptor_selected_owner_label(
+            record
+                .provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled);
+    record.provider_backend_input_selected_root_descriptor_source =
+        rtcore_backend_root_descriptor_selected_source_label(
+            record
+                .provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled);
     record.provider_backend_input_traversable_root_proxy_delegated =
         view.resolve_traversable_root_proxy_delegated;
     record.provider_backend_input_bvh_format_profile_proxy_delegated =
@@ -13840,6 +13866,8 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_root_address_space=%s, "
          "provider_backend_input_root_node_reference=0x%llx, "
          "provider_backend_input_layout_profile_reference=%s, "
+         "provider_backend_input_selected_root_descriptor_owner=%s, "
+         "provider_backend_input_selected_root_descriptor_source=%s, "
          "provider_backend_input_traversable_root_proxy_delegated=%u, "
          "provider_backend_input_bvh_format_profile_proxy_delegated=%u, "
          "provider_backend_input_profile_layout_publication_future_producer=%u, "
@@ -14125,6 +14153,8 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.provider_backend_input_root_address_space,
          (unsigned long long)record.provider_backend_input_root_node_reference,
          record.provider_backend_input_layout_profile_reference,
+         record.provider_backend_input_selected_root_descriptor_owner,
+         record.provider_backend_input_selected_root_descriptor_source,
          record.provider_backend_input_traversable_root_proxy_delegated ? 1
                                                                         : 0,
          record.provider_backend_input_bvh_format_profile_proxy_delegated ? 1
