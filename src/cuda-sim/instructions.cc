@@ -13072,6 +13072,57 @@ struct rtcore_decoded_trace_ray_value_record {
   uint32_t miss_index;
 };
 
+enum rtcore_decoded_trace_ray_value_record_failpoint {
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE = 0,
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH
+};
+
+static rtcore_decoded_trace_ray_value_record_failpoint
+rtcore_decoded_trace_ray_value_record_failpoint_mode() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_DECODED_VALUE_RECORD_FAILPOINT");
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0) {
+    return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE;
+  }
+  if (strcmp(value, "ray_flags_mismatch") == 0) {
+    return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH;
+  }
+  return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE;
+}
+
+static const char *rtcore_decoded_trace_ray_value_record_failpoint_name(
+    rtcore_decoded_trace_ray_value_record_failpoint mode) {
+  switch (mode) {
+    case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH:
+      return "ray_flags_mismatch";
+    case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void rtcore_apply_decoded_trace_ray_value_record_failpoint(
+    rtcore_decoded_trace_ray_value_record *record) {
+  if (record == NULL || !record->valid) {
+    return;
+  }
+  const rtcore_decoded_trace_ray_value_record_failpoint mode =
+      rtcore_decoded_trace_ray_value_record_failpoint_mode();
+  if (mode ==
+      RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH) {
+    const uint32_t original_ray_flags = record->ray_flags;
+    record->ray_flags = record->ray_flags ^ 0x1u;
+    printf("GPGPU-Sim PTX: RT_SUBMIT decoded-value-record-failpoint, "
+           "decoded_value_record_failpoint_applied=1, "
+           "decoded_value_record_failpoint_mode=%s, "
+           "decoded_value_record_source=%s, "
+           "decoded_value_record_original_ray_flags=%u, "
+           "decoded_value_record_mutated_ray_flags=%u\n",
+           rtcore_decoded_trace_ray_value_record_failpoint_name(mode),
+           record->source, original_ray_flags, record->ray_flags);
+    fflush(stdout);
+  }
+}
+
 static rtcore_decoded_trace_ray_value_record
 rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
     const rtcore_provider_payload_consumed_input_view &view) {
@@ -13099,6 +13150,7 @@ rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
                  record.has_launch_context_input &&
                  record.has_selected_root_descriptor &&
                  record.root_metadata_handle != 0;
+  rtcore_apply_decoded_trace_ray_value_record_failpoint(&record);
   return record;
 }
 
@@ -17180,6 +17232,23 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
       input->decoded_value_record_matches_request &&
       input->decoded_source_provenance_match;
   if (!input->work_descriptor_snapshot_fields_match_request) {
+    if (!input->decoded_value_record_matches_request) {
+      printf("GPGPU-Sim PTX: RT_SUBMIT "
+             "decoded-value-record-mismatch-rejected=1, "
+             "decoded_value_record_mismatch_rejected=1, "
+             "decoded_value_record_valid=%u, "
+             "decoded_value_record_source=%s, "
+             "decoded_value_record_matches_request=0, "
+             "work_descriptor_snapshot_fields_match_request=0, "
+             "decoded_value_record_ray_flags=%u, "
+             "snapshot_ray_flags=%u, "
+             "request_ray_flags=%u\n",
+             input->decoded_value_record_valid ? 1 : 0,
+             input->decoded_value_record_source,
+             decoded_value_record.ray_flags, snapshot.ray_flags,
+             request.replay_ray_flags);
+      fflush(stdout);
+    }
     return false;
   }
 
