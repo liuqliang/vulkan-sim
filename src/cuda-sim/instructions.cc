@@ -13037,8 +13037,12 @@ struct rtcore_provider_materialized_traversal_input_snapshot {
       : valid(false),
         source("unavailable"),
         has_ray_origin_direction_tmin_tmax(false),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_ray_flags_cull_mask(false),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_launch_context_input(false),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_selected_root_descriptor(false),
         ray_flags(0),
         cull_mask(0),
@@ -13051,7 +13055,10 @@ struct rtcore_provider_materialized_traversal_input_snapshot {
         root_address_space("unavailable"),
         root_node_reference(0),
         layout_profile_reference("unavailable"),
-        bvh_memory_binding(false) {
+        bvh_memory_binding(false),
+        provider_payload_runtime_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
     memset(&ray_direction, 0, sizeof(ray_direction));
   }
@@ -13059,8 +13066,11 @@ struct rtcore_provider_materialized_traversal_input_snapshot {
   bool valid;
   const char *source;
   bool has_ray_origin_direction_tmin_tmax;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
   bool has_ray_flags_cull_mask;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   bool has_launch_context_input;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
   bool has_selected_root_descriptor;
   float3 ray_origin;
   float3 ray_direction;
@@ -13076,6 +13086,9 @@ struct rtcore_provider_materialized_traversal_input_snapshot {
   uint64_t root_node_reference;
   const char *layout_profile_reference;
   bool bvh_memory_binding;
+  bool provider_payload_runtime_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
 };
 
 static rtcore_provider_materialized_traversal_input_snapshot
@@ -13086,8 +13099,12 @@ rtcore_make_provider_materialized_traversal_input_snapshot(
       "provider_backend_work_descriptor_materialized_input_snapshot";
   snapshot.has_ray_origin_direction_tmin_tmax =
       view.has_ray_origin_direction_tmin_tmax;
+  snapshot.ray_origin_direction_tmin_tmax_owner =
+      view.ray_origin_direction_tmin_tmax_owner;
   snapshot.has_ray_flags_cull_mask = view.has_ray_flags_cull_mask;
+  snapshot.ray_flags_cull_mask_owner = view.ray_flags_cull_mask_owner;
   snapshot.has_launch_context_input = view.has_launch_context_input;
+  snapshot.launch_context_input_owner = view.launch_context_input_owner;
   snapshot.has_selected_root_descriptor =
       view.resolve_backend_root_descriptor_ready;
   snapshot.ray_origin = view.ray_origin;
@@ -13105,6 +13122,11 @@ rtcore_make_provider_materialized_traversal_input_snapshot(
   snapshot.layout_profile_reference = view.resolve_layout_profile_reference;
   snapshot.bvh_memory_binding =
       view.resolve_backend_root_descriptor_producer_bvh_memory_binding;
+  snapshot.provider_payload_runtime_lifetime_ready =
+      view.provider_payload_runtime_lifetime_ready;
+  snapshot.context_window_owner_seq_matches_lifetime =
+      view.context_window_owner_seq_matches_lifetime;
+  snapshot.token_lifetime_key_ready = view.token_lifetime_key_ready;
   snapshot.valid = view.valid &&
                    snapshot.has_ray_origin_direction_tmin_tmax &&
                    snapshot.has_ray_flags_cull_mask &&
@@ -16729,6 +16751,15 @@ struct rtcore_materialized_traversal_input {
         work_descriptor_snapshot_source("unavailable"),
         work_descriptor_snapshot_fields_match_request(false),
         work_descriptor_snapshot_consumed_by_materialization(false),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        provider_payload_runtime_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false),
+        context_window_bound_to_provider_decoded_abi(false),
+        decoded_source_provenance_match(false),
         top_level_as((VkAccelerationStructureKHR)0),
         ray_flags(0),
         cull_mask(0),
@@ -16762,6 +16793,14 @@ struct rtcore_materialized_traversal_input {
   const char *work_descriptor_snapshot_source;
   bool work_descriptor_snapshot_fields_match_request;
   bool work_descriptor_snapshot_consumed_by_materialization;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
+  bool provider_payload_runtime_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
+  bool context_window_bound_to_provider_decoded_abi;
+  bool decoded_source_provenance_match;
   VkAccelerationStructureKHR top_level_as;
   uint32_t ray_flags;
   uint32_t cull_mask;
@@ -16794,6 +16833,15 @@ struct rtcore_trace_ray_argument_audit {
         sbt_record_stride(0),
         miss_index(0),
         root_metadata_handle(0),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        provider_payload_runtime_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false),
+        context_window_bound_to_provider_decoded_abi(false),
+        decoded_source_provenance_match(false),
         matches_typed_object(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
     memset(&ray_direction, 0, sizeof(ray_direction));
@@ -16812,6 +16860,14 @@ struct rtcore_trace_ray_argument_audit {
   uint32_t sbt_record_stride;
   uint32_t miss_index;
   uint64_t root_metadata_handle;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
+  bool provider_payload_runtime_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
+  bool context_window_bound_to_provider_decoded_abi;
+  bool decoded_source_provenance_match;
   bool matches_typed_object;
 };
 
@@ -16835,6 +16891,22 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
   trace_ray_arguments.sbt_record_stride = input.sbt_record_stride;
   trace_ray_arguments.miss_index = input.miss_index;
   trace_ray_arguments.root_metadata_handle = input.root_metadata_handle;
+  trace_ray_arguments.ray_origin_direction_tmin_tmax_owner =
+      input.ray_origin_direction_tmin_tmax_owner;
+  trace_ray_arguments.ray_flags_cull_mask_owner =
+      input.ray_flags_cull_mask_owner;
+  trace_ray_arguments.launch_context_input_owner =
+      input.launch_context_input_owner;
+  trace_ray_arguments.provider_payload_runtime_lifetime_ready =
+      input.provider_payload_runtime_lifetime_ready;
+  trace_ray_arguments.context_window_owner_seq_matches_lifetime =
+      input.context_window_owner_seq_matches_lifetime;
+  trace_ray_arguments.token_lifetime_key_ready =
+      input.token_lifetime_key_ready;
+  trace_ray_arguments.context_window_bound_to_provider_decoded_abi =
+      input.context_window_bound_to_provider_decoded_abi;
+  trace_ray_arguments.decoded_source_provenance_match =
+      input.decoded_source_provenance_match;
   trace_ray_arguments.matches_typed_object =
       trace_ray_arguments.valid &&
       (uint64_t)trace_ray_arguments.top_level_as == input.root_metadata_handle &&
@@ -16886,6 +16958,33 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
   }
   input->work_descriptor_snapshot_valid = snapshot.valid;
   input->work_descriptor_snapshot_source = snapshot.source;
+  input->decoded_source_provenance_match =
+      snapshot.valid &&
+      strcmp(rtcore_decoded_input_field_source_label(
+                 snapshot.ray_origin_direction_tmin_tmax_owner),
+             request.replay_ray_origin_direction_tmin_tmax_source) == 0 &&
+      strcmp(rtcore_decoded_input_field_owner_class_name(
+                 snapshot.ray_origin_direction_tmin_tmax_owner),
+             request.replay_ray_origin_direction_tmin_tmax_authority) == 0 &&
+      strcmp(rtcore_decoded_input_field_source_label(
+                 snapshot.ray_flags_cull_mask_owner),
+             request.replay_ray_flags_cull_mask_source) == 0 &&
+      strcmp(rtcore_decoded_input_field_owner_class_name(
+                 snapshot.ray_flags_cull_mask_owner),
+             request.replay_ray_flags_cull_mask_authority) == 0 &&
+      strcmp(rtcore_decoded_input_field_source_label(
+                 snapshot.launch_context_input_owner),
+             request.replay_launch_context_input_source) == 0 &&
+      strcmp(rtcore_decoded_input_field_owner_class_name(
+                 snapshot.launch_context_input_owner),
+             request.replay_launch_context_input_authority) == 0 &&
+      snapshot.provider_payload_runtime_lifetime_ready ==
+          request.replay_context_window_lifetime_ready &&
+      snapshot.context_window_owner_seq_matches_lifetime ==
+          request.replay_context_window_owner_seq_matches_lifetime &&
+      snapshot.token_lifetime_key_ready ==
+          request.replay_token_lifetime_key_ready &&
+      request.replay_context_window_bound_to_provider_decoded_abi;
   input->work_descriptor_snapshot_fields_match_request =
       snapshot.valid &&
       snapshot.has_ray_origin_direction_tmin_tmax &&
@@ -16912,11 +17011,23 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
       snapshot.cull_mask == request.replay_cull_mask &&
       snapshot.sbt_record_offset == request.replay_sbt_record_offset &&
       snapshot.sbt_record_stride == request.replay_sbt_record_stride &&
-      snapshot.miss_index == request.replay_miss_index;
+      snapshot.miss_index == request.replay_miss_index &&
+      input->decoded_source_provenance_match;
   if (!input->work_descriptor_snapshot_fields_match_request) {
     return false;
   }
 
+  input->ray_origin_direction_tmin_tmax_owner =
+      snapshot.ray_origin_direction_tmin_tmax_owner;
+  input->ray_flags_cull_mask_owner = snapshot.ray_flags_cull_mask_owner;
+  input->launch_context_input_owner = snapshot.launch_context_input_owner;
+  input->provider_payload_runtime_lifetime_ready =
+      snapshot.provider_payload_runtime_lifetime_ready;
+  input->context_window_owner_seq_matches_lifetime =
+      snapshot.context_window_owner_seq_matches_lifetime;
+  input->token_lifetime_key_ready = snapshot.token_lifetime_key_ready;
+  input->context_window_bound_to_provider_decoded_abi =
+      request.replay_context_window_bound_to_provider_decoded_abi;
   input->top_level_as = (VkAccelerationStructureKHR)snapshot.root_metadata_handle;
   input->ray_flags = snapshot.ray_flags;
   input->cull_mask = snapshot.cull_mask;
@@ -17119,6 +17230,19 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "trace_ray_argument_miss_index=%u, "
          "trace_ray_argument_ray_flags=%u, "
          "trace_ray_argument_cull_mask=%u, "
+         "trace_ray_argument_decoded_source_provenance=1, "
+         "trace_ray_argument_ray_origin_direction_tmin_tmax_owner=%s, "
+         "trace_ray_argument_ray_origin_direction_tmin_tmax_source=%s, "
+         "trace_ray_argument_ray_flags_cull_mask_owner=%s, "
+         "trace_ray_argument_ray_flags_cull_mask_source=%s, "
+         "trace_ray_argument_launch_context_input_owner=%s, "
+         "trace_ray_argument_launch_context_input_source=%s, "
+         "trace_ray_argument_context_window_authority=driver_runtime, "
+         "trace_ray_argument_context_window_lifetime_ready=%u, "
+         "trace_ray_argument_context_window_owner_seq_matches_lifetime=%u, "
+         "trace_ray_argument_token_lifetime_key_ready=%u, "
+         "trace_ray_argument_context_window_bound_to_provider_decoded_abi=%u, "
+         "trace_ray_argument_decoded_source_provenance_match=%u, "
          "traversal_stack_depth_before=%zu, "
          "traversal_stack_depth_after_reset=%zu, "
          "traversal_stack_depth_after_materialize=%zu, "
@@ -17182,6 +17306,25 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          trace_ray_arguments.sbt_record_stride,
          trace_ray_arguments.miss_index, trace_ray_arguments.ray_flags,
          trace_ray_arguments.cull_mask,
+         rtcore_decoded_input_field_owner_class_name(
+             trace_ray_arguments.ray_origin_direction_tmin_tmax_owner),
+         rtcore_decoded_input_field_source_label(
+             trace_ray_arguments.ray_origin_direction_tmin_tmax_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             trace_ray_arguments.ray_flags_cull_mask_owner),
+         rtcore_decoded_input_field_source_label(
+             trace_ray_arguments.ray_flags_cull_mask_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             trace_ray_arguments.launch_context_input_owner),
+         rtcore_decoded_input_field_source_label(
+             trace_ray_arguments.launch_context_input_owner),
+         trace_ray_arguments.provider_payload_runtime_lifetime_ready ? 1 : 0,
+         trace_ray_arguments.context_window_owner_seq_matches_lifetime ? 1
+                                                                       : 0,
+         trace_ray_arguments.token_lifetime_key_ready ? 1 : 0,
+         trace_ray_arguments.context_window_bound_to_provider_decoded_abi ? 1
+                                                                         : 0,
+         trace_ray_arguments.decoded_source_provenance_match ? 1 : 0,
          traversal_stack_depth_before,
          traversal_stack_depth_after_reset,
          traversal_stack_depth_after_materialize, materialized ? 1 : 0);
