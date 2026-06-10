@@ -13037,9 +13037,16 @@ struct rtcore_decoded_trace_ray_value_record {
       : valid(false),
         source("unavailable"),
         has_ray_origin_direction_tmin_tmax(false),
+        ray_origin_direction_tmin_tmax_owner(
+            RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_ray_flags_cull_mask(false),
+        ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_launch_context_input(false),
+        launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_selected_root_descriptor(false),
+        provider_payload_runtime_lifetime_ready(false),
+        context_window_owner_seq_matches_lifetime(false),
+        token_lifetime_key_ready(false),
         top_level_as(0),
         root_metadata_handle(0),
         ray_flags(0),
@@ -13056,9 +13063,15 @@ struct rtcore_decoded_trace_ray_value_record {
   bool valid;
   const char *source;
   bool has_ray_origin_direction_tmin_tmax;
+  rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
   bool has_ray_flags_cull_mask;
+  rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   bool has_launch_context_input;
+  rtcore_decoded_input_field_owner_class launch_context_input_owner;
   bool has_selected_root_descriptor;
+  bool provider_payload_runtime_lifetime_ready;
+  bool context_window_owner_seq_matches_lifetime;
+  bool token_lifetime_key_ready;
   uint64_t top_level_as;
   uint64_t root_metadata_handle;
   float3 ray_origin;
@@ -13130,10 +13143,19 @@ rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
   record.source = "decoded_context_window_abi_value_record";
   record.has_ray_origin_direction_tmin_tmax =
       view.has_ray_origin_direction_tmin_tmax;
+  record.ray_origin_direction_tmin_tmax_owner =
+      view.ray_origin_direction_tmin_tmax_owner;
   record.has_ray_flags_cull_mask = view.has_ray_flags_cull_mask;
+  record.ray_flags_cull_mask_owner = view.ray_flags_cull_mask_owner;
   record.has_launch_context_input = view.has_launch_context_input;
+  record.launch_context_input_owner = view.launch_context_input_owner;
   record.has_selected_root_descriptor =
       view.resolve_backend_root_descriptor_ready;
+  record.provider_payload_runtime_lifetime_ready =
+      view.provider_payload_runtime_lifetime_ready;
+  record.context_window_owner_seq_matches_lifetime =
+      view.context_window_owner_seq_matches_lifetime;
+  record.token_lifetime_key_ready = view.token_lifetime_key_ready;
   record.top_level_as = view.resolve_root_metadata_handle;
   record.root_metadata_handle = view.resolve_root_metadata_handle;
   record.ray_origin = view.ray_origin;
@@ -13152,6 +13174,37 @@ rtcore_make_decoded_trace_ray_value_record_from_provider_consumed_input_view(
                  record.root_metadata_handle != 0;
   rtcore_apply_decoded_trace_ray_value_record_failpoint(&record);
   return record;
+}
+
+static bool rtcore_decoded_trace_ray_value_record_authority_matches_request(
+    const rtcore_decoded_trace_ray_value_record &record,
+    const rtcore_traversal_source_request &request) {
+  return record.valid &&
+         strcmp(rtcore_decoded_input_field_source_label(
+                    record.ray_origin_direction_tmin_tmax_owner),
+                request.replay_ray_origin_direction_tmin_tmax_source) == 0 &&
+         strcmp(rtcore_decoded_input_field_owner_class_name(
+                    record.ray_origin_direction_tmin_tmax_owner),
+                request.replay_ray_origin_direction_tmin_tmax_authority) == 0 &&
+         strcmp(rtcore_decoded_input_field_source_label(
+                    record.ray_flags_cull_mask_owner),
+                request.replay_ray_flags_cull_mask_source) == 0 &&
+         strcmp(rtcore_decoded_input_field_owner_class_name(
+                    record.ray_flags_cull_mask_owner),
+                request.replay_ray_flags_cull_mask_authority) == 0 &&
+         strcmp(rtcore_decoded_input_field_source_label(
+                    record.launch_context_input_owner),
+                request.replay_launch_context_input_source) == 0 &&
+         strcmp(rtcore_decoded_input_field_owner_class_name(
+                    record.launch_context_input_owner),
+                request.replay_launch_context_input_authority) == 0 &&
+         record.provider_payload_runtime_lifetime_ready ==
+             request.replay_context_window_lifetime_ready &&
+         record.context_window_owner_seq_matches_lifetime ==
+             request.replay_context_window_owner_seq_matches_lifetime &&
+         record.token_lifetime_key_ready ==
+             request.replay_token_lifetime_key_ready &&
+         request.replay_context_window_bound_to_provider_decoded_abi;
 }
 
 static bool rtcore_decoded_trace_ray_value_record_matches_request(
@@ -16913,6 +16966,7 @@ struct rtcore_materialized_traversal_input {
         decoded_value_record_source("unavailable"),
         decoded_value_record_consumed_by_materialization(false),
         decoded_value_record_matches_request(false),
+        decoded_value_record_authority_matches_request(false),
         top_level_as((VkAccelerationStructureKHR)0),
         ray_flags(0),
         cull_mask(0),
@@ -16958,6 +17012,7 @@ struct rtcore_materialized_traversal_input {
   const char *decoded_value_record_source;
   bool decoded_value_record_consumed_by_materialization;
   bool decoded_value_record_matches_request;
+  bool decoded_value_record_authority_matches_request;
   rtcore_decoded_trace_ray_value_record decoded_trace_ray_value_record;
   VkAccelerationStructureKHR top_level_as;
   uint32_t ray_flags;
@@ -17004,6 +17059,7 @@ struct rtcore_trace_ray_argument_audit {
         decoded_value_record_source("unavailable"),
         decoded_value_record_consumed(false),
         decoded_value_record_matches_request(false),
+        decoded_value_record_authority_matches_request(false),
         values_match_decoded_value_record(false),
         matches_typed_object(false) {
     memset(&ray_origin, 0, sizeof(ray_origin));
@@ -17035,6 +17091,7 @@ struct rtcore_trace_ray_argument_audit {
   const char *decoded_value_record_source;
   bool decoded_value_record_consumed;
   bool decoded_value_record_matches_request;
+  bool decoded_value_record_authority_matches_request;
   bool values_match_decoded_value_record;
   bool matches_typed_object;
 };
@@ -17083,6 +17140,8 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
       input.decoded_value_record_consumed_by_materialization;
   trace_ray_arguments.decoded_value_record_matches_request =
       input.decoded_value_record_matches_request;
+  trace_ray_arguments.decoded_value_record_authority_matches_request =
+      input.decoded_value_record_authority_matches_request;
   trace_ray_arguments.values_match_decoded_value_record =
       trace_ray_arguments.valid && input.decoded_value_record_valid &&
       trace_ray_arguments.root_metadata_handle ==
@@ -17188,6 +17247,9 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
       decoded_value_record.sbt_record_offset == snapshot.sbt_record_offset &&
       decoded_value_record.sbt_record_stride == snapshot.sbt_record_stride &&
       decoded_value_record.miss_index == snapshot.miss_index;
+  input->decoded_value_record_authority_matches_request =
+      rtcore_decoded_trace_ray_value_record_authority_matches_request(
+          decoded_value_record, request);
   input->decoded_source_provenance_match =
       snapshot.valid &&
       strcmp(rtcore_decoded_input_field_source_label(
@@ -17230,6 +17292,7 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
       snapshot.bvh_memory_binding ==
           request.replay_backend_root_descriptor_producer_bvh_memory_binding &&
       input->decoded_value_record_matches_request &&
+      input->decoded_value_record_authority_matches_request &&
       input->decoded_source_provenance_match;
   if (!input->work_descriptor_snapshot_fields_match_request) {
     if (!input->decoded_value_record_matches_request) {
@@ -17485,6 +17548,13 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "trace_ray_argument_decoded_value_record_valid=%u, "
          "trace_ray_argument_decoded_value_record_consumed=%u, "
          "trace_ray_argument_decoded_value_record_matches_request=%u, "
+         "trace_ray_argument_decoded_value_record_authority_match=%u, "
+         "trace_ray_argument_decoded_value_record_ray_origin_direction_tmin_tmax_owner=%s, "
+         "trace_ray_argument_decoded_value_record_ray_flags_cull_mask_owner=%s, "
+         "trace_ray_argument_decoded_value_record_launch_context_input_owner=%s, "
+         "trace_ray_argument_decoded_value_record_context_window_lifetime_ready=%u, "
+         "trace_ray_argument_decoded_value_record_context_window_owner_seq_matches_lifetime=%u, "
+         "trace_ray_argument_decoded_value_record_token_lifetime_key_ready=%u, "
          "trace_ray_argument_values_match_decoded_value_record=%u, "
          "traversal_stack_depth_before=%zu, "
          "traversal_stack_depth_after_reset=%zu, "
@@ -17572,6 +17642,29 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          trace_ray_arguments.decoded_value_record_valid ? 1 : 0,
          trace_ray_arguments.decoded_value_record_consumed ? 1 : 0,
          trace_ray_arguments.decoded_value_record_matches_request ? 1 : 0,
+         trace_ray_arguments.decoded_value_record_authority_matches_request ? 1
+                                                                            : 0,
+         rtcore_decoded_input_field_owner_class_name(
+             materialized_input.decoded_trace_ray_value_record
+                 .ray_origin_direction_tmin_tmax_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             materialized_input.decoded_trace_ray_value_record
+                 .ray_flags_cull_mask_owner),
+         rtcore_decoded_input_field_owner_class_name(
+             materialized_input.decoded_trace_ray_value_record
+                 .launch_context_input_owner),
+         materialized_input.decoded_trace_ray_value_record
+                 .provider_payload_runtime_lifetime_ready
+             ? 1
+             : 0,
+         materialized_input.decoded_trace_ray_value_record
+                 .context_window_owner_seq_matches_lifetime
+             ? 1
+             : 0,
+         materialized_input.decoded_trace_ray_value_record
+                 .token_lifetime_key_ready
+             ? 1
+             : 0,
          trace_ray_arguments.values_match_decoded_value_record ? 1 : 0,
          traversal_stack_depth_before,
          traversal_stack_depth_after_reset,
