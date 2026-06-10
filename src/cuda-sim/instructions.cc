@@ -16781,6 +16781,80 @@ struct rtcore_materialized_traversal_input {
   bool layout_profile_match;
 };
 
+struct rtcore_trace_ray_argument_audit {
+  rtcore_trace_ray_argument_audit()
+      : valid(false),
+        source("unavailable"),
+        top_level_as((VkAccelerationStructureKHR)0),
+        ray_flags(0),
+        cull_mask(0),
+        ray_tmin(0.0f),
+        ray_tmax(0.0f),
+        sbt_record_offset(0),
+        sbt_record_stride(0),
+        miss_index(0),
+        root_metadata_handle(0),
+        matches_typed_object(false) {
+    memset(&ray_origin, 0, sizeof(ray_origin));
+    memset(&ray_direction, 0, sizeof(ray_direction));
+  }
+
+  bool valid;
+  const char *source;
+  VkAccelerationStructureKHR top_level_as;
+  uint32_t ray_flags;
+  uint32_t cull_mask;
+  float3 ray_origin;
+  float3 ray_direction;
+  float ray_tmin;
+  float ray_tmax;
+  uint32_t sbt_record_offset;
+  uint32_t sbt_record_stride;
+  uint32_t miss_index;
+  uint64_t root_metadata_handle;
+  bool matches_typed_object;
+};
+
+static rtcore_trace_ray_argument_audit
+rtcore_make_trace_ray_argument_audit_from_materialized_input(
+    const rtcore_materialized_traversal_input &input) {
+  rtcore_trace_ray_argument_audit trace_ray_arguments;
+  trace_ray_arguments.valid =
+      input.valid && input.full_abi_field_guard_passed;
+  trace_ray_arguments.source =
+      trace_ray_arguments.valid ? "typed_materialized_traversal_input"
+                                : "invalid_typed_materialized_traversal_input";
+  trace_ray_arguments.top_level_as = input.top_level_as;
+  trace_ray_arguments.ray_flags = input.ray_flags;
+  trace_ray_arguments.cull_mask = input.cull_mask;
+  trace_ray_arguments.ray_origin = input.ray_origin;
+  trace_ray_arguments.ray_direction = input.ray_direction;
+  trace_ray_arguments.ray_tmin = input.ray_tmin;
+  trace_ray_arguments.ray_tmax = input.ray_tmax;
+  trace_ray_arguments.sbt_record_offset = input.sbt_record_offset;
+  trace_ray_arguments.sbt_record_stride = input.sbt_record_stride;
+  trace_ray_arguments.miss_index = input.miss_index;
+  trace_ray_arguments.root_metadata_handle = input.root_metadata_handle;
+  trace_ray_arguments.matches_typed_object =
+      trace_ray_arguments.valid &&
+      (uint64_t)trace_ray_arguments.top_level_as == input.root_metadata_handle &&
+      trace_ray_arguments.root_metadata_handle == input.root_metadata_handle &&
+      trace_ray_arguments.ray_flags == input.ray_flags &&
+      trace_ray_arguments.cull_mask == input.cull_mask &&
+      trace_ray_arguments.ray_origin.x == input.ray_origin.x &&
+      trace_ray_arguments.ray_origin.y == input.ray_origin.y &&
+      trace_ray_arguments.ray_origin.z == input.ray_origin.z &&
+      trace_ray_arguments.ray_direction.x == input.ray_direction.x &&
+      trace_ray_arguments.ray_direction.y == input.ray_direction.y &&
+      trace_ray_arguments.ray_direction.z == input.ray_direction.z &&
+      trace_ray_arguments.ray_tmin == input.ray_tmin &&
+      trace_ray_arguments.ray_tmax == input.ray_tmax &&
+      trace_ray_arguments.sbt_record_offset == input.sbt_record_offset &&
+      trace_ray_arguments.sbt_record_stride == input.sbt_record_stride &&
+      trace_ray_arguments.miss_index == input.miss_index;
+  return trace_ray_arguments;
+}
+
 static bool
 rtcore_producer_root_descriptor_traversal_authority_request_ready(
     const rtcore_traversal_source_request &request) {
@@ -16952,13 +17026,16 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
   }
   const size_t traversal_stack_depth_after_reset =
       thread->RT_thread_data->traversal_data.size();
+  const rtcore_trace_ray_argument_audit trace_ray_arguments =
+      rtcore_make_trace_ray_argument_audit_from_materialized_input(
+          materialized_input);
 
   VulkanRayTracing::traceRay(
-      materialized_input.top_level_as, materialized_input.ray_flags,
-      materialized_input.cull_mask, materialized_input.sbt_record_offset,
-      materialized_input.sbt_record_stride, materialized_input.miss_index,
-      materialized_input.ray_origin, materialized_input.ray_tmin,
-      materialized_input.ray_direction, materialized_input.ray_tmax, NULL,
+      trace_ray_arguments.top_level_as, trace_ray_arguments.ray_flags,
+      trace_ray_arguments.cull_mask, trace_ray_arguments.sbt_record_offset,
+      trace_ray_arguments.sbt_record_stride, trace_ray_arguments.miss_index,
+      trace_ray_arguments.ray_origin, trace_ray_arguments.ray_tmin,
+      trace_ray_arguments.ray_direction, trace_ray_arguments.ray_tmax, NULL,
       pI, thread);
 
   const size_t traversal_stack_depth_after_materialize =
@@ -17027,6 +17104,21 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "ray_flags=%u, cull_mask=%u, "
+         "producer_root_descriptor_traversal_input_trace_ray_argument_audit=1, "
+         "trace_ray_argument_source=typed_materialized_traversal_input, "
+         "trace_ray_argument_valid=%u, "
+         "trace_ray_arguments_match_typed_object=%u, "
+         "trace_ray_argument_top_level_as=0x%llx, "
+         "trace_ray_argument_root_metadata_handle=0x%llx, "
+         "trace_ray_argument_ray_origin=(%f,%f,%f), "
+         "trace_ray_argument_ray_direction=(%f,%f,%f), "
+         "trace_ray_argument_ray_tmin=%f, "
+         "trace_ray_argument_ray_tmax=%f, "
+         "trace_ray_argument_sbt_record_offset=%u, "
+         "trace_ray_argument_sbt_record_stride=%u, "
+         "trace_ray_argument_miss_index=%u, "
+         "trace_ray_argument_ray_flags=%u, "
+         "trace_ray_argument_cull_mask=%u, "
          "traversal_stack_depth_before=%zu, "
          "traversal_stack_depth_after_reset=%zu, "
          "traversal_stack_depth_after_materialize=%zu, "
@@ -17076,6 +17168,20 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          materialized_input.sbt_record_offset,
          materialized_input.sbt_record_stride, materialized_input.miss_index,
          materialized_input.ray_flags, materialized_input.cull_mask,
+         trace_ray_arguments.valid ? 1 : 0,
+         trace_ray_arguments.matches_typed_object ? 1 : 0,
+         (unsigned long long)trace_ray_arguments.top_level_as,
+         (unsigned long long)trace_ray_arguments.root_metadata_handle,
+         trace_ray_arguments.ray_origin.x, trace_ray_arguments.ray_origin.y,
+         trace_ray_arguments.ray_origin.z,
+         trace_ray_arguments.ray_direction.x,
+         trace_ray_arguments.ray_direction.y,
+         trace_ray_arguments.ray_direction.z,
+         trace_ray_arguments.ray_tmin, trace_ray_arguments.ray_tmax,
+         trace_ray_arguments.sbt_record_offset,
+         trace_ray_arguments.sbt_record_stride,
+         trace_ray_arguments.miss_index, trace_ray_arguments.ray_flags,
+         trace_ray_arguments.cull_mask,
          traversal_stack_depth_before,
          traversal_stack_depth_after_reset,
          traversal_stack_depth_after_materialize, materialized ? 1 : 0);
