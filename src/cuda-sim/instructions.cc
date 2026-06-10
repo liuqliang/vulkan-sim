@@ -13106,7 +13106,8 @@ struct rtcore_decoded_trace_ray_value_record {
 enum rtcore_decoded_trace_ray_value_record_failpoint {
   RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE = 0,
   RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH,
-  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH,
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SELECTED_ROOT_OWNER_MISMATCH
 };
 
 static rtcore_decoded_trace_ray_value_record_failpoint
@@ -13121,6 +13122,9 @@ rtcore_decoded_trace_ray_value_record_failpoint_mode() {
   if (strcmp(value, "ray_flags_owner_mismatch") == 0) {
     return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH;
   }
+  if (strcmp(value, "selected_root_owner_mismatch") == 0) {
+    return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SELECTED_ROOT_OWNER_MISMATCH;
+  }
   return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE;
 }
 
@@ -13131,6 +13135,8 @@ static const char *rtcore_decoded_trace_ray_value_record_failpoint_name(
       return "ray_flags_mismatch";
     case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH:
       return "ray_flags_owner_mismatch";
+    case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SELECTED_ROOT_OWNER_MISMATCH:
+      return "selected_root_owner_mismatch";
     case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE:
     default:
       return "none";
@@ -13174,6 +13180,42 @@ static void rtcore_apply_decoded_trace_ray_value_record_failpoint(
            rtcore_decoded_input_field_owner_class_name(original_owner),
            rtcore_decoded_input_field_owner_class_name(
                record->ray_flags_cull_mask_owner));
+    fflush(stdout);
+  }
+  if (mode ==
+      RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SELECTED_ROOT_OWNER_MISMATCH) {
+    const char *original_owner = record->selected_root_descriptor_owner;
+    const bool original_payload_route_consistent =
+        record->selected_root_descriptor_payload_route_consistent;
+    const bool original_policy_passed =
+        record->selected_root_descriptor_policy_passed;
+    record->selected_root_descriptor_owner =
+        rtcore_backend_root_descriptor_selected_owner_label(false);
+    record->selected_root_descriptor_payload_route_consistent =
+        strcmp(record->selected_root_descriptor_owner,
+               record->payload_selected_root_descriptor_owner) == 0 &&
+        strcmp(record->selected_root_descriptor_source,
+               record->payload_selected_root_descriptor_source) == 0;
+    record->selected_root_descriptor_policy_passed =
+        !record->selected_root_descriptor_actual_producer_authority_enabled ||
+        record->selected_root_descriptor_payload_route_consistent;
+    printf("GPGPU-Sim PTX: RT_SUBMIT decoded-value-record-failpoint, "
+           "decoded_value_record_failpoint_applied=1, "
+           "decoded_value_record_failpoint_mode=%s, "
+           "decoded_value_record_source=%s, "
+           "decoded_value_record_original_selected_root_descriptor_owner=%s, "
+           "decoded_value_record_mutated_selected_root_descriptor_owner=%s, "
+           "decoded_value_record_original_selected_root_descriptor_payload_route_consistent=%u, "
+           "decoded_value_record_mutated_selected_root_descriptor_payload_route_consistent=%u, "
+           "decoded_value_record_original_selected_root_descriptor_policy_passed=%u, "
+           "decoded_value_record_mutated_selected_root_descriptor_policy_passed=%u\n",
+           rtcore_decoded_trace_ray_value_record_failpoint_name(mode),
+           record->source, original_owner,
+           record->selected_root_descriptor_owner,
+           original_payload_route_consistent ? 1 : 0,
+           record->selected_root_descriptor_payload_route_consistent ? 1 : 0,
+           original_policy_passed ? 1 : 0,
+           record->selected_root_descriptor_policy_passed ? 1 : 0);
     fflush(stdout);
   }
 }
@@ -17468,6 +17510,8 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
              "decoded_value_record_selected_root_descriptor_authority_mismatch_rejected=1, "
              "decoded_value_record_valid=%u, "
              "decoded_value_record_source=%s, "
+             "decoded_value_record_matches_request=%u, "
+             "decoded_value_record_authority_matches_request=%u, "
              "decoded_value_record_selected_root_descriptor_authority_matches_request=0, "
              "decoded_value_record_selected_root_descriptor_owner=%s, "
              "request_selected_root_descriptor_owner=%s, "
@@ -17477,6 +17521,8 @@ rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
              "request_selected_root_descriptor_policy_passed=%u\n",
              input->decoded_value_record_valid ? 1 : 0,
              input->decoded_value_record_source,
+             input->decoded_value_record_matches_request ? 1 : 0,
+             input->decoded_value_record_authority_matches_request ? 1 : 0,
              decoded_value_record.selected_root_descriptor_owner,
              request.replay_selected_root_descriptor_owner,
              decoded_value_record.selected_root_descriptor_source,
