@@ -13436,17 +13436,6 @@ static bool rtcore_decoded_trace_ray_value_record_matches_request(
          record.has_selected_root_descriptor &&
          record.root_metadata_handle == request.replay_root_metadata_handle &&
          record.top_level_as == request.replay_root_metadata_handle &&
-         record.root_node_reference == request.replay_root_node_reference &&
-         record.root_address_space != NULL &&
-         request.replay_root_address_space != NULL &&
-         strcmp(record.root_address_space, request.replay_root_address_space) ==
-             0 &&
-         record.layout_profile_reference != NULL &&
-         request.replay_layout_profile_reference != NULL &&
-         strcmp(record.layout_profile_reference,
-                request.replay_layout_profile_reference) == 0 &&
-         record.bvh_memory_binding ==
-             request.replay_backend_root_descriptor_producer_bvh_memory_binding &&
          record.ray_origin.x == request.replay_ray_origin.x &&
          record.ray_origin.y == request.replay_ray_origin.y &&
          record.ray_origin.z == request.replay_ray_origin.z &&
