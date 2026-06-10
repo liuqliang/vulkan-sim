@@ -13638,6 +13638,10 @@ struct rtcore_provider_backend_input_consumption_route_record {
         existing_traversal_backend_path_selected(false),
         existing_traversal_backend_invoked(false),
         existing_traversal_backend_invocation_skipped(false),
+        existing_traversal_backend_root_authority_source("unavailable"),
+        existing_traversal_backend_root_authority_available(false),
+        existing_traversal_backend_root_authority_top_level_as(0),
+        existing_traversal_backend_uses_producer_root_fields(false),
         provider_backend_input_consumption_route_passed(false),
         reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED) {}
 
@@ -13749,6 +13753,10 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool existing_traversal_backend_path_selected;
   bool existing_traversal_backend_invoked;
   bool existing_traversal_backend_invocation_skipped;
+  const char *existing_traversal_backend_root_authority_source;
+  bool existing_traversal_backend_root_authority_available;
+  uint64_t existing_traversal_backend_root_authority_top_level_as;
+  bool existing_traversal_backend_uses_producer_root_fields;
   bool provider_backend_input_consumption_route_passed;
   rtcore_traversal_provider_reject_reason reject_reason;
 };
@@ -14053,6 +14061,32 @@ rtcore_make_provider_backend_input_consumption_route_record(
   record.existing_traversal_backend_invocation_skipped =
       record.existing_traversal_backend_path_selected &&
       !record.existing_traversal_backend_invoked;
+  record.existing_traversal_backend_uses_producer_root_fields =
+      record.existing_traversal_backend_path_selected &&
+      record.existing_traversal_backend_invoked &&
+      record
+          .provider_backend_input_backend_root_descriptor_producer_fields_consumed_by_traversal;
+  if (!record.existing_traversal_backend_path_selected) {
+    record.existing_traversal_backend_root_authority_source = "unavailable";
+  } else if (!record.existing_traversal_backend_invoked) {
+    record.existing_traversal_backend_root_authority_source = "not_invoked";
+  } else if (custom_result.has_traversal_data &&
+             custom_result.traversal_snapshot.rtcore_trace_input_has_top_level_as !=
+                 0) {
+    record.existing_traversal_backend_root_authority_source =
+        "legacy_traversal_data_trace_input";
+    record.existing_traversal_backend_root_authority_available = true;
+    record.existing_traversal_backend_root_authority_top_level_as =
+        custom_result.traversal_snapshot.rtcore_trace_input_top_level_as;
+  } else if (custom_result.has_traversal_data) {
+    record.existing_traversal_backend_root_authority_source =
+        "legacy_traversal_data_missing_top_level_as";
+  } else if (custom_result.initialized_default_miss) {
+    record.existing_traversal_backend_root_authority_source =
+        "legacy_default_miss_no_top_level_as";
+  } else {
+    record.existing_traversal_backend_root_authority_source = "unavailable";
+  }
   record.reject_reason = response.reject_reason;
   record.provider_backend_input_consumption_route_passed =
       response.provider_supported && response.provider_accepted &&
@@ -14195,6 +14229,10 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "existing_traversal_backend_path_selected=%u, "
          "existing_traversal_backend_invoked=%u, "
          "existing_traversal_backend_invocation_skipped=%u, "
+         "existing_traversal_backend_root_authority_source=%s, "
+         "existing_traversal_backend_root_authority_available=%u, "
+         "existing_traversal_backend_root_authority_top_level_as=0x%llx, "
+         "existing_traversal_backend_uses_producer_root_fields=%u, "
          "reject_reason=%s, existing_traversal_backend_reused=1, "
          "claims_new_hardware_bvh_engine=0\n",
          rtcore_traversal_source_provider_name(record.provider),
@@ -14509,6 +14547,11 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.existing_traversal_backend_path_selected ? 1 : 0,
          record.existing_traversal_backend_invoked ? 1 : 0,
          record.existing_traversal_backend_invocation_skipped ? 1 : 0,
+         record.existing_traversal_backend_root_authority_source,
+         record.existing_traversal_backend_root_authority_available ? 1 : 0,
+         (unsigned long long)
+             record.existing_traversal_backend_root_authority_top_level_as,
+         record.existing_traversal_backend_uses_producer_root_fields ? 1 : 0,
          rtcore_traversal_provider_reject_reason_name(record.reject_reason));
   fflush(stdout);
 }
