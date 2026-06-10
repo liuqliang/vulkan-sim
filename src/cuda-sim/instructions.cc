@@ -13216,10 +13216,19 @@ struct rtcore_provider_payload_backend_input_snapshot {
   rtcore_provider_payload_backend_input_snapshot()
       : valid(false),
         provider_payload_consumption_enabled(false),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot_valid(false),
+        provider_materialized_traversal_input_snapshot_source("unavailable"),
+        provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+            false),
         consumed_input_view() {}
 
   bool valid;
   bool provider_payload_consumption_enabled;
+  bool has_provider_materialized_traversal_input_snapshot;
+  bool provider_materialized_traversal_input_snapshot_valid;
+  const char *provider_materialized_traversal_input_snapshot_source;
+  bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
   rtcore_provider_payload_consumed_input_view consumed_input_view;
 };
 
@@ -13237,6 +13246,17 @@ rtcore_make_provider_payload_backend_input_snapshot(
 
   snapshot.valid = true;
   snapshot.consumed_input_view = descriptor.provider_payload_consumed_input;
+  snapshot.has_provider_materialized_traversal_input_snapshot =
+      descriptor.has_provider_materialized_traversal_input_snapshot;
+  snapshot.provider_materialized_traversal_input_snapshot_valid =
+      descriptor.provider_materialized_traversal_input_snapshot.valid;
+  snapshot.provider_materialized_traversal_input_snapshot_source =
+      descriptor.provider_materialized_traversal_input_snapshot.source;
+  snapshot.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      snapshot.has_provider_materialized_traversal_input_snapshot &&
+      snapshot.provider_materialized_traversal_input_snapshot_valid &&
+      rtcore_provider_payload_view_proxy_fields_retired_by_actual_producer(
+          descriptor.provider_payload_consumed_input);
   return snapshot;
 }
 
@@ -13308,7 +13328,12 @@ struct rtcore_provider_backend_input_response_annotation {
         backend_input_snapshot_required(false),
         has_provider_payload_backend_input_snapshot(false),
         provider_payload_backend_input_snapshot_valid(false),
-        provider_payload_backend_input_snapshot_accepted(false) {}
+        provider_payload_backend_input_snapshot_accepted(false),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot_valid(false),
+        provider_materialized_traversal_input_snapshot_source("unavailable"),
+        provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+            false) {}
 
   bool valid;
   bool provider_payload_consumption_enabled;
@@ -13316,6 +13341,10 @@ struct rtcore_provider_backend_input_response_annotation {
   bool has_provider_payload_backend_input_snapshot;
   bool provider_payload_backend_input_snapshot_valid;
   bool provider_payload_backend_input_snapshot_accepted;
+  bool has_provider_materialized_traversal_input_snapshot;
+  bool provider_materialized_traversal_input_snapshot_valid;
+  const char *provider_materialized_traversal_input_snapshot_source;
+  bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 };
 
 struct rtcore_traversal_provider_response {
@@ -14071,7 +14100,12 @@ struct rtcore_traversal_source_provider_backend_input_annotation {
         backend_input_snapshot_required(false),
         has_provider_payload_backend_input_snapshot(false),
         provider_payload_backend_input_snapshot_valid(false),
-        provider_payload_backend_input_snapshot_accepted(false) {}
+        provider_payload_backend_input_snapshot_accepted(false),
+        has_provider_materialized_traversal_input_snapshot(false),
+        provider_materialized_traversal_input_snapshot_valid(false),
+        provider_materialized_traversal_input_snapshot_source("unavailable"),
+        provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+            false) {}
 
   bool valid;
   bool provider_payload_consumption_enabled;
@@ -14079,6 +14113,10 @@ struct rtcore_traversal_source_provider_backend_input_annotation {
   bool has_provider_payload_backend_input_snapshot;
   bool provider_payload_backend_input_snapshot_valid;
   bool provider_payload_backend_input_snapshot_accepted;
+  bool has_provider_materialized_traversal_input_snapshot;
+  bool provider_materialized_traversal_input_snapshot_valid;
+  const char *provider_materialized_traversal_input_snapshot_source;
+  bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 };
 
 struct rtcore_registry_payload_consumption_admission_decision {
@@ -15740,6 +15778,18 @@ rtcore_annotate_provider_response_with_backend_input_snapshot_result(
       response->provider_accepted &&
       annotation.has_provider_payload_backend_input_snapshot &&
       annotation.provider_payload_backend_input_snapshot_valid;
+  annotation.has_provider_materialized_traversal_input_snapshot =
+      custom_result.provider_payload_backend_input_snapshot
+          .has_provider_materialized_traversal_input_snapshot;
+  annotation.provider_materialized_traversal_input_snapshot_valid =
+      custom_result.provider_payload_backend_input_snapshot
+          .provider_materialized_traversal_input_snapshot_valid;
+  annotation.provider_materialized_traversal_input_snapshot_source =
+      custom_result.provider_payload_backend_input_snapshot
+          .provider_materialized_traversal_input_snapshot_source;
+  annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      custom_result.provider_payload_backend_input_snapshot
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "provider-backend-input-response-annotation, provider=%s, "
@@ -15751,6 +15801,12 @@ rtcore_annotate_provider_response_with_backend_input_snapshot_result(
          "has_provider_payload_backend_input_snapshot=%u, "
          "provider_payload_backend_input_snapshot_valid=%u, "
          "provider_payload_backend_input_snapshot_accepted=%u, "
+         "provider_materialized_traversal_input_response_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
          "response_backend_input_annotation_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(response->provider),
          custom_result.context_ptr, custom_result.handoff_window_base,
@@ -15759,7 +15815,14 @@ rtcore_annotate_provider_response_with_backend_input_snapshot_result(
          annotation.backend_input_snapshot_required ? 1 : 0,
          annotation.has_provider_payload_backend_input_snapshot ? 1 : 0,
          annotation.provider_payload_backend_input_snapshot_valid ? 1 : 0,
-         annotation.provider_payload_backend_input_snapshot_accepted ? 1 : 0);
+         annotation.provider_payload_backend_input_snapshot_accepted ? 1 : 0,
+         annotation.has_provider_materialized_traversal_input_snapshot ? 1 : 0,
+         annotation.provider_materialized_traversal_input_snapshot_valid ? 1
+                                                                         : 0,
+         annotation.provider_materialized_traversal_input_snapshot_source,
+         annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0);
   fflush(stdout);
 }
 
@@ -16166,6 +16229,8 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
 
   const rtcore_provider_payload_consumed_input_view &view =
       result.provider_payload_backend_input_snapshot.consumed_input_view;
+  const rtcore_provider_payload_backend_input_snapshot &backend_snapshot =
+      result.provider_payload_backend_input_snapshot;
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-provider-payload-consumed-input, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -16174,6 +16239,12 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "provider_payload_consumption_enabled=%u, "
          "provider_payload_backend_input_source=registry_payload_shadow, "
          "provider_backend_input_source_bridge=field_source_labels, "
+         "custom_backend_provider_materialized_traversal_input_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
          "rtcore-provider-payload-launch-context-input=1, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "ray_origin_direction_tmin_tmax_source=%s, "
@@ -16235,8 +16306,15 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          result.context_ptr, result.handoff_window_base,
          result.lane_slot_index, result.warp_metadata.warp_uid,
          result.warp_metadata.active_mask,
-         result.provider_payload_backend_input_snapshot
-                 .provider_payload_consumption_enabled
+         backend_snapshot.provider_payload_consumption_enabled ? 1 : 0,
+         backend_snapshot.has_provider_materialized_traversal_input_snapshot ? 1
+                                                                             : 0,
+         backend_snapshot.provider_materialized_traversal_input_snapshot_valid
+             ? 1
+             : 0,
+         backend_snapshot.provider_materialized_traversal_input_snapshot_source,
+         backend_snapshot
+                 .provider_materialized_traversal_input_actual_abi_snapshot_admitted
              ? 1
              : 0,
          view.has_ray_origin_direction_tmin_tmax ? 1 : 0,
@@ -17558,6 +17636,15 @@ rtcore_copy_provider_backend_input_response_annotation_to_source_snapshot(
       response_annotation.provider_payload_backend_input_snapshot_valid;
   annotation.provider_payload_backend_input_snapshot_accepted =
       response_annotation.provider_payload_backend_input_snapshot_accepted;
+  annotation.has_provider_materialized_traversal_input_snapshot =
+      response_annotation.has_provider_materialized_traversal_input_snapshot;
+  annotation.provider_materialized_traversal_input_snapshot_valid =
+      response_annotation.provider_materialized_traversal_input_snapshot_valid;
+  annotation.provider_materialized_traversal_input_snapshot_source =
+      response_annotation.provider_materialized_traversal_input_snapshot_source;
+  annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      response_annotation
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "traversal-source-provider-backend-input-annotation, provider=%s, "
@@ -17568,13 +17655,26 @@ rtcore_copy_provider_backend_input_response_annotation_to_source_snapshot(
          "has_provider_payload_backend_input_snapshot=%u, "
          "provider_payload_backend_input_snapshot_valid=%u, "
          "provider_payload_backend_input_snapshot_accepted=%u, "
+         "provider_materialized_traversal_input_source_snapshot_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
          "source_snapshot_backend_input_annotation_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(response.provider),
          annotation.provider_payload_consumption_enabled ? 1 : 0,
          annotation.backend_input_snapshot_required ? 1 : 0,
          annotation.has_provider_payload_backend_input_snapshot ? 1 : 0,
          annotation.provider_payload_backend_input_snapshot_valid ? 1 : 0,
-         annotation.provider_payload_backend_input_snapshot_accepted ? 1 : 0);
+         annotation.provider_payload_backend_input_snapshot_accepted ? 1 : 0,
+         annotation.has_provider_materialized_traversal_input_snapshot ? 1 : 0,
+         annotation.provider_materialized_traversal_input_snapshot_valid ? 1
+                                                                         : 0,
+         annotation.provider_materialized_traversal_input_snapshot_source,
+         annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0);
   fflush(stdout);
 }
 
@@ -26667,12 +26767,22 @@ static void rtcore_log_provider_payload_consumed_input_view(
   const bool proxy_fields_retired_by_actual_producer =
       rtcore_provider_payload_view_proxy_fields_retired_by_actual_producer(
           view);
+  const bool provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      descriptor.has_provider_materialized_traversal_input_snapshot &&
+      descriptor.provider_materialized_traversal_input_snapshot.valid &&
+      proxy_fields_retired_by_actual_producer;
   printf("GPGPU-Sim PTX: RT_SUBMIT provider-payload-consumed-input, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, provider-payload-consumed-input-view=1, "
          "provider_payload_consumption_enabled=1, "
          "provider_payload_consumption_source=registry_payload_shadow, "
          "provider_payload_consumed_input_source_bridge=field_source_labels, "
+         "provider_payload_materialized_traversal_input_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
          "rtcore-provider-payload-launch-context-input=1, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "ray_origin_direction_tmin_tmax_owner=%s, "
@@ -26707,6 +26817,13 @@ static void rtcore_log_provider_payload_consumed_input_view(
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
          descriptor.lane_slot_index,
+         descriptor.has_provider_materialized_traversal_input_snapshot ? 1
+                                                                       : 0,
+         descriptor.provider_materialized_traversal_input_snapshot.valid ? 1
+                                                                         : 0,
+         descriptor.provider_materialized_traversal_input_snapshot.source,
+         provider_materialized_traversal_input_actual_abi_snapshot_admitted ? 1
+                                                                           : 0,
          view.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              view.ray_origin_direction_tmin_tmax_owner),
