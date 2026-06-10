@@ -1303,6 +1303,12 @@ struct rtcore_adapter_completion_claim_snapshot {
         provider_materialized_traversal_input_snapshot_source("unavailable"),
         provider_materialized_traversal_input_actual_abi_snapshot_admitted(
             false),
+        provider_materialized_traversal_input_decoded_value_record_valid(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source(
+            "unavailable"),
+        provider_materialized_traversal_input_decoded_value_record_consumed(
+            false),
         reject_reason("missing_record") {}
 
   bool found;
@@ -1327,6 +1333,9 @@ struct rtcore_adapter_completion_claim_snapshot {
   bool provider_materialized_traversal_input_snapshot_valid;
   const char *provider_materialized_traversal_input_snapshot_source;
   bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  bool provider_materialized_traversal_input_decoded_value_record_valid;
+  const char *provider_materialized_traversal_input_decoded_value_record_source;
+  bool provider_materialized_traversal_input_decoded_value_record_consumed;
   const char *reject_reason;
 };
 
