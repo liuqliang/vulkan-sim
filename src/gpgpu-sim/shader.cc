@@ -286,6 +286,27 @@ rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_force_later_gate
   return true;
 }
 
+static bool
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_force_issue_slot_stall_enabled() {
+  const char *value = getenv(
+      "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_REUSABLE_CREDIT_SCHEDULER_BRIDGE_FORCE_ISSUE_SLOT_STALL");
+  return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static bool
+rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_force_issue_slot_stall_once(
+    bool bridge_enabled, bool credit_consumed,
+    bool issue_slot_ready_before_failpoint) {
+  static bool forced_issue_slot_stall_injected = false;
+  if (forced_issue_slot_stall_injected || !bridge_enabled ||
+      !credit_consumed || !issue_slot_ready_before_failpoint ||
+      !rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_force_issue_slot_stall_enabled()) {
+    return false;
+  }
+  forced_issue_slot_stall_injected = true;
+  return true;
+}
+
 static unsigned &rtcore_scheduler_credit_ledger_reusable_credit_shadow_count() {
   static unsigned reusable_credit_shadow_count = 0;
   return reusable_credit_shadow_count;
@@ -3419,11 +3440,75 @@ void scheduler_unit::cycle() {
                 break;
               }
 
-              const bool rt_core_issue_slot_ready =
+              const bool rt_core_issue_slot_ready_before_failpoint =
                   m_rt_core_out->has_free(m_shader->m_config->sub_core_model,
                                           m_id) &&
                   !(diff_exec_units &&
                     previous_issued_inst_exec_type == exec_unit_type_t::RT);
+              const bool rtcore_scheduler_credit_ledger_forced_issue_slot_stall =
+                  pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                  rtcore_scheduler_credit_ledger_reusable_credit_scheduler_bridge_force_issue_slot_stall_once(
+                      rtcore_scheduler_credit_ledger_scheduler_bridge_enabled,
+                      rtcore_scheduler_credit_ledger_issue_gate_credit_consumed,
+                      rt_core_issue_slot_ready_before_failpoint);
+              const bool rt_core_issue_slot_ready =
+                  rt_core_issue_slot_ready_before_failpoint &&
+                  !rtcore_scheduler_credit_ledger_forced_issue_slot_stall;
+              if (rtcore_scheduler_credit_ledger_forced_issue_slot_stall) {
+                printf("GPGPU-Sim PTX: RT_SUBMIT "
+                       "scheduler-credit-ledger-reusable-credit-scheduler-bridge-forced-issue-slot-stall=1, "
+                       "owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
+                       "static_inst_pc=0x%llx, issued_active_mask=0x%08x, "
+                       "bridge_enabled=%u, credit_consumed=%u, "
+                       "owner_tuple_reserved=%u, "
+                       "forced_issue_slot_ready_before=1, "
+                       "forced_issue_slot_ready_after=0, "
+                       "transition_reason=reusable_credit_scheduler_bridge_force_issue_slot_stall, "
+                       "scheduler_credit_ledger_reusable_credit_forced_issue_slot_materialized_input_provenance=1, "
+                       "forced_issue_slot_materialized_input_provenance_available=%u, "
+                       "has_provider_materialized_traversal_input_snapshot=%u, "
+                       "provider_materialized_traversal_input_snapshot_valid=%u, "
+                       "provider_materialized_traversal_input_snapshot_source=%s, "
+                       "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+                       "forced_issue_slot_materialized_input_consumes_failpoint=1, "
+                       "forced_issue_slot_materialized_input_consumes_slot_behavior=0\n",
+                       rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
+                       rtcore_scheduler_credit_ledger_shadow_table.warp_id,
+                       static_cast<unsigned long long>(
+                           rtcore_scheduler_credit_ledger_shadow_table
+                               .static_inst_pc),
+                       rtcore_scheduler_credit_ledger_shadow_table
+                           .issued_active_mask,
+                       rtcore_scheduler_credit_ledger_scheduler_bridge_enabled
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_credit_consumed
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_scheduler_bridge_owner_tuple_reserved
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .available
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .has_provider_materialized_traversal_input_snapshot
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_snapshot_valid
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                           .provider_materialized_traversal_input_snapshot_source,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_actual_abi_snapshot_admitted
+                           ? 1
+                           : 0);
+                fflush(stdout);
+              }
               if (rt_core_issue_slot_ready) {
                 rtcore_completion_queue_gate_materialized_input_provenance_snapshot
                     rtcore_completion_queue_gate_materialized_input_provenance;
