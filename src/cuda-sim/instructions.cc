@@ -13007,7 +13007,8 @@ enum rtcore_traversal_provider_reject_reason {
   RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING = 4,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_DECODED_ABI_AUTHORITY = 5,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT = 6,
-  RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_ROOT_FIELD_DRIFT = 7
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_ROOT_FIELD_DRIFT = 7,
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_PRODUCER_ROOT_DESCRIPTOR_TRAVERSAL_AUTHORITY_NOT_READY = 8
 };
 
 static const char *rtcore_traversal_provider_reject_reason_name(
@@ -13023,6 +13024,8 @@ static const char *rtcore_traversal_provider_reject_reason_name(
       return "RTCORE_TRAVERSAL_PROVIDER_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_ROOT_FIELD_DRIFT:
       return "RTCORE_TRAVERSAL_PROVIDER_SELECTED_ROOT_DESCRIPTOR_ROOT_FIELD_DRIFT";
+    case RTCORE_TRAVERSAL_PROVIDER_REJECT_PRODUCER_ROOT_DESCRIPTOR_TRAVERSAL_AUTHORITY_NOT_READY:
+      return "RTCORE_TRAVERSAL_PROVIDER_PRODUCER_ROOT_DESCRIPTOR_TRAVERSAL_AUTHORITY_NOT_READY";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED:
       return "RTCORE_TRAVERSAL_PROVIDER_WORK_DESCRIPTOR_REJECTED";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED:
@@ -13464,6 +13467,26 @@ static bool rtcore_registry_payload_consumption_admission_policy_default_deny() 
       "default-deny");
 }
 
+static const char *
+rtcore_producer_root_descriptor_traversal_authority_env_name() {
+  return "VULKAN_SIM_RTCORE_PRODUCER_ROOT_DESCRIPTOR_TRAVERSAL_AUTHORITY";
+}
+
+static bool
+rtcore_producer_root_descriptor_traversal_authority_opt_in_requested() {
+  const char *value =
+      getenv(rtcore_producer_root_descriptor_traversal_authority_env_name());
+  if (value == NULL || value[0] == '\0') {
+    return false;
+  }
+  return rtcore_rt_env_value_is_explicit_true(value) ||
+         rtcore_path_mode_is(value, "promote") ||
+         rtcore_path_mode_is(value, "producer_root") ||
+         rtcore_path_mode_is(value, "producer-root") ||
+         rtcore_path_mode_is(value, "producer_root_descriptor") ||
+         rtcore_path_mode_is(value, "producer-root-descriptor");
+}
+
 struct rtcore_custom_backend_result {
   rtcore_custom_backend_result()
       : provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_UNSUPPORTED),
@@ -13653,6 +13676,8 @@ struct rtcore_provider_backend_input_consumption_route_record {
             false),
         producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject(
             false),
+        producer_root_descriptor_traversal_authority_opt_in_requested(false),
+        producer_root_descriptor_traversal_authority_request_rejected(false),
         producer_root_descriptor_traversal_authority_block_reason(
             "unavailable"),
         provider_backend_input_consumption_route_passed(false),
@@ -13777,6 +13802,8 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool producer_root_descriptor_traversal_authority_blocked_by_existing_backend;
   bool producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy;
   bool producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject;
+  bool producer_root_descriptor_traversal_authority_opt_in_requested;
+  bool producer_root_descriptor_traversal_authority_request_rejected;
   const char *producer_root_descriptor_traversal_authority_block_reason;
   bool provider_backend_input_consumption_route_passed;
   rtcore_traversal_provider_reject_reason reject_reason;
@@ -14125,16 +14152,26 @@ rtcore_make_provider_backend_input_consumption_route_record(
       .producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject =
       record.existing_traversal_backend_path_selected &&
       !record.existing_traversal_backend_invoked;
+  record.producer_root_descriptor_traversal_authority_opt_in_requested =
+      rtcore_producer_root_descriptor_traversal_authority_opt_in_requested();
+  record.producer_root_descriptor_traversal_authority_request_rejected =
+      record.producer_root_descriptor_traversal_authority_opt_in_requested &&
+      response.reject_reason ==
+          RTCORE_TRAVERSAL_PROVIDER_REJECT_PRODUCER_ROOT_DESCRIPTOR_TRAVERSAL_AUTHORITY_NOT_READY;
   record
       .producer_root_descriptor_traversal_authority_preconditions_satisfied =
       record.producer_root_descriptor_traversal_authority_candidate &&
+      !record.producer_root_descriptor_traversal_authority_opt_in_requested &&
       !record
            .producer_root_descriptor_traversal_authority_blocked_by_existing_backend &&
       !record
            .producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy &&
       !record
            .producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject;
-  if (record
+  if (record.producer_root_descriptor_traversal_authority_request_rejected) {
+    record.producer_root_descriptor_traversal_authority_block_reason =
+        "producer_root_traversal_authority_requested_before_real_consumption";
+  } else if (record
           .producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject) {
     record.producer_root_descriptor_traversal_authority_block_reason =
         "pre_traversal_reject";
@@ -14307,6 +14344,8 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "producer_root_descriptor_traversal_authority_blocked_by_existing_backend=%u, "
          "producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy=%u, "
          "producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject=%u, "
+         "producer_root_descriptor_traversal_authority_opt_in_requested=%u, "
+         "producer_root_descriptor_traversal_authority_request_rejected=%u, "
          "producer_root_descriptor_traversal_authority_block_reason=%s, "
          "reject_reason=%s, existing_traversal_backend_reused=1, "
          "claims_new_hardware_bvh_engine=0\n",
@@ -14646,6 +14685,12 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
              : 0,
          record
                  .producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject
+             ? 1
+             : 0,
+         record.producer_root_descriptor_traversal_authority_opt_in_requested
+             ? 1
+             : 0,
+         record.producer_root_descriptor_traversal_authority_request_rejected
              ? 1
              : 0,
          record.producer_root_descriptor_traversal_authority_block_reason,
@@ -15709,6 +15754,41 @@ rtcore_make_custom_rtcore_existing_traversal_selected_descriptor_root_field_pre_
 }
 
 static rtcore_traversal_provider_response
+rtcore_make_custom_rtcore_existing_traversal_producer_root_authority_pre_traversal_rejected_response(
+    const rtcore_traversal_work_descriptor &descriptor,
+    const rtcore_traversal_source_request &request) {
+  rtcore_custom_backend_result custom_result =
+      rtcore_make_custom_rtcore_backend_result_base(descriptor);
+  custom_result.supported = true;
+  custom_result.accepted = false;
+  custom_result.reject_reason =
+      RTCORE_TRAVERSAL_PROVIDER_REJECT_PRODUCER_ROOT_DESCRIPTOR_TRAVERSAL_AUTHORITY_NOT_READY;
+  custom_result.existing_traversal_input_replay_requested =
+      request.from_provider_backend_input_snapshot;
+  custom_result.existing_traversal_request_replay_live_input_match = false;
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "custom-rtcore-backend-existing-traversal-producer-root-authority-pre-traversal-reject, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "custom-rtcore-backend-existing-traversal-producer-root-authority-pre-traversal-reject=1, "
+         "existing_traversal_backend_invocation_skipped=1, "
+         "existing_traversal_input_replay_source=provider_backend_input_snapshot, "
+         "producer_root_descriptor_traversal_authority_opt_in_requested=1, "
+         "producer_root_descriptor_traversal_authority_request_rejected=1, "
+         "producer_root_descriptor_traversal_authority_reject_policy=fail_closed_until_real_consumption, "
+         "reject_reason=%s\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
+         descriptor.warp_metadata.active_mask,
+         rtcore_traversal_provider_reject_reason_name(
+             custom_result.reject_reason));
+  fflush(stdout);
+  return rtcore_make_provider_response_from_custom_rtcore_backend_result(
+      custom_result);
+}
+
+static rtcore_traversal_provider_response
 rtcore_make_custom_rtcore_existing_traversal_backend_response(
     const rtcore_traversal_work_descriptor &descriptor,
     const rtcore_traversal_source_request &request) {
@@ -15723,6 +15803,10 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
       effective_request.from_provider_backend_input_snapshot;
   bool existing_traversal_request_replay_live_input_match =
       !existing_traversal_input_replay_requested;
+  if (rtcore_producer_root_descriptor_traversal_authority_opt_in_requested()) {
+    return rtcore_make_custom_rtcore_existing_traversal_producer_root_authority_pre_traversal_rejected_response(
+        descriptor, effective_request);
+  }
   if (existing_traversal_input_replay_requested &&
       !effective_request.replay_selected_root_descriptor_policy_passed) {
     return rtcore_make_custom_rtcore_existing_traversal_selected_descriptor_pre_traversal_rejected_response(
