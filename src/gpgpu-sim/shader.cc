@@ -5221,6 +5221,15 @@ rt_unit::rtcore_make_synthetic_release_snapshot(
   snapshot.adapter_completed_lane_mask = event.adapter_completed_lane_mask;
   snapshot.adapter_max_node_visits = event.adapter_max_node_visits;
   snapshot.adapter_max_primitive_tests = event.adapter_max_primitive_tests;
+  snapshot.has_provider_materialized_traversal_input_snapshot =
+      event.has_provider_materialized_traversal_input_snapshot;
+  snapshot.provider_materialized_traversal_input_snapshot_valid =
+      event.provider_materialized_traversal_input_snapshot_valid;
+  snapshot.provider_materialized_traversal_input_snapshot_source =
+      event.provider_materialized_traversal_input_snapshot_source;
+  snapshot.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
+      event
+          .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
   snapshot.enqueue_cycle = event.enqueue_cycle;
   snapshot.ready_cycle = event.ready_cycle;
   snapshot.current_cycle = current_cycle;
@@ -5242,13 +5251,26 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
          "adapter_active_mask=0x%08x, "
          "adapter_completed_lane_mask=0x%08x, ready_cycle=%llu, "
          "current_cycle=%llu, adapter_max_node_visits=%u, "
-         "adapter_max_primitive_tests=%u\n",
+         "adapter_max_primitive_tests=%u, "
+         "rt_unit_materialized_traversal_input_release_provenance=1, "
+         "provider_materialized_traversal_input_snapshot=1, "
+         "has_provider_materialized_traversal_input_snapshot=%u, "
+         "provider_materialized_traversal_input_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_snapshot_source=%s, "
+         "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+         "synthetic_release_materialized_input_consumes_release_behavior=0\n",
          snapshot.warp_uid, snapshot.warp_id, snapshot.owner_hw_sid,
          static_cast<unsigned long long>(snapshot.static_inst_pc),
          snapshot.issued_active_mask, snapshot.adapter_active_mask,
          snapshot.adapter_completed_lane_mask, snapshot.ready_cycle,
          snapshot.current_cycle, snapshot.adapter_max_node_visits,
-         snapshot.adapter_max_primitive_tests);
+         snapshot.adapter_max_primitive_tests,
+         snapshot.has_provider_materialized_traversal_input_snapshot ? 1 : 0,
+         snapshot.provider_materialized_traversal_input_snapshot_valid ? 1 : 0,
+         snapshot.provider_materialized_traversal_input_snapshot_source,
+         snapshot.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0);
   fflush(stdout);
 
   rtcore_shadow_table_release_snapshot shadow_table_release =

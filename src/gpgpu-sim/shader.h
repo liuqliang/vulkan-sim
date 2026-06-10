@@ -1578,6 +1578,12 @@ class rt_unit : public pipelined_simd_unit {
               adapter_completed_lane_mask(0),
               adapter_max_node_visits(0),
               adapter_max_primitive_tests(0),
+              has_provider_materialized_traversal_input_snapshot(false),
+              provider_materialized_traversal_input_snapshot_valid(false),
+              provider_materialized_traversal_input_snapshot_source(
+                  "unavailable"),
+              provider_materialized_traversal_input_actual_abi_snapshot_admitted(
+                  false),
               enqueue_cycle(0),
               ready_cycle(0),
               current_cycle(0) {}
@@ -1593,6 +1599,10 @@ class rt_unit : public pipelined_simd_unit {
         unsigned adapter_completed_lane_mask;
         unsigned adapter_max_node_visits;
         unsigned adapter_max_primitive_tests;
+        bool has_provider_materialized_traversal_input_snapshot;
+        bool provider_materialized_traversal_input_snapshot_valid;
+        const char *provider_materialized_traversal_input_snapshot_source;
+        bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
         unsigned long long current_cycle;
