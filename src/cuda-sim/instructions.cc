@@ -12337,6 +12337,11 @@ struct rtcore_traversal_source_request {
         replay_full_backend_input_abi_ready_gate(false),
         replay_full_backend_input_abi_ready(false),
         replay_full_backend_input_abi_block_reason("unavailable"),
+        replay_root_profile_actual_abi_evidence_bridge(false),
+        replay_root_profile_actual_abi_evidence_available(false),
+        replay_root_profile_actual_abi_evidence_source("unavailable"),
+        replay_root_profile_producer_fields_consumed_by_traversal(false),
+        replay_root_profile_actual_abi_gap_closure_candidate(false),
         replay_ray_flags(0),
         replay_cull_mask(0),
         replay_ray_tmin(0.0f),
@@ -12413,6 +12418,11 @@ struct rtcore_traversal_source_request {
   bool replay_full_backend_input_abi_ready_gate;
   bool replay_full_backend_input_abi_ready;
   const char *replay_full_backend_input_abi_block_reason;
+  bool replay_root_profile_actual_abi_evidence_bridge;
+  bool replay_root_profile_actual_abi_evidence_available;
+  const char *replay_root_profile_actual_abi_evidence_source;
+  bool replay_root_profile_producer_fields_consumed_by_traversal;
+  bool replay_root_profile_actual_abi_gap_closure_candidate;
   float3 replay_ray_origin;
   float3 replay_ray_direction;
   uint32_t replay_ray_flags;
@@ -13316,6 +13326,10 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
           provider_decoded_abi_authority_complete,
           request->replay_root_profile_abi_gap_open,
           request->replay_actual_abi_evidence_for_proxy_fields);
+  request->replay_root_profile_actual_abi_evidence_bridge =
+      view.resolve_backend_root_descriptor_actual_producer_evidence_bridge;
+  request->replay_root_profile_actual_abi_evidence_source =
+      view.resolve_backend_root_descriptor_actual_producer_evidence_source;
   request->replay_ray_origin = view.ray_origin;
   request->replay_ray_direction = view.ray_direction;
   request->replay_ray_tmin = view.ray_tmin;
@@ -13403,6 +13417,21 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
       !request
            ->replay_selected_root_descriptor_actual_producer_authority_enabled ||
       request->replay_selected_root_descriptor_payload_route_consistent;
+  request->replay_root_profile_producer_fields_consumed_by_traversal =
+      view.resolve_backend_root_descriptor_producer_fields_consumed_by_traversal ||
+      (request
+           ->replay_selected_root_descriptor_actual_producer_authority_enabled &&
+       request->replay_selected_root_descriptor_matches_producer_root_fields);
+  request->replay_root_profile_actual_abi_evidence_available =
+      proxy_fields_retired_by_actual_producer &&
+      view.resolve_backend_root_descriptor_actual_abi_evidence &&
+      view.resolve_backend_root_descriptor_actual_producer_evidence_ready &&
+      view.resolve_backend_root_descriptor_actual_producer_authority_enabled &&
+      view.resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence &&
+      request->replay_root_profile_producer_fields_consumed_by_traversal;
+  request->replay_root_profile_actual_abi_gap_closure_candidate =
+      request->replay_root_profile_actual_abi_evidence_available &&
+      !request->replay_runtime_proxy_compatibility_path;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-input-replay, "
@@ -13433,6 +13462,11 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "existing_traversal_replay_full_backend_input_abi_ready_gate=%u, "
          "existing_traversal_replay_full_backend_input_abi_ready=%u, "
          "existing_traversal_replay_full_backend_input_abi_block_reason=%s, "
+         "existing_traversal_replay_root_profile_actual_abi_evidence_bridge=%u, "
+         "existing_traversal_replay_root_profile_actual_abi_evidence_available=%u, "
+         "existing_traversal_replay_root_profile_actual_abi_evidence_source=%s, "
+         "existing_traversal_replay_root_profile_producer_fields_consumed_by_traversal=%u, "
+         "existing_traversal_replay_root_profile_actual_abi_gap_closure_candidate=%u, "
          "has_launch_context_input=%u, bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "existing_traversal_replay_selected_descriptor_source_bridge=1, "
@@ -13490,6 +13524,13 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          request->replay_full_backend_input_abi_ready_gate ? 1 : 0,
          request->replay_full_backend_input_abi_ready ? 1 : 0,
          request->replay_full_backend_input_abi_block_reason,
+         request->replay_root_profile_actual_abi_evidence_bridge ? 1 : 0,
+         request->replay_root_profile_actual_abi_evidence_available ? 1 : 0,
+         request->replay_root_profile_actual_abi_evidence_source,
+         request->replay_root_profile_producer_fields_consumed_by_traversal ? 1
+                                                                            : 0,
+         request->replay_root_profile_actual_abi_gap_closure_candidate ? 1
+                                                                       : 0,
          request->has_replay_launch_context_input ? 1 : 0,
          (unsigned long long)request->replay_bridge_trace_replay_top_level_as,
          request->replay_sbt_record_offset, request->replay_sbt_record_stride,
@@ -13575,6 +13616,11 @@ struct rtcore_existing_traversal_replay_input_match_record {
         full_backend_input_abi_ready_gate(false),
         full_backend_input_abi_ready(false),
         full_backend_input_abi_block_reason("unavailable"),
+        root_profile_actual_abi_evidence_bridge(false),
+        root_profile_actual_abi_evidence_available(false),
+        root_profile_actual_abi_evidence_source("unavailable"),
+        root_profile_producer_fields_consumed_by_traversal(false),
+        root_profile_actual_abi_gap_closure_candidate(false),
         launch_context_sbt_match(false),
         ray_origin_direction_tmin_tmax_match(false),
         ray_flags_cull_mask_match(false),
@@ -13610,6 +13656,11 @@ struct rtcore_existing_traversal_replay_input_match_record {
   bool full_backend_input_abi_ready_gate;
   bool full_backend_input_abi_ready;
   const char *full_backend_input_abi_block_reason;
+  bool root_profile_actual_abi_evidence_bridge;
+  bool root_profile_actual_abi_evidence_available;
+  const char *root_profile_actual_abi_evidence_source;
+  bool root_profile_producer_fields_consumed_by_traversal;
+  bool root_profile_actual_abi_gap_closure_candidate;
   bool launch_context_sbt_match;
   bool ray_origin_direction_tmin_tmax_match;
   bool ray_flags_cull_mask_match;
@@ -13679,6 +13730,16 @@ rtcore_make_existing_traversal_replay_input_match_record(
           record.provider_decoded_abi_authority_complete,
           record.root_profile_abi_gap_open,
           record.actual_abi_evidence_for_proxy_fields);
+  record.root_profile_actual_abi_evidence_bridge =
+      request.replay_root_profile_actual_abi_evidence_bridge;
+  record.root_profile_actual_abi_evidence_available =
+      request.replay_root_profile_actual_abi_evidence_available;
+  record.root_profile_actual_abi_evidence_source =
+      request.replay_root_profile_actual_abi_evidence_source;
+  record.root_profile_producer_fields_consumed_by_traversal =
+      request.replay_root_profile_producer_fields_consumed_by_traversal;
+  record.root_profile_actual_abi_gap_closure_candidate =
+      request.replay_root_profile_actual_abi_gap_closure_candidate;
   if (!request.from_provider_backend_input_snapshot) {
     record.all_fields_match = true;
     return record;
@@ -13759,6 +13820,11 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          "existing_traversal_replay_full_backend_input_abi_ready_gate=%u, "
          "existing_traversal_replay_full_backend_input_abi_ready=%u, "
          "existing_traversal_replay_full_backend_input_abi_block_reason=%s, "
+         "existing_traversal_replay_root_profile_actual_abi_evidence_bridge=%u, "
+         "existing_traversal_replay_root_profile_actual_abi_evidence_available=%u, "
+         "existing_traversal_replay_root_profile_actual_abi_evidence_source=%s, "
+         "existing_traversal_replay_root_profile_producer_fields_consumed_by_traversal=%u, "
+         "existing_traversal_replay_root_profile_actual_abi_gap_closure_candidate=%u, "
          "existing_traversal_replay_all_fields_match=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
@@ -13796,6 +13862,11 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          record.full_backend_input_abi_ready_gate ? 1 : 0,
          record.full_backend_input_abi_ready ? 1 : 0,
          record.full_backend_input_abi_block_reason,
+         record.root_profile_actual_abi_evidence_bridge ? 1 : 0,
+         record.root_profile_actual_abi_evidence_available ? 1 : 0,
+         record.root_profile_actual_abi_evidence_source,
+         record.root_profile_producer_fields_consumed_by_traversal ? 1 : 0,
+         record.root_profile_actual_abi_gap_closure_candidate ? 1 : 0,
          record.all_fields_match ? 1 : 0);
   fflush(stdout);
 }
