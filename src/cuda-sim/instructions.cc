@@ -13006,7 +13006,8 @@ enum rtcore_traversal_provider_reject_reason {
   RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING = 3,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING = 4,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_DECODED_ABI_AUTHORITY = 5,
-  RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT = 6
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT = 6,
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_ROOT_FIELD_DRIFT = 7
 };
 
 static const char *rtcore_traversal_provider_reject_reason_name(
@@ -13020,6 +13021,8 @@ static const char *rtcore_traversal_provider_reject_reason_name(
       return "RTCORE_TRAVERSAL_PROVIDER_DECODED_ABI_AUTHORITY_REJECTED";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT:
       return "RTCORE_TRAVERSAL_PROVIDER_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT";
+    case RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_ROOT_FIELD_DRIFT:
+      return "RTCORE_TRAVERSAL_PROVIDER_SELECTED_ROOT_DESCRIPTOR_ROOT_FIELD_DRIFT";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED:
       return "RTCORE_TRAVERSAL_PROVIDER_WORK_DESCRIPTOR_REJECTED";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED:
@@ -15491,6 +15494,58 @@ rtcore_make_custom_rtcore_existing_traversal_selected_descriptor_pre_traversal_r
 }
 
 static rtcore_traversal_provider_response
+rtcore_make_custom_rtcore_existing_traversal_selected_descriptor_root_field_pre_traversal_rejected_response(
+    const rtcore_traversal_work_descriptor &descriptor,
+    const rtcore_traversal_source_request &request) {
+  rtcore_custom_backend_result custom_result =
+      rtcore_make_custom_rtcore_backend_result_base(descriptor);
+  custom_result.supported = true;
+  custom_result.accepted = false;
+  custom_result.reject_reason =
+      RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_ROOT_FIELD_DRIFT;
+  custom_result.existing_traversal_input_replay_requested =
+      request.from_provider_backend_input_snapshot;
+  custom_result.existing_traversal_request_replay_live_input_match = false;
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "custom-rtcore-backend-existing-traversal-selected-descriptor-root-field-pre-traversal-reject, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "custom-rtcore-backend-existing-traversal-selected-descriptor-root-field-pre-traversal-reject=1, "
+         "existing_traversal_backend_invocation_skipped=1, "
+         "existing_traversal_input_replay_source=provider_backend_input_snapshot, "
+         "replay_selected_root_descriptor_owner=%s, "
+         "replay_selected_root_descriptor_root_field_failpoint=%s, "
+         "replay_selected_root_descriptor_root_field_failpoint_applied=%u, "
+         "replay_selected_root_descriptor_root_metadata_handle_match=%u, "
+         "replay_selected_root_descriptor_matches_producer_root_fields=%u, "
+         "replay_selected_root_descriptor_root_field_consistency_policy_passed=%u, "
+         "reject_reason=%s\n",
+         rtcore_traversal_source_provider_name(descriptor.provider),
+         descriptor.context_ptr, descriptor.handoff_window_base,
+         descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
+         descriptor.warp_metadata.active_mask,
+         request.replay_selected_root_descriptor_owner,
+         request.replay_selected_root_descriptor_root_field_failpoint,
+         request.replay_selected_root_descriptor_root_field_failpoint_applied
+             ? 1
+             : 0,
+         request.replay_selected_root_descriptor_root_metadata_handle_match ? 1
+                                                                            : 0,
+         request.replay_selected_root_descriptor_matches_producer_root_fields
+             ? 1
+             : 0,
+         request
+                 .replay_selected_root_descriptor_root_field_consistency_policy_passed
+             ? 1
+             : 0,
+         rtcore_traversal_provider_reject_reason_name(
+             custom_result.reject_reason));
+  fflush(stdout);
+  return rtcore_make_provider_response_from_custom_rtcore_backend_result(
+      custom_result);
+}
+
+static rtcore_traversal_provider_response
 rtcore_make_custom_rtcore_existing_traversal_backend_response(
     const rtcore_traversal_work_descriptor &descriptor,
     const rtcore_traversal_source_request &request) {
@@ -15508,6 +15563,13 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
   if (existing_traversal_input_replay_requested &&
       !effective_request.replay_selected_root_descriptor_policy_passed) {
     return rtcore_make_custom_rtcore_existing_traversal_selected_descriptor_pre_traversal_rejected_response(
+        descriptor, effective_request);
+  }
+  const bool selected_root_field_policy_failed =
+      existing_traversal_input_replay_requested &&
+      !effective_request.replay_selected_root_descriptor_root_field_consistency_policy_passed;
+  if (selected_root_field_policy_failed) {
+    return rtcore_make_custom_rtcore_existing_traversal_selected_descriptor_root_field_pre_traversal_rejected_response(
         descriptor, effective_request);
   }
   rtcore_traversal_provider_response existing_response =
