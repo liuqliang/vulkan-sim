@@ -14672,6 +14672,8 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "backend_root_descriptor_required_bvh_memory_binding=%u, "
          "root_metadata_handle=0x%llx, root_address_space=%s, "
          "root_node_reference=0x%llx, layout_profile_reference=%s, "
+         "provider_payload_selected_root_descriptor_owner=%s, "
+         "provider_payload_selected_root_descriptor_source=%s, "
          "actual_abi_evidence_for_proxy_fields=0, "
          "provider_payload_backend_input_owner_lifetime_ok=%u, "
          "provider_backend_input_runtime_lifetime_ready=%u, "
@@ -14761,6 +14763,11 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          view.resolve_root_address_space,
          (unsigned long long)view.resolve_root_node_reference,
          view.resolve_layout_profile_reference,
+         // custom_backend_provider_payload_selected_root_descriptor_labels=1;
+         rtcore_backend_root_descriptor_selected_owner_label(
+             view.resolve_backend_root_descriptor_actual_producer_authority_enabled),
+         rtcore_backend_root_descriptor_selected_source_label(
+             view.resolve_backend_root_descriptor_actual_producer_authority_enabled),
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
          view.provider_payload_runtime_lifetime_ready ? 1 : 0,
          view.context_window_owner_seq_matches_lifetime ? 1 : 0,
