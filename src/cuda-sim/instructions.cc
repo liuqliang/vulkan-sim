@@ -12334,6 +12334,9 @@ struct rtcore_traversal_source_request {
         replay_root_profile_abi_gap_open(false),
         replay_remaining_compatibility_fields("unavailable"),
         replay_root_profile_abi_gap_reason("unavailable"),
+        replay_full_backend_input_abi_ready_gate(false),
+        replay_full_backend_input_abi_ready(false),
+        replay_full_backend_input_abi_block_reason("unavailable"),
         replay_ray_flags(0),
         replay_cull_mask(0),
         replay_ray_tmin(0.0f),
@@ -12407,6 +12410,9 @@ struct rtcore_traversal_source_request {
   bool replay_root_profile_abi_gap_open;
   const char *replay_remaining_compatibility_fields;
   const char *replay_root_profile_abi_gap_reason;
+  bool replay_full_backend_input_abi_ready_gate;
+  bool replay_full_backend_input_abi_ready;
+  const char *replay_full_backend_input_abi_block_reason;
   float3 replay_ray_origin;
   float3 replay_ray_direction;
   uint32_t replay_ray_flags;
@@ -12442,6 +12448,39 @@ struct rtcore_traversal_source_request {
   bool replay_selected_root_descriptor_payload_route_consistent;
   bool replay_selected_root_descriptor_policy_passed;
 };
+
+static bool rtcore_replay_provider_decoded_abi_authority_complete(
+    const rtcore_traversal_source_request &request) {
+  return request.from_provider_backend_input_snapshot &&
+         request.has_replay_ray_origin_direction_tmin_tmax &&
+         request.has_replay_ray_flags_cull_mask &&
+         request.has_replay_launch_context_input &&
+         strcmp(request.replay_ray_origin_direction_tmin_tmax_authority,
+                "compiler_driver_publication") == 0 &&
+         strcmp(request.replay_ray_flags_cull_mask_authority,
+                "compiler_driver_publication") == 0 &&
+         strcmp(request.replay_launch_context_input_authority,
+                "compiler_driver_publication") == 0 &&
+         strcmp(request.replay_context_window_authority, "driver_runtime") ==
+             0 &&
+         request.replay_context_window_bound_to_provider_decoded_abi;
+}
+
+static const char *rtcore_full_backend_input_abi_block_reason_label(
+    bool provider_decoded_abi_authority_complete,
+    bool root_profile_abi_gap_open,
+    bool actual_abi_evidence_for_proxy_fields) {
+  if (!provider_decoded_abi_authority_complete) {
+    return "provider_decoded_abi_authority_incomplete";
+  }
+  if (root_profile_abi_gap_open) {
+    return "root_profile_abi_gap_open";
+  }
+  if (!actual_abi_evidence_for_proxy_fields) {
+    return "actual_abi_evidence_for_proxy_fields_unavailable";
+  }
+  return "none";
+}
 
 static rtcore_traversal_source_request
 rtcore_make_traversal_source_request(
@@ -13265,6 +13304,18 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
       request->replay_root_profile_abi_gap_open
           ? "actual_abi_evidence_for_proxy_fields_unavailable"
           : "none";
+  const bool provider_decoded_abi_authority_complete =
+      rtcore_replay_provider_decoded_abi_authority_complete(*request);
+  request->replay_full_backend_input_abi_ready_gate = true;
+  request->replay_full_backend_input_abi_ready =
+      provider_decoded_abi_authority_complete &&
+      !request->replay_root_profile_abi_gap_open &&
+      request->replay_actual_abi_evidence_for_proxy_fields;
+  request->replay_full_backend_input_abi_block_reason =
+      rtcore_full_backend_input_abi_block_reason_label(
+          provider_decoded_abi_authority_complete,
+          request->replay_root_profile_abi_gap_open,
+          request->replay_actual_abi_evidence_for_proxy_fields);
   request->replay_ray_origin = view.ray_origin;
   request->replay_ray_direction = view.ray_direction;
   request->replay_ray_tmin = view.ray_tmin;
@@ -13379,6 +13430,9 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "existing_traversal_replay_root_profile_abi_gap_open=%u, "
          "existing_traversal_replay_remaining_compatibility_fields=%s, "
          "existing_traversal_replay_root_profile_abi_gap_reason=%s, "
+         "existing_traversal_replay_full_backend_input_abi_ready_gate=%u, "
+         "existing_traversal_replay_full_backend_input_abi_ready=%u, "
+         "existing_traversal_replay_full_backend_input_abi_block_reason=%s, "
          "has_launch_context_input=%u, bridge_trace_replay_top_level_as=0x%llx, "
          "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
          "existing_traversal_replay_selected_descriptor_source_bridge=1, "
@@ -13433,6 +13487,9 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          request->replay_root_profile_abi_gap_open ? 1 : 0,
          request->replay_remaining_compatibility_fields,
          request->replay_root_profile_abi_gap_reason,
+         request->replay_full_backend_input_abi_ready_gate ? 1 : 0,
+         request->replay_full_backend_input_abi_ready ? 1 : 0,
+         request->replay_full_backend_input_abi_block_reason,
          request->has_replay_launch_context_input ? 1 : 0,
          (unsigned long long)request->replay_bridge_trace_replay_top_level_as,
          request->replay_sbt_record_offset, request->replay_sbt_record_stride,
@@ -13515,6 +13572,9 @@ struct rtcore_existing_traversal_replay_input_match_record {
         root_profile_abi_gap_open(false),
         remaining_compatibility_fields("unavailable"),
         root_profile_abi_gap_reason("unavailable"),
+        full_backend_input_abi_ready_gate(false),
+        full_backend_input_abi_ready(false),
+        full_backend_input_abi_block_reason("unavailable"),
         launch_context_sbt_match(false),
         ray_origin_direction_tmin_tmax_match(false),
         ray_flags_cull_mask_match(false),
@@ -13547,6 +13607,9 @@ struct rtcore_existing_traversal_replay_input_match_record {
   bool root_profile_abi_gap_open;
   const char *remaining_compatibility_fields;
   const char *root_profile_abi_gap_reason;
+  bool full_backend_input_abi_ready_gate;
+  bool full_backend_input_abi_ready;
+  const char *full_backend_input_abi_block_reason;
   bool launch_context_sbt_match;
   bool ray_origin_direction_tmin_tmax_match;
   bool ray_flags_cull_mask_match;
@@ -13604,15 +13667,18 @@ rtcore_make_existing_traversal_replay_input_match_record(
   record.root_profile_abi_gap_reason =
       request.replay_root_profile_abi_gap_reason;
   record.provider_decoded_abi_authority_complete =
-      record.provider_decoded_abi_fields_consumed &&
-      strcmp(request.replay_ray_origin_direction_tmin_tmax_authority,
-             "compiler_driver_publication") == 0 &&
-      strcmp(request.replay_ray_flags_cull_mask_authority,
-             "compiler_driver_publication") == 0 &&
-      strcmp(request.replay_launch_context_input_authority,
-             "compiler_driver_publication") == 0 &&
-      strcmp(request.replay_context_window_authority, "driver_runtime") == 0 &&
-      request.replay_context_window_bound_to_provider_decoded_abi;
+      rtcore_replay_provider_decoded_abi_authority_complete(request);
+  record.full_backend_input_abi_ready_gate =
+      request.replay_full_backend_input_abi_ready_gate;
+  record.full_backend_input_abi_ready =
+      record.provider_decoded_abi_authority_complete &&
+      !record.root_profile_abi_gap_open &&
+      record.actual_abi_evidence_for_proxy_fields;
+  record.full_backend_input_abi_block_reason =
+      rtcore_full_backend_input_abi_block_reason_label(
+          record.provider_decoded_abi_authority_complete,
+          record.root_profile_abi_gap_open,
+          record.actual_abi_evidence_for_proxy_fields);
   if (!request.from_provider_backend_input_snapshot) {
     record.all_fields_match = true;
     return record;
@@ -13690,6 +13756,9 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          "existing_traversal_replay_root_profile_abi_gap_open=%u, "
          "existing_traversal_replay_remaining_compatibility_fields=%s, "
          "existing_traversal_replay_root_profile_abi_gap_reason=%s, "
+         "existing_traversal_replay_full_backend_input_abi_ready_gate=%u, "
+         "existing_traversal_replay_full_backend_input_abi_ready=%u, "
+         "existing_traversal_replay_full_backend_input_abi_block_reason=%s, "
          "existing_traversal_replay_all_fields_match=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
@@ -13724,6 +13793,9 @@ static void rtcore_log_existing_traversal_replay_input_match_record(
          record.root_profile_abi_gap_open ? 1 : 0,
          record.remaining_compatibility_fields,
          record.root_profile_abi_gap_reason,
+         record.full_backend_input_abi_ready_gate ? 1 : 0,
+         record.full_backend_input_abi_ready ? 1 : 0,
+         record.full_backend_input_abi_block_reason,
          record.all_fields_match ? 1 : 0);
   fflush(stdout);
 }
