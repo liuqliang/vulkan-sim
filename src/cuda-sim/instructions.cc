@@ -17457,6 +17457,67 @@ struct rtcore_trace_ray_argument_audit {
   bool matches_typed_object;
 };
 
+static const char *rtcore_trace_ray_argument_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT";
+}
+
+enum rtcore_trace_ray_argument_failpoint_kind_t {
+  RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_NONE = 0,
+  RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_DECODED_VALUE_RECORD_ARGUMENT_DRIFT,
+  RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_UNSUPPORTED
+};
+
+static rtcore_trace_ray_argument_failpoint_kind_t
+rtcore_get_trace_ray_argument_failpoint_kind() {
+  const char *value = getenv(rtcore_trace_ray_argument_failpoint_env_name());
+  if (value == NULL || value[0] == '\0' || rtcore_path_mode_is(value, "none") ||
+      rtcore_rt_env_value_is_explicit_false(value)) {
+    return RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_NONE;
+  }
+  if (rtcore_path_mode_is(value, "decoded_value_record_argument_drift") ||
+      rtcore_path_mode_is(value, "decoded-value-record-argument-drift") ||
+      rtcore_rt_env_value_is_explicit_true(value)) {
+    return RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_DECODED_VALUE_RECORD_ARGUMENT_DRIFT;
+  }
+  return RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_UNSUPPORTED;
+}
+
+static const char *rtcore_trace_ray_argument_failpoint_kind_name(
+    rtcore_trace_ray_argument_failpoint_kind_t kind) {
+  switch (kind) {
+    case RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_DECODED_VALUE_RECORD_ARGUMENT_DRIFT:
+      return "decoded_value_record_argument_drift";
+    case RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_UNSUPPORTED:
+      return "unsupported";
+    case RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_NONE:
+    default:
+      return "none";
+  }
+}
+
+static void rtcore_apply_trace_ray_argument_failpoint(
+    rtcore_trace_ray_argument_audit *trace_ray_arguments) {
+  if (trace_ray_arguments == NULL) {
+    return;
+  }
+  const rtcore_trace_ray_argument_failpoint_kind_t kind =
+      rtcore_get_trace_ray_argument_failpoint_kind();
+  if (kind !=
+      RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_DECODED_VALUE_RECORD_ARGUMENT_DRIFT) {
+    return;
+  }
+
+  trace_ray_arguments->ray_flags ^= 1u;
+  printf("GPGPU-Sim PTX: RT_SUBMIT trace-ray-argument-failpoint, "
+         "trace_ray_argument_failpoint_applied=1, "
+         "trace_ray_argument_failpoint_mode=%s, "
+         "trace_ray_argument_failpoint_mutated_field=ray_flags, "
+         "trace_ray_argument_failpoint_ray_flags=%u\n",
+         rtcore_trace_ray_argument_failpoint_kind_name(kind),
+         trace_ray_arguments->ray_flags);
+  fflush(stdout);
+}
+
 static rtcore_trace_ray_argument_audit
 rtcore_make_trace_ray_argument_audit_from_materialized_input(
     const rtcore_materialized_traversal_input &input) {
@@ -17509,6 +17570,7 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
           .decoded_value_record_selected_root_descriptor_authority_matches_request;
   trace_ray_arguments.decoded_value_record_root_descriptor_fields_match_request =
       input.decoded_value_record_root_descriptor_fields_match_request;
+  rtcore_apply_trace_ray_argument_failpoint(&trace_ray_arguments);
   trace_ray_arguments.values_match_decoded_value_record =
       trace_ray_arguments.valid && input.decoded_value_record_valid &&
       trace_ray_arguments.root_metadata_handle ==
@@ -17559,6 +17621,21 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
       trace_ray_arguments.sbt_record_stride == input.sbt_record_stride &&
       trace_ray_arguments.miss_index == input.miss_index;
   return trace_ray_arguments;
+}
+
+static bool rtcore_trace_ray_arguments_ready_for_backend_call(
+    const rtcore_trace_ray_argument_audit &trace_ray_arguments) {
+  return trace_ray_arguments.valid &&
+         trace_ray_arguments.decoded_value_record_valid &&
+         trace_ray_arguments.decoded_value_record_consumed &&
+         trace_ray_arguments.decoded_value_record_matches_request &&
+         trace_ray_arguments.decoded_value_record_authority_matches_request &&
+         trace_ray_arguments
+             .decoded_value_record_selected_root_descriptor_authority_matches_request &&
+         trace_ray_arguments
+             .decoded_value_record_root_descriptor_fields_match_request &&
+         trace_ray_arguments.values_match_decoded_value_record &&
+         trace_ray_arguments.matches_typed_object;
 }
 
 static bool
@@ -17888,7 +17965,11 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
     const rtcore_traversal_work_descriptor &descriptor,
     const rtcore_traversal_source_request &request,
     const rtcore_producer_root_descriptor_traversal_authority_policy
-        &producer_root_descriptor_traversal_authority_policy) {
+        &producer_root_descriptor_traversal_authority_policy,
+    const char **failure_reason) {
+  if (failure_reason != NULL) {
+    *failure_reason = "producer_root_descriptor_traversal_input_materialization_failed";
+  }
   if (!rtcore_producer_root_descriptor_traversal_authority_request_ready(
           request) ||
       request.thread == NULL || request.pI == NULL) {
@@ -17915,6 +17996,46 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
   const rtcore_trace_ray_argument_audit trace_ray_arguments =
       rtcore_make_trace_ray_argument_audit_from_materialized_input(
           materialized_input);
+  if (!rtcore_trace_ray_arguments_ready_for_backend_call(trace_ray_arguments)) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "trace-ray-argument-pre-call-guard-rejected=1, "
+           "trace_ray_argument_pre_call_guard_rejected=1, "
+           "trace_ray_argument_valid=%u, "
+           "trace_ray_arguments_match_typed_object=%u, "
+           "trace_ray_argument_decoded_value_record_valid=%u, "
+           "trace_ray_argument_decoded_value_record_consumed=%u, "
+           "trace_ray_argument_decoded_value_record_matches_request=%u, "
+           "trace_ray_argument_decoded_value_record_authority_match=%u, "
+           "trace_ray_argument_decoded_value_record_selected_root_descriptor_authority_match=%u, "
+           "trace_ray_argument_decoded_value_record_root_descriptor_field_bundle_match=%u, "
+           "trace_ray_argument_values_match_decoded_value_record=%u, "
+           "trace_ray_argument_ray_flags=%u, "
+           "trace_ray_argument_decoded_value_record_ray_flags=%u, "
+           "reason=typed_materialized_trace_ray_argument_pre_call_guard_failed\n",
+           trace_ray_arguments.valid ? 1 : 0,
+           trace_ray_arguments.matches_typed_object ? 1 : 0,
+           trace_ray_arguments.decoded_value_record_valid ? 1 : 0,
+           trace_ray_arguments.decoded_value_record_consumed ? 1 : 0,
+           trace_ray_arguments.decoded_value_record_matches_request ? 1 : 0,
+           trace_ray_arguments.decoded_value_record_authority_matches_request ? 1
+                                                                            : 0,
+           trace_ray_arguments
+                   .decoded_value_record_selected_root_descriptor_authority_matches_request
+               ? 1
+               : 0,
+           trace_ray_arguments
+                   .decoded_value_record_root_descriptor_fields_match_request
+               ? 1
+               : 0,
+           trace_ray_arguments.values_match_decoded_value_record ? 1 : 0,
+           trace_ray_arguments.ray_flags,
+           materialized_input.decoded_trace_ray_value_record.ray_flags);
+    fflush(stdout);
+    if (failure_reason != NULL) {
+      *failure_reason = "typed_materialized_trace_ray_argument_pre_call_guard_failed";
+    }
+    return false;
+  }
 
   VulkanRayTracing::traceRay(
       trace_ray_arguments.top_level_as, trace_ray_arguments.ray_flags,
@@ -18466,12 +18587,14 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
     }
     effective_request.replay_bridge_trace_replay_top_level_as =
         effective_request.replay_root_metadata_handle;
+    const char *materialization_failure_reason =
+        "producer_root_descriptor_traversal_input_materialization_failed";
     if (!rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
             descriptor, effective_request,
-            producer_root_descriptor_traversal_authority_policy)) {
+            producer_root_descriptor_traversal_authority_policy,
+            &materialization_failure_reason)) {
       return rtcore_make_custom_rtcore_existing_traversal_replay_missing_response(
-          descriptor,
-          "producer_root_descriptor_traversal_input_materialization_failed");
+          descriptor, materialization_failure_reason);
     }
     producer_root_descriptor_traversal_authority_consumes_backend_input = true;
   }
