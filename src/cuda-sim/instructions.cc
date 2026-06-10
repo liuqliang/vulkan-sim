@@ -15849,6 +15849,9 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
       request.replay_bridge_trace_replay_top_level_as ==
           request
               .replay_backend_root_descriptor_producer_root_metadata_handle;
+  const bool named_top_level_as_matches_bridge_trace_replay_top_level_as =
+      request.replay_root_metadata_handle ==
+      request.replay_bridge_trace_replay_top_level_as;
   const bool traversal_input_layout_profile_match =
       request.replay_selected_root_descriptor_layout_profile_reference_match;
   const bool producer_root_descriptor_replay_root_fields_match =
@@ -15869,6 +15872,12 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "producer_root_metadata_handle=0x%llx, "
          "producer_root_node_reference=0x%llx, "
          "producer_root_address_space=%s, "
+         "producer_root_descriptor_named_top_level_as_source=producer_root_metadata_handle, "
+         "producer_root_descriptor_named_top_level_as_authority=actual_producer_descriptor, "
+         "producer_root_descriptor_named_top_level_as=0x%llx, "
+         "producer_root_descriptor_named_top_level_as_matches_bridge_trace_replay_top_level_as=%u, "
+         "bridge_trace_replay_top_level_as_authority=compatibility_observation, "
+         "bridge_trace_replay_top_level_as_compatibility_observation_only=1, "
          "producer_root_descriptor_traversal_input_source=provider_consumed_producer_descriptor_fields, "
          "producer_root_descriptor_traversal_input_top_level_as=0x%llx, "
          "producer_root_descriptor_traversal_input_top_level_as_match=%u, "
@@ -15899,6 +15908,8 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          (unsigned long long)request.replay_root_metadata_handle,
          (unsigned long long)request.replay_root_node_reference,
          request.replay_root_address_space,
+         (unsigned long long)request.replay_root_metadata_handle,
+         named_top_level_as_matches_bridge_trace_replay_top_level_as ? 1 : 0,
          (unsigned long long)request.replay_bridge_trace_replay_top_level_as,
          traversal_input_top_level_as_match ? 1 : 0,
          request.replay_layout_profile_reference,
