@@ -12444,6 +12444,28 @@ static const char *rtcore_backend_root_descriptor_selected_source_label(
              : "runtime_proxy_compatibility";
 }
 
+static const char *rtcore_selected_root_descriptor_label_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_SELECTED_ROOT_DESCRIPTOR_LABEL_FAILPOINT";
+}
+
+static bool
+rtcore_selected_root_descriptor_label_failpoint_payload_route_owner_drift() {
+  const char *value =
+      getenv(rtcore_selected_root_descriptor_label_failpoint_env_name());
+  return value != NULL && strcmp(value, "payload_route_owner_drift") == 0;
+}
+
+static const char *rtcore_backend_root_descriptor_payload_selected_owner_label(
+    bool actual_producer_authority_enabled) {
+  // selected_root_descriptor_label_failpoint_payload_route_owner_drift=1;
+  if (rtcore_selected_root_descriptor_label_failpoint_payload_route_owner_drift()) {
+    return actual_producer_authority_enabled ? "simulator_proxy"
+                                             : "actual_producer_descriptor";
+  }
+  return rtcore_backend_root_descriptor_selected_owner_label(
+      actual_producer_authority_enabled);
+}
+
 static bool rtcore_decoded_input_field_owner_has_lifetime(
     rtcore_decoded_input_field_owner_class owner) {
   return owner == RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME ||
@@ -13748,7 +13770,7 @@ rtcore_make_provider_backend_input_consumption_route_record(
                 .provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled);
     // provider_backend_input_payload_route_selected_root_descriptor_consistency=1;
     record.provider_backend_input_payload_selected_root_descriptor_owner =
-        rtcore_backend_root_descriptor_selected_owner_label(
+        rtcore_backend_root_descriptor_payload_selected_owner_label(
             view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
     record.provider_backend_input_payload_selected_root_descriptor_source =
         rtcore_backend_root_descriptor_selected_source_label(
