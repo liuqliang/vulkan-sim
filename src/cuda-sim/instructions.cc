@@ -20304,6 +20304,23 @@ static void rtcore_recompute_driver_as_resolve_table_lookup_snapshot(
       snapshot->entry_found
           ? snapshot->entry.profile_layout_publication_future_producer
           : true;
+  // fallback_gate_bypasses_actual_producer_sidecar_requirements=1;
+  const bool fallback_gate_forces_runtime_proxy =
+      rtcore_backend_root_descriptor_actual_producer_fallback_gate_enabled();
+  const bool producer_sidecar_requirements_satisfied =
+      fallback_gate_forces_runtime_proxy ||
+      (snapshot->backend_root_descriptor_producer_contract &&
+       !snapshot->backend_root_descriptor_producer_contract_ready &&
+       snapshot->backend_root_descriptor_producer_fields_published &&
+       snapshot->backend_root_descriptor_producer_fields_guarded &&
+       !snapshot->backend_root_descriptor_producer_fields_consumed_by_traversal &&
+       snapshot->backend_root_descriptor_required_root_metadata_handle &&
+       strcmp(snapshot->backend_root_descriptor_required_root_address_space,
+              rtcore_backend_root_descriptor_required_address_space_label()) ==
+           0 &&
+       snapshot->backend_root_descriptor_required_root_node_reference &&
+       snapshot->backend_root_descriptor_required_layout_profile_reference &&
+       snapshot->backend_root_descriptor_required_bvh_memory_binding);
   snapshot->resolve_lookup_passed =
       !rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested() &&
       snapshot->key.valid && snapshot->entry_found && snapshot->entry_live &&
@@ -20317,18 +20334,7 @@ static void rtcore_recompute_driver_as_resolve_table_lookup_snapshot(
       snapshot->backend_root_descriptor_proxy_delegated &&
       snapshot->backend_root_descriptor_runtime_proxy_compatibility_path &&
       !snapshot->backend_root_descriptor_actual_abi_evidence &&
-      snapshot->backend_root_descriptor_producer_contract &&
-      !snapshot->backend_root_descriptor_producer_contract_ready &&
-      snapshot->backend_root_descriptor_producer_fields_published &&
-      snapshot->backend_root_descriptor_producer_fields_guarded &&
-      !snapshot->backend_root_descriptor_producer_fields_consumed_by_traversal &&
-      snapshot->backend_root_descriptor_required_root_metadata_handle &&
-      strcmp(snapshot->backend_root_descriptor_required_root_address_space,
-             rtcore_backend_root_descriptor_required_address_space_label()) ==
-          0 &&
-      snapshot->backend_root_descriptor_required_root_node_reference &&
-      snapshot->backend_root_descriptor_required_layout_profile_reference &&
-      snapshot->backend_root_descriptor_required_bvh_memory_binding &&
+      producer_sidecar_requirements_satisfied &&
       snapshot->traversable_root_proxy_delegated &&
       snapshot->bvh_format_profile_proxy_delegated &&
       snapshot->profile_layout_publication_future_producer;
