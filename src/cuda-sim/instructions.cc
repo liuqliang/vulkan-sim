@@ -12331,6 +12331,8 @@ struct rtcore_traversal_source_request {
         replay_backend_root_descriptor_producer_layout_profile_reference(
             "unavailable"),
         replay_backend_root_descriptor_producer_bvh_memory_binding(false),
+        replay_selected_root_descriptor_root_field_failpoint("none"),
+        replay_selected_root_descriptor_root_field_failpoint_applied(false),
         replay_selected_root_descriptor_root_metadata_handle_match(false),
         replay_selected_root_descriptor_root_address_space_match(false),
         replay_selected_root_descriptor_root_node_reference_match(false),
@@ -12380,6 +12382,8 @@ struct rtcore_traversal_source_request {
   uint64_t replay_backend_root_descriptor_producer_root_node_reference;
   const char *replay_backend_root_descriptor_producer_layout_profile_reference;
   bool replay_backend_root_descriptor_producer_bvh_memory_binding;
+  const char *replay_selected_root_descriptor_root_field_failpoint;
+  bool replay_selected_root_descriptor_root_field_failpoint_applied;
   bool replay_selected_root_descriptor_root_metadata_handle_match;
   bool replay_selected_root_descriptor_root_address_space_match;
   bool replay_selected_root_descriptor_root_node_reference_match;
@@ -12502,6 +12506,16 @@ rtcore_selected_root_descriptor_label_failpoint_payload_route_owner_drift() {
   const char *value =
       getenv(rtcore_selected_root_descriptor_label_failpoint_env_name());
   return value != NULL && strcmp(value, "payload_route_owner_drift") == 0;
+}
+
+static const char *rtcore_selected_root_field_failpoint_env_name() {
+  return "VULKAN_SIM_RTCORE_SELECTED_ROOT_FIELD_FAILPOINT";
+}
+
+static bool rtcore_selected_root_field_failpoint_metadata_handle_drift() {
+  const char *value = getenv(rtcore_selected_root_field_failpoint_env_name());
+  // replay_selected_root_descriptor_root_field_failpoint=metadata_handle_drift;
+  return value != NULL && strcmp(value, "metadata_handle_drift") == 0;
 }
 
 static const char *rtcore_backend_root_descriptor_payload_selected_owner_label(
@@ -13144,6 +13158,16 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
       view.resolve_backend_root_descriptor_producer_bvh_memory_binding;
   request->replay_selected_root_descriptor_actual_producer_authority_enabled =
       view.resolve_backend_root_descriptor_actual_producer_authority_enabled;
+  const bool selected_root_field_metadata_handle_drift =
+      rtcore_selected_root_field_failpoint_metadata_handle_drift();
+  request->replay_selected_root_descriptor_root_field_failpoint =
+      selected_root_field_metadata_handle_drift ? "metadata_handle_drift"
+                                                : "none";
+  if (request->replay_selected_root_descriptor_actual_producer_authority_enabled &&
+      selected_root_field_metadata_handle_drift) {
+    request->replay_root_metadata_handle ^= 0x1ull;
+    request->replay_selected_root_descriptor_root_field_failpoint_applied = true;
+  }
   request->replay_selected_root_descriptor_root_metadata_handle_match =
       request->replay_root_metadata_handle ==
       request->replay_backend_root_descriptor_producer_root_metadata_handle;
@@ -13212,6 +13236,8 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "replay_backend_root_descriptor_producer_root_node_reference=0x%llx, "
          "replay_backend_root_descriptor_producer_layout_profile_reference=%s, "
          "replay_backend_root_descriptor_producer_bvh_memory_binding=%u, "
+         "replay_selected_root_descriptor_root_field_failpoint=%s, "
+         "replay_selected_root_descriptor_root_field_failpoint_applied=%u, "
          "existing_traversal_replay_root_field_consistency_bridge=1, "
          "replay_selected_root_descriptor_root_metadata_handle_match=%u, "
          "replay_selected_root_descriptor_root_address_space_match=%u, "
@@ -13249,6 +13275,10 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
              ->replay_backend_root_descriptor_producer_layout_profile_reference,
          request->replay_backend_root_descriptor_producer_bvh_memory_binding ? 1
                                                                              : 0,
+         request->replay_selected_root_descriptor_root_field_failpoint,
+         request->replay_selected_root_descriptor_root_field_failpoint_applied
+             ? 1
+             : 0,
          request->replay_selected_root_descriptor_root_metadata_handle_match ? 1
                                                                             : 0,
          request->replay_selected_root_descriptor_root_address_space_match ? 1
