@@ -13380,6 +13380,11 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_backend_input_layout_profile_reference("unavailable"),
         provider_backend_input_selected_root_descriptor_owner("unavailable"),
         provider_backend_input_selected_root_descriptor_source("unavailable"),
+        provider_backend_input_payload_selected_root_descriptor_owner("unavailable"),
+        provider_backend_input_payload_selected_root_descriptor_source("unavailable"),
+        provider_backend_input_selected_root_descriptor_payload_owner_match(false),
+        provider_backend_input_selected_root_descriptor_payload_source_match(false),
+        provider_backend_input_selected_root_descriptor_payload_route_consistent(false),
         provider_backend_input_traversable_root_proxy_delegated(false),
         provider_backend_input_bvh_format_profile_proxy_delegated(false),
         provider_backend_input_profile_layout_publication_future_producer(false),
@@ -13481,6 +13486,11 @@ struct rtcore_provider_backend_input_consumption_route_record {
   const char *provider_backend_input_layout_profile_reference;
   const char *provider_backend_input_selected_root_descriptor_owner;
   const char *provider_backend_input_selected_root_descriptor_source;
+  const char *provider_backend_input_payload_selected_root_descriptor_owner;
+  const char *provider_backend_input_payload_selected_root_descriptor_source;
+  bool provider_backend_input_selected_root_descriptor_payload_owner_match;
+  bool provider_backend_input_selected_root_descriptor_payload_source_match;
+  bool provider_backend_input_selected_root_descriptor_payload_route_consistent;
   bool provider_backend_input_traversable_root_proxy_delegated;
   bool provider_backend_input_bvh_format_profile_proxy_delegated;
   bool provider_backend_input_profile_layout_publication_future_producer;
@@ -13736,6 +13746,31 @@ rtcore_make_provider_backend_input_consumption_route_record(
         rtcore_backend_root_descriptor_selected_source_label(
             record
                 .provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled);
+    // provider_backend_input_payload_route_selected_root_descriptor_consistency=1;
+    record.provider_backend_input_payload_selected_root_descriptor_owner =
+        rtcore_backend_root_descriptor_selected_owner_label(
+            view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+    record.provider_backend_input_payload_selected_root_descriptor_source =
+        rtcore_backend_root_descriptor_selected_source_label(
+            view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+    record
+        .provider_backend_input_selected_root_descriptor_payload_owner_match =
+        strcmp(record.provider_backend_input_selected_root_descriptor_owner,
+               record
+                   .provider_backend_input_payload_selected_root_descriptor_owner) ==
+        0;
+    record
+        .provider_backend_input_selected_root_descriptor_payload_source_match =
+        strcmp(record.provider_backend_input_selected_root_descriptor_source,
+               record
+                   .provider_backend_input_payload_selected_root_descriptor_source) ==
+        0;
+    record
+        .provider_backend_input_selected_root_descriptor_payload_route_consistent =
+        record
+            .provider_backend_input_selected_root_descriptor_payload_owner_match &&
+        record
+            .provider_backend_input_selected_root_descriptor_payload_source_match;
     record.provider_backend_input_traversable_root_proxy_delegated =
         view.resolve_traversable_root_proxy_delegated;
     record.provider_backend_input_bvh_format_profile_proxy_delegated =
@@ -13868,6 +13903,11 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_layout_profile_reference=%s, "
          "provider_backend_input_selected_root_descriptor_owner=%s, "
          "provider_backend_input_selected_root_descriptor_source=%s, "
+         "provider_backend_input_payload_selected_root_descriptor_owner=%s, "
+         "provider_backend_input_payload_selected_root_descriptor_source=%s, "
+         "provider_backend_input_selected_root_descriptor_payload_owner_match=%u, "
+         "provider_backend_input_selected_root_descriptor_payload_source_match=%u, "
+         "provider_backend_input_selected_root_descriptor_payload_route_consistent=%u, "
          "provider_backend_input_traversable_root_proxy_delegated=%u, "
          "provider_backend_input_bvh_format_profile_proxy_delegated=%u, "
          "provider_backend_input_profile_layout_publication_future_producer=%u, "
@@ -14155,6 +14195,20 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.provider_backend_input_layout_profile_reference,
          record.provider_backend_input_selected_root_descriptor_owner,
          record.provider_backend_input_selected_root_descriptor_source,
+         record.provider_backend_input_payload_selected_root_descriptor_owner,
+         record.provider_backend_input_payload_selected_root_descriptor_source,
+         record
+                 .provider_backend_input_selected_root_descriptor_payload_owner_match
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_selected_root_descriptor_payload_source_match
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_selected_root_descriptor_payload_route_consistent
+             ? 1
+             : 0,
          record.provider_backend_input_traversable_root_proxy_delegated ? 1
                                                                         : 0,
          record.provider_backend_input_bvh_format_profile_proxy_delegated ? 1
