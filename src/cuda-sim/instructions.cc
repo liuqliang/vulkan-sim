@@ -12458,9 +12458,9 @@ rtcore_selected_root_descriptor_label_failpoint_payload_route_owner_drift() {
 static const char *rtcore_backend_root_descriptor_payload_selected_owner_label(
     bool actual_producer_authority_enabled) {
   // selected_root_descriptor_label_failpoint_payload_route_owner_drift=1;
-  if (rtcore_selected_root_descriptor_label_failpoint_payload_route_owner_drift()) {
-    return actual_producer_authority_enabled ? "simulator_proxy"
-                                             : "actual_producer_descriptor";
+  if (actual_producer_authority_enabled &&
+      rtcore_selected_root_descriptor_label_failpoint_payload_route_owner_drift()) {
+    return "simulator_proxy";
   }
   return rtcore_backend_root_descriptor_selected_owner_label(
       actual_producer_authority_enabled);
@@ -12942,7 +12942,8 @@ enum rtcore_traversal_provider_reject_reason {
   RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED = 2,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_ACCEPTED_PAYLOAD_MISSING = 3,
   RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING = 4,
-  RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_DECODED_ABI_AUTHORITY = 5
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_DECODED_ABI_AUTHORITY = 5,
+  RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT = 6
 };
 
 static const char *rtcore_traversal_provider_reject_reason_name(
@@ -12954,6 +12955,8 @@ static const char *rtcore_traversal_provider_reject_reason_name(
       return "RTCORE_TRAVERSAL_PROVIDER_PAYLOAD_BACKEND_INPUT_MISSING";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_PROVIDER_DECODED_ABI_AUTHORITY:
       return "RTCORE_TRAVERSAL_PROVIDER_DECODED_ABI_AUTHORITY_REJECTED";
+    case RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT:
+      return "RTCORE_TRAVERSAL_PROVIDER_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED:
       return "RTCORE_TRAVERSAL_PROVIDER_WORK_DESCRIPTOR_REJECTED";
     case RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED:
@@ -13407,6 +13410,8 @@ struct rtcore_provider_backend_input_consumption_route_record {
         provider_backend_input_selected_root_descriptor_payload_owner_match(false),
         provider_backend_input_selected_root_descriptor_payload_source_match(false),
         provider_backend_input_selected_root_descriptor_payload_route_consistent(false),
+        provider_backend_input_selected_root_descriptor_payload_route_consistency_policy_applied(false),
+        provider_backend_input_selected_root_descriptor_payload_route_consistency_fail_closed(false),
         provider_backend_input_traversable_root_proxy_delegated(false),
         provider_backend_input_bvh_format_profile_proxy_delegated(false),
         provider_backend_input_profile_layout_publication_future_producer(false),
@@ -13513,6 +13518,8 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool provider_backend_input_selected_root_descriptor_payload_owner_match;
   bool provider_backend_input_selected_root_descriptor_payload_source_match;
   bool provider_backend_input_selected_root_descriptor_payload_route_consistent;
+  bool provider_backend_input_selected_root_descriptor_payload_route_consistency_policy_applied;
+  bool provider_backend_input_selected_root_descriptor_payload_route_consistency_fail_closed;
   bool provider_backend_input_traversable_root_proxy_delegated;
   bool provider_backend_input_bvh_format_profile_proxy_delegated;
   bool provider_backend_input_profile_layout_publication_future_producer;
@@ -13793,6 +13800,16 @@ rtcore_make_provider_backend_input_consumption_route_record(
             .provider_backend_input_selected_root_descriptor_payload_owner_match &&
         record
             .provider_backend_input_selected_root_descriptor_payload_source_match;
+    record
+        .provider_backend_input_selected_root_descriptor_payload_route_consistency_policy_applied =
+        record
+            .provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled;
+    record
+        .provider_backend_input_selected_root_descriptor_payload_route_consistency_fail_closed =
+        record
+            .provider_backend_input_selected_root_descriptor_payload_route_consistency_policy_applied &&
+        !record
+             .provider_backend_input_selected_root_descriptor_payload_route_consistent;
     record.provider_backend_input_traversable_root_proxy_delegated =
         view.resolve_traversable_root_proxy_delegated;
     record.provider_backend_input_bvh_format_profile_proxy_delegated =
@@ -13814,6 +13831,8 @@ rtcore_make_provider_backend_input_consumption_route_record(
       record.provider_payload_backend_input_snapshot_accepted &&
       record.provider_payload_backend_input_owner_lifetime_ok &&
       record.provider_backend_input_runtime_lifetime_ready &&
+      !record
+           .provider_backend_input_selected_root_descriptor_payload_route_consistency_fail_closed &&
       (!record.existing_traversal_input_replay_requested ||
        record.existing_traversal_request_replay_live_input_match);
   return record;
@@ -13930,6 +13949,9 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_selected_root_descriptor_payload_owner_match=%u, "
          "provider_backend_input_selected_root_descriptor_payload_source_match=%u, "
          "provider_backend_input_selected_root_descriptor_payload_route_consistent=%u, "
+         "provider_backend_input_selected_root_descriptor_payload_route_consistency_policy=fail_closed_actual_producer, "
+         "provider_backend_input_selected_root_descriptor_payload_route_consistency_policy_applied=%u, "
+         "provider_backend_input_selected_root_descriptor_payload_route_consistency_fail_closed=%u, "
          "provider_backend_input_traversable_root_proxy_delegated=%u, "
          "provider_backend_input_bvh_format_profile_proxy_delegated=%u, "
          "provider_backend_input_profile_layout_publication_future_producer=%u, "
@@ -14231,6 +14253,14 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
                  .provider_backend_input_selected_root_descriptor_payload_route_consistent
              ? 1
              : 0,
+         record
+                 .provider_backend_input_selected_root_descriptor_payload_route_consistency_policy_applied
+             ? 1
+             : 0,
+         record
+                 .provider_backend_input_selected_root_descriptor_payload_route_consistency_fail_closed
+             ? 1
+             : 0,
          record.provider_backend_input_traversable_root_proxy_delegated ? 1
                                                                         : 0,
          record.provider_backend_input_bvh_format_profile_proxy_delegated ? 1
@@ -14242,6 +14272,68 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          record.existing_traversal_request_replay_live_input_match ? 1 : 0,
          record.provider_backend_input_consumption_route_passed ? 1 : 0,
          rtcore_traversal_provider_reject_reason_name(record.reject_reason));
+  fflush(stdout);
+}
+
+static bool
+rtcore_selected_root_descriptor_payload_route_consistency_fail_closed_required(
+    const rtcore_custom_backend_result &custom_result) {
+  if (!custom_result.supported || !custom_result.accepted ||
+      custom_result.reject_reason != RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE ||
+      !custom_result.has_provider_payload_backend_input_snapshot ||
+      !custom_result.provider_payload_backend_input_snapshot.valid) {
+    return false;
+  }
+
+  const rtcore_provider_payload_consumed_input_view &view =
+      custom_result.provider_payload_backend_input_snapshot.consumed_input_view;
+  if (!view.resolve_backend_root_descriptor_actual_producer_authority_enabled) {
+    return false;
+  }
+
+  const char *selected_owner = rtcore_backend_root_descriptor_selected_owner_label(
+      view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+  const char *selected_source = rtcore_backend_root_descriptor_selected_source_label(
+      view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+  const char *payload_owner =
+      rtcore_backend_root_descriptor_payload_selected_owner_label(
+          view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+  const char *payload_source =
+      rtcore_backend_root_descriptor_selected_source_label(
+          view.resolve_backend_root_descriptor_actual_producer_authority_enabled);
+
+  return strcmp(selected_owner, payload_owner) != 0 ||
+         strcmp(selected_source, payload_source) != 0;
+}
+
+static void
+rtcore_apply_selected_root_descriptor_payload_route_consistency_policy(
+    rtcore_traversal_provider_response *response,
+    const rtcore_custom_backend_result &custom_result) {
+  if (response == NULL || !response->provider_supported ||
+      !response->provider_accepted ||
+      response->reject_reason != RTCORE_TRAVERSAL_PROVIDER_REJECT_NONE ||
+      !rtcore_selected_root_descriptor_payload_route_consistency_fail_closed_required(
+          custom_result)) {
+    return;
+  }
+
+  response->provider_accepted = false;
+  response->reject_reason =
+      RTCORE_TRAVERSAL_PROVIDER_REJECT_SELECTED_ROOT_DESCRIPTOR_PAYLOAD_ROUTE_DRIFT;
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "selected-root-descriptor-payload-route-consistency-policy, "
+         "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, warp_uid=%u, active_mask=0x%08x, "
+         "selected_root_descriptor_payload_route_consistency_policy=fail_closed_actual_producer, "
+         "selected_root_descriptor_payload_route_consistency_fail_closed=1, "
+         "reject_reason=%s\n",
+         rtcore_traversal_source_provider_name(response->provider),
+         custom_result.context_ptr, custom_result.handoff_window_base,
+         custom_result.lane_slot_index,
+         custom_result.warp_metadata.warp_uid,
+         custom_result.warp_metadata.active_mask,
+         rtcore_traversal_provider_reject_reason_name(response->reject_reason));
   fflush(stdout);
 }
 
@@ -14362,6 +14454,8 @@ rtcore_make_provider_response_from_custom_rtcore_backend_result(
            response.initialized_default_miss ? 1 : 0);
     fflush(stdout);
   }
+  rtcore_apply_selected_root_descriptor_payload_route_consistency_policy(
+      &response, custom_result);
   rtcore_annotate_provider_response_with_backend_input_snapshot_result(
       &response, custom_result);
   rtcore_log_provider_backend_input_consumption_route_record(custom_result,
