@@ -13642,6 +13642,19 @@ struct rtcore_provider_backend_input_consumption_route_record {
         existing_traversal_backend_root_authority_available(false),
         existing_traversal_backend_root_authority_top_level_as(0),
         existing_traversal_backend_uses_producer_root_fields(false),
+        producer_root_descriptor_traversal_authority_preflight(false),
+        producer_root_descriptor_traversal_authority_candidate(false),
+        producer_root_descriptor_traversal_authority_enabled(false),
+        producer_root_descriptor_traversal_authority_preconditions_satisfied(
+            false),
+        producer_root_descriptor_traversal_authority_blocked_by_existing_backend(
+            false),
+        producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy(
+            false),
+        producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject(
+            false),
+        producer_root_descriptor_traversal_authority_block_reason(
+            "unavailable"),
         provider_backend_input_consumption_route_passed(false),
         reject_reason(RTCORE_TRAVERSAL_PROVIDER_REJECT_UNSUPPORTED) {}
 
@@ -13757,6 +13770,14 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool existing_traversal_backend_root_authority_available;
   uint64_t existing_traversal_backend_root_authority_top_level_as;
   bool existing_traversal_backend_uses_producer_root_fields;
+  bool producer_root_descriptor_traversal_authority_preflight;
+  bool producer_root_descriptor_traversal_authority_candidate;
+  bool producer_root_descriptor_traversal_authority_enabled;
+  bool producer_root_descriptor_traversal_authority_preconditions_satisfied;
+  bool producer_root_descriptor_traversal_authority_blocked_by_existing_backend;
+  bool producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy;
+  bool producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject;
+  const char *producer_root_descriptor_traversal_authority_block_reason;
   bool provider_backend_input_consumption_route_passed;
   rtcore_traversal_provider_reject_reason reject_reason;
 };
@@ -14087,6 +14108,52 @@ rtcore_make_provider_backend_input_consumption_route_record(
   } else {
     record.existing_traversal_backend_root_authority_source = "unavailable";
   }
+  record.producer_root_descriptor_traversal_authority_preflight =
+      record.existing_traversal_backend_path_selected;
+  record.producer_root_descriptor_traversal_authority_candidate =
+      record
+          .provider_backend_input_backend_root_descriptor_actual_producer_authority_enabled;
+  record.producer_root_descriptor_traversal_authority_enabled = false;
+  record
+      .producer_root_descriptor_traversal_authority_blocked_by_existing_backend =
+      record.existing_traversal_backend_path_selected &&
+      !record.existing_traversal_backend_uses_producer_root_fields;
+  record.producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy =
+      record
+          .provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path;
+  record
+      .producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject =
+      record.existing_traversal_backend_path_selected &&
+      !record.existing_traversal_backend_invoked;
+  record
+      .producer_root_descriptor_traversal_authority_preconditions_satisfied =
+      record.producer_root_descriptor_traversal_authority_candidate &&
+      !record
+           .producer_root_descriptor_traversal_authority_blocked_by_existing_backend &&
+      !record
+           .producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy &&
+      !record
+           .producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject;
+  if (record
+          .producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject) {
+    record.producer_root_descriptor_traversal_authority_block_reason =
+        "pre_traversal_reject";
+  } else if (record
+                 .producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy) {
+    record.producer_root_descriptor_traversal_authority_block_reason =
+        "runtime_proxy_compatibility_path";
+  } else if (record
+                 .producer_root_descriptor_traversal_authority_blocked_by_existing_backend) {
+    record.producer_root_descriptor_traversal_authority_block_reason =
+        "existing_traversal_backend_reuses_legacy_traversal_data";
+  } else if (record
+                 .producer_root_descriptor_traversal_authority_preconditions_satisfied) {
+    record.producer_root_descriptor_traversal_authority_block_reason =
+        "none";
+  } else {
+    record.producer_root_descriptor_traversal_authority_block_reason =
+        "unavailable";
+  }
   record.reject_reason = response.reject_reason;
   record.provider_backend_input_consumption_route_passed =
       response.provider_supported && response.provider_accepted &&
@@ -14233,6 +14300,14 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "existing_traversal_backend_root_authority_available=%u, "
          "existing_traversal_backend_root_authority_top_level_as=0x%llx, "
          "existing_traversal_backend_uses_producer_root_fields=%u, "
+         "producer_root_descriptor_traversal_authority_preflight=%u, "
+         "producer_root_descriptor_traversal_authority_candidate=%u, "
+         "producer_root_descriptor_traversal_authority_enabled=%u, "
+         "producer_root_descriptor_traversal_authority_preconditions_satisfied=%u, "
+         "producer_root_descriptor_traversal_authority_blocked_by_existing_backend=%u, "
+         "producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy=%u, "
+         "producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject=%u, "
+         "producer_root_descriptor_traversal_authority_block_reason=%s, "
          "reject_reason=%s, existing_traversal_backend_reused=1, "
          "claims_new_hardware_bvh_engine=0\n",
          rtcore_traversal_source_provider_name(record.provider),
@@ -14552,6 +14627,28 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          (unsigned long long)
              record.existing_traversal_backend_root_authority_top_level_as,
          record.existing_traversal_backend_uses_producer_root_fields ? 1 : 0,
+         record.producer_root_descriptor_traversal_authority_preflight ? 1
+                                                                       : 0,
+         record.producer_root_descriptor_traversal_authority_candidate ? 1
+                                                                      : 0,
+         record.producer_root_descriptor_traversal_authority_enabled ? 1 : 0,
+         record
+                 .producer_root_descriptor_traversal_authority_preconditions_satisfied
+             ? 1
+             : 0,
+         record
+                 .producer_root_descriptor_traversal_authority_blocked_by_existing_backend
+             ? 1
+             : 0,
+         record
+                 .producer_root_descriptor_traversal_authority_blocked_by_runtime_proxy
+             ? 1
+             : 0,
+         record
+                 .producer_root_descriptor_traversal_authority_blocked_by_pre_traversal_reject
+             ? 1
+             : 0,
+         record.producer_root_descriptor_traversal_authority_block_reason,
          rtcore_traversal_provider_reject_reason_name(record.reject_reason));
   fflush(stdout);
 }
