@@ -13790,6 +13790,10 @@ struct rtcore_provider_backend_input_consumption_route_record {
         existing_traversal_backend_root_authority_available(false),
         existing_traversal_backend_root_authority_top_level_as(0),
         existing_traversal_backend_uses_producer_root_fields(false),
+        existing_traversal_backend_named_top_level_as_authority("unavailable"),
+        existing_traversal_backend_named_top_level_as_source("unavailable"),
+        existing_traversal_backend_bridge_trace_replay_top_level_as_compatibility_observation_only(false),
+        existing_traversal_backend_named_top_level_as_matches_root_authority(false),
         producer_root_descriptor_traversal_authority_preflight(false),
         producer_root_descriptor_traversal_authority_candidate(false),
         producer_root_descriptor_traversal_authority_enabled(false),
@@ -13925,6 +13929,10 @@ struct rtcore_provider_backend_input_consumption_route_record {
   bool existing_traversal_backend_root_authority_available;
   uint64_t existing_traversal_backend_root_authority_top_level_as;
   bool existing_traversal_backend_uses_producer_root_fields;
+  const char *existing_traversal_backend_named_top_level_as_authority;
+  const char *existing_traversal_backend_named_top_level_as_source;
+  bool existing_traversal_backend_bridge_trace_replay_top_level_as_compatibility_observation_only;
+  bool existing_traversal_backend_named_top_level_as_matches_root_authority;
   bool producer_root_descriptor_traversal_authority_preflight;
   bool producer_root_descriptor_traversal_authority_candidate;
   bool producer_root_descriptor_traversal_authority_enabled;
@@ -14282,6 +14290,20 @@ rtcore_make_provider_backend_input_consumption_route_record(
   } else {
     record.existing_traversal_backend_root_authority_source = "unavailable";
   }
+  if (record.existing_traversal_backend_uses_producer_root_fields &&
+      record.existing_traversal_backend_root_authority_available) {
+    record.existing_traversal_backend_named_top_level_as_authority =
+        "actual_producer_descriptor";
+    record.existing_traversal_backend_named_top_level_as_source =
+        "producer_root_metadata_handle";
+    record
+        .existing_traversal_backend_bridge_trace_replay_top_level_as_compatibility_observation_only =
+        true;
+    record
+        .existing_traversal_backend_named_top_level_as_matches_root_authority =
+        record.existing_traversal_backend_root_authority_top_level_as ==
+        record.provider_backend_input_root_metadata_handle;
+  }
   record.producer_root_descriptor_traversal_authority_preflight =
       record.existing_traversal_backend_path_selected;
   record.producer_root_descriptor_traversal_authority_candidate =
@@ -14500,6 +14522,10 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "existing_traversal_backend_root_authority_available=%u, "
          "existing_traversal_backend_root_authority_top_level_as=0x%llx, "
          "existing_traversal_backend_uses_producer_root_fields=%u, "
+         "existing_traversal_backend_named_top_level_as_authority=%s, "
+         "existing_traversal_backend_named_top_level_as_source=%s, "
+         "existing_traversal_backend_bridge_trace_replay_top_level_as_compatibility_observation_only=%u, "
+         "existing_traversal_backend_named_top_level_as_matches_root_authority=%u, "
          "producer_root_descriptor_traversal_authority_preflight=%u, "
          "producer_root_descriptor_traversal_authority_candidate=%u, "
          "producer_root_descriptor_traversal_authority_enabled=%u, "
@@ -14850,6 +14876,16 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          (unsigned long long)
              record.existing_traversal_backend_root_authority_top_level_as,
          record.existing_traversal_backend_uses_producer_root_fields ? 1 : 0,
+         record.existing_traversal_backend_named_top_level_as_authority,
+         record.existing_traversal_backend_named_top_level_as_source,
+         record
+                 .existing_traversal_backend_bridge_trace_replay_top_level_as_compatibility_observation_only
+             ? 1
+             : 0,
+         record
+                 .existing_traversal_backend_named_top_level_as_matches_root_authority
+             ? 1
+             : 0,
          record.producer_root_descriptor_traversal_authority_preflight ? 1
                                                                        : 0,
          record.producer_root_descriptor_traversal_authority_candidate ? 1
