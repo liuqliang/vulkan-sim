@@ -1495,7 +1495,15 @@ struct rtcore_resident_gate_materialized_input_provenance_snapshot {
         provider_materialized_traversal_input_decoded_value_record_source(
             "unavailable"),
         provider_materialized_traversal_input_decoded_value_record_consumed(
-            false) {}
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
+            "unavailable") {}
 
   bool available;
   bool has_provider_materialized_traversal_input_snapshot;
@@ -1505,6 +1513,14 @@ struct rtcore_resident_gate_materialized_input_provenance_snapshot {
   bool provider_materialized_traversal_input_decoded_value_record_valid;
   const char *provider_materialized_traversal_input_decoded_value_record_source;
   bool provider_materialized_traversal_input_decoded_value_record_consumed;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+  const char
+      *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
 };
 
 struct rtcore_completion_queue_gate_materialized_input_provenance_snapshot {
@@ -1520,7 +1536,15 @@ struct rtcore_completion_queue_gate_materialized_input_provenance_snapshot {
         provider_materialized_traversal_input_decoded_value_record_source(
             "unavailable"),
         provider_materialized_traversal_input_decoded_value_record_consumed(
-            false) {}
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
+            "unavailable") {}
 
   bool available;
   bool has_provider_materialized_traversal_input_snapshot;
@@ -1530,6 +1554,14 @@ struct rtcore_completion_queue_gate_materialized_input_provenance_snapshot {
   bool provider_materialized_traversal_input_decoded_value_record_valid;
   const char *provider_materialized_traversal_input_decoded_value_record_source;
   bool provider_materialized_traversal_input_decoded_value_record_consumed;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+  const char
+      *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
 };
 
 class rt_unit : public pipelined_simd_unit {
@@ -1753,6 +1785,14 @@ class rt_unit : public pipelined_simd_unit {
                   "unavailable"),
               provider_materialized_traversal_input_decoded_value_record_consumed(
                   false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid(
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted(
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
+                  "unavailable"),
               release_result("shadow_table_release_skeleton_default_off"),
               transition_reason("shadow_table_release_skeleton_default_off") {}
 
@@ -1779,6 +1819,14 @@ class rt_unit : public pipelined_simd_unit {
         const char
             *provider_materialized_traversal_input_decoded_value_record_source;
         bool provider_materialized_traversal_input_decoded_value_record_consumed;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+        const char
+            *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
         const char *release_result;
         const char *transition_reason;
       };

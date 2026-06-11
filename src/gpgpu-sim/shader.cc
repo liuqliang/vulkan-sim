@@ -325,7 +325,15 @@ struct rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provena
         provider_materialized_traversal_input_decoded_value_record_source(
             "unavailable"),
         provider_materialized_traversal_input_decoded_value_record_consumed(
-            false) {}
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
+            "unavailable") {}
 
   bool available;
   bool has_provider_materialized_traversal_input_snapshot;
@@ -335,6 +343,14 @@ struct rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provena
   bool provider_materialized_traversal_input_decoded_value_record_valid;
   const char *provider_materialized_traversal_input_decoded_value_record_source;
   bool provider_materialized_traversal_input_decoded_value_record_consumed;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+  const char
+      *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
 };
 
 static std::deque<
@@ -363,7 +379,12 @@ rtcore_scheduler_credit_ledger_publish_reusable_credit_provenance_preflight(
     bool provider_materialized_traversal_input_decoded_value_record_valid,
     const char
         *provider_materialized_traversal_input_decoded_value_record_source,
-    bool provider_materialized_traversal_input_decoded_value_record_consumed) {
+    bool provider_materialized_traversal_input_decoded_value_record_consumed,
+    bool provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid,
+    bool provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted,
+    bool provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed,
+    const char
+        *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason) {
   rtcore_scheduler_credit_ledger_reusable_credit_materialized_input_provenance
       provenance;
   provenance.available = true;
@@ -382,6 +403,18 @@ rtcore_scheduler_credit_ledger_publish_reusable_credit_provenance_preflight(
   provenance
       .provider_materialized_traversal_input_decoded_value_record_consumed =
       provider_materialized_traversal_input_decoded_value_record_consumed;
+  provenance
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+  provenance
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+  provenance
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed =
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+  provenance
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
   rtcore_scheduler_credit_ledger_reusable_credit_provenance_queue().push_back(
       provenance);
 }
@@ -2856,8 +2889,13 @@ void scheduler_unit::cycle() {
                          "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
                          "provider_materialized_traversal_input_decoded_value_record_source=%s, "
                          "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+                         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+                         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+                         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+                         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
                          "consumer_materialized_input_consumes_credit_behavior=0, "
                          "reusable_credit_decoded_value_record_consumes_credit_behavior=0, "
+                         "reusable_credit_decoded_value_record_source_snapshot_consumes_credit_behavior=0, "
                          "transition_reason=%s\n",
                          rtcore_scheduler_credit_ledger_shadow_table
                              .owner_hw_sid,
@@ -2905,6 +2943,20 @@ void scheduler_unit::cycle() {
                                  .provider_materialized_traversal_input_decoded_value_record_consumed
                              ? 1
                              : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
                          "reusable_credit_consumer_preflight");
                   fflush(stdout);
                 }
@@ -3160,8 +3212,14 @@ void scheduler_unit::cycle() {
                        "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
                        "provider_materialized_traversal_input_decoded_value_record_source=%s, "
                        "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
                        "scheduler_bridge_materialized_input_consumes_bridge_policy=0, "
-                       "scheduler_bridge_materialized_input_consumes_issue_behavior=0\n",
+                       "scheduler_bridge_materialized_input_consumes_issue_behavior=0, "
+                       "scheduler_bridge_decoded_value_record_source_snapshot_consumes_bridge_policy=0, "
+                       "scheduler_bridge_decoded_value_record_source_snapshot_consumes_issue_behavior=0\n",
                        rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_id,
@@ -3215,7 +3273,21 @@ void scheduler_unit::cycle() {
                        rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                                .provider_materialized_traversal_input_decoded_value_record_consumed
                            ? 1
-                           : 0);
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
                 fflush(stdout);
               }
               if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT &&
@@ -3245,7 +3317,12 @@ void scheduler_unit::cycle() {
                        "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
                        "provider_materialized_traversal_input_decoded_value_record_source=%s, "
                        "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
                        "issue_gate_materialized_input_consumes_issue_readiness=0, "
+                       "issue_gate_decoded_value_record_source_snapshot_consumes_issue_readiness=0, "
                        "transition_reason=%s\n",
                        rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
@@ -3297,6 +3374,20 @@ void scheduler_unit::cycle() {
                                .provider_materialized_traversal_input_decoded_value_record_consumed
                            ? 1
                            : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
                        "reusable_credit_issue_gate_preflight");
                 fflush(stdout);
               }
@@ -3346,8 +3437,14 @@ void scheduler_unit::cycle() {
                            "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
                            "provider_materialized_traversal_input_decoded_value_record_source=%s, "
                            "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+                           "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+                           "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+                           "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+                           "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
                            "scheduler_bridge_materialized_input_consumes_bridge_policy=0, "
-                           "scheduler_bridge_materialized_input_consumes_issue_behavior=0\n",
+                           "scheduler_bridge_materialized_input_consumes_issue_behavior=0, "
+                           "scheduler_bridge_decoded_value_record_source_snapshot_consumes_bridge_policy=0, "
+                           "scheduler_bridge_decoded_value_record_source_snapshot_consumes_issue_behavior=0\n",
                            rtcore_scheduler_credit_ledger_shadow_table
                                .owner_hw_sid,
                            rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
@@ -3400,7 +3497,21 @@ void scheduler_unit::cycle() {
                            rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                                    .provider_materialized_traversal_input_decoded_value_record_consumed
                                ? 1
-                               : 0);
+                               : 0,
+                           rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                   .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+                               ? 1
+                               : 0,
+                           rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                   .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+                               ? 1
+                               : 0,
+                           rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                   .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+                               ? 1
+                               : 0,
+                           rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
                     fflush(stdout);
                     if (credit_refunded) {
                       rtcore_scheduler_credit_ledger_issue_gate_credit_consumed =
@@ -3440,8 +3551,13 @@ void scheduler_unit::cycle() {
                        "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
                        "provider_materialized_traversal_input_decoded_value_record_source=%s, "
                        "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
                        "forced_later_gate_materialized_input_consumes_failpoint=0, "
-                       "forced_later_gate_materialized_input_consumes_rollback_behavior=0\n",
+                       "forced_later_gate_materialized_input_consumes_rollback_behavior=0, "
+                       "forced_later_gate_decoded_value_record_source_snapshot_consumes_rollback_behavior=0\n",
                        rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_id,
@@ -3486,7 +3602,21 @@ void scheduler_unit::cycle() {
                        rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                                .provider_materialized_traversal_input_decoded_value_record_consumed
                            ? 1
-                           : 0);
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
                 fflush(stdout);
                 rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
                     "scheduler_bridge_rollback_after_forced_later_gate");
@@ -3527,6 +3657,22 @@ void scheduler_unit::cycle() {
                   .provider_materialized_traversal_input_decoded_value_record_consumed =
                   rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                       .provider_materialized_traversal_input_decoded_value_record_consumed;
+              rtcore_resident_gate_materialized_input_provenance
+                  .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+              rtcore_resident_gate_materialized_input_provenance
+                  .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+              rtcore_resident_gate_materialized_input_provenance
+                  .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed =
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+              rtcore_resident_gate_materialized_input_provenance
+                  .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
+                  rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
               const bool rtcore_resident_warp_capacity_ready =
                   pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
                   m_shader->rtcore_submit_resident_warp_capacity_available(
@@ -3571,8 +3717,13 @@ void scheduler_unit::cycle() {
                        "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
                        "provider_materialized_traversal_input_decoded_value_record_source=%s, "
                        "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+                       "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
                        "forced_issue_slot_materialized_input_consumes_failpoint=1, "
-                       "forced_issue_slot_materialized_input_consumes_slot_behavior=0\n",
+                       "forced_issue_slot_materialized_input_consumes_slot_behavior=0, "
+                       "forced_issue_slot_decoded_value_record_source_snapshot_consumes_slot_behavior=0\n",
                        rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
                        rtcore_scheduler_credit_ledger_shadow_table.warp_id,
@@ -3617,7 +3768,21 @@ void scheduler_unit::cycle() {
                        rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                                .provider_materialized_traversal_input_decoded_value_record_consumed
                            ? 1
-                           : 0);
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+                           ? 1
+                           : 0,
+                       rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
                 fflush(stdout);
               }
               if (rt_core_issue_slot_ready) {
@@ -3655,6 +3820,22 @@ void scheduler_unit::cycle() {
                     .provider_materialized_traversal_input_decoded_value_record_consumed =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_decoded_value_record_consumed;
+                rtcore_completion_queue_gate_materialized_input_provenance
+                    .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
+                    rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                        .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+                rtcore_completion_queue_gate_materialized_input_provenance
+                    .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
+                    rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                        .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+                rtcore_completion_queue_gate_materialized_input_provenance
+                    .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed =
+                    rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                        .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+                rtcore_completion_queue_gate_materialized_input_provenance
+                    .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
+                    rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                        .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
                 const bool rtcore_completion_queue_ready =
                     pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
                     m_shader->rtcore_submit_completion_queue_reserve_issue_slot(
@@ -3690,8 +3871,14 @@ void scheduler_unit::cycle() {
                          "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
                          "provider_materialized_traversal_input_decoded_value_record_source=%s, "
                          "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+                         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+                         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+                         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+                         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
                          "scheduler_bridge_materialized_input_consumes_bridge_policy=0, "
-                         "scheduler_bridge_materialized_input_consumes_issue_behavior=0\n",
+                         "scheduler_bridge_materialized_input_consumes_issue_behavior=0, "
+                         "scheduler_bridge_decoded_value_record_source_snapshot_consumes_bridge_policy=0, "
+                         "scheduler_bridge_decoded_value_record_source_snapshot_consumes_issue_behavior=0\n",
                          rtcore_scheduler_credit_ledger_shadow_table
                              .owner_hw_sid,
                          rtcore_scheduler_credit_ledger_shadow_table.warp_uid,
@@ -3746,7 +3933,21 @@ void scheduler_unit::cycle() {
                          rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                                  .provider_materialized_traversal_input_decoded_value_record_consumed
                              ? 1
-                             : 0);
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+                             ? 1
+                             : 0,
+                         rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
+                             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
                   fflush(stdout);
                 }
                 issued++;
@@ -5031,8 +5232,14 @@ bool rt_unit::rtcore_resident_warp_capacity_available(
            "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
            "provider_materialized_traversal_input_decoded_value_record_source=%s, "
            "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+           "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+           "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+           "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+           "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
            "resident_gate_materialized_input_consumes_capacity_decision=0, "
-           "resident_gate_materialized_input_consumes_backpressure_behavior=0\n",
+           "resident_gate_materialized_input_consumes_backpressure_behavior=0, "
+           "resident_gate_decoded_value_record_source_snapshot_consumes_capacity_decision=0, "
+           "resident_gate_decoded_value_record_source_snapshot_consumes_backpressure_behavior=0\n",
            warp_id, owner_hw_sid, static_inst_pc,
            snapshot.resident_live_warps, snapshot.resident_warp_capacity,
            snapshot.dispatch_pending_warps,
@@ -5062,7 +5269,21 @@ bool rt_unit::rtcore_resident_warp_capacity_available(
            materialized_input_provenance
                    .provider_materialized_traversal_input_decoded_value_record_consumed
                ? 1
-               : 0);
+               : 0,
+           materialized_input_provenance
+                   .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+               ? 1
+               : 0,
+           materialized_input_provenance
+                   .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+               ? 1
+               : 0,
+           materialized_input_provenance
+                   .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+               ? 1
+               : 0,
+           materialized_input_provenance
+               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
     fflush(stdout);
     return false;
   }
@@ -5267,8 +5488,14 @@ bool rt_unit::rtcore_completion_queue_reserve_issue_slot(
          "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source=%s, "
          "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
          "completion_queue_gate_materialized_input_consumes_capacity_decision=0, "
-         "completion_queue_gate_materialized_input_consumes_reservation_behavior=0\n",
+         "completion_queue_gate_materialized_input_consumes_reservation_behavior=0, "
+         "completion_queue_gate_decoded_value_record_source_snapshot_consumes_capacity_decision=0, "
+         "completion_queue_gate_decoded_value_record_source_snapshot_consumes_reservation_behavior=0\n",
          snapshot.warp_uid, snapshot.warp_id, snapshot.owner_hw_sid,
          snapshot.static_inst_pc, snapshot.issued_active_mask,
          snapshot.inflight, snapshot.reserved, snapshot.capacity,
@@ -5296,7 +5523,21 @@ bool rt_unit::rtcore_completion_queue_reserve_issue_slot(
          materialized_input_provenance
                  .provider_materialized_traversal_input_decoded_value_record_consumed
              ? 1
-             : 0);
+             : 0,
+         materialized_input_provenance
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+             ? 1
+             : 0,
+         materialized_input_provenance
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+             ? 1
+             : 0,
+         materialized_input_provenance
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+             ? 1
+             : 0,
+         materialized_input_provenance
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
   fflush(stdout);
   return false;
 }
@@ -6092,7 +6333,15 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
             shadow_table_release
                 .provider_materialized_traversal_input_decoded_value_record_source,
             shadow_table_release
-                .provider_materialized_traversal_input_decoded_value_record_consumed);
+                .provider_materialized_traversal_input_decoded_value_record_consumed,
+            shadow_table_release
+                .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid,
+            shadow_table_release
+                .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted,
+            shadow_table_release
+                .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed,
+            shadow_table_release
+                .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
       }
       const bool rtcore_scheduler_credit_ledger_publication_negative_fault =
           rtcore_scheduler_credit_ledger_shadow_table_real_mutation_duplicate_fault_enabled() ||
@@ -6122,7 +6371,12 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
              "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
              "provider_materialized_traversal_input_decoded_value_record_source=%s, "
              "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+             "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+             "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+             "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+             "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
              "publication_materialized_input_consumes_publication_behavior=0, "
+             "reusable_slot_decoded_value_record_source_snapshot_consumes_publication_behavior=0, "
              "publication_result=%s, transition_reason=%s\n",
              snapshot.owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
              static_cast<unsigned long long>(snapshot.static_inst_pc),
@@ -6163,6 +6417,20 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
                      .provider_materialized_traversal_input_decoded_value_record_consumed
                  ? 1
                  : 0,
+             shadow_table_release
+                     .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+                 ? 1
+                 : 0,
+             shadow_table_release
+                     .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+                 ? 1
+                 : 0,
+             shadow_table_release
+                     .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+                 ? 1
+                 : 0,
+             shadow_table_release
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
              rtcore_scheduler_credit_ledger_publication_result,
              "reusable_slot_publication_preflight");
       fflush(stdout);
@@ -6207,6 +6475,22 @@ rt_unit::rtcore_make_shadow_table_release_snapshot(
   snapshot.provider_materialized_traversal_input_decoded_value_record_consumed =
       release_snapshot
           .provider_materialized_traversal_input_decoded_value_record_consumed;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
+      release_snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
+      release_snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed =
+      release_snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
+      release_snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
   snapshot.release_attempted = snapshot.enabled;
   snapshot.entry_found = snapshot.enabled;
   snapshot.would_release_owner_tuple = snapshot.enabled;
@@ -6247,7 +6531,12 @@ void rt_unit::rtcore_apply_shadow_table_release_snapshot(
          "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source=%s, "
          "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
          "shadow_table_release_materialized_input_consumes_mutation=0, "
+         "shadow_table_release_decoded_value_record_source_snapshot_consumes_mutation=0, "
          "release_result=%s, transition_reason=%s\n",
          snapshot.owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
          static_cast<unsigned long long>(snapshot.static_inst_pc),
@@ -6274,6 +6563,20 @@ void rt_unit::rtcore_apply_shadow_table_release_snapshot(
                  .provider_materialized_traversal_input_decoded_value_record_consumed
              ? 1
              : 0,
+         snapshot
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+             ? 1
+             : 0,
+         snapshot
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+             ? 1
+             : 0,
+         snapshot
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+             ? 1
+             : 0,
+         snapshot
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
          snapshot.release_result,
          snapshot.transition_reason);
   fflush(stdout);
