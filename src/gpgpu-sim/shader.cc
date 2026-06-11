@@ -5583,6 +5583,22 @@ rt_unit::rtcore_make_adapter_readiness_snapshot(
   snapshot.provider_materialized_traversal_input_decoded_value_record_consumed =
       claim_snapshot
           .provider_materialized_traversal_input_decoded_value_record_consumed;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
+      claim_snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
+      claim_snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed =
+      claim_snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
+      claim_snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
   snapshot.issue_mask_match =
       snapshot.adapter_active_mask == issued_active_mask;
   snapshot.issued_lanes_complete =
@@ -5625,6 +5641,22 @@ void rt_unit::rtcore_apply_adapter_readiness_snapshot(
   event->provider_materialized_traversal_input_decoded_value_record_consumed =
       snapshot
           .provider_materialized_traversal_input_decoded_value_record_consumed;
+  event
+      ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
+      snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+  event
+      ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
+      snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+  event
+      ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed =
+      snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+  event
+      ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
+      snapshot
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
   event->adapter_completion_issue_mask_match = snapshot.issue_mask_match;
   event->adapter_completion_issued_lanes_complete =
       snapshot.issued_lanes_complete;
@@ -5711,8 +5743,13 @@ bool rt_unit::claim_adapter_completion_for_issue(
          "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source=%s, "
          "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
          "rt_unit_readiness_materialized_input_consumes_adapter_ready=0, "
          "rt_unit_readiness_decoded_value_record_consumes_adapter_ready=0, "
+         "rt_unit_readiness_decoded_value_record_source_snapshot_consumes_adapter_ready=0, "
          "accepted=%u\n",
          event->warp_uid, event->warp_id, m_sid, event->issued_active_mask,
          event->adapter_active_mask, event->adapter_completed_lane_mask,
@@ -5735,6 +5772,20 @@ bool rt_unit::claim_adapter_completion_for_issue(
          event->provider_materialized_traversal_input_decoded_value_record_consumed
              ? 1
              : 0,
+         event
+                 ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+             ? 1
+             : 0,
+         event
+                 ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+             ? 1
+             : 0,
+         event
+                 ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+             ? 1
+             : 0,
+         event
+             ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
          event->adapter_completion_ready ? 1 : 0);
   fflush(stdout);
 
@@ -5783,6 +5834,18 @@ void rt_unit::enqueue_synthetic_completion(
       "unavailable";
   event.provider_materialized_traversal_input_decoded_value_record_consumed =
       false;
+  event
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
+      false;
+  event
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
+      false;
+  event
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed =
+      false;
+  event
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
+      "unavailable";
   event.adapter_completion_ready = false;
   event.adapter_completion_claimed = false;
   event.adapter_completion_issue_mask_match = false;
@@ -5863,6 +5926,22 @@ rt_unit::rtcore_make_synthetic_release_snapshot(
   snapshot.provider_materialized_traversal_input_decoded_value_record_consumed =
       event
           .provider_materialized_traversal_input_decoded_value_record_consumed;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
+      event
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
+      event
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed =
+      event
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+  snapshot
+      .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
+      event
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
   snapshot.enqueue_cycle = event.enqueue_cycle;
   snapshot.ready_cycle = event.ready_cycle;
   snapshot.current_cycle = current_cycle;
@@ -5894,8 +5973,13 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
          "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source=%s, "
          "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
+         "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
          "synthetic_release_materialized_input_consumes_release_behavior=0, "
-         "synthetic_release_decoded_value_record_consumes_release_behavior=0\n",
+         "synthetic_release_decoded_value_record_consumes_release_behavior=0, "
+         "synthetic_release_decoded_value_record_source_snapshot_consumes_release_behavior=0\n",
          snapshot.warp_uid, snapshot.warp_id, snapshot.owner_hw_sid,
          static_cast<unsigned long long>(snapshot.static_inst_pc),
          snapshot.issued_active_mask, snapshot.adapter_active_mask,
@@ -5916,7 +6000,21 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
          snapshot
                  .provider_materialized_traversal_input_decoded_value_record_consumed
              ? 1
-             : 0);
+             : 0,
+         snapshot
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid
+             ? 1
+             : 0,
+         snapshot
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted
+             ? 1
+             : 0,
+         snapshot
+                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed
+             ? 1
+             : 0,
+         snapshot
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
   fflush(stdout);
 
   rtcore_shadow_table_release_snapshot shadow_table_release =

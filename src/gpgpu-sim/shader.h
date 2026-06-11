@@ -1309,6 +1309,14 @@ struct rtcore_adapter_completion_claim_snapshot {
             "unavailable"),
         provider_materialized_traversal_input_decoded_value_record_consumed(
             false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
+            false),
+        provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
+            "unavailable"),
         reject_reason("missing_record") {}
 
   bool found;
@@ -1336,6 +1344,14 @@ struct rtcore_adapter_completion_claim_snapshot {
   bool provider_materialized_traversal_input_decoded_value_record_valid;
   const char *provider_materialized_traversal_input_decoded_value_record_source;
   bool provider_materialized_traversal_input_decoded_value_record_consumed;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+  bool
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+  const char
+      *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
   const char *reject_reason;
 };
 
@@ -1628,6 +1644,14 @@ class rt_unit : public pipelined_simd_unit {
         const char
             *provider_materialized_traversal_input_decoded_value_record_source;
         bool provider_materialized_traversal_input_decoded_value_record_consumed;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+        const char
+            *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
         unsigned completion_latency;
@@ -1657,6 +1681,14 @@ class rt_unit : public pipelined_simd_unit {
                   "unavailable"),
               provider_materialized_traversal_input_decoded_value_record_consumed(
                   false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid(
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted(
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
+                  "unavailable"),
               enqueue_cycle(0),
               ready_cycle(0),
               current_cycle(0) {}
@@ -1680,6 +1712,14 @@ class rt_unit : public pipelined_simd_unit {
         const char
             *provider_materialized_traversal_input_decoded_value_record_source;
         bool provider_materialized_traversal_input_decoded_value_record_consumed;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+        const char
+            *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
         unsigned long long current_cycle;
@@ -1764,7 +1804,15 @@ class rt_unit : public pipelined_simd_unit {
               provider_materialized_traversal_input_decoded_value_record_source(
                   "unavailable"),
               provider_materialized_traversal_input_decoded_value_record_consumed(
-                  false) {}
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid(
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted(
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
+                  false),
+              provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
+                  "unavailable") {}
 
         bool claim_accepted;
         bool issue_mask_match;
@@ -1783,6 +1831,14 @@ class rt_unit : public pipelined_simd_unit {
         const char
             *provider_materialized_traversal_input_decoded_value_record_source;
         bool provider_materialized_traversal_input_decoded_value_record_consumed;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
+        bool
+            provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
+        const char
+            *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
       };
       struct rtcore_completion_timing_snapshot {
         rtcore_completion_timing_snapshot()
