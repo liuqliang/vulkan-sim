@@ -7787,7 +7787,9 @@ struct rtcore_traversal_completion_provider_backend_input_annotation {
         provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
             false),
         provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
-            "unavailable") {}
+            "unavailable"),
+        backend_input_authority_pre_call_guard_required(false),
+        backend_input_authority_pre_call_guard_ready(false) {}
 
   bool valid;
   bool provider_payload_consumption_enabled;
@@ -7812,6 +7814,8 @@ struct rtcore_traversal_completion_provider_backend_input_annotation {
       provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
   const char
       *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  bool backend_input_authority_pre_call_guard_required;
+  bool backend_input_authority_pre_call_guard_ready;
 };
 
 struct rtcore_adapter_completion_record {
@@ -7911,6 +7915,8 @@ struct rtcore_adapter_completion_claim_status {
             false),
         provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
             "unavailable"),
+        provider_backend_input_claim_authority_pre_call_guard_required(false),
+        provider_backend_input_claim_authority_pre_call_guard_ready(false),
         reject_reason("missing_record") {}
 
   bool found;
@@ -7948,6 +7954,8 @@ struct rtcore_adapter_completion_claim_status {
       provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
   const char
       *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  bool provider_backend_input_claim_authority_pre_call_guard_required;
+  bool provider_backend_input_claim_authority_pre_call_guard_ready;
   const char *reject_reason;
 };
 
@@ -8091,7 +8099,11 @@ static bool rtcore_backend_input_completion_annotation_values_match(
              rhs.provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed &&
          strcmp(lhs.provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
                 rhs.provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason) ==
-             0;
+             0 &&
+         lhs.backend_input_authority_pre_call_guard_required ==
+             rhs.backend_input_authority_pre_call_guard_required &&
+         lhs.backend_input_authority_pre_call_guard_ready ==
+             rhs.backend_input_authority_pre_call_guard_ready;
 }
 
 static void
@@ -8214,6 +8226,8 @@ static bool rtcore_publish_adapter_completion_record(
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+         "provider_backend_input_completion_publication_authority_pre_call_guard_required=%u, "
+         "provider_backend_input_completion_publication_authority_pre_call_guard_ready=%u, "
          "adapter_completion_backend_input_annotation_consumes_completion_behavior=0\n",
          publication.warp_uid, publication.warp_id, publication.owner_hw_sid,
          publication.active_mask, record.completed_lane_mask,
@@ -8271,7 +8285,13 @@ static bool rtcore_publish_adapter_completion_record(
              ? 1
              : 0,
          backend_input_annotation
-             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+         backend_input_annotation.backend_input_authority_pre_call_guard_required
+             ? 1
+             : 0,
+         backend_input_annotation.backend_input_authority_pre_call_guard_ready
+             ? 1
+             : 0);
   fflush(stdout);
   return accepted;
 }
@@ -8448,6 +8468,10 @@ static rtcore_adapter_completion_claim_status rtcore_query_adapter_completion_st
       .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       backend_input_annotation
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  status.provider_backend_input_claim_authority_pre_call_guard_required =
+      backend_input_annotation.backend_input_authority_pre_call_guard_required;
+  status.provider_backend_input_claim_authority_pre_call_guard_ready =
+      backend_input_annotation.backend_input_authority_pre_call_guard_ready;
   status.metadata_match =
       record.valid && record.warp_uid == warp_uid &&
       record.warp_id == warp_id && record.owner_hw_sid == owner_hw_sid;
@@ -8528,6 +8552,10 @@ static void rtcore_fill_adapter_completion_claim_snapshot(
       ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       status
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  snapshot->provider_backend_input_claim_authority_pre_call_guard_required =
+      status.provider_backend_input_claim_authority_pre_call_guard_required;
+  snapshot->provider_backend_input_claim_authority_pre_call_guard_ready =
+      status.provider_backend_input_claim_authority_pre_call_guard_ready;
   snapshot->reject_reason = status.reject_reason;
 }
 
@@ -8568,6 +8596,8 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
            "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
            "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
            "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+           "provider_backend_input_claim_authority_pre_call_guard_required=%u, "
+           "provider_backend_input_claim_authority_pre_call_guard_ready=%u, "
            "adapter_completion_claim_backend_input_annotation_consumes_readiness_behavior=0\n",
            warp_uid, warp_id, owner_hw_sid, status.active_mask,
            status.completed_lane_mask, status.static_inst_uid,
@@ -8610,7 +8640,12 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
                ? 1
                : 0,
            status
-               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
+               .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+           status.provider_backend_input_claim_authority_pre_call_guard_required
+               ? 1
+               : 0,
+           status.provider_backend_input_claim_authority_pre_call_guard_ready ? 1
+                                                                             : 0);
     fflush(stdout);
     return false;
   }
@@ -8648,6 +8683,8 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+         "provider_backend_input_claim_authority_pre_call_guard_required=%u, "
+         "provider_backend_input_claim_authority_pre_call_guard_ready=%u, "
          "adapter_completion_claim_backend_input_annotation_consumes_readiness_behavior=0\n",
          warp_uid, warp_id, owner_hw_sid, status.active_mask,
          status.completed_lane_mask, status.static_inst_uid,
@@ -8690,7 +8727,12 @@ extern "C" bool rtcore_claim_adapter_completion_snapshot(
              ? 1
              : 0,
          status
-             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+         status.provider_backend_input_claim_authority_pre_call_guard_required
+             ? 1
+             : 0,
+         status.provider_backend_input_claim_authority_pre_call_guard_ready ? 1
+                                                                           : 0);
   fflush(stdout);
   return status.accepted;
 }
@@ -14293,7 +14335,9 @@ struct rtcore_provider_backend_input_response_annotation {
         provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
             false),
         provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
-            "unavailable") {}
+            "unavailable"),
+        backend_input_authority_pre_call_guard_required(false),
+        backend_input_authority_pre_call_guard_ready(false) {}
 
   bool valid;
   bool provider_payload_consumption_enabled;
@@ -14318,6 +14362,8 @@ struct rtcore_provider_backend_input_response_annotation {
       provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
   const char
       *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  bool backend_input_authority_pre_call_guard_required;
+  bool backend_input_authority_pre_call_guard_ready;
 };
 
 struct rtcore_traversal_provider_response {
@@ -15212,7 +15258,9 @@ struct rtcore_traversal_source_provider_backend_input_annotation {
         provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
             false),
         provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
-            "unavailable") {}
+            "unavailable"),
+        backend_input_authority_pre_call_guard_required(false),
+        backend_input_authority_pre_call_guard_ready(false) {}
 
   bool valid;
   bool provider_payload_consumption_enabled;
@@ -15237,6 +15285,8 @@ struct rtcore_traversal_source_provider_backend_input_annotation {
       provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
   const char
       *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  bool backend_input_authority_pre_call_guard_required;
+  bool backend_input_authority_pre_call_guard_ready;
 };
 
 struct rtcore_registry_payload_consumption_admission_decision {
@@ -16974,6 +17024,18 @@ rtcore_annotate_provider_response_with_backend_input_snapshot_result(
           ? "none"
           : custom_result.provider_payload_backend_input_snapshot
                 .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  annotation.backend_input_authority_pre_call_guard_required =
+      annotation.provider_payload_backend_input_snapshot_accepted &&
+      custom_result
+          .producer_root_descriptor_traversal_authority_consumes_backend_input;
+  annotation.backend_input_authority_pre_call_guard_ready =
+      annotation.backend_input_authority_pre_call_guard_required &&
+      custom_result.existing_traversal_input_replay_requested &&
+      custom_result.existing_traversal_request_replay_live_input_match &&
+      annotation
+          .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot &&
+      annotation
+          .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "provider-backend-input-response-annotation, provider=%s, "
@@ -16999,6 +17061,8 @@ rtcore_annotate_provider_response_with_backend_input_snapshot_result(
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+         "provider_backend_input_response_authority_pre_call_guard_required=%u, "
+         "provider_backend_input_response_authority_pre_call_guard_ready=%u, "
          "response_backend_input_annotation_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(response->provider),
          custom_result.context_ptr, custom_result.handoff_window_base,
@@ -17039,7 +17103,9 @@ rtcore_annotate_provider_response_with_backend_input_snapshot_result(
              ? 1
              : 0,
          annotation
-             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+         annotation.backend_input_authority_pre_call_guard_required ? 1 : 0,
+         annotation.backend_input_authority_pre_call_guard_ready ? 1 : 0);
   fflush(stdout);
 }
 
@@ -19940,6 +20006,10 @@ rtcore_copy_provider_backend_input_response_annotation_to_source_snapshot(
       .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       response_annotation
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  annotation.backend_input_authority_pre_call_guard_required =
+      response_annotation.backend_input_authority_pre_call_guard_required;
+  annotation.backend_input_authority_pre_call_guard_ready =
+      response_annotation.backend_input_authority_pre_call_guard_ready;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "traversal-source-provider-backend-input-annotation, provider=%s, "
@@ -19964,6 +20034,8 @@ rtcore_copy_provider_backend_input_response_annotation_to_source_snapshot(
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+         "provider_backend_input_source_snapshot_authority_pre_call_guard_required=%u, "
+         "provider_backend_input_source_snapshot_authority_pre_call_guard_ready=%u, "
          "source_snapshot_backend_input_annotation_consumes_traversal_behavior=0\n",
          rtcore_traversal_source_provider_name(response.provider),
          annotation.provider_payload_consumption_enabled ? 1 : 0,
@@ -20002,7 +20074,9 @@ rtcore_copy_provider_backend_input_response_annotation_to_source_snapshot(
              ? 1
              : 0,
          annotation
-             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+         annotation.backend_input_authority_pre_call_guard_required ? 1 : 0,
+         annotation.backend_input_authority_pre_call_guard_ready ? 1 : 0);
   fflush(stdout);
 }
 
@@ -29395,6 +29469,10 @@ rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
       .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       source_annotation
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  annotation.backend_input_authority_pre_call_guard_required =
+      source_annotation.backend_input_authority_pre_call_guard_required;
+  annotation.backend_input_authority_pre_call_guard_ready =
+      source_annotation.backend_input_authority_pre_call_guard_ready;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "traversal-completion-provider-backend-input-annotation, "
@@ -29421,6 +29499,8 @@ rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+         "provider_backend_input_completion_event_authority_pre_call_guard_required=%u, "
+         "provider_backend_input_completion_event_authority_pre_call_guard_ready=%u, "
          "completion_event_backend_input_annotation_consumes_traversal_behavior=0\n",
          event->context_ptr, event->handoff_window_base,
          event->lane_slot_index,
@@ -29460,7 +29540,9 @@ rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
              ? 1
              : 0,
          annotation
-             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+         annotation.backend_input_authority_pre_call_guard_required ? 1 : 0,
+         annotation.backend_input_authority_pre_call_guard_ready ? 1 : 0);
   fflush(stdout);
 }
 
@@ -29540,6 +29622,10 @@ rtcore_copy_completion_backend_input_annotation_to_pending(
       .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       event_annotation
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  annotation.backend_input_authority_pre_call_guard_required =
+      event_annotation.backend_input_authority_pre_call_guard_required;
+  annotation.backend_input_authority_pre_call_guard_ready =
+      event_annotation.backend_input_authority_pre_call_guard_ready;
 }
 
 rtcore_pending_traversal_completion
@@ -29631,6 +29717,10 @@ rtcore_copy_completion_backend_input_annotation_to_publication(
       .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       event_annotation
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  annotation.backend_input_authority_pre_call_guard_required =
+      event_annotation.backend_input_authority_pre_call_guard_required;
+  annotation.backend_input_authority_pre_call_guard_ready =
+      event_annotation.backend_input_authority_pre_call_guard_ready;
 }
 
 rtcore_adapter_completion_publication
@@ -29700,6 +29790,8 @@ static bool rtcore_enqueue_pending_traversal_completion(
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+         "provider_backend_input_pending_completion_authority_pre_call_guard_required=%u, "
+         "provider_backend_input_pending_completion_authority_pre_call_guard_ready=%u, "
          "delayed_completion_backend_input_annotation_consumes_completion_behavior=0\n",
          record.warp_uid, record.warp_id, record.owner_hw_sid,
          record.active_mask, record.static_inst_uid,
@@ -29756,7 +29848,13 @@ static bool rtcore_enqueue_pending_traversal_completion(
              ? 1
              : 0,
          backend_input_annotation
-             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+         backend_input_annotation.backend_input_authority_pre_call_guard_required
+             ? 1
+             : 0,
+         backend_input_annotation.backend_input_authority_pre_call_guard_ready
+             ? 1
+             : 0);
   fflush(stdout);
   return true;
 }

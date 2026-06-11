@@ -1317,6 +1317,8 @@ struct rtcore_adapter_completion_claim_snapshot {
             false),
         provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
             "unavailable"),
+        provider_backend_input_claim_authority_pre_call_guard_required(false),
+        provider_backend_input_claim_authority_pre_call_guard_ready(false),
         reject_reason("missing_record") {}
 
   bool found;
@@ -1352,6 +1354,8 @@ struct rtcore_adapter_completion_claim_snapshot {
       provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
   const char
       *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  bool provider_backend_input_claim_authority_pre_call_guard_required;
+  bool provider_backend_input_claim_authority_pre_call_guard_ready;
   const char *reject_reason;
 };
 
