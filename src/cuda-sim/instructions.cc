@@ -12950,6 +12950,7 @@ enum rtcore_decoded_input_field_owner_class {
   RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME,
   RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION,
   RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY,
+  RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE,
 };
 
 static const char *rtcore_decoded_input_field_owner_class_name(
@@ -12961,6 +12962,8 @@ static const char *rtcore_decoded_input_field_owner_class_name(
       return "compiler_driver_publication";
     case RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY:
       return "simulator_proxy";
+    case RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE:
+      return "driver_as_resolve_table";
     case RTCORE_DECODED_INPUT_OWNER_FORBIDDEN:
     default:
       return "forbidden";
@@ -12976,6 +12979,8 @@ static const char *rtcore_decoded_input_field_source_label(
       return "compiler_driver_publication_sideband";
     case RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY:
       return "simulator_proxy";
+    case RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE:
+      return "driver_as_resolve_table_producer_shadow";
     case RTCORE_DECODED_INPUT_OWNER_FORBIDDEN:
     default:
       return "unavailable";
@@ -13067,7 +13072,8 @@ static bool rtcore_decoded_input_field_owner_has_lifetime(
     rtcore_decoded_input_field_owner_class owner) {
   return owner == RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME ||
          owner == RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION ||
-         owner == RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
+         owner == RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY ||
+         owner == RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE;
 }
 
 static bool rtcore_decoded_input_fields_all_owned_with_lifetime(
@@ -13108,6 +13114,19 @@ static bool rtcore_proxy_delegation_gate_passed_for_proxy_fields(
              RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY &&
          has_bvh_format_profile &&
          bvh_format_profile_owner == RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY;
+}
+
+static bool rtcore_actual_producer_root_descriptor_fields_ready(
+    bool has_traversable_root_proxy,
+    rtcore_decoded_input_field_owner_class traversable_root_proxy_owner,
+    bool has_bvh_format_profile,
+    rtcore_decoded_input_field_owner_class bvh_format_profile_owner) {
+  return has_traversable_root_proxy &&
+         traversable_root_proxy_owner ==
+             RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE &&
+         has_bvh_format_profile &&
+         bvh_format_profile_owner ==
+             RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE;
 }
 
 struct rtcore_provider_payload_consumed_input_view {
@@ -26196,6 +26215,50 @@ static bool rtcore_backend_root_descriptor_actual_producer_evidence_ready(
       .evidence_ready;
 }
 
+static bool
+rtcore_driver_as_resolve_table_actual_producer_authority_enabled(
+    const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot) {
+  return rtcore_backend_root_descriptor_actual_producer_consumption_opt_in_requested() &&
+         rtcore_backend_root_descriptor_actual_producer_evidence_ready(
+             snapshot);
+}
+
+static void
+rtcore_apply_driver_as_resolve_actual_producer_snapshot_to_decoded_snapshot(
+    rtcore_decoded_traversal_input_snapshot *decoded_input_snapshot,
+    const rtcore_driver_as_resolve_table_lookup_snapshot &snapshot) {
+  if (decoded_input_snapshot == NULL ||
+      !rtcore_driver_as_resolve_table_actual_producer_authority_enabled(
+          snapshot)) {
+    return;
+  }
+
+  decoded_input_snapshot->traversable_proxy_id = snapshot.backend_root_descriptor_producer_root_metadata_handle;
+  decoded_input_snapshot->root_proxy_id = snapshot.backend_root_descriptor_producer_root_node_reference;
+  decoded_input_snapshot->has_traversable_root_proxy =
+      decoded_input_snapshot->traversable_proxy_id != 0 &&
+      decoded_input_snapshot->root_proxy_id != 0;
+  decoded_input_snapshot->traversable_root_proxy_owner = RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE;
+  if (!decoded_input_snapshot->has_traversable_root_proxy) {
+    decoded_input_snapshot->traversable_root_proxy_owner =
+        RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+  }
+
+  decoded_input_snapshot->bvh_format_version = snapshot.key.bvh_format_version;
+  decoded_input_snapshot->has_bvh_format_version =
+      snapshot.key.has_profile_ref &&
+      snapshot.key.bvh_format_version == RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT &&
+      snapshot.backend_root_descriptor_producer_layout_profile_reference !=
+          NULL &&
+      strcmp(snapshot.backend_root_descriptor_producer_layout_profile_reference,
+             "unavailable") != 0;
+  decoded_input_snapshot->bvh_format_profile_owner = RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE;
+  if (!decoded_input_snapshot->has_bvh_format_version) {
+    decoded_input_snapshot->bvh_format_profile_owner =
+        RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+  }
+}
+
 static bool rtcore_fail_closed_on_driver_as_resolve_table_lookup_snapshot(
     const ptx_instruction *pI,
     const rtcore_traversal_source_request &source_request,
@@ -28065,7 +28128,6 @@ rtcore_make_default_compiler_driver_publication_route_record(
       compiler_driver_source ? "compiler_driver_publication_sideband"
                              : "unexpected_source";
   record.runtime_context_window_source = "driver_runtime";
-  record.proxy_fields_source = "simulator_proxy";
   record.proxy_delegation_source = rtcore_proxy_delegation_source_label();
   record.top_level_as_proxy_resolve_adapter_source =
       rtcore_top_level_as_proxy_resolve_adapter_source_label();
@@ -28098,19 +28160,29 @@ rtcore_make_default_compiler_driver_publication_route_record(
           launch_context_input_publication_record.handoff_window_base &&
       decoded_input_snapshot.context_window_owner_seq.lane_slot_index ==
           launch_context_input_publication_record.lane_slot_index;
-  record.proxy_fields_complete =
+  record.proxy_delegation_gate_passed =
       rtcore_proxy_delegation_gate_passed_for_proxy_fields(
           decoded_input_snapshot.has_traversable_root_proxy,
           decoded_input_snapshot.traversable_root_proxy_owner,
           decoded_input_snapshot.has_bvh_format_version,
           decoded_input_snapshot.bvh_format_profile_owner);
-  record.proxy_delegation_gate_passed = record.proxy_fields_complete;
+  record.proxy_fields_actual_abi_evidence = rtcore_actual_producer_root_descriptor_fields_ready(
+          decoded_input_snapshot.has_traversable_root_proxy,
+          decoded_input_snapshot.traversable_root_proxy_owner,
+          decoded_input_snapshot.has_bvh_format_version,
+          decoded_input_snapshot.bvh_format_profile_owner);
+  record.proxy_fields_source =
+      record.proxy_fields_actual_abi_evidence
+          ? rtcore_backend_root_descriptor_selected_source_label(true)
+          : "simulator_proxy";
+  record.proxy_fields_complete =
+      record.proxy_delegation_gate_passed ||
+      record.proxy_fields_actual_abi_evidence;
   record.top_level_as_proxy_resolve_adapter_gate_passed =
-      record.proxy_fields_complete && record.has_launch_context_input;
-  record.proxy_fields_actual_abi_evidence = false;
+      record.proxy_delegation_gate_passed && record.has_launch_context_input;
   record.valid = record.compiler_fields_complete &&
                  record.runtime_context_window_complete &&
-                 record.proxy_delegation_gate_passed;
+                 (record.proxy_delegation_gate_passed || record.proxy_fields_actual_abi_evidence);
   return record;
 }
 
@@ -28136,7 +28208,7 @@ static void rtcore_log_default_compiler_driver_publication_route_record(
          "top_level_as_proxy_resolve_adapter_source=%s, "
          "proxy_token_source=%s, "
          "top_level_as_proxy_resolve_adapter_gate_passed=%u, "
-         "actual_abi_evidence_for_proxy_fields=0, "
+         "actual_abi_evidence_for_proxy_fields=%u, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, source_publication_seq=%llu, "
          "source_owner_tuple_match=%u, has_source_context_window_key=%u, "
@@ -28160,6 +28232,7 @@ static void rtcore_log_default_compiler_driver_publication_route_record(
          record.top_level_as_proxy_resolve_adapter_source,
          record.proxy_token_source,
          record.top_level_as_proxy_resolve_adapter_gate_passed ? 1 : 0,
+         record.proxy_fields_actual_abi_evidence ? 1 : 0,
          record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.source_publication_seq,
          record.source_owner_tuple_match ? 1 : 0,
@@ -28221,7 +28294,7 @@ rtcore_fail_closed_on_default_compiler_driver_publication_route_record(
          "top_level_as_proxy_resolve_adapter_source=%s, "
          "proxy_token_source=%s, "
          "top_level_as_proxy_resolve_adapter_gate_passed=%u, "
-         "actual_abi_evidence_for_proxy_fields=0, "
+         "actual_abi_evidence_for_proxy_fields=%u, "
          "provider_consumption_default_disabled=%u, "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, source_publication_seq=%llu, "
@@ -28239,6 +28312,7 @@ rtcore_fail_closed_on_default_compiler_driver_publication_route_record(
          record.top_level_as_proxy_resolve_adapter_source,
          record.proxy_token_source,
          record.top_level_as_proxy_resolve_adapter_gate_passed ? 1 : 0,
+         record.proxy_fields_actual_abi_evidence ? 1 : 0,
          record.provider_consumption_default_disabled ? 1 : 0,
          record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.source_publication_seq,
@@ -29984,60 +30058,121 @@ bool rtcore_build_traversal_completion_event(
               pI, source_request, driver_as_resolve_table_lookup_snapshot)) {
         return false;
       }
-      rtcore_runtime_as_proxy_registry_key runtime_as_proxy_registry_key =
+      const bool actual_producer_authority_enabled =
+          rtcore_driver_as_resolve_table_actual_producer_authority_enabled(
+              driver_as_resolve_table_lookup_snapshot);
+      if (actual_producer_authority_enabled) {
+        rtcore_apply_driver_as_resolve_actual_producer_snapshot_to_decoded_snapshot(
+            &event->decoded_input_snapshot,
+            driver_as_resolve_table_lookup_snapshot);
+        printf("GPGPU-Sim PTX: RT_SUBMIT "
+               "actual_producer_runtime_proxy_bypass=1, "
+               "provider=%s, context_ptr=0x%llx, "
+               "handoff_window_base=0x%llx, lane_slot_index=%u, "
+               "driver_as_resolve_table_source=%s, "
+               "runtime_as_proxy_registry_bypassed=1, "
+               "resolve_table_runtime_proxy_consistency_bypassed=1, "
+               "top_level_as_proxy_resolve_adapter_bypassed=1, "
+               "has_traversable_root_proxy=%u, "
+               "traversable_proxy_id=0x%llx, root_proxy_id=0x%llx, "
+               "traversable_root_proxy_owner=%s, "
+               "has_bvh_format_profile=%u, bvh_format_version=%u, "
+               "bvh_format_profile_owner=%s, "
+               "backend_root_descriptor_producer_root_metadata_handle=0x%llx, "
+               "backend_root_descriptor_producer_root_address_space=%s, "
+               "backend_root_descriptor_producer_root_node_reference=0x%llx, "
+               "backend_root_descriptor_producer_layout_profile_reference=%s, "
+               "actual_abi_evidence_for_proxy_fields=1, "
+               "before_registry_payload_shadow=1, "
+               "before_provider_consumed_input=1, "
+               "before_backend_input_route=1, "
+               "before_traversal_completion=1, "
+               "before_completion_release=1 (%s:%u)\n",
+               rtcore_traversal_source_provider_name(source_request.provider),
+               source_request.context_ptr, source_request.handoff_window_base,
+               source_request.lane_slot_index,
+               driver_as_resolve_table_lookup_snapshot.resolve_table_source,
+               event->decoded_input_snapshot.has_traversable_root_proxy ? 1
+                                                                        : 0,
+               (unsigned long long)
+                   event->decoded_input_snapshot.traversable_proxy_id,
+               (unsigned long long)event->decoded_input_snapshot.root_proxy_id,
+               rtcore_decoded_input_field_owner_class_name(
+                   event->decoded_input_snapshot.traversable_root_proxy_owner),
+               event->decoded_input_snapshot.has_bvh_format_version ? 1 : 0,
+               event->decoded_input_snapshot.bvh_format_version,
+               rtcore_decoded_input_field_owner_class_name(
+                   event->decoded_input_snapshot.bvh_format_profile_owner),
+               (unsigned long long)
+                   driver_as_resolve_table_lookup_snapshot
+                       .backend_root_descriptor_producer_root_metadata_handle,
+               driver_as_resolve_table_lookup_snapshot
+                   .backend_root_descriptor_producer_root_address_space,
+               (unsigned long long)
+                   driver_as_resolve_table_lookup_snapshot
+                       .backend_root_descriptor_producer_root_node_reference,
+               driver_as_resolve_table_lookup_snapshot
+                   .backend_root_descriptor_producer_layout_profile_reference,
+               pI != NULL ? pI->source_file() : "<unknown>",
+               pI != NULL ? pI->source_line() : 0);
+        fflush(stdout);
+      } else {
+        rtcore_runtime_as_proxy_registry_key runtime_as_proxy_registry_key =
           rtcore_make_runtime_as_proxy_registry_key(
               source_request, event->owner_seq_snapshot,
               event->driver_runtime_context_window_lifetime_bridge_snapshot,
               launch_context_input_publication_record);
-      (void)rtcore_publish_runtime_as_proxy_registry_entry(
-          runtime_as_proxy_registry_key, pre_provider_traversal_data_snapshot,
-          bvh_format_profile_object_bridge_snapshot);
-      rtcore_runtime_as_proxy_registry_lookup_snapshot
-          runtime_as_proxy_registry_lookup_snapshot =
-              rtcore_lookup_runtime_as_proxy_registry_entry(
-                  runtime_as_proxy_registry_key);
-      rtcore_apply_runtime_as_proxy_registry_failpoint_to_lookup_snapshot(
-          pI, source_request, &runtime_as_proxy_registry_lookup_snapshot);
-      rtcore_log_runtime_as_proxy_registry_lookup_snapshot(
-          pI, source_request, runtime_as_proxy_registry_lookup_snapshot);
-      if (rtcore_fail_closed_on_runtime_as_proxy_registry_lookup_snapshot(
-              pI, source_request, runtime_as_proxy_registry_lookup_snapshot)) {
-        return false;
+        (void)rtcore_publish_runtime_as_proxy_registry_entry(
+            runtime_as_proxy_registry_key, pre_provider_traversal_data_snapshot,
+            bvh_format_profile_object_bridge_snapshot);
+        rtcore_runtime_as_proxy_registry_lookup_snapshot
+            runtime_as_proxy_registry_lookup_snapshot =
+                rtcore_lookup_runtime_as_proxy_registry_entry(
+                    runtime_as_proxy_registry_key);
+        rtcore_apply_runtime_as_proxy_registry_failpoint_to_lookup_snapshot(
+            pI, source_request, &runtime_as_proxy_registry_lookup_snapshot);
+        rtcore_log_runtime_as_proxy_registry_lookup_snapshot(
+            pI, source_request, runtime_as_proxy_registry_lookup_snapshot);
+        if (rtcore_fail_closed_on_runtime_as_proxy_registry_lookup_snapshot(
+                pI, source_request, runtime_as_proxy_registry_lookup_snapshot)) {
+          return false;
+        }
+        rtcore_resolve_table_runtime_proxy_consistency_snapshot
+            resolve_table_runtime_proxy_consistency_snapshot =
+                rtcore_make_resolve_table_runtime_proxy_consistency_snapshot(
+                    driver_as_resolve_table_lookup_snapshot,
+                    runtime_as_proxy_registry_lookup_snapshot);
+        rtcore_apply_resolve_table_runtime_proxy_consistency_failpoint(
+            pI, source_request,
+            &resolve_table_runtime_proxy_consistency_snapshot);
+        rtcore_log_resolve_table_runtime_proxy_consistency_snapshot(
+            pI, source_request,
+            resolve_table_runtime_proxy_consistency_snapshot);
+        if (rtcore_fail_closed_on_resolve_table_runtime_proxy_consistency_snapshot(
+                pI, source_request,
+                resolve_table_runtime_proxy_consistency_snapshot)) {
+          return false;
+        }
+        rtcore_top_level_as_proxy_resolve_adapter_snapshot
+            top_level_as_proxy_resolve_adapter_snapshot =
+                rtcore_make_top_level_as_proxy_resolve_adapter_snapshot(
+                    launch_context_input_publication_record,
+                    runtime_as_proxy_registry_lookup_snapshot);
+        rtcore_apply_top_level_as_proxy_resolve_failpoint_to_adapter_snapshot(
+            pI, source_request, &top_level_as_proxy_resolve_adapter_snapshot);
+        rtcore_log_top_level_as_proxy_resolve_adapter_snapshot(
+            pI, source_request, top_level_as_proxy_resolve_adapter_snapshot);
+        if (rtcore_fail_closed_on_top_level_as_proxy_resolve_adapter_snapshot(
+                pI, source_request,
+                top_level_as_proxy_resolve_adapter_snapshot)) {
+          return false;
+        }
+        rtcore_apply_top_level_as_proxy_resolve_adapter_snapshot_to_decoded_snapshot(
+            &event->decoded_input_snapshot,
+            top_level_as_proxy_resolve_adapter_snapshot);
+        rtcore_apply_proxy_delegation_failpoint_to_decoded_snapshot(
+            pI, source_request, &event->decoded_input_snapshot);
       }
-      rtcore_resolve_table_runtime_proxy_consistency_snapshot
-          resolve_table_runtime_proxy_consistency_snapshot =
-              rtcore_make_resolve_table_runtime_proxy_consistency_snapshot(
-                  driver_as_resolve_table_lookup_snapshot,
-                  runtime_as_proxy_registry_lookup_snapshot);
-      rtcore_apply_resolve_table_runtime_proxy_consistency_failpoint(
-          pI, source_request,
-          &resolve_table_runtime_proxy_consistency_snapshot);
-      rtcore_log_resolve_table_runtime_proxy_consistency_snapshot(
-          pI, source_request,
-          resolve_table_runtime_proxy_consistency_snapshot);
-      if (rtcore_fail_closed_on_resolve_table_runtime_proxy_consistency_snapshot(
-              pI, source_request,
-              resolve_table_runtime_proxy_consistency_snapshot)) {
-        return false;
-      }
-      rtcore_top_level_as_proxy_resolve_adapter_snapshot
-          top_level_as_proxy_resolve_adapter_snapshot =
-              rtcore_make_top_level_as_proxy_resolve_adapter_snapshot(
-                  launch_context_input_publication_record,
-                  runtime_as_proxy_registry_lookup_snapshot);
-      rtcore_apply_top_level_as_proxy_resolve_failpoint_to_adapter_snapshot(
-          pI, source_request, &top_level_as_proxy_resolve_adapter_snapshot);
-      rtcore_log_top_level_as_proxy_resolve_adapter_snapshot(
-          pI, source_request, top_level_as_proxy_resolve_adapter_snapshot);
-      if (rtcore_fail_closed_on_top_level_as_proxy_resolve_adapter_snapshot(
-              pI, source_request, top_level_as_proxy_resolve_adapter_snapshot)) {
-        return false;
-      }
-      rtcore_apply_top_level_as_proxy_resolve_adapter_snapshot_to_decoded_snapshot(
-          &event->decoded_input_snapshot,
-          top_level_as_proxy_resolve_adapter_snapshot);
-      rtcore_apply_proxy_delegation_failpoint_to_decoded_snapshot(
-          pI, source_request, &event->decoded_input_snapshot);
     }
     rtcore_default_compiler_driver_publication_route_record
         default_publication_route_record =
