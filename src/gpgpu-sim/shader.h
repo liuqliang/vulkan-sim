@@ -1688,6 +1688,8 @@ class rt_unit : public pipelined_simd_unit {
             provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
         const char
             *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+        bool provider_backend_input_authority_pre_call_guard_required;
+        bool provider_backend_input_authority_pre_call_guard_ready;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
         unsigned completion_latency;
@@ -1725,6 +1727,8 @@ class rt_unit : public pipelined_simd_unit {
                   false),
               provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
                   "unavailable"),
+              provider_backend_input_authority_pre_call_guard_required(false),
+              provider_backend_input_authority_pre_call_guard_ready(false),
               enqueue_cycle(0),
               ready_cycle(0),
               current_cycle(0) {}
@@ -1756,6 +1760,8 @@ class rt_unit : public pipelined_simd_unit {
             provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
         const char
             *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+        bool provider_backend_input_authority_pre_call_guard_required;
+        bool provider_backend_input_authority_pre_call_guard_ready;
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
         unsigned long long current_cycle;
@@ -1797,6 +1803,8 @@ class rt_unit : public pipelined_simd_unit {
                   false),
               provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
                   "unavailable"),
+              provider_backend_input_authority_pre_call_guard_required(false),
+              provider_backend_input_authority_pre_call_guard_ready(false),
               release_result("shadow_table_release_skeleton_default_off"),
               transition_reason("shadow_table_release_skeleton_default_off") {}
 
@@ -1831,6 +1839,8 @@ class rt_unit : public pipelined_simd_unit {
             provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
         const char
             *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+        bool provider_backend_input_authority_pre_call_guard_required;
+        bool provider_backend_input_authority_pre_call_guard_ready;
         const char *release_result;
         const char *transition_reason;
       };
@@ -1864,7 +1874,9 @@ class rt_unit : public pipelined_simd_unit {
               provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed(
                   false),
               provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason(
-                  "unavailable") {}
+                  "unavailable"),
+              provider_backend_input_authority_pre_call_guard_required(false),
+              provider_backend_input_authority_pre_call_guard_ready(false) {}
 
         bool claim_accepted;
         bool issue_mask_match;
@@ -1891,6 +1903,8 @@ class rt_unit : public pipelined_simd_unit {
             provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
         const char
             *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+        bool provider_backend_input_authority_pre_call_guard_required;
+        bool provider_backend_input_authority_pre_call_guard_ready;
       };
       struct rtcore_completion_timing_snapshot {
         rtcore_completion_timing_snapshot()

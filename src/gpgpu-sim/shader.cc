@@ -5840,6 +5840,11 @@ rt_unit::rtcore_make_adapter_readiness_snapshot(
       .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       claim_snapshot
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  snapshot.provider_backend_input_authority_pre_call_guard_required =
+      claim_snapshot
+          .provider_backend_input_claim_authority_pre_call_guard_required;
+  snapshot.provider_backend_input_authority_pre_call_guard_ready =
+      claim_snapshot.provider_backend_input_claim_authority_pre_call_guard_ready;
   snapshot.issue_mask_match =
       snapshot.adapter_active_mask == issued_active_mask;
   snapshot.issued_lanes_complete =
@@ -5898,6 +5903,10 @@ void rt_unit::rtcore_apply_adapter_readiness_snapshot(
       ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       snapshot
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  event->provider_backend_input_authority_pre_call_guard_required =
+      snapshot.provider_backend_input_authority_pre_call_guard_required;
+  event->provider_backend_input_authority_pre_call_guard_ready =
+      snapshot.provider_backend_input_authority_pre_call_guard_ready;
   event->adapter_completion_issue_mask_match = snapshot.issue_mask_match;
   event->adapter_completion_issued_lanes_complete =
       snapshot.issued_lanes_complete;
@@ -5988,9 +5997,12 @@ bool rt_unit::claim_adapter_completion_for_issue(
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+         "rt_unit_backend_input_authority_pre_call_guard_required=%u, "
+         "rt_unit_backend_input_authority_pre_call_guard_ready=%u, "
          "rt_unit_readiness_materialized_input_consumes_adapter_ready=0, "
          "rt_unit_readiness_decoded_value_record_consumes_adapter_ready=0, "
          "rt_unit_readiness_decoded_value_record_source_snapshot_consumes_adapter_ready=0, "
+         "rt_unit_readiness_backend_input_authority_pre_call_guard_consumes_adapter_ready=0, "
          "accepted=%u\n",
          event->warp_uid, event->warp_id, m_sid, event->issued_active_mask,
          event->adapter_active_mask, event->adapter_completed_lane_mask,
@@ -6027,6 +6039,9 @@ bool rt_unit::claim_adapter_completion_for_issue(
              : 0,
          event
              ->provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+         event->provider_backend_input_authority_pre_call_guard_required ? 1
+                                                                         : 0,
+         event->provider_backend_input_authority_pre_call_guard_ready ? 1 : 0,
          event->adapter_completion_ready ? 1 : 0);
   fflush(stdout);
 
@@ -6087,6 +6102,8 @@ void rt_unit::enqueue_synthetic_completion(
   event
       .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       "unavailable";
+  event.provider_backend_input_authority_pre_call_guard_required = false;
+  event.provider_backend_input_authority_pre_call_guard_ready = false;
   event.adapter_completion_ready = false;
   event.adapter_completion_claimed = false;
   event.adapter_completion_issue_mask_match = false;
@@ -6183,6 +6200,10 @@ rt_unit::rtcore_make_synthetic_release_snapshot(
       .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       event
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  snapshot.provider_backend_input_authority_pre_call_guard_required =
+      event.provider_backend_input_authority_pre_call_guard_required;
+  snapshot.provider_backend_input_authority_pre_call_guard_ready =
+      event.provider_backend_input_authority_pre_call_guard_ready;
   snapshot.enqueue_cycle = event.enqueue_cycle;
   snapshot.ready_cycle = event.ready_cycle;
   snapshot.current_cycle = current_cycle;
@@ -6218,9 +6239,12 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+         "synthetic_release_backend_input_authority_pre_call_guard_required=%u, "
+         "synthetic_release_backend_input_authority_pre_call_guard_ready=%u, "
          "synthetic_release_materialized_input_consumes_release_behavior=0, "
          "synthetic_release_decoded_value_record_consumes_release_behavior=0, "
-         "synthetic_release_decoded_value_record_source_snapshot_consumes_release_behavior=0\n",
+         "synthetic_release_decoded_value_record_source_snapshot_consumes_release_behavior=0, "
+         "synthetic_release_backend_input_authority_pre_call_guard_consumes_release_behavior=0\n",
          snapshot.warp_uid, snapshot.warp_id, snapshot.owner_hw_sid,
          static_cast<unsigned long long>(snapshot.static_inst_pc),
          snapshot.issued_active_mask, snapshot.adapter_active_mask,
@@ -6255,7 +6279,11 @@ void rt_unit::rtcore_apply_synthetic_release_snapshot(
              ? 1
              : 0,
          snapshot
-             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason);
+             .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+         snapshot.provider_backend_input_authority_pre_call_guard_required ? 1
+                                                                           : 0,
+         snapshot.provider_backend_input_authority_pre_call_guard_ready ? 1
+                                                                       : 0);
   fflush(stdout);
 
   rtcore_shadow_table_release_snapshot shadow_table_release =
@@ -6491,6 +6519,10 @@ rt_unit::rtcore_make_shadow_table_release_snapshot(
       .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
       release_snapshot
           .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
+  snapshot.provider_backend_input_authority_pre_call_guard_required =
+      release_snapshot.provider_backend_input_authority_pre_call_guard_required;
+  snapshot.provider_backend_input_authority_pre_call_guard_ready =
+      release_snapshot.provider_backend_input_authority_pre_call_guard_ready;
   snapshot.release_attempted = snapshot.enabled;
   snapshot.entry_found = snapshot.enabled;
   snapshot.would_release_owner_tuple = snapshot.enabled;
@@ -6535,8 +6567,11 @@ void rt_unit::rtcore_apply_shadow_table_release_snapshot(
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
+         "shadow_table_release_backend_input_authority_pre_call_guard_required=%u, "
+         "shadow_table_release_backend_input_authority_pre_call_guard_ready=%u, "
          "shadow_table_release_materialized_input_consumes_mutation=0, "
          "shadow_table_release_decoded_value_record_source_snapshot_consumes_mutation=0, "
+         "shadow_table_release_backend_input_authority_pre_call_guard_consumes_mutation=0, "
          "release_result=%s, transition_reason=%s\n",
          snapshot.owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
          static_cast<unsigned long long>(snapshot.static_inst_pc),
@@ -6577,6 +6612,10 @@ void rt_unit::rtcore_apply_shadow_table_release_snapshot(
              : 0,
          snapshot
              .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason,
+         snapshot.provider_backend_input_authority_pre_call_guard_required ? 1
+                                                                           : 0,
+         snapshot.provider_backend_input_authority_pre_call_guard_ready ? 1
+                                                                       : 0,
          snapshot.release_result,
          snapshot.transition_reason);
   fflush(stdout);
