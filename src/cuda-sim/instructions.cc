@@ -12621,6 +12621,8 @@ struct rtcore_traversal_source_request {
             false),
         replay_decoded_value_record_source_snapshot_block_reason("unavailable"),
         has_replay_ray_origin_direction_tmin_tmax(false),
+        replay_ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot(
+            false),
         has_replay_ray_flags_cull_mask(false),
         has_replay_launch_context_input(false),
         has_replay_selected_root_descriptor(false),
@@ -12713,6 +12715,8 @@ struct rtcore_traversal_source_request {
   bool replay_decoded_value_record_source_snapshot_consumed_by_existing_traversal;
   const char *replay_decoded_value_record_source_snapshot_block_reason;
   bool has_replay_ray_origin_direction_tmin_tmax;
+  bool
+      replay_ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot;
   bool has_replay_ray_flags_cull_mask;
   bool has_replay_launch_context_input;
   bool has_replay_selected_root_descriptor;
@@ -13724,6 +13728,21 @@ static bool rtcore_decoded_trace_ray_value_record_matches_request(
          record.miss_index == request.replay_miss_index;
 }
 
+static bool
+rtcore_ray_origin_direction_tmin_tmax_field_from_decoded_value_record_source_snapshot(
+    const rtcore_decoded_trace_ray_value_record &record,
+    const rtcore_traversal_source_request &request) {
+  return request
+             .replay_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot &&
+         request.replay_decoded_value_record_source_snapshot_admitted &&
+         request.has_replay_ray_origin_direction_tmin_tmax && record.valid &&
+         record.has_ray_origin_direction_tmin_tmax &&
+         rtcore_decoded_trace_ray_value_record_matches_request(record,
+                                                               request) &&
+         rtcore_decoded_trace_ray_value_record_authority_matches_request(record,
+                                                                         request);
+}
+
 struct rtcore_provider_materialized_traversal_input_snapshot {
   rtcore_provider_materialized_traversal_input_snapshot()
       : valid(false),
@@ -14531,6 +14550,10 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
           request->replay_actual_abi_source_snapshot_admitted,
           request->replay_decoded_value_record_source_snapshot_valid,
           request->replay_decoded_value_record_source_snapshot_admitted);
+  request
+      ->replay_ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot =
+      rtcore_ray_origin_direction_tmin_tmax_field_from_decoded_value_record_source_snapshot(
+          decoded_value_record, *request);
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-input-replay, "
@@ -14539,6 +14562,7 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "custom-rtcore-backend-existing-traversal-input-replay=1, "
          "existing_traversal_input_replay_source=provider_backend_input_snapshot, "
          "existing_traversal_replay_ray_origin_direction_tmin_tmax_source=%s, "
+         "existing_traversal_replay_ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot=%u, "
          "existing_traversal_replay_ray_flags_cull_mask_source=%s, "
          "existing_traversal_replay_launch_context_input_source=%s, "
          "existing_traversal_replay_context_window_source=%s, "
@@ -14610,6 +14634,10 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          descriptor.lane_slot_index, descriptor.warp_metadata.warp_uid,
          descriptor.warp_metadata.active_mask,
          request->replay_ray_origin_direction_tmin_tmax_source,
+         request
+                 ->replay_ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          request->replay_ray_flags_cull_mask_source,
          request->replay_launch_context_input_source,
          request->replay_context_window_source,
@@ -17744,6 +17772,8 @@ struct rtcore_materialized_traversal_input {
             false),
         root_field_consumed(false),
         ray_origin_direction_tmin_tmax_consumed(false),
+        ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot(
+            false),
         ray_flags_cull_mask_consumed(false),
         launch_context_sbt_consumed(false),
         full_abi_fields_consumed(false),
@@ -17800,6 +17830,7 @@ struct rtcore_materialized_traversal_input {
   bool actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   bool root_field_consumed;
   bool ray_origin_direction_tmin_tmax_consumed;
+  bool ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot;
   bool ray_flags_cull_mask_consumed;
   bool launch_context_sbt_consumed;
   bool full_abi_fields_consumed;
@@ -17864,6 +17895,8 @@ struct rtcore_trace_ray_argument_audit {
         root_metadata_handle(0),
         ray_origin_direction_tmin_tmax_owner(
             RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot(
+            false),
         ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         provider_payload_runtime_lifetime_ready(false),
@@ -17899,6 +17932,7 @@ struct rtcore_trace_ray_argument_audit {
   uint32_t miss_index;
   uint64_t root_metadata_handle;
   rtcore_decoded_input_field_owner_class ray_origin_direction_tmin_tmax_owner;
+  bool ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot;
   rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   rtcore_decoded_input_field_owner_class launch_context_input_owner;
   bool provider_payload_runtime_lifetime_ready;
@@ -18000,6 +18034,9 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
   trace_ray_arguments.root_metadata_handle = input.root_metadata_handle;
   trace_ray_arguments.ray_origin_direction_tmin_tmax_owner =
       input.ray_origin_direction_tmin_tmax_owner;
+  trace_ray_arguments
+      .ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot =
+      input.ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot;
   trace_ray_arguments.ray_flags_cull_mask_owner =
       input.ray_flags_cull_mask_owner;
   trace_ray_arguments.launch_context_input_owner =
@@ -18402,6 +18439,13 @@ rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
       input.actual_abi_source_snapshot_admitted &&
       materialized_from_work_descriptor &&
       request.has_replay_ray_origin_direction_tmin_tmax;
+  input.ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot =
+      input.ray_origin_direction_tmin_tmax_consumed &&
+      input.decoded_value_record_consumed_by_materialization &&
+      input.decoded_value_record_matches_request &&
+      input.decoded_value_record_authority_matches_request &&
+      request
+          .replay_ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot;
   input.ray_flags_cull_mask_consumed =
       input.actual_abi_source_snapshot_admitted &&
       materialized_from_work_descriptor &&
@@ -18594,6 +18638,7 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "producer_root_descriptor_traversal_input_actual_abi_source_snapshot_consumed=%u, "
          "producer_root_descriptor_traversal_input_root_field_consumed=%u, "
          "producer_root_descriptor_traversal_input_ray_origin_direction_tmin_tmax_consumed=%u, "
+         "producer_root_descriptor_traversal_input_ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot=%u, "
          "producer_root_descriptor_traversal_input_ray_flags_cull_mask_consumed=%u, "
          "producer_root_descriptor_traversal_input_launch_context_sbt_consumed=%u, "
          "producer_root_descriptor_traversal_input_full_abi_fields_consumed=%u, "
@@ -18626,6 +18671,7 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "trace_ray_argument_decoded_source_provenance=1, "
          "trace_ray_argument_ray_origin_direction_tmin_tmax_owner=%s, "
          "trace_ray_argument_ray_origin_direction_tmin_tmax_source=%s, "
+         "trace_ray_argument_ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot=%u, "
          "trace_ray_argument_ray_flags_cull_mask_owner=%s, "
          "trace_ray_argument_ray_flags_cull_mask_source=%s, "
          "trace_ray_argument_launch_context_input_owner=%s, "
@@ -18715,6 +18761,10 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          actual_abi_source_snapshot_consumed ? 1 : 0,
          materialized_input.root_field_consumed ? 1 : 0,
          materialized_input.ray_origin_direction_tmin_tmax_consumed ? 1 : 0,
+         materialized_input
+                 .ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          materialized_input.ray_flags_cull_mask_consumed ? 1 : 0,
          materialized_input.launch_context_sbt_consumed ? 1 : 0,
          materialized_input.full_abi_fields_consumed ? 1 : 0,
@@ -18748,6 +18798,10 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
              trace_ray_arguments.ray_origin_direction_tmin_tmax_owner),
          rtcore_decoded_input_field_source_label(
              trace_ray_arguments.ray_origin_direction_tmin_tmax_owner),
+         trace_ray_arguments
+                 .ray_origin_direction_tmin_tmax_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          rtcore_decoded_input_field_owner_class_name(
              trace_ray_arguments.ray_flags_cull_mask_owner),
          rtcore_decoded_input_field_source_label(
