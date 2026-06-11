@@ -13975,6 +13975,18 @@ rtcore_provider_payload_view_proxy_fields_retired_by_actual_producer(
          !view.resolve_profile_layout_publication_future_producer;
 }
 
+static bool rtcore_provider_payload_actual_abi_evidence_for_proxy_fields(
+    const rtcore_provider_payload_consumed_input_view &view) {
+  return rtcore_provider_payload_view_proxy_fields_retired_by_actual_producer(
+             view) &&
+         view.resolve_backend_root_descriptor_actual_abi_evidence &&
+         view.resolve_backend_root_descriptor_actual_producer_evidence_ready &&
+         view.resolve_backend_root_descriptor_actual_producer_authority_enabled &&
+         view
+             .resolve_backend_root_descriptor_actual_producer_contract_claim_actual_abi_evidence &&
+         !view.resolve_backend_root_descriptor_runtime_proxy_compatibility_path;
+}
+
 struct rtcore_provider_decoded_input_observation {
   rtcore_provider_decoded_input_observation()
       : valid(false),
@@ -17533,6 +17545,8 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
       result.provider_payload_backend_input_snapshot.consumed_input_view;
   const rtcore_provider_payload_backend_input_snapshot &backend_snapshot =
       result.provider_payload_backend_input_snapshot;
+  const bool actual_abi_evidence_for_proxy_fields =
+      rtcore_provider_payload_actual_abi_evidence_for_proxy_fields(view);
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-provider-payload-consumed-input, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -17594,7 +17608,7 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
          "root_node_reference=0x%llx, layout_profile_reference=%s, "
          "provider_payload_selected_root_descriptor_owner=%s, "
          "provider_payload_selected_root_descriptor_source=%s, "
-         "actual_abi_evidence_for_proxy_fields=0, "
+         "actual_abi_evidence_for_proxy_fields=%u, "
          "provider_payload_backend_input_owner_lifetime_ok=%u, "
          "provider_backend_input_runtime_lifetime_ready=%u, "
          "context_window_owner_seq_matches_lifetime=%u, "
@@ -17695,6 +17709,7 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
              view.resolve_backend_root_descriptor_actual_producer_authority_enabled),
          rtcore_backend_root_descriptor_selected_source_label(
              view.resolve_backend_root_descriptor_actual_producer_authority_enabled),
+         actual_abi_evidence_for_proxy_fields ? 1 : 0,
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
          view.provider_payload_runtime_lifetime_ready ? 1 : 0,
          view.context_window_owner_seq_matches_lifetime ? 1 : 0,
@@ -29264,6 +29279,8 @@ static void rtcore_log_provider_payload_consumed_input_view(
           provider_materialized_traversal_input_actual_abi_snapshot_admitted,
           provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid,
           provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted);
+  const bool actual_abi_evidence_for_proxy_fields =
+      rtcore_provider_payload_actual_abi_evidence_for_proxy_fields(view);
   printf("GPGPU-Sim PTX: RT_SUBMIT provider-payload-consumed-input, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, provider-payload-consumed-input-view=1, "
@@ -29302,7 +29319,7 @@ static void rtcore_log_provider_payload_consumed_input_view(
          "proxy_fields_retired_by_actual_producer=%u, "
          "proxy_fields_authority=%s, "
          "proxy_fields_compatibility_observation_only=%u, "
-         "actual_abi_evidence_for_proxy_fields=0, "
+         "actual_abi_evidence_for_proxy_fields=%u, "
          "provider_consumed_input_fields_all_owned_with_lifetime=%u, "
          "provider_payload_runtime_lifetime_ready=%u, "
          "context_window_owner_seq_matches_lifetime=%u, "
@@ -29365,6 +29382,7 @@ static void rtcore_log_provider_payload_consumed_input_view(
          rtcore_proxy_fields_authority_label(
              proxy_fields_retired_by_actual_producer),
          proxy_fields_retired_by_actual_producer ? 1 : 0,
+         actual_abi_evidence_for_proxy_fields ? 1 : 0,
          view.provider_consumed_input_fields_all_owned_with_lifetime ? 1 : 0,
          view.provider_payload_runtime_lifetime_ready ? 1 : 0,
          view.context_window_owner_seq_matches_lifetime ? 1 : 0,
