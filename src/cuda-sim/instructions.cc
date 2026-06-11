@@ -12688,6 +12688,24 @@ static const char *rtcore_actual_abi_source_snapshot_block_reason_label(
              : full_backend_input_abi_block_reason;
 }
 
+static const char *
+rtcore_decoded_value_record_source_snapshot_block_reason_label(
+    bool decoded_value_record_source_snapshot_valid,
+    bool decoded_value_record_source_snapshot_admitted,
+    const char *full_backend_input_abi_block_reason) {
+  if (decoded_value_record_source_snapshot_admitted) {
+    return "none";
+  }
+  if (full_backend_input_abi_block_reason != NULL &&
+      strcmp(full_backend_input_abi_block_reason, "none") != 0) {
+    return full_backend_input_abi_block_reason;
+  }
+  if (!decoded_value_record_source_snapshot_valid) {
+    return "decoded_value_record_source_snapshot_invalid";
+  }
+  return "decoded_value_record_source_snapshot_source_mismatch";
+}
+
 static rtcore_traversal_source_request
 rtcore_make_traversal_source_request(
     const ptx_instruction *pI, ptx_thread_info *thread,
@@ -13200,7 +13218,8 @@ enum rtcore_decoded_trace_ray_value_record_failpoint {
   RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_MISMATCH,
   RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_RAY_FLAGS_OWNER_MISMATCH,
   RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SELECTED_ROOT_OWNER_MISMATCH,
-  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_ROOT_DESCRIPTOR_FIELD_BUNDLE_MISMATCH
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_ROOT_DESCRIPTOR_FIELD_BUNDLE_MISMATCH,
+  RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SOURCE_MISMATCH
 };
 
 static rtcore_decoded_trace_ray_value_record_failpoint
@@ -13221,6 +13240,9 @@ rtcore_decoded_trace_ray_value_record_failpoint_mode() {
   if (strcmp(value, "root_descriptor_field_bundle_mismatch") == 0) {
     return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_ROOT_DESCRIPTOR_FIELD_BUNDLE_MISMATCH;
   }
+  if (strcmp(value, "source_mismatch") == 0) {
+    return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SOURCE_MISMATCH;
+  }
   return RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE;
 }
 
@@ -13235,6 +13257,8 @@ static const char *rtcore_decoded_trace_ray_value_record_failpoint_name(
       return "selected_root_owner_mismatch";
     case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_ROOT_DESCRIPTOR_FIELD_BUNDLE_MISMATCH:
       return "root_descriptor_field_bundle_mismatch";
+    case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SOURCE_MISMATCH:
+      return "source_mismatch";
     case RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_NONE:
     default:
       return "none";
@@ -13341,6 +13365,18 @@ static void rtcore_apply_decoded_trace_ray_value_record_failpoint(
            (unsigned long long)record->root_metadata_handle,
            record->root_address_space, record->layout_profile_reference,
            record->bvh_memory_binding ? 1 : 0);
+    fflush(stdout);
+  }
+  if (mode == RTCORE_DECODED_TRACE_RAY_VALUE_RECORD_FAILPOINT_SOURCE_MISMATCH) {
+    const char *original_source = record->source;
+    record->source = "forbidden_decoded_value_record_source";
+    printf("GPGPU-Sim PTX: RT_SUBMIT decoded-value-record-failpoint, "
+           "decoded_value_record_failpoint_applied=1, "
+           "decoded_value_record_failpoint_mode=%s, "
+           "decoded_value_record_original_source=%s, "
+           "decoded_value_record_mutated_source=%s\n",
+           rtcore_decoded_trace_ray_value_record_failpoint_name(mode),
+           original_source, record->source);
     fflush(stdout);
   }
 }
@@ -14260,7 +14296,8 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
       ->replay_decoded_value_record_source_snapshot_consumed_by_existing_traversal =
       false;
   request->replay_decoded_value_record_source_snapshot_block_reason =
-      rtcore_actual_abi_source_snapshot_block_reason_label(
+      rtcore_decoded_value_record_source_snapshot_block_reason_label(
+          request->replay_decoded_value_record_source_snapshot_valid,
           request->replay_decoded_value_record_source_snapshot_admitted,
           request->replay_full_backend_input_abi_block_reason);
 
@@ -18054,7 +18091,8 @@ rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
       input.root_field_consumed &&
       input.ray_origin_direction_tmin_tmax_consumed &&
       input.ray_flags_cull_mask_consumed &&
-      input.launch_context_sbt_consumed;
+      input.launch_context_sbt_consumed &&
+      input.decoded_value_record_source_snapshot_admitted;
   input.full_abi_field_guard_passed = input.full_abi_fields_consumed;
   input.work_descriptor_snapshot_consumed_by_materialization =
       materialized_from_work_descriptor && input.full_abi_field_guard_passed;
@@ -18062,17 +18100,20 @@ rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
       input.work_descriptor_snapshot_consumed_by_materialization &&
       input.decoded_value_record_source_snapshot_admitted &&
       input.decoded_value_record_consumed_by_materialization;
-  input.block_reason =
-      input.full_abi_field_guard_passed
-          ? "none"
-          : (strcmp(request.replay_actual_abi_source_snapshot_block_reason,
-                    "none") == 0
-                 ? "full_abi_field_guard_failed"
-                 : request.replay_actual_abi_source_snapshot_block_reason);
   input.decoded_value_record_source_snapshot_block_reason =
       input.decoded_value_record_source_snapshot_consumed_by_materialization
           ? "none"
           : request.replay_decoded_value_record_source_snapshot_block_reason;
+  input.block_reason =
+      input.full_abi_field_guard_passed
+          ? "none"
+          : (strcmp(input.decoded_value_record_source_snapshot_block_reason,
+                    "none") != 0
+                 ? input.decoded_value_record_source_snapshot_block_reason
+                 : (strcmp(request.replay_actual_abi_source_snapshot_block_reason,
+                           "none") == 0
+                        ? "full_abi_field_guard_failed"
+                        : request.replay_actual_abi_source_snapshot_block_reason));
   input.valid = input.full_abi_field_guard_passed;
   return input;
 }
@@ -18096,6 +18137,11 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
       rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
           request, descriptor);
   if (!materialized_input.valid) {
+    if (failure_reason != NULL &&
+        materialized_input.block_reason != NULL &&
+        strcmp(materialized_input.block_reason, "none") != 0) {
+      *failure_reason = materialized_input.block_reason;
+    }
     return false;
   }
 
