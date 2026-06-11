@@ -12627,6 +12627,8 @@ struct rtcore_traversal_source_request {
         replay_ray_flags_cull_mask_from_decoded_value_record_source_snapshot(
             false),
         has_replay_launch_context_input(false),
+        replay_launch_context_sbt_from_decoded_value_record_source_snapshot(
+            false),
         has_replay_selected_root_descriptor(false),
         replay_ray_origin_direction_tmin_tmax_source("unavailable"),
         replay_ray_flags_cull_mask_source("unavailable"),
@@ -12722,6 +12724,7 @@ struct rtcore_traversal_source_request {
   bool has_replay_ray_flags_cull_mask;
   bool replay_ray_flags_cull_mask_from_decoded_value_record_source_snapshot;
   bool has_replay_launch_context_input;
+  bool replay_launch_context_sbt_from_decoded_value_record_source_snapshot;
   bool has_replay_selected_root_descriptor;
   const char *replay_ray_origin_direction_tmin_tmax_source;
   const char *replay_ray_flags_cull_mask_source;
@@ -13761,6 +13764,20 @@ rtcore_ray_flags_cull_mask_field_from_decoded_value_record_source_snapshot(
                                                                          request);
 }
 
+static bool rtcore_launch_context_sbt_field_from_decoded_value_record_source_snapshot(
+    const rtcore_decoded_trace_ray_value_record &record,
+    const rtcore_traversal_source_request &request) {
+  return request
+             .replay_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot &&
+         request.replay_decoded_value_record_source_snapshot_admitted &&
+         request.has_replay_launch_context_input && record.valid &&
+         record.has_launch_context_input &&
+         rtcore_decoded_trace_ray_value_record_matches_request(record,
+                                                               request) &&
+         rtcore_decoded_trace_ray_value_record_authority_matches_request(record,
+                                                                         request);
+}
+
 struct rtcore_provider_materialized_traversal_input_snapshot {
   rtcore_provider_materialized_traversal_input_snapshot()
       : valid(false),
@@ -14575,6 +14592,9 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
   request->replay_ray_flags_cull_mask_from_decoded_value_record_source_snapshot =
       rtcore_ray_flags_cull_mask_field_from_decoded_value_record_source_snapshot(
           decoded_value_record, *request);
+  request->replay_launch_context_sbt_from_decoded_value_record_source_snapshot =
+      rtcore_launch_context_sbt_field_from_decoded_value_record_source_snapshot(
+          decoded_value_record, *request);
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-input-replay, "
@@ -14587,6 +14607,7 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "existing_traversal_replay_ray_flags_cull_mask_source=%s, "
          "existing_traversal_replay_ray_flags_cull_mask_from_decoded_value_record_source_snapshot=%u, "
          "existing_traversal_replay_launch_context_input_source=%s, "
+         "existing_traversal_replay_launch_context_sbt_from_decoded_value_record_source_snapshot=%u, "
          "existing_traversal_replay_context_window_source=%s, "
          "existing_traversal_replay_context_window_authority=%s, "
          "existing_traversal_replay_context_window_lifetime_ready=%u, "
@@ -14666,6 +14687,10 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
              ? 1
              : 0,
          request->replay_launch_context_input_source,
+         request
+                 ->replay_launch_context_sbt_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          request->replay_context_window_source,
          request->replay_context_window_authority,
          request->replay_context_window_lifetime_ready ? 1 : 0,
@@ -17803,6 +17828,7 @@ struct rtcore_materialized_traversal_input {
         ray_flags_cull_mask_consumed(false),
         ray_flags_cull_mask_from_decoded_value_record_source_snapshot(false),
         launch_context_sbt_consumed(false),
+        launch_context_sbt_from_decoded_value_record_source_snapshot(false),
         full_abi_fields_consumed(false),
         full_abi_field_guard_passed(false),
         block_reason("unavailable"),
@@ -17861,6 +17887,7 @@ struct rtcore_materialized_traversal_input {
   bool ray_flags_cull_mask_consumed;
   bool ray_flags_cull_mask_from_decoded_value_record_source_snapshot;
   bool launch_context_sbt_consumed;
+  bool launch_context_sbt_from_decoded_value_record_source_snapshot;
   bool full_abi_fields_consumed;
   bool full_abi_field_guard_passed;
   const char *block_reason;
@@ -17928,6 +17955,7 @@ struct rtcore_trace_ray_argument_audit {
         ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         ray_flags_cull_mask_from_decoded_value_record_source_snapshot(false),
         launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        launch_context_sbt_from_decoded_value_record_source_snapshot(false),
         provider_payload_runtime_lifetime_ready(false),
         context_window_owner_seq_matches_lifetime(false),
         token_lifetime_key_ready(false),
@@ -17965,6 +17993,7 @@ struct rtcore_trace_ray_argument_audit {
   rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   bool ray_flags_cull_mask_from_decoded_value_record_source_snapshot;
   rtcore_decoded_input_field_owner_class launch_context_input_owner;
+  bool launch_context_sbt_from_decoded_value_record_source_snapshot;
   bool provider_payload_runtime_lifetime_ready;
   bool context_window_owner_seq_matches_lifetime;
   bool token_lifetime_key_ready;
@@ -18074,6 +18103,9 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
       input.ray_flags_cull_mask_from_decoded_value_record_source_snapshot;
   trace_ray_arguments.launch_context_input_owner =
       input.launch_context_input_owner;
+  trace_ray_arguments
+      .launch_context_sbt_from_decoded_value_record_source_snapshot =
+      input.launch_context_sbt_from_decoded_value_record_source_snapshot;
   trace_ray_arguments.provider_payload_runtime_lifetime_ready =
       input.provider_payload_runtime_lifetime_ready;
   trace_ray_arguments.context_window_owner_seq_matches_lifetime =
@@ -18493,6 +18525,12 @@ rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
       input.actual_abi_source_snapshot_admitted &&
       materialized_from_work_descriptor &&
       request.has_replay_launch_context_input;
+  input.launch_context_sbt_from_decoded_value_record_source_snapshot =
+      input.launch_context_sbt_consumed &&
+      input.decoded_value_record_consumed_by_materialization &&
+      input.decoded_value_record_matches_request &&
+      input.decoded_value_record_authority_matches_request &&
+      request.replay_launch_context_sbt_from_decoded_value_record_source_snapshot;
   input.full_abi_fields_consumed =
       input.root_field_consumed &&
       input.ray_origin_direction_tmin_tmax_consumed &&
@@ -18681,6 +18719,7 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "producer_root_descriptor_traversal_input_ray_flags_cull_mask_consumed=%u, "
          "producer_root_descriptor_traversal_input_ray_flags_cull_mask_from_decoded_value_record_source_snapshot=%u, "
          "producer_root_descriptor_traversal_input_launch_context_sbt_consumed=%u, "
+         "producer_root_descriptor_traversal_input_launch_context_sbt_from_decoded_value_record_source_snapshot=%u, "
          "producer_root_descriptor_traversal_input_full_abi_fields_consumed=%u, "
          "producer_root_descriptor_traversal_input_full_abi_field_guard_passed=%u, "
          "producer_root_descriptor_traversal_input_block_reason=%s, "
@@ -18717,6 +18756,7 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "trace_ray_argument_ray_flags_cull_mask_from_decoded_value_record_source_snapshot=%u, "
          "trace_ray_argument_launch_context_input_owner=%s, "
          "trace_ray_argument_launch_context_input_source=%s, "
+         "trace_ray_argument_launch_context_sbt_from_decoded_value_record_source_snapshot=%u, "
          "trace_ray_argument_context_window_authority=driver_runtime, "
          "trace_ray_argument_context_window_lifetime_ready=%u, "
          "trace_ray_argument_context_window_owner_seq_matches_lifetime=%u, "
@@ -18812,6 +18852,10 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
              ? 1
              : 0,
          materialized_input.launch_context_sbt_consumed ? 1 : 0,
+         materialized_input
+                 .launch_context_sbt_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          materialized_input.full_abi_fields_consumed ? 1 : 0,
          materialized_input.full_abi_field_guard_passed ? 1 : 0,
          materialized_input.block_reason,
@@ -18859,6 +18903,10 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
              trace_ray_arguments.launch_context_input_owner),
          rtcore_decoded_input_field_source_label(
              trace_ray_arguments.launch_context_input_owner),
+         trace_ray_arguments
+                 .launch_context_sbt_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          trace_ray_arguments.provider_payload_runtime_lifetime_ready ? 1 : 0,
          trace_ray_arguments.context_window_owner_seq_matches_lifetime ? 1
                                                                        : 0,
