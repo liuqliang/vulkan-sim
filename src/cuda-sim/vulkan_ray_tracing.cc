@@ -34,7 +34,9 @@
 #include <string>
 #include <fstream>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #define BOOST_FILESYSTEM_VERSION 3
 #define BOOST_FILESYSTEM_NO_DEPRECATED 
 #include <boost/filesystem.hpp>
@@ -47,6 +49,43 @@ static bool rt_progress_logging_enabled() {
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled;
+}
+
+struct rtcore_pixel_trace_filter {
+    bool enabled = false;
+    unsigned x = 0;
+    unsigned y = 0;
+};
+
+static const rtcore_pixel_trace_filter &rtcore_pixel_trace_filter_value()
+{
+    static rtcore_pixel_trace_filter filter = []() {
+        rtcore_pixel_trace_filter parsed;
+        const char *value = getenv("VULKAN_SIM_RTCORE_PIXEL_TRACE");
+        if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0) {
+            return parsed;
+        }
+
+        unsigned x = 0;
+        unsigned y = 0;
+        if (sscanf(value, "%u,%u", &x, &y) == 2) {
+            parsed.enabled = true;
+            parsed.x = x;
+            parsed.y = y;
+        } else {
+            printf("GPGPU-Sim RTCORE_PIXEL_TRACE ignored invalid filter '%s' "
+                   "(expected x,y)\n",
+                   value);
+        }
+        return parsed;
+    }();
+    return filter;
+}
+
+static bool rtcore_pixel_trace_matches(unsigned x, unsigned y)
+{
+    const rtcore_pixel_trace_filter &filter = rtcore_pixel_trace_filter_value();
+    return filter.enabled && filter.x == x && filter.y == y;
 }
 
 #define __CUDA_RUNTIME_API_H__
@@ -133,6 +172,10 @@ bool VulkanRayTracing::_init_ = false;
 warp_intersection_table *** VulkanRayTracing::intersection_table;
 warp_intersection_table *** VulkanRayTracing::anyhit_table;
 IntersectionTableType VulkanRayTracing::intersectionTableType = IntersectionTableType::Baseline;
+
+static unsigned rtcore_launch_id_x_for_thread(ptx_thread_info *thread);
+static unsigned rtcore_launch_id_y_for_thread(ptx_thread_info *thread);
+static bool rtcore_pixel_trace_matches_thread(ptx_thread_info *thread);
 
 float get_norm(float4 v)
 {
@@ -551,6 +594,23 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.rtcore_root_proxy_id = 0;
     traversal_data.rtcore_node_visits = 0;
     traversal_data.rtcore_primitive_tests = 0;
+
+    const bool pixel_trace_enabled = rtcore_pixel_trace_matches_thread(thread);
+    if (pixel_trace_enabled) {
+        printf("GPGPU-Sim RTCORE_PIXEL_TRACE trace-ray-begin "
+               "launch=(%u,%u), thread_uid=%u, tid=(%u,%u,%u), "
+               "ctaid=(%u,%u,%u), origin=(%.9g,%.9g,%.9g), "
+               "direction=(%.9g,%.9g,%.9g), tmin=%.9g, tmax=%.9g, "
+               "rayFlags=%u, cullMask=%u, sbtOffset=%u, sbtStride=%u, "
+               "missIndex=%u\n",
+               rtcore_launch_id_x_for_thread(thread),
+               rtcore_launch_id_y_for_thread(thread), thread->get_uid(),
+               thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+               thread->get_ctaid().x, thread->get_ctaid().y,
+               thread->get_ctaid().z, origin.x, origin.y, origin.z,
+               direction.x, direction.y, direction.z, Tmin, Tmax, rayFlags,
+               cullMask, sbtRecordOffset, sbtRecordStride, missIndex);
+    }
 
     bool hit_procedural = false;
 
@@ -1158,6 +1218,37 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     {
         VSIM_DPRINTF("gpgpusim: Ray [%d] missed.\n", thread->get_uid());
         traversal_data.hit_geometry = false;
+    }
+
+    if (pixel_trace_enabled) {
+        if (traversal_data.hit_geometry) {
+            printf("GPGPU-Sim RTCORE_PIXEL_TRACE trace-ray-result "
+                   "launch=(%u,%u), thread_uid=%u, result=closest-hit, "
+                   "geometry=%u, primitive=%u, instance=%u, t=%.9g, "
+                   "bary=(%.9g,%.9g,%.9g), intersection=(%.9g,%.9g,%.9g), "
+                   "nodes=%u, primitive_tests=%u\n",
+                   rtcore_launch_id_x_for_thread(thread),
+                   rtcore_launch_id_y_for_thread(thread), thread->get_uid(),
+                   traversal_data.closest_hit.geometry_index,
+                   traversal_data.closest_hit.primitive_index,
+                   traversal_data.closest_hit.instance_index,
+                   traversal_data.closest_hit.world_min_thit,
+                   traversal_data.closest_hit.barycentric_coordinates.x,
+                   traversal_data.closest_hit.barycentric_coordinates.y,
+                   traversal_data.closest_hit.barycentric_coordinates.z,
+                   traversal_data.closest_hit.intersection_point.x,
+                   traversal_data.closest_hit.intersection_point.y,
+                   traversal_data.closest_hit.intersection_point.z,
+                   total_nodes_accessed, total_primitive_tests);
+        } else {
+            printf("GPGPU-Sim RTCORE_PIXEL_TRACE trace-ray-result "
+                   "launch=(%u,%u), thread_uid=%u, result=%s, nodes=%u, "
+                   "primitive_tests=%u\n",
+                   rtcore_launch_id_x_for_thread(thread),
+                   rtcore_launch_id_y_for_thread(thread), thread->get_uid(),
+                   hit_procedural ? "procedural-deferred" : "miss",
+                   total_nodes_accessed, total_primitive_tests);
+        }
     }
 
     memory_space *mem = thread->get_global_memory();
@@ -2192,6 +2283,25 @@ static bool rtcore_lvp_should_dump_storage_image(int binding)
 }
 #endif
 
+static unsigned rtcore_launch_id_x_for_thread(ptx_thread_info *thread)
+{
+    const dim3 tid = thread->get_tid();
+    const dim3 ctaid = thread->get_ctaid();
+    return tid.x + ctaid.x * 32;
+}
+
+static unsigned rtcore_launch_id_y_for_thread(ptx_thread_info *thread)
+{
+    return thread->get_ctaid().y;
+}
+
+static bool rtcore_pixel_trace_matches_thread(ptx_thread_info *thread)
+{
+    return thread != NULL &&
+           rtcore_pixel_trace_matches(rtcore_launch_id_x_for_thread(thread),
+                                      rtcore_launch_id_y_for_thread(thread));
+}
+
 void VulkanRayTracing::image_load(struct DESCRIPTOR_STRUCT *desc, uint32_t x, uint32_t y, float &c0, float &c1, float &c2, float &c3)
 {
 #if defined(MESA_USE_INTEL_DRIVER)
@@ -2305,6 +2415,17 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
     uint32_t height = image->vk.extent.height;
     const int storage_image_binding =
         rtcore_lvp_descriptor_binding(VulkanRayTracing::descriptorSet, desc);
+
+    if (rtcore_pixel_trace_matches(gl_LaunchIDEXT_X, gl_LaunchIDEXT_Y)) {
+        printf("GPGPU-Sim RTCORE_PIXEL_TRACE image-store "
+               "launch=(%u,%u), thread_uid=%u, binding=%d, dump_image=%u, "
+               "value=(%.9g,%.9g,%.9g,%.9g)\n",
+               gl_LaunchIDEXT_X, gl_LaunchIDEXT_Y, thread->get_uid(),
+               storage_image_binding,
+               rtcore_lvp_should_dump_storage_image(storage_image_binding) ? 1
+                                                                           : 0,
+               hitValue_X, hitValue_Y, hitValue_Z, hitValue_W);
+    }
 
     if (writeImageBinary && rtcore_lvp_should_dump_storage_image(storage_image_binding)) {
         // TODO: fix the bottom, is NULL
