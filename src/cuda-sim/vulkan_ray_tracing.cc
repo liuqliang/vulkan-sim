@@ -2132,8 +2132,12 @@ struct ImageOutputState {
     std::string path;
     std::string contents;
     std::vector<uint8_t> written_pixels;
+    std::vector<uint8_t> pixel_nonblack;
+    std::vector<unsigned> pixel_max_channels;
     size_t header_offset = 0;
     size_t pixel_count = 0;
+    size_t nonblack_pixels = 0;
+    unsigned max_channel = 0;
     bool flushed = false;
 };
 
@@ -2329,18 +2333,41 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
             state.header_offset = state.contents.size();
             state.contents.resize(state.header_offset + static_cast<size_t>(width) * height * 12, ' ');
             state.written_pixels.assign(static_cast<size_t>(width) * height, 0);
+            state.pixel_nonblack.assign(static_cast<size_t>(width) * height, 0);
+            state.pixel_max_channels.assign(static_cast<size_t>(width) * height, 0);
             outputImageStates[img_name] = std::move(state);
         }
 
         ImageOutputState &state = outputImageStates[img_name];
         const size_t pixel_index = gl_LaunchIDEXT_X + static_cast<size_t>(gl_LaunchIDEXT_Y) * width;
         const size_t value_offset = state.header_offset + pixel_index * 12;
+        const unsigned ppm_r = rtcore_clamp_ppm_channel(hitValue_X);
+        const unsigned ppm_g = rtcore_clamp_ppm_channel(hitValue_Y);
+        const unsigned ppm_b = rtcore_clamp_ppm_channel(hitValue_Z);
+        const bool pixel_is_nonblack = ppm_r != 0 || ppm_g != 0 || ppm_b != 0;
+        unsigned pixel_max_channel = ppm_r;
+        if (ppm_g > pixel_max_channel) {
+            pixel_max_channel = ppm_g;
+        }
+        if (ppm_b > pixel_max_channel) {
+            pixel_max_channel = ppm_b;
+        }
         char pixel_line[13];
-        snprintf(pixel_line, sizeof(pixel_line), "%3u %3u %3u\n",
-                 rtcore_clamp_ppm_channel(hitValue_X),
-                 rtcore_clamp_ppm_channel(hitValue_Y),
-                 rtcore_clamp_ppm_channel(hitValue_Z));
+        snprintf(pixel_line, sizeof(pixel_line), "%3u %3u %3u\n", ppm_r,
+                 ppm_g, ppm_b);
         state.contents.replace(value_offset, 12, pixel_line, 12);
+
+        if (state.written_pixels[pixel_index]) {
+            if (state.pixel_nonblack[pixel_index] && !pixel_is_nonblack) {
+                state.nonblack_pixels--;
+            } else if (!state.pixel_nonblack[pixel_index] && pixel_is_nonblack) {
+                state.nonblack_pixels++;
+            }
+        } else if (pixel_is_nonblack) {
+            state.nonblack_pixels++;
+        }
+        state.pixel_nonblack[pixel_index] = pixel_is_nonblack ? 1 : 0;
+        state.pixel_max_channels[pixel_index] = pixel_max_channel;
 
         if (!state.written_pixels[pixel_index]) {
             state.written_pixels[pixel_index] = 1;
@@ -2369,6 +2396,17 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
 
             fflush(img_bin);
             fclose(img_bin);
+            state.max_channel = 0;
+            for (size_t i = 0; i < state.pixel_max_channels.size(); ++i) {
+                if (state.pixel_max_channels[i] > state.max_channel) {
+                    state.max_channel = state.pixel_max_channels[i];
+                }
+            }
+            printf("gpgpusim: image %s stats nonblack_pixels=%zu / %zu, "
+                   "max_channel=%u, all_black=%u\n",
+                   img_name.c_str(), state.nonblack_pixels,
+                   state.written_pixels.size(), state.max_channel,
+                   state.nonblack_pixels == 0 ? 1 : 0);
             state.flushed = true;
             printf("gpgpusim: finished image %s (%zu pixels)\n", img_name.c_str(), state.pixel_count);
         }
