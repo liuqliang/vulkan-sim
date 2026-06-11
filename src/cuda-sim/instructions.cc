@@ -7772,6 +7772,8 @@ struct rtcore_traversal_completion_provider_backend_input_annotation {
         provider_materialized_traversal_input_snapshot_source("unavailable"),
         provider_materialized_traversal_input_actual_abi_snapshot_admitted(
             false),
+        provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+            false),
         provider_materialized_traversal_input_decoded_value_record_valid(
             false),
         provider_materialized_traversal_input_decoded_value_record_source(
@@ -7797,6 +7799,8 @@ struct rtcore_traversal_completion_provider_backend_input_annotation {
   bool provider_materialized_traversal_input_snapshot_valid;
   const char *provider_materialized_traversal_input_snapshot_source;
   bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  bool
+      provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   bool provider_materialized_traversal_input_decoded_value_record_valid;
   const char *provider_materialized_traversal_input_decoded_value_record_source;
   bool provider_materialized_traversal_input_decoded_value_record_consumed;
@@ -7891,6 +7895,8 @@ struct rtcore_adapter_completion_claim_status {
         provider_materialized_traversal_input_snapshot_source("unavailable"),
         provider_materialized_traversal_input_actual_abi_snapshot_admitted(
             false),
+        provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+            false),
         provider_materialized_traversal_input_decoded_value_record_valid(
             false),
         provider_materialized_traversal_input_decoded_value_record_source(
@@ -7929,6 +7935,8 @@ struct rtcore_adapter_completion_claim_status {
   bool provider_materialized_traversal_input_snapshot_valid;
   const char *provider_materialized_traversal_input_snapshot_source;
   bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  bool
+      provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   bool provider_materialized_traversal_input_decoded_value_record_valid;
   const char *provider_materialized_traversal_input_decoded_value_record_source;
   bool provider_materialized_traversal_input_decoded_value_record_consumed;
@@ -8411,6 +8419,10 @@ static rtcore_adapter_completion_claim_status rtcore_query_adapter_completion_st
   status.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
       backend_input_annotation
           .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  status
+      .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      backend_input_annotation
+          .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   status.provider_materialized_traversal_input_decoded_value_record_valid =
       backend_input_annotation
           .provider_materialized_traversal_input_decoded_value_record_valid;
@@ -12600,6 +12612,8 @@ struct rtcore_traversal_source_request {
         replay_actual_abi_source_snapshot_admitted(false),
         replay_actual_abi_source_snapshot_consumed_by_existing_traversal(false),
         replay_actual_abi_source_snapshot_block_reason("unavailable"),
+        replay_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+            false),
         replay_decoded_value_record_source_snapshot("unavailable"),
         replay_decoded_value_record_source_snapshot_valid(false),
         replay_decoded_value_record_source_snapshot_admitted(false),
@@ -12691,6 +12705,8 @@ struct rtcore_traversal_source_request {
   bool replay_actual_abi_source_snapshot_admitted;
   bool replay_actual_abi_source_snapshot_consumed_by_existing_traversal;
   const char *replay_actual_abi_source_snapshot_block_reason;
+  bool
+      replay_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   const char *replay_decoded_value_record_source_snapshot;
   bool replay_decoded_value_record_source_snapshot_valid;
   bool replay_decoded_value_record_source_snapshot_admitted;
@@ -12813,6 +12829,16 @@ static const char *rtcore_actual_abi_source_snapshot_block_reason_label(
   return actual_abi_source_snapshot_admitted
              ? "none"
              : full_backend_input_abi_block_reason;
+}
+
+static bool
+rtcore_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+    bool actual_abi_source_snapshot_admitted,
+    bool decoded_value_record_source_snapshot_valid,
+    bool decoded_value_record_source_snapshot_admitted) {
+  return actual_abi_source_snapshot_admitted &&
+      decoded_value_record_source_snapshot_valid &&
+      decoded_value_record_source_snapshot_admitted;
 }
 
 static const char *
@@ -14001,6 +14027,8 @@ struct rtcore_provider_payload_backend_input_snapshot {
         provider_materialized_traversal_input_snapshot_source("unavailable"),
         provider_materialized_traversal_input_actual_abi_snapshot_admitted(
             false),
+        provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+            false),
         provider_materialized_traversal_input_decoded_value_record_valid(
             false),
         provider_materialized_traversal_input_decoded_value_record_source(
@@ -14023,6 +14051,8 @@ struct rtcore_provider_payload_backend_input_snapshot {
   bool provider_materialized_traversal_input_snapshot_valid;
   const char *provider_materialized_traversal_input_snapshot_source;
   bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  bool
+      provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   bool provider_materialized_traversal_input_decoded_value_record_valid;
   const char *provider_materialized_traversal_input_decoded_value_record_source;
   bool provider_materialized_traversal_input_decoded_value_record_consumed;
@@ -14094,6 +14124,15 @@ rtcore_make_provider_payload_backend_input_snapshot(
           snapshot.provider_materialized_traversal_input_actual_abi_snapshot_admitted
               ? "none"
               : "root_profile_abi_gap_open");
+  snapshot
+      .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      rtcore_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+          snapshot
+              .provider_materialized_traversal_input_actual_abi_snapshot_admitted,
+          snapshot
+              .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid,
+          snapshot
+              .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted);
   return snapshot;
 }
 
@@ -14171,6 +14210,8 @@ struct rtcore_provider_backend_input_response_annotation {
         provider_materialized_traversal_input_snapshot_source("unavailable"),
         provider_materialized_traversal_input_actual_abi_snapshot_admitted(
             false),
+        provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+            false),
         provider_materialized_traversal_input_decoded_value_record_valid(
             false),
         provider_materialized_traversal_input_decoded_value_record_source(
@@ -14196,6 +14237,8 @@ struct rtcore_provider_backend_input_response_annotation {
   bool provider_materialized_traversal_input_snapshot_valid;
   const char *provider_materialized_traversal_input_snapshot_source;
   bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  bool
+      provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   bool provider_materialized_traversal_input_decoded_value_record_valid;
   const char *provider_materialized_traversal_input_decoded_value_record_source;
   bool provider_materialized_traversal_input_decoded_value_record_consumed;
@@ -14482,6 +14525,12 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
           request->replay_decoded_value_record_source_snapshot_valid,
           request->replay_decoded_value_record_source_snapshot_admitted,
           request->replay_full_backend_input_abi_block_reason);
+  request
+      ->replay_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      rtcore_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+          request->replay_actual_abi_source_snapshot_admitted,
+          request->replay_decoded_value_record_source_snapshot_valid,
+          request->replay_decoded_value_record_source_snapshot_admitted);
 
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-existing-traversal-input-replay, "
@@ -14515,6 +14564,7 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          "existing_traversal_replay_backend_input_source_snapshot=%s, "
          "existing_traversal_replay_actual_abi_source_snapshot_admitted=%u, "
          "existing_traversal_replay_actual_abi_source_snapshot_block_reason=%s, "
+         "existing_traversal_replay_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot=%u, "
          "existing_traversal_replay_decoded_value_record_source_snapshot=%s, "
          "existing_traversal_replay_decoded_value_record_source_snapshot_valid=%u, "
          "existing_traversal_replay_decoded_value_record_source_snapshot_admitted=%u, "
@@ -14584,6 +14634,10 @@ rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
          request->replay_backend_input_source_snapshot,
          request->replay_actual_abi_source_snapshot_admitted ? 1 : 0,
          request->replay_actual_abi_source_snapshot_block_reason,
+         request
+                 ->replay_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          request->replay_decoded_value_record_source_snapshot,
          request->replay_decoded_value_record_source_snapshot_valid ? 1 : 0,
          request->replay_decoded_value_record_source_snapshot_admitted ? 1
@@ -15036,6 +15090,8 @@ struct rtcore_traversal_source_provider_backend_input_annotation {
         provider_materialized_traversal_input_snapshot_source("unavailable"),
         provider_materialized_traversal_input_actual_abi_snapshot_admitted(
             false),
+        provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+            false),
         provider_materialized_traversal_input_decoded_value_record_valid(
             false),
         provider_materialized_traversal_input_decoded_value_record_source(
@@ -15061,6 +15117,8 @@ struct rtcore_traversal_source_provider_backend_input_annotation {
   bool provider_materialized_traversal_input_snapshot_valid;
   const char *provider_materialized_traversal_input_snapshot_source;
   bool provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  bool
+      provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   bool provider_materialized_traversal_input_decoded_value_record_valid;
   const char *provider_materialized_traversal_input_decoded_value_record_source;
   bool provider_materialized_traversal_input_decoded_value_record_consumed;
@@ -15475,6 +15533,8 @@ struct rtcore_provider_backend_input_consumption_route_record {
             "unavailable"),
         provider_backend_input_full_backend_input_abi_ready_gate(false),
         provider_backend_input_actual_abi_evidence_for_proxy_fields(false),
+        provider_backend_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+            false),
         provider_backend_input_full_backend_input_abi_ready_admitted(false),
         provider_backend_input_full_backend_input_abi_ready_block_reason(
             "unavailable"),
@@ -15613,6 +15673,8 @@ struct rtcore_provider_backend_input_consumption_route_record {
   const char *producer_root_descriptor_traversal_authority_block_reason;
   bool provider_backend_input_full_backend_input_abi_ready_gate;
   bool provider_backend_input_actual_abi_evidence_for_proxy_fields;
+  bool
+      provider_backend_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   bool provider_backend_input_full_backend_input_abi_ready_admitted;
   const char *provider_backend_input_full_backend_input_abi_ready_block_reason;
   bool provider_backend_input_consumption_route_passed;
@@ -16103,6 +16165,10 @@ rtcore_make_provider_backend_input_consumption_route_record(
            .provider_backend_input_backend_root_descriptor_runtime_proxy_compatibility_path &&
       !record
            .provider_backend_input_selected_root_descriptor_payload_route_consistency_fail_closed;
+  record
+      .provider_backend_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      response.provider_backend_input_response_annotation
+          .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   record.provider_backend_input_full_backend_input_abi_ready_admitted =
       record.provider_backend_input_consumption_route_passed &&
       record.provider_backend_input_actual_abi_evidence_for_proxy_fields;
@@ -16236,6 +16302,7 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
          "provider_backend_input_full_backend_input_abi_ready_gate=%u, "
          "provider_backend_input_actual_abi_evidence_for_proxy_fields=%u, "
          "actual_abi_evidence_for_proxy_fields=%u, "
+         "provider_backend_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot=%u, "
          "provider_backend_input_full_backend_input_abi_ready_admitted=%u, "
          "provider_backend_input_full_backend_input_abi_ready_block_reason=%s, "
          "existing_traversal_input_replay_requested=%u, "
@@ -16597,6 +16664,10 @@ static void rtcore_log_provider_backend_input_consumption_route_record(
                                                                             : 0,
          record.provider_backend_input_actual_abi_evidence_for_proxy_fields ? 1
                                                                             : 0,
+         record
+                 .provider_backend_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          record.provider_backend_input_full_backend_input_abi_ready_admitted
              ? 1
              : 0,
@@ -16760,6 +16831,10 @@ rtcore_annotate_provider_response_with_backend_input_snapshot_result(
   annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
       custom_result.provider_payload_backend_input_snapshot
           .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  annotation
+      .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      custom_result.provider_payload_backend_input_snapshot
+          .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   annotation.provider_materialized_traversal_input_decoded_value_record_valid =
       custom_result.provider_payload_backend_input_snapshot
           .provider_materialized_traversal_input_decoded_value_record_valid;
@@ -16809,6 +16884,7 @@ rtcore_annotate_provider_response_with_backend_input_snapshot_result(
          "provider_materialized_traversal_input_snapshot_valid=%u, "
          "provider_materialized_traversal_input_snapshot_source=%s, "
          "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+         "provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot=%u, "
          "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source=%s, "
          "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
@@ -16830,6 +16906,10 @@ rtcore_annotate_provider_response_with_backend_input_snapshot_result(
                                                                          : 0,
          annotation.provider_materialized_traversal_input_snapshot_source,
          annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0,
+         annotation
+                 .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot
              ? 1
              : 0,
          annotation.provider_materialized_traversal_input_decoded_value_record_valid
@@ -17660,6 +17740,8 @@ struct rtcore_materialized_traversal_input {
       : valid(false),
         source_snapshot("unavailable"),
         actual_abi_source_snapshot_admitted(false),
+        actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+            false),
         root_field_consumed(false),
         ray_origin_direction_tmin_tmax_consumed(false),
         ray_flags_cull_mask_consumed(false),
@@ -17715,6 +17797,7 @@ struct rtcore_materialized_traversal_input {
   bool valid;
   const char *source_snapshot;
   bool actual_abi_source_snapshot_admitted;
+  bool actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   bool root_field_consumed;
   bool ray_origin_direction_tmin_tmax_consumed;
   bool ray_flags_cull_mask_consumed;
@@ -18301,6 +18384,9 @@ rtcore_make_materialized_traversal_input_from_producer_root_descriptor_request(
       request.replay_decoded_value_record_source_snapshot_valid;
   input.decoded_value_record_source_snapshot_admitted =
       request.replay_decoded_value_record_source_snapshot_admitted;
+  input.actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      request
+          .replay_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   const bool materialized_from_work_descriptor =
       descriptor.has_provider_materialized_traversal_input_snapshot &&
       rtcore_materialized_traversal_input_from_work_descriptor_snapshot(
@@ -18504,6 +18590,7 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "producer_root_descriptor_traversal_input_decoded_value_record_source_snapshot_consumed=%u, "
          "producer_root_descriptor_traversal_input_decoded_value_record_source_snapshot_block_reason=%s, "
          "producer_root_descriptor_traversal_input_actual_abi_source_snapshot_admitted=%u, "
+         "producer_root_descriptor_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot=%u, "
          "producer_root_descriptor_traversal_input_actual_abi_source_snapshot_consumed=%u, "
          "producer_root_descriptor_traversal_input_root_field_consumed=%u, "
          "producer_root_descriptor_traversal_input_ray_origin_direction_tmin_tmax_consumed=%u, "
@@ -18621,6 +18708,10 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
              : 0,
          materialized_input.decoded_value_record_source_snapshot_block_reason,
          materialized_input.actual_abi_source_snapshot_admitted ? 1 : 0,
+         materialized_input
+                 .actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          actual_abi_source_snapshot_consumed ? 1 : 0,
          materialized_input.root_field_consumed ? 1 : 0,
          materialized_input.ray_origin_direction_tmin_tmax_consumed ? 1 : 0,
@@ -19406,6 +19497,10 @@ rtcore_copy_provider_backend_input_response_annotation_to_source_snapshot(
   annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
       response_annotation
           .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  annotation
+      .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      response_annotation
+          .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   annotation.provider_materialized_traversal_input_decoded_value_record_valid =
       response_annotation
           .provider_materialized_traversal_input_decoded_value_record_valid;
@@ -19447,6 +19542,7 @@ rtcore_copy_provider_backend_input_response_annotation_to_source_snapshot(
          "provider_materialized_traversal_input_snapshot_valid=%u, "
          "provider_materialized_traversal_input_snapshot_source=%s, "
          "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+         "provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot=%u, "
          "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source=%s, "
          "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
@@ -19466,6 +19562,10 @@ rtcore_copy_provider_backend_input_response_annotation_to_source_snapshot(
                                                                          : 0,
          annotation.provider_materialized_traversal_input_snapshot_source,
          annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0,
+         annotation
+                 .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot
              ? 1
              : 0,
          annotation.provider_materialized_traversal_input_decoded_value_record_valid
@@ -28585,6 +28685,23 @@ static void rtcore_log_provider_payload_consumed_input_view(
       descriptor.has_provider_materialized_traversal_input_snapshot &&
       descriptor.provider_materialized_traversal_input_snapshot.valid &&
       proxy_fields_retired_by_actual_producer;
+  const rtcore_decoded_trace_ray_value_record &decoded_value_record =
+      descriptor.provider_materialized_traversal_input_snapshot
+          .decoded_trace_ray_value_record;
+  const bool provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
+      descriptor.has_provider_materialized_traversal_input_snapshot &&
+      descriptor.provider_materialized_traversal_input_snapshot.valid &&
+      decoded_value_record.valid;
+  const bool provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
+      provider_materialized_traversal_input_actual_abi_snapshot_admitted &&
+      provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid &&
+      strcmp(decoded_value_record.source,
+             "decoded_context_window_abi_value_record") == 0;
+  const bool provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      rtcore_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot(
+          provider_materialized_traversal_input_actual_abi_snapshot_admitted,
+          provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid,
+          provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted);
   printf("GPGPU-Sim PTX: RT_SUBMIT provider-payload-consumed-input, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, provider-payload-consumed-input-view=1, "
@@ -28597,6 +28714,7 @@ static void rtcore_log_provider_payload_consumed_input_view(
          "provider_materialized_traversal_input_snapshot_valid=%u, "
          "provider_materialized_traversal_input_snapshot_source=%s, "
          "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+         "provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot=%u, "
          "rtcore-provider-payload-launch-context-input=1, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "ray_origin_direction_tmin_tmax_owner=%s, "
@@ -28638,6 +28756,9 @@ static void rtcore_log_provider_payload_consumed_input_view(
          descriptor.provider_materialized_traversal_input_snapshot.source,
          provider_materialized_traversal_input_actual_abi_snapshot_admitted ? 1
                                                                            : 0,
+         provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot
+             ? 1
+             : 0,
          view.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          rtcore_decoded_input_field_owner_class_name(
              view.ray_origin_direction_tmin_tmax_owner),
@@ -28831,6 +28952,10 @@ rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
   annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
       source_annotation
           .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  annotation
+      .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      source_annotation
+          .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   annotation.provider_materialized_traversal_input_decoded_value_record_valid =
       source_annotation
           .provider_materialized_traversal_input_decoded_value_record_valid;
@@ -28874,6 +28999,7 @@ rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
          "provider_materialized_traversal_input_snapshot_valid=%u, "
          "provider_materialized_traversal_input_snapshot_source=%s, "
          "provider_materialized_traversal_input_actual_abi_snapshot_admitted=%u, "
+         "provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot=%u, "
          "provider_materialized_traversal_input_decoded_value_record_valid=%u, "
          "provider_materialized_traversal_input_decoded_value_record_source=%s, "
          "provider_materialized_traversal_input_decoded_value_record_consumed=%u, "
@@ -28894,6 +29020,10 @@ rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
                                                                          : 0,
          annotation.provider_materialized_traversal_input_snapshot_source,
          annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted
+             ? 1
+             : 0,
+         annotation
+                 .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot
              ? 1
              : 0,
          annotation.provider_materialized_traversal_input_decoded_value_record_valid
@@ -28967,6 +29097,10 @@ rtcore_copy_completion_backend_input_annotation_to_pending(
   annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
       event_annotation
           .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  annotation
+      .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      event_annotation
+          .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   annotation.provider_materialized_traversal_input_decoded_value_record_valid =
       event_annotation
           .provider_materialized_traversal_input_decoded_value_record_valid;
@@ -29054,6 +29188,10 @@ rtcore_copy_completion_backend_input_annotation_to_publication(
   annotation.provider_materialized_traversal_input_actual_abi_snapshot_admitted =
       event_annotation
           .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
+  annotation
+      .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot =
+      event_annotation
+          .provider_materialized_traversal_input_actual_abi_source_snapshot_composed_from_decoded_value_record_source_snapshot;
   annotation.provider_materialized_traversal_input_decoded_value_record_valid =
       event_annotation
           .provider_materialized_traversal_input_decoded_value_record_valid;
