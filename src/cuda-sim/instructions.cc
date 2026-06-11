@@ -17991,6 +17991,8 @@ struct rtcore_trace_ray_argument_audit {
         all_field_bundles_from_decoded_value_record_source_snapshot(false),
         aggregate_authority_pre_call_guard_required(false),
         aggregate_authority_pre_call_guard_ready(false),
+        root_descriptor_authority_pre_call_guard_required(false),
+        root_descriptor_authority_pre_call_guard_ready(false),
         provider_payload_runtime_lifetime_ready(false),
         context_window_owner_seq_matches_lifetime(false),
         token_lifetime_key_ready(false),
@@ -18032,6 +18034,8 @@ struct rtcore_trace_ray_argument_audit {
   bool all_field_bundles_from_decoded_value_record_source_snapshot;
   bool aggregate_authority_pre_call_guard_required;
   bool aggregate_authority_pre_call_guard_ready;
+  bool root_descriptor_authority_pre_call_guard_required;
+  bool root_descriptor_authority_pre_call_guard_ready;
   bool provider_payload_runtime_lifetime_ready;
   bool context_window_owner_seq_matches_lifetime;
   bool token_lifetime_key_ready;
@@ -18056,6 +18060,7 @@ enum rtcore_trace_ray_argument_failpoint_kind_t {
   RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_NONE = 0,
   RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_DECODED_VALUE_RECORD_ARGUMENT_DRIFT,
   RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_AGGREGATE_FIELD_AUTHORITY_MISSING,
+  RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_ROOT_DESCRIPTOR_AUTHORITY_MISSING,
   RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_UNSUPPORTED
 };
 
@@ -18077,6 +18082,10 @@ rtcore_get_trace_ray_argument_failpoint_kind() {
       rtcore_path_mode_is(value, "aggregate-authority-missing")) {
     return RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_AGGREGATE_FIELD_AUTHORITY_MISSING;
   }
+  if (rtcore_path_mode_is(value, "root_descriptor_authority_missing") ||
+      rtcore_path_mode_is(value, "root-descriptor-authority-missing")) {
+    return RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_ROOT_DESCRIPTOR_AUTHORITY_MISSING;
+  }
   return RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_UNSUPPORTED;
 }
 
@@ -18087,6 +18096,8 @@ static const char *rtcore_trace_ray_argument_failpoint_kind_name(
       return "decoded_value_record_argument_drift";
     case RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_AGGREGATE_FIELD_AUTHORITY_MISSING:
       return "aggregate_field_authority_missing";
+    case RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_ROOT_DESCRIPTOR_AUTHORITY_MISSING:
+      return "root_descriptor_authority_missing";
     case RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_UNSUPPORTED:
       return "unsupported";
     case RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_NONE:
@@ -18125,6 +18136,29 @@ static void rtcore_apply_trace_ray_argument_failpoint(
              rtcore_trace_ray_argument_failpoint_kind_name(kind),
              trace_ray_arguments
                      ->all_field_bundles_from_decoded_value_record_source_snapshot
+                 ? 1
+                 : 0);
+      fflush(stdout);
+      return;
+    case RTCORE_TRACE_RAY_ARGUMENT_FAILPOINT_ROOT_DESCRIPTOR_AUTHORITY_MISSING:
+      trace_ray_arguments
+          ->decoded_value_record_selected_root_descriptor_authority_matches_request =
+          false;
+      trace_ray_arguments
+          ->decoded_value_record_root_descriptor_fields_match_request = false;
+      printf("GPGPU-Sim PTX: RT_SUBMIT trace-ray-argument-failpoint, "
+             "trace_ray_argument_failpoint_applied=1, "
+             "trace_ray_argument_failpoint_mode=%s, "
+             "trace_ray_argument_failpoint_mutated_field=root_descriptor_authority, "
+             "trace_ray_argument_decoded_value_record_selected_root_descriptor_authority_match=%u, "
+             "trace_ray_argument_decoded_value_record_root_descriptor_field_bundle_match=%u\n",
+             rtcore_trace_ray_argument_failpoint_kind_name(kind),
+             trace_ray_arguments
+                     ->decoded_value_record_selected_root_descriptor_authority_matches_request
+                 ? 1
+                 : 0,
+             trace_ray_arguments
+                     ->decoded_value_record_root_descriptor_fields_match_request
                  ? 1
                  : 0);
       fflush(stdout);
@@ -18257,6 +18291,14 @@ rtcore_make_trace_ray_argument_audit_from_materialized_input(
       !trace_ray_arguments.aggregate_authority_pre_call_guard_required ||
       trace_ray_arguments
           .all_field_bundles_from_decoded_value_record_source_snapshot;
+  trace_ray_arguments.root_descriptor_authority_pre_call_guard_required =
+      trace_ray_arguments.valid;
+  trace_ray_arguments.root_descriptor_authority_pre_call_guard_ready =
+      !trace_ray_arguments.root_descriptor_authority_pre_call_guard_required ||
+      (trace_ray_arguments
+           .decoded_value_record_selected_root_descriptor_authority_matches_request &&
+       trace_ray_arguments
+           .decoded_value_record_root_descriptor_fields_match_request);
   return trace_ray_arguments;
 }
 
@@ -18274,6 +18316,9 @@ static bool rtcore_trace_ray_arguments_ready_for_backend_call(
          (!trace_ray_arguments
                .aggregate_authority_pre_call_guard_required ||
           trace_ray_arguments.aggregate_authority_pre_call_guard_ready) &&
+         (!trace_ray_arguments
+               .root_descriptor_authority_pre_call_guard_required ||
+          trace_ray_arguments.root_descriptor_authority_pre_call_guard_ready) &&
          trace_ray_arguments.values_match_decoded_value_record &&
          trace_ray_arguments.matches_typed_object;
 }
@@ -18693,10 +18738,15 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
     const bool aggregate_authority_pre_call_guard_failed =
         trace_ray_arguments.aggregate_authority_pre_call_guard_required &&
         !trace_ray_arguments.aggregate_authority_pre_call_guard_ready;
+    const bool root_descriptor_authority_pre_call_guard_failed =
+        trace_ray_arguments.root_descriptor_authority_pre_call_guard_required &&
+        !trace_ray_arguments.root_descriptor_authority_pre_call_guard_ready;
     const char *trace_ray_argument_pre_call_guard_failure_reason =
         aggregate_authority_pre_call_guard_failed
             ? "typed_materialized_trace_ray_argument_aggregate_authority_pre_call_guard_failed"
-            : "typed_materialized_trace_ray_argument_pre_call_guard_failed";
+            : (root_descriptor_authority_pre_call_guard_failed
+                   ? "typed_materialized_trace_ray_argument_root_descriptor_authority_pre_call_guard_failed"
+                   : "typed_materialized_trace_ray_argument_pre_call_guard_failed");
     printf("GPGPU-Sim PTX: RT_SUBMIT "
            "trace-ray-argument-pre-call-guard-rejected=1, "
            "trace_ray_argument_pre_call_guard_rejected=1, "
@@ -18704,6 +18754,10 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
            "trace_ray_argument_aggregate_authority_pre_call_guard_rejected=%u, "
            "trace_ray_argument_aggregate_authority_pre_call_guard_required=%u, "
            "trace_ray_argument_aggregate_authority_pre_call_guard_ready=%u, "
+           "trace_ray_argument_root_descriptor_authority_pre_call_guard=1, "
+           "trace_ray_argument_root_descriptor_authority_pre_call_guard_rejected=%u, "
+           "trace_ray_argument_root_descriptor_authority_pre_call_guard_required=%u, "
+           "trace_ray_argument_root_descriptor_authority_pre_call_guard_ready=%u, "
            "trace_ray_argument_valid=%u, "
            "trace_ray_arguments_match_typed_object=%u, "
            "trace_ray_argument_all_field_bundles_from_decoded_value_record_source_snapshot=%u, "
@@ -18722,6 +18776,14 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
                                                                           : 0,
            trace_ray_arguments.aggregate_authority_pre_call_guard_ready ? 1
                                                                         : 0,
+           root_descriptor_authority_pre_call_guard_failed ? 1 : 0,
+           trace_ray_arguments
+                   .root_descriptor_authority_pre_call_guard_required
+               ? 1
+               : 0,
+           trace_ray_arguments.root_descriptor_authority_pre_call_guard_ready
+               ? 1
+               : 0,
            trace_ray_arguments.valid ? 1 : 0,
            trace_ray_arguments.matches_typed_object ? 1 : 0,
            trace_ray_arguments
@@ -18870,6 +18932,9 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          "trace_ray_argument_aggregate_authority_pre_call_guard=1, "
          "trace_ray_argument_aggregate_authority_pre_call_guard_required=%u, "
          "trace_ray_argument_aggregate_authority_pre_call_guard_ready=%u, "
+         "trace_ray_argument_root_descriptor_authority_pre_call_guard=1, "
+         "trace_ray_argument_root_descriptor_authority_pre_call_guard_required=%u, "
+         "trace_ray_argument_root_descriptor_authority_pre_call_guard_ready=%u, "
          "trace_ray_argument_context_window_authority=driver_runtime, "
          "trace_ray_argument_context_window_lifetime_ready=%u, "
          "trace_ray_argument_context_window_owner_seq_matches_lifetime=%u, "
@@ -19031,6 +19096,11 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
          trace_ray_arguments.aggregate_authority_pre_call_guard_required ? 1
                                                                         : 0,
          trace_ray_arguments.aggregate_authority_pre_call_guard_ready ? 1 : 0,
+         trace_ray_arguments.root_descriptor_authority_pre_call_guard_required
+             ? 1
+             : 0,
+         trace_ray_arguments.root_descriptor_authority_pre_call_guard_ready ? 1
+                                                                           : 0,
          trace_ray_arguments.provider_payload_runtime_lifetime_ready ? 1 : 0,
          trace_ray_arguments.context_window_owner_seq_matches_lifetime ? 1
                                                                        : 0,
