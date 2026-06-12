@@ -1877,6 +1877,13 @@ void VulkanRayTracing::callAnyHitShader(const ptx_instruction *pI, ptx_thread_in
     int32_t current_shader_type = 2;
     mem->write(&(traversal_data->current_shader_type), sizeof(traversal_data->current_shader_type), &current_shader_type, thread, pI);
 
+    assert(shader_counter < thread->RT_thread_data->all_hit_data.size());
+    Hit_data anyhit_hit_attributes;
+    mem->read(thread->RT_thread_data->all_hit_data[shader_counter],
+              sizeof(anyhit_hit_attributes), &anyhit_hit_attributes);
+    thread->RT_thread_data->set_hitAttribute(
+        anyhit_hit_attributes.barycentric_coordinates, pI, thread);
+
     warp_intersection_table* table = VulkanRayTracing::anyhit_table[thread->get_ctaid().x][thread->get_ctaid().y];
     uint32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
 
