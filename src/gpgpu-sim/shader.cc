@@ -5759,11 +5759,33 @@ rt_unit::rtcore_make_hardware_model_boundary_snapshot(
   snapshot.completion_component_source = "rt_unit_completion_timing_snapshot";
   snapshot.backpressure_component_source =
       "rt_unit_completion_queue_state_snapshot";
+  snapshot.completion_queue_state_source =
+      "rt_unit_completion_queue_state_snapshot";
   snapshot.custom_abi_input_authority_admitted =
       event.provider_materialized_traversal_input_actual_abi_snapshot_admitted &&
       event.provider_backend_input_authority_pre_call_guard_ready;
   snapshot.uses_reused_traversal_backend = true;
   snapshot.claims_new_hardware_bvh_engine = false;
+  snapshot.completion_queue_capacity = rtcore_completion_queue_capacity();
+  snapshot.completion_queue_inflight = rtcore_completion_queue_inflight();
+  snapshot.completion_queue_reserved =
+      rtcore_completion_queue_reservation_count();
+  const unsigned long long completion_queue_live_plus_reserved =
+      (unsigned long long)snapshot.completion_queue_inflight +
+      snapshot.completion_queue_reserved;
+  snapshot.completion_queue_live_plus_reserved =
+      completion_queue_live_plus_reserved > UINT_MAX
+          ? UINT_MAX
+          : (unsigned)completion_queue_live_plus_reserved;
+  snapshot.completion_queue_capacity_enabled =
+      snapshot.completion_queue_capacity != 0;
+  snapshot.completion_queue_capacity_available =
+      !snapshot.completion_queue_capacity_enabled ||
+      snapshot.completion_queue_live_plus_reserved <
+          snapshot.completion_queue_capacity;
+  snapshot.completion_queue_backpressure_observed =
+      snapshot.completion_queue_capacity_enabled &&
+      !snapshot.completion_queue_capacity_available;
   snapshot.adapter_max_node_visits = timing_snapshot.adapter_max_node_visits;
   snapshot.adapter_max_primitive_tests =
       timing_snapshot.adapter_max_primitive_tests;
@@ -5781,23 +5803,37 @@ void rt_unit::rtcore_log_hardware_model_boundary_snapshot(
          "intersection_component_source=%s, "
          "memory_cache_component_source=%s, stack_component_source=%s, "
          "completion_component_source=%s, backpressure_component_source=%s, "
+         "completion_queue_state_source=%s, "
          "custom_abi_input_authority_admitted=%u, "
          "uses_reused_traversal_backend=%u, "
          "claims_new_hardware_bvh_engine=%u, "
+         "completion_queue_capacity_enabled=%u, "
+         "completion_queue_capacity_available=%u, "
+         "completion_queue_backpressure_observed=%u, "
          "adapter_max_node_visits=%u, adapter_max_primitive_tests=%u, "
          "traversal_stack_entries_per_warp_demand=%u, "
+         "completion_queue_capacity=%u, completion_queue_inflight=%u, "
+         "completion_queue_reserved=%u, "
+         "completion_queue_live_plus_reserved=%u, "
          "completion_latency=%u\n",
          snapshot.snapshot_source, snapshot.traversal_component_source,
          snapshot.intersection_component_source,
          snapshot.memory_cache_component_source, snapshot.stack_component_source,
          snapshot.completion_component_source,
          snapshot.backpressure_component_source,
+         snapshot.completion_queue_state_source,
          snapshot.custom_abi_input_authority_admitted ? 1 : 0,
          snapshot.uses_reused_traversal_backend ? 1 : 0,
          snapshot.claims_new_hardware_bvh_engine ? 1 : 0,
+         snapshot.completion_queue_capacity_enabled ? 1 : 0,
+         snapshot.completion_queue_capacity_available ? 1 : 0,
+         snapshot.completion_queue_backpressure_observed ? 1 : 0,
          snapshot.adapter_max_node_visits,
          snapshot.adapter_max_primitive_tests,
          snapshot.traversal_stack_entries_per_warp_demand,
+         snapshot.completion_queue_capacity, snapshot.completion_queue_inflight,
+         snapshot.completion_queue_reserved,
+         snapshot.completion_queue_live_plus_reserved,
          snapshot.completion_latency);
   fflush(stdout);
 }
