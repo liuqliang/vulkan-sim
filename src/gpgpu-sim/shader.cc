@@ -5695,6 +5695,9 @@ rt_unit::rtcore_make_completion_timing_snapshot(
   snapshot.enqueue_cycle = event.enqueue_cycle;
   snapshot.ready_cycle =
       snapshot.enqueue_cycle + snapshot.completion_latency;
+  rtcore_hardware_model_boundary_snapshot hardware_snapshot =
+      rtcore_make_hardware_model_boundary_snapshot(event, snapshot);
+  rtcore_log_hardware_model_boundary_snapshot(hardware_snapshot);
 
   printf("GPGPU-Sim PTX: RT-unit synthetic-completion-latency, "
          "warp_uid=%u, warp_id=%u, mode=%s, fixed_latency=%u, "
@@ -5738,6 +5741,65 @@ rt_unit::rtcore_make_completion_timing_snapshot(
   }
   fflush(stdout);
   return snapshot;
+}
+
+rt_unit::rtcore_hardware_model_boundary_snapshot
+rt_unit::rtcore_make_hardware_model_boundary_snapshot(
+    const rtcore_synthetic_completion_event &event,
+    const rtcore_completion_timing_snapshot &timing_snapshot) const {
+  rtcore_hardware_model_boundary_snapshot snapshot;
+  snapshot.snapshot_source = "rtunit_completion_timing_resource_boundary";
+  snapshot.traversal_component_source =
+      "existing_vulkan_sim_traversal_intersection_backend";
+  snapshot.intersection_component_source =
+      "existing_vulkan_sim_traversal_intersection_backend";
+  snapshot.memory_cache_component_source =
+      "existing_vulkan_sim_memory_transaction_records";
+  snapshot.stack_component_source = "rt_unit_completion_timing_snapshot";
+  snapshot.completion_component_source = "rt_unit_completion_timing_snapshot";
+  snapshot.backpressure_component_source =
+      "rt_unit_completion_queue_state_snapshot";
+  snapshot.custom_abi_input_authority_admitted =
+      event.provider_materialized_traversal_input_actual_abi_snapshot_admitted &&
+      event.provider_backend_input_authority_pre_call_guard_ready;
+  snapshot.uses_reused_traversal_backend = true;
+  snapshot.claims_new_hardware_bvh_engine = false;
+  snapshot.adapter_max_node_visits = timing_snapshot.adapter_max_node_visits;
+  snapshot.adapter_max_primitive_tests =
+      timing_snapshot.adapter_max_primitive_tests;
+  snapshot.traversal_stack_entries_per_warp_demand =
+      timing_snapshot.traversal_stack_entries_per_warp_demand;
+  snapshot.completion_latency = timing_snapshot.completion_latency;
+  return snapshot;
+}
+
+void rt_unit::rtcore_log_hardware_model_boundary_snapshot(
+    const rtcore_hardware_model_boundary_snapshot &snapshot) const {
+  printf("GPGPU-Sim PTX: RT-unit hardware-model-boundary-snapshot, "
+         "hardware_model_boundary_snapshot=1, snapshot_source=%s, "
+         "traversal_component_source=%s, "
+         "intersection_component_source=%s, "
+         "memory_cache_component_source=%s, stack_component_source=%s, "
+         "completion_component_source=%s, backpressure_component_source=%s, "
+         "custom_abi_input_authority_admitted=%u, "
+         "uses_reused_traversal_backend=%u, "
+         "claims_new_hardware_bvh_engine=%u, "
+         "adapter_max_node_visits=%u, adapter_max_primitive_tests=%u, "
+         "traversal_stack_entries_per_warp_demand=%u, "
+         "completion_latency=%u\n",
+         snapshot.snapshot_source, snapshot.traversal_component_source,
+         snapshot.intersection_component_source,
+         snapshot.memory_cache_component_source, snapshot.stack_component_source,
+         snapshot.completion_component_source,
+         snapshot.backpressure_component_source,
+         snapshot.custom_abi_input_authority_admitted ? 1 : 0,
+         snapshot.uses_reused_traversal_backend ? 1 : 0,
+         snapshot.claims_new_hardware_bvh_engine ? 1 : 0,
+         snapshot.adapter_max_node_visits,
+         snapshot.adapter_max_primitive_tests,
+         snapshot.traversal_stack_entries_per_warp_demand,
+         snapshot.completion_latency);
+  fflush(stdout);
 }
 
 void rt_unit::rtcore_apply_completion_timing_snapshot(

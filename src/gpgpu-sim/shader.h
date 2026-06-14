@@ -1934,6 +1934,38 @@ class rt_unit : public pipelined_simd_unit {
         unsigned long long enqueue_cycle;
         unsigned long long ready_cycle;
       };
+      struct rtcore_hardware_model_boundary_snapshot {
+        rtcore_hardware_model_boundary_snapshot()
+            : snapshot_source("unavailable"),
+              traversal_component_source("unavailable"),
+              intersection_component_source("unavailable"),
+              memory_cache_component_source("unavailable"),
+              stack_component_source("unavailable"),
+              completion_component_source("unavailable"),
+              backpressure_component_source("unavailable"),
+              custom_abi_input_authority_admitted(false),
+              uses_reused_traversal_backend(true),
+              claims_new_hardware_bvh_engine(false),
+              adapter_max_node_visits(0),
+              adapter_max_primitive_tests(0),
+              traversal_stack_entries_per_warp_demand(0),
+              completion_latency(0) {}
+
+        const char *snapshot_source;
+        const char *traversal_component_source;
+        const char *intersection_component_source;
+        const char *memory_cache_component_source;
+        const char *stack_component_source;
+        const char *completion_component_source;
+        const char *backpressure_component_source;
+        bool custom_abi_input_authority_admitted;
+        bool uses_reused_traversal_backend;
+        bool claims_new_hardware_bvh_engine;
+        unsigned adapter_max_node_visits;
+        unsigned adapter_max_primitive_tests;
+        unsigned traversal_stack_entries_per_warp_demand;
+        unsigned completion_latency;
+      };
       unsigned rtcore_synthetic_completion_latency() const;
       unsigned rtcore_completion_queue_capacity() const;
       unsigned rtcore_completion_queue_inflight() const;
@@ -1968,6 +2000,12 @@ class rt_unit : public pipelined_simd_unit {
       void rtcore_apply_completion_timing_snapshot(
           rtcore_synthetic_completion_event *event,
           const rtcore_completion_timing_snapshot &snapshot) const;
+      rtcore_hardware_model_boundary_snapshot
+      rtcore_make_hardware_model_boundary_snapshot(
+          const rtcore_synthetic_completion_event &event,
+          const rtcore_completion_timing_snapshot &timing_snapshot) const;
+      void rtcore_log_hardware_model_boundary_snapshot(
+          const rtcore_hardware_model_boundary_snapshot &snapshot) const;
       rtcore_synthetic_release_snapshot rtcore_make_synthetic_release_snapshot(
           const warp_inst_t &inst,
           const rtcore_synthetic_completion_event &event,
