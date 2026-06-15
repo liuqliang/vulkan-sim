@@ -379,6 +379,13 @@ static rtcore_replay_issue_budget rtcore_replay_issue_budget_config()
     return budget;
 }
 
+static unsigned rtcore_replay_memory_wake_budget_config()
+{
+    static unsigned budget = rtcore_replay_issue_budget_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_WAKE_BUDGET", 1);
+    return budget;
+}
+
 static bool rtcore_replay_issue_budget_available(
     const rtcore_replay_issue_budget &budget)
 {
@@ -1044,6 +1051,59 @@ static bool rtcore_service_replay_ready_requests_with_budget(
         progressed = true;
     }
     return progressed;
+}
+
+static bool rtcore_dequeue_waiting_memory_request(unsigned *thread_uid)
+{
+    if (g_rtcore_replay_ready_queues.waiting_memory_queue.empty()) {
+        return false;
+    }
+
+    if (thread_uid) {
+        *thread_uid = g_rtcore_replay_ready_queues.waiting_memory_queue.front();
+    }
+    g_rtcore_replay_ready_queues.waiting_memory_queue.pop_front();
+    return true;
+}
+
+static bool rtcore_wake_waiting_memory_replay_request(unsigned thread_uid)
+{
+    std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+        g_rtcore_replay_lane_requests.find(thread_uid);
+    if (it == g_rtcore_replay_lane_requests.end()) {
+        return false;
+    }
+    if (it->second.state != RTCORE_REPLAY_WAITING_MEMORY) {
+        return false;
+    }
+    if (!rtcore_step_admitted_replay_request(thread_uid)) {
+        return false;
+    }
+    return rtcore_route_admitted_replay_request(thread_uid);
+}
+
+static bool rtcore_service_waiting_memory_replay_requests(unsigned wake_budget)
+{
+    bool progressed = false;
+    while (wake_budget > 0) {
+        unsigned thread_uid = 0;
+        if (!rtcore_dequeue_waiting_memory_request(&thread_uid)) {
+            break;
+        }
+        if (!rtcore_wake_waiting_memory_replay_request(thread_uid)) {
+            rtcore_route_admitted_replay_request(thread_uid);
+            break;
+        }
+        wake_budget--;
+        progressed = true;
+    }
+    return progressed;
+}
+
+static bool rtcore_service_waiting_memory_replay_requests()
+{
+    return rtcore_service_waiting_memory_replay_requests(
+        rtcore_replay_memory_wake_budget_config());
 }
 
 float get_norm(float4 v)
