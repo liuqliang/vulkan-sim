@@ -263,6 +263,13 @@ static unsigned rtcore_trace_node_test_flags(unsigned child_index, bool hit,
            ((child_index & 0x7u) << 2);
 }
 
+static unsigned rtcore_trace_stack_flags(bool top_level, bool leaf,
+                                         bool clear)
+{
+    return (top_level ? 0x1u : 0x2u) | (leaf ? 0x4u : 0u) |
+           (clear ? 0x8u : 0u);
+}
+
 struct rtcore_bounded_trace_collector {
     bool enabled;
     unsigned lane_id;
@@ -327,6 +334,26 @@ struct rtcore_bounded_trace_collector {
         append(RTCORE_TRACE_NODE_TEST, RTCORE_TRACE_RESOURCE_NODE,
                parent_node_address, 0, 1,
                rtcore_trace_node_test_flags(child_index, hit, top_level));
+    }
+
+    void append_stack_push(uint64_t entry_address, bool top_level, bool leaf)
+    {
+        append(RTCORE_TRACE_STACK_PUSH, RTCORE_TRACE_RESOURCE_STACK,
+               entry_address, 0, 1,
+               rtcore_trace_stack_flags(top_level, leaf, false));
+    }
+
+    void append_stack_pop(uint64_t entry_address, bool top_level, bool leaf)
+    {
+        append(RTCORE_TRACE_STACK_POP, RTCORE_TRACE_RESOURCE_STACK,
+               entry_address, 0, 1,
+               rtcore_trace_stack_flags(top_level, leaf, false));
+    }
+
+    void append_stack_clear(unsigned entries)
+    {
+        append(RTCORE_TRACE_STACK_POP, RTCORE_TRACE_RESOURCE_STACK, 0, 0,
+               entries, rtcore_trace_stack_flags(false, false, true));
     }
 
     void append_completion_summary(unsigned node_events,
@@ -869,8 +896,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         bool root_hit = ray_box_test(lo, hi, calculate_idir(ray.get_direction()), ray.get_origin(), ray.get_tmin(), ray.get_tmax(), thit);
         rtcore_compact_trace.append_node_test(
             (uint64_t)topRootAddr + device_offset, 0, root_hit, true);
-        if(root_hit)
+        if(root_hit) {
             stack.push_back(StackEntry(topRootAddr, true, false));
+            rtcore_compact_trace.append_stack_push(
+                (uint64_t)topRootAddr + device_offset, true, false);
+        }
     }
 
     while (!stack.empty())
@@ -884,6 +914,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         if(!stack.back().leaf)
         {
             next_node_addr = stack.back().addr;
+            uint64_t tlas_stack_device_offset =
+                (uint64_t)tlas_addr - (uint64_t)_topLevelAS;
+            rtcore_compact_trace.append_stack_pop(
+                (uint64_t)stack.back().addr + tlas_stack_device_offset,
+                stack.back().topLevel, stack.back().leaf);
             stack.pop_back();
         }
 
@@ -959,6 +994,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     {
                         assert(node.ChildType[i] == NODE_TYPE_INSTANCE);
                         stack.push_back(StackEntry(child_addr, true, true));
+                        rtcore_compact_trace.append_stack_push(
+                            (uint64_t)child_addr + device_offset, true, true);
                         assert(tree_level_map.find(node_addr) != tree_level_map.end());
                         tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
                     }
@@ -971,6 +1008,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         }
                         else {
                             stack.push_back(StackEntry(child_addr, true, false));
+                            rtcore_compact_trace.append_stack_push(
+                                (uint64_t)child_addr + device_offset, true,
+                                false);
                             assert(tree_level_map.find(node_addr) != tree_level_map.end());
                             tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
                         }
@@ -1001,6 +1041,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             assert(stack.back().topLevel);
 
             uint8_t* leaf_addr = stack.back().addr;
+            rtcore_compact_trace.append_stack_pop(
+                (uint64_t)leaf_addr + device_offset, stack.back().topLevel,
+                stack.back().leaf);
             stack.pop_back();
 
             GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
@@ -1060,6 +1103,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             
             botLevelRootAddr = ((uint8_t *)((uint64_t)leaf_addr + instanceLeaf.BVHAddress)) + botLevelASAddr.RootNodeOffset;
             stack.push_back(StackEntry(botLevelRootAddr, false, false));
+            rtcore_compact_trace.append_stack_push(
+                (uint64_t)botLevelRootAddr + device_offset, false, false);
             assert(tree_level_map.find(leaf_addr) != tree_level_map.end());
             tree_level_map[botLevelRootAddr] = tree_level_map[leaf_addr];
 
@@ -1076,6 +1121,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             {
                 uint8_t* node_addr = NULL;
                 uint8_t* next_node_addr = stack.back().addr;
+                rtcore_compact_trace.append_stack_pop(
+                    (uint64_t)stack.back().addr + device_offset,
+                    stack.back().topLevel, stack.back().leaf);
                 stack.pop_back();
                 
 
@@ -1152,6 +1200,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             if(node.ChildType[i] != NODE_TYPE_INTERNAL)
                             {
                                 stack.push_back(StackEntry(child_addr, false, true));
+                                rtcore_compact_trace.append_stack_push(
+                                    (uint64_t)child_addr + device_offset,
+                                    false, true);
                                 assert(tree_level_map.find(node_addr) != tree_level_map.end());
                                 tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
                             }
@@ -1164,6 +1215,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 }
                                 else {
                                     stack.push_back(StackEntry(child_addr, false, false));
+                                    rtcore_compact_trace.append_stack_push(
+                                        (uint64_t)child_addr + device_offset,
+                                        false, false);
                                     assert(tree_level_map.find(node_addr) != tree_level_map.end());
                                     tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
                                 }
@@ -1189,6 +1243,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                 while(!stack.empty() && !stack.back().topLevel && stack.back().leaf)
                 {
                     uint8_t* leaf_addr = stack.back().addr;
+                    rtcore_compact_trace.append_stack_pop(
+                        (uint64_t)leaf_addr + device_offset,
+                        stack.back().topLevel, stack.back().leaf);
                     stack.pop_back();
                     struct GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR leaf_descriptor;
                     GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(&leaf_descriptor, leaf_addr);
@@ -1324,6 +1381,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
                             if(terminateOnFirstHit)
                             {
+                                rtcore_compact_trace.append_stack_clear(stack.size());
                                 stack.clear();
                             }
                         }
