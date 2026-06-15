@@ -362,6 +362,16 @@ static bool rtcore_replay_service_tick_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_replay_service_tick_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_SERVICE_TICK_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
 static rtcore_replay_ready_selection_policy
 rtcore_replay_ready_selection_policy()
 {
@@ -1194,10 +1204,28 @@ rtcore_get_replay_service_tick_stats_snapshot()
     return snapshot;
 }
 
+static void rtcore_log_replay_service_tick_stats_snapshot(
+    const rtcore_service_tick_stats_snapshot &snapshot)
+{
+    if (!snapshot.valid) {
+        return;
+    }
+
+    printf("GPGPU-Sim RTCORE_REPLAY_SERVICE_TICK_STATS "
+           "tick_attempts=%u ticks_progressed=%u "
+           "memory_ticks_progressed=%u ready_ticks_progressed=%u\n",
+           snapshot.tick_attempts, snapshot.ticks_progressed,
+           snapshot.memory_ticks_progressed, snapshot.ready_ticks_progressed);
+}
+
 static void rtcore_publish_replay_service_tick_stats_snapshot()
 {
     g_rtcore_replay_service_tick_stats_snapshot =
         rtcore_get_replay_service_tick_stats_snapshot();
+    if (rtcore_replay_service_tick_stats_log_enabled()) {
+        rtcore_log_replay_service_tick_stats_snapshot(
+            g_rtcore_replay_service_tick_stats_snapshot);
+    }
 }
 
 static void rtcore_try_service_replay_after_admission()
