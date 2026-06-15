@@ -328,6 +328,13 @@ struct rtcore_replay_service_tick_stats_snapshot {
 typedef rtcore_replay_service_tick_stats_snapshot
     rtcore_service_tick_stats_snapshot;
 
+struct rtcore_replay_service_cycle_result {
+    bool service_enabled;
+    unsigned service_cycle;
+    rtcore_replay_service_tick_result tick_result;
+    rtcore_service_tick_stats_snapshot stats_snapshot;
+};
+
 static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
 static rtcore_replay_service_tick_stats g_rtcore_replay_service_tick_stats;
 static rtcore_service_tick_stats_snapshot
@@ -1228,15 +1235,26 @@ static void rtcore_publish_replay_service_tick_stats_snapshot()
     }
 }
 
+static rtcore_replay_service_cycle_result
+rtcore_service_replay_cycle(unsigned service_cycle)
+{
+    rtcore_replay_service_cycle_result result = {};
+    result.service_cycle = service_cycle;
+    result.service_enabled = rtcore_replay_service_tick_enabled();
+    if (!result.service_enabled) {
+        return result;
+    }
+
+    result.tick_result = rtcore_maybe_service_replay_tick();
+    rtcore_record_replay_service_tick_result(result.tick_result);
+    rtcore_publish_replay_service_tick_stats_snapshot();
+    result.stats_snapshot = g_rtcore_replay_service_tick_stats_snapshot;
+    return result;
+}
+
 static void rtcore_try_service_replay_after_admission()
 {
-    if (!rtcore_replay_service_tick_enabled()) {
-        return;
-    }
-    rtcore_replay_service_tick_result result =
-        rtcore_maybe_service_replay_tick();
-    rtcore_record_replay_service_tick_result(result);
-    rtcore_publish_replay_service_tick_stats_snapshot();
+    (void)rtcore_service_replay_cycle(0);
 }
 
 float get_norm(float4 v)
