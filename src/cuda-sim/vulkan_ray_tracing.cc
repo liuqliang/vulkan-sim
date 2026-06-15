@@ -342,6 +342,10 @@ static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
 static rtcore_replay_service_tick_stats g_rtcore_replay_service_tick_stats;
 static rtcore_service_tick_stats_snapshot
     g_rtcore_replay_service_tick_stats_snapshot;
+static unsigned g_rtcore_replay_service_tick_stats_logs_emitted = 0;
+static unsigned g_rtcore_replay_service_tick_stats_progress_logs_emitted = 0;
+static unsigned g_rtcore_replay_service_tick_stats_last_logged_ticks_progressed =
+    0;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -380,6 +384,39 @@ static bool rtcore_replay_service_tick_stats_log_enabled()
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
+}
+
+static unsigned rtcore_replay_service_tick_stats_log_limit_from_env(
+    const char *name, unsigned default_limit)
+{
+    const char *value = getenv(name);
+    if (!value || value[0] == '\0') {
+        return default_limit;
+    }
+
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value) {
+        return default_limit;
+    }
+    if (parsed > 1024) {
+        return 1024;
+    }
+    return static_cast<unsigned>(parsed);
+}
+
+static unsigned rtcore_replay_service_tick_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_SERVICE_TICK_STATS_LOG_LIMIT", 8);
+    return limit;
+}
+
+static unsigned rtcore_replay_service_tick_stats_progress_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_SERVICE_TICK_STATS_PROGRESS_LOG_LIMIT", 8);
+    return limit;
 }
 
 static rtcore_replay_ready_selection_policy
@@ -1470,10 +1507,44 @@ rtcore_get_replay_service_tick_stats_snapshot()
     return snapshot;
 }
 
-static void rtcore_log_replay_service_tick_stats_snapshot(
+static bool rtcore_should_log_replay_service_tick_stats_snapshot(
     const rtcore_service_tick_stats_snapshot &snapshot)
 {
     if (!snapshot.valid) {
+        return false;
+    }
+
+    if (g_rtcore_replay_service_tick_stats_logs_emitted <
+        rtcore_replay_service_tick_stats_log_limit()) {
+        g_rtcore_replay_service_tick_stats_logs_emitted++;
+        if (snapshot.ticks_progressed >
+            g_rtcore_replay_service_tick_stats_last_logged_ticks_progressed) {
+            g_rtcore_replay_service_tick_stats_last_logged_ticks_progressed =
+                snapshot.ticks_progressed;
+        }
+        return true;
+    }
+
+    if (snapshot.ticks_progressed <=
+        g_rtcore_replay_service_tick_stats_last_logged_ticks_progressed) {
+        return false;
+    }
+    if (g_rtcore_replay_service_tick_stats_progress_logs_emitted >=
+        rtcore_replay_service_tick_stats_progress_log_limit()) {
+        return false;
+    }
+
+    g_rtcore_replay_service_tick_stats_logs_emitted++;
+    g_rtcore_replay_service_tick_stats_progress_logs_emitted++;
+    g_rtcore_replay_service_tick_stats_last_logged_ticks_progressed =
+        snapshot.ticks_progressed;
+    return true;
+}
+
+static void rtcore_log_replay_service_tick_stats_snapshot(
+    const rtcore_service_tick_stats_snapshot &snapshot)
+{
+    if (!rtcore_should_log_replay_service_tick_stats_snapshot(snapshot)) {
         return;
     }
 
