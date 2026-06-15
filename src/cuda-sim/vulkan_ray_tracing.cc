@@ -798,6 +798,49 @@ static bool rtcore_select_ready_replay_request(unsigned *thread_uid)
     }
 }
 
+static bool rtcore_remove_replay_request_from_queue(
+    std::deque<unsigned> &queue, unsigned thread_uid)
+{
+    if (queue.empty()) {
+        return false;
+    }
+
+    if (queue.front() == thread_uid) {
+        queue.pop_front();
+        return true;
+    }
+
+    for (std::deque<unsigned>::iterator it = queue.begin(); it != queue.end();
+         ++it) {
+        if (*it == thread_uid) {
+            queue.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool rtcore_dequeue_selected_ready_request(unsigned thread_uid)
+{
+    if (rtcore_remove_replay_request_from_queue(
+            g_rtcore_replay_ready_queues.ready_node_queue, thread_uid)) {
+        return true;
+    }
+    if (rtcore_remove_replay_request_from_queue(
+            g_rtcore_replay_ready_queues.ready_primitive_queue, thread_uid)) {
+        return true;
+    }
+    if (rtcore_remove_replay_request_from_queue(
+            g_rtcore_replay_ready_queues.ready_stack_queue, thread_uid)) {
+        return true;
+    }
+    if (rtcore_remove_replay_request_from_queue(
+            g_rtcore_replay_ready_queues.ready_completion_queue, thread_uid)) {
+        return true;
+    }
+    return false;
+}
+
 static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 {
     if (!rtcore_replay_admission_enabled() || !thread) {
@@ -864,6 +907,21 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid)
         return false;
     }
     return rtcore_replay_advance_lane_request(&it->second);
+}
+
+static bool rtcore_step_selected_ready_replay_request()
+{
+    unsigned thread_uid = 0;
+    if (!rtcore_select_ready_replay_request(&thread_uid)) {
+        return false;
+    }
+    if (!rtcore_dequeue_selected_ready_request(thread_uid)) {
+        return false;
+    }
+    if (!rtcore_step_admitted_replay_request(thread_uid)) {
+        return false;
+    }
+    return rtcore_route_admitted_replay_request(thread_uid);
 }
 
 float get_norm(float4 v)
