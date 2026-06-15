@@ -256,6 +256,7 @@ struct rtcore_compact_trace_export_record {
     bool valid;
     const char *model_name;
     unsigned thread_uid;
+    unsigned owner_hw_sid;
     unsigned lane_id;
     unsigned event_count;
     unsigned max_trace_events_per_lane;
@@ -270,6 +271,7 @@ static std::map<unsigned, rtcore_compact_trace_export_record>
 struct rtcore_replay_lane_request {
     bool valid;
     unsigned thread_uid;
+    unsigned owner_hw_sid;
     unsigned lane_id;
     unsigned next_event_index;
     unsigned event_count;
@@ -330,6 +332,7 @@ typedef rtcore_replay_service_tick_stats_snapshot
 
 struct rtcore_replay_service_cycle_result {
     bool service_enabled;
+    unsigned owner_hw_sid;
     unsigned service_cycle;
     rtcore_replay_service_tick_result tick_result;
     rtcore_service_tick_stats_snapshot stats_snapshot;
@@ -653,6 +656,7 @@ struct rtcore_bounded_trace_collector {
         record.valid = enabled;
         record.model_name = RTCORE_TRACE_REPLAY_MODEL_NAME;
         record.thread_uid = 0;
+        record.owner_hw_sid = 0;
         record.lane_id = lane_id;
         record.event_count = events.size();
         record.max_trace_events_per_lane = max_trace_events_per_lane;
@@ -673,6 +677,7 @@ static void rtcore_publish_compact_trace_export(
     }
     rtcore_compact_trace_export_record stored = record;
     stored.thread_uid = thread ? thread->get_uid() : 0;
+    stored.owner_hw_sid = thread ? thread->get_hw_sid() : 0;
     g_rtcore_compact_trace_exports[stored.thread_uid] = stored;
 }
 
@@ -696,6 +701,7 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     rtcore_replay_lane_request request = {};
     request.valid = record.valid;
     request.thread_uid = record.thread_uid;
+    request.owner_hw_sid = record.owner_hw_sid;
     request.lane_id = record.lane_id;
     request.next_event_index = 0;
     request.event_count = record.event_count;
@@ -951,7 +957,7 @@ static bool rtcore_dequeue_selected_ready_request(unsigned thread_uid)
     return false;
 }
 
-static void rtcore_try_service_replay_after_admission();
+static void rtcore_try_service_replay_after_admission(unsigned owner_hw_sid);
 
 static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 {
@@ -972,7 +978,7 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
     request.ready_order = g_rtcore_next_replay_ready_order++;
     g_rtcore_replay_lane_requests[request.thread_uid] = request;
     rtcore_route_admitted_replay_request(request.thread_uid);
-    rtcore_try_service_replay_after_admission();
+    rtcore_try_service_replay_after_admission(thread->get_hw_sid());
 }
 
 static bool rtcore_replay_request_done(
@@ -1236,9 +1242,10 @@ static void rtcore_publish_replay_service_tick_stats_snapshot()
 }
 
 static rtcore_replay_service_cycle_result
-rtcore_service_replay_cycle(unsigned service_cycle)
+rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned service_cycle)
 {
     rtcore_replay_service_cycle_result result = {};
+    result.owner_hw_sid = owner_hw_sid;
     result.service_cycle = service_cycle;
     result.service_enabled = rtcore_replay_service_tick_enabled();
     if (!result.service_enabled) {
@@ -1252,9 +1259,9 @@ rtcore_service_replay_cycle(unsigned service_cycle)
     return result;
 }
 
-static void rtcore_try_service_replay_after_admission()
+static void rtcore_try_service_replay_after_admission(unsigned owner_hw_sid)
 {
-    (void)rtcore_service_replay_cycle(0);
+    (void)rtcore_service_replay_cycle(owner_hw_sid, 0);
 }
 
 float get_norm(float4 v)
