@@ -304,6 +304,12 @@ struct rtcore_replay_issue_budget {
     unsigned completion_issue_budget;
 };
 
+struct rtcore_replay_service_tick_result {
+    bool progressed;
+    bool memory_progressed;
+    bool ready_progressed;
+};
+
 static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
@@ -321,6 +327,15 @@ static bool rtcore_replay_admission_enabled()
 {
     static int enabled = []() {
         const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_ADMISSION");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_service_tick_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_SERVICE_TICK");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -1104,6 +1119,24 @@ static bool rtcore_service_waiting_memory_replay_requests()
 {
     return rtcore_service_waiting_memory_replay_requests(
         rtcore_replay_memory_wake_budget_config());
+}
+
+static rtcore_replay_service_tick_result rtcore_service_replay_tick()
+{
+    rtcore_replay_service_tick_result result = {};
+    result.memory_progressed = rtcore_service_waiting_memory_replay_requests();
+    result.ready_progressed = rtcore_service_replay_ready_requests_with_budget(rtcore_replay_issue_budget_config());
+    result.progressed = result.memory_progressed || result.ready_progressed;
+    return result;
+}
+
+static rtcore_replay_service_tick_result rtcore_maybe_service_replay_tick()
+{
+    rtcore_replay_service_tick_result result = {};
+    if (!rtcore_replay_service_tick_enabled()) {
+        return result;
+    }
+    return rtcore_service_replay_tick();
 }
 
 float get_norm(float4 v)
