@@ -317,8 +317,21 @@ struct rtcore_replay_service_tick_stats {
     unsigned ready_ticks_progressed;
 };
 
+struct rtcore_replay_service_tick_stats_snapshot {
+    bool valid;
+    unsigned tick_attempts;
+    unsigned ticks_progressed;
+    unsigned memory_ticks_progressed;
+    unsigned ready_ticks_progressed;
+};
+
+typedef rtcore_replay_service_tick_stats_snapshot
+    rtcore_service_tick_stats_snapshot;
+
 static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
 static rtcore_replay_service_tick_stats g_rtcore_replay_service_tick_stats;
+static rtcore_service_tick_stats_snapshot
+    g_rtcore_replay_service_tick_stats_snapshot;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -1165,6 +1178,28 @@ static void rtcore_record_replay_service_tick_result(
     }
 }
 
+static rtcore_service_tick_stats_snapshot
+rtcore_get_replay_service_tick_stats_snapshot()
+{
+    rtcore_service_tick_stats_snapshot snapshot = {};
+    snapshot.valid = true;
+    snapshot.tick_attempts =
+        g_rtcore_replay_service_tick_stats.tick_attempts;
+    snapshot.ticks_progressed =
+        g_rtcore_replay_service_tick_stats.ticks_progressed;
+    snapshot.memory_ticks_progressed =
+        g_rtcore_replay_service_tick_stats.memory_ticks_progressed;
+    snapshot.ready_ticks_progressed =
+        g_rtcore_replay_service_tick_stats.ready_ticks_progressed;
+    return snapshot;
+}
+
+static void rtcore_publish_replay_service_tick_stats_snapshot()
+{
+    g_rtcore_replay_service_tick_stats_snapshot =
+        rtcore_get_replay_service_tick_stats_snapshot();
+}
+
 static void rtcore_try_service_replay_after_admission()
 {
     if (!rtcore_replay_service_tick_enabled()) {
@@ -1173,6 +1208,7 @@ static void rtcore_try_service_replay_after_admission()
     rtcore_replay_service_tick_result result =
         rtcore_maybe_service_replay_tick();
     rtcore_record_replay_service_tick_result(result);
+    rtcore_publish_replay_service_tick_stats_snapshot();
 }
 
 float get_norm(float4 v)
