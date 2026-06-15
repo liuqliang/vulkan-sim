@@ -100,6 +100,29 @@ struct rtcore_replay_cycle_hook_consumer_stats {
 static rtcore_replay_cycle_hook_consumer_stats
     g_rtcore_replay_cycle_hook_consumer_stats = {};
 
+static bool rtcore_replay_cycle_release_gate_shadow_enabled() {
+  static int cached_enabled = -1;
+  if (cached_enabled < 0) {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_CYCLE_RELEASE_GATE_SHADOW");
+    cached_enabled =
+        (value != NULL && *value != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+  }
+  return cached_enabled != 0;
+}
+
+struct rtcore_replay_cycle_release_gate_shadow_stats {
+  unsigned long long evaluated_calls;
+  unsigned long long legacy_ready_calls;
+  unsigned long long hook_progressed_calls;
+  unsigned long long shadow_release_allowed_calls;
+  unsigned last_owner_hw_sid;
+  unsigned long long last_cycle;
+};
+
+static rtcore_replay_cycle_release_gate_shadow_stats
+    g_rtcore_replay_cycle_release_gate_shadow_stats = {};
+
 struct rtcore_replay_cycle_hook_smoke_stats {
   unsigned long long hook_calls;
   unsigned long long service_enabled_calls;
@@ -274,6 +297,31 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   }
   if (result.ready_progressed) {
     g_rtcore_replay_cycle_hook_consumer_stats.ready_progressed_results++;
+  }
+}
+
+static void rtcore_record_replay_cycle_release_gate_shadow_decision(
+    const rtcore_replay_cycle_hook_result &result, bool legacy_ready) {
+  if (!rtcore_replay_cycle_release_gate_shadow_enabled()) {
+    return;
+  }
+
+  g_rtcore_replay_cycle_release_gate_shadow_stats.evaluated_calls++;
+  g_rtcore_replay_cycle_release_gate_shadow_stats.last_owner_hw_sid =
+      result.owner_hw_sid;
+  g_rtcore_replay_cycle_release_gate_shadow_stats.last_cycle = result.cycle;
+  if (legacy_ready) {
+    g_rtcore_replay_cycle_release_gate_shadow_stats.legacy_ready_calls++;
+  }
+  if (result.progressed) {
+    g_rtcore_replay_cycle_release_gate_shadow_stats.hook_progressed_calls++;
+  }
+  const bool shadow_release_allowed =
+      legacy_ready && result.hook_enabled && result.service_enabled &&
+      result.progressed;
+  if (shadow_release_allowed) {
+    g_rtcore_replay_cycle_release_gate_shadow_stats
+        .shadow_release_allowed_calls++;
   }
 }
 
@@ -7149,6 +7197,8 @@ void rt_unit::cycle() {
     RT_DPRINTF("Checking warp inst uid: %d\n", debug_inst.get_uid());
     const bool synthetic_submit_completion_ready =
         synthetic_completion_ready(it->second, current_cycle);
+    rtcore_record_replay_cycle_release_gate_shadow_decision(
+        replay_cycle_result, synthetic_submit_completion_ready);
     // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
     if (synthetic_submit_completion_ready &&
         it->second.rt_mem_accesses_empty() &&
