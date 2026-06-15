@@ -188,6 +188,37 @@ static bool rtcore_replay_release_gate_activation_enabled() {
   return cached_enabled != 0;
 }
 
+static bool rtcore_replay_release_gate_aggregate_stats_log_enabled() {
+  static int cached_enabled = -1;
+  if (cached_enabled < 0) {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_RELEASE_GATE_AGGREGATE_STATS_LOG");
+    cached_enabled =
+        (value != NULL && *value != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+  }
+  return cached_enabled != 0;
+}
+
+static unsigned rtcore_replay_release_gate_aggregate_stats_log_limit() {
+  static unsigned cached_limit = []() {
+    const char *value = getenv(
+        "VULKAN_SIM_RTCORE_REPLAY_RELEASE_GATE_AGGREGATE_STATS_LOG_LIMIT");
+    if (value == NULL || *value == '\0') {
+      return 16u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value) {
+      return 16u;
+    }
+    if (parsed > 1024) {
+      return 1024u;
+    }
+    return static_cast<unsigned>(parsed);
+  }();
+  return cached_limit;
+}
+
 struct rtcore_replay_release_gate_activation_block_key {
   bool operator<(
       const rtcore_replay_release_gate_activation_block_key &other) const {
@@ -260,16 +291,59 @@ struct rtcore_replay_cycle_release_gate_shadow_stats {
   unsigned long long all_lanes_shadow_release_allowed_calls;
   unsigned long long all_lanes_shadow_release_blocked_calls;
   unsigned long long candidate_all_lanes_shadow_release_allowed_calls;
+  unsigned long long activation_enabled_calls;
   unsigned long long activation_blocked_calls;
   unsigned long long activation_allowed_calls;
+  unsigned long long activation_allowed_after_block_calls;
+  unsigned long long activation_blocked_cycle_total;
   unsigned long long activation_blocked_cycle_observations;
+  unsigned long long activation_max_candidate_blocked_cycles;
   unsigned long long logged_records;
+  unsigned long long aggregate_logged_records;
   unsigned last_owner_hw_sid;
   unsigned long long last_cycle;
 };
 
 static rtcore_replay_cycle_release_gate_shadow_stats
     g_rtcore_replay_cycle_release_gate_shadow_stats = {};
+
+static void rtcore_maybe_log_replay_release_gate_aggregate_stats(
+    const rtcore_replay_cycle_hook_result &result, bool aggregate_event) {
+  if (!aggregate_event ||
+      !rtcore_replay_release_gate_aggregate_stats_log_enabled()) {
+    return;
+  }
+  if (g_rtcore_replay_cycle_release_gate_shadow_stats.aggregate_logged_records >=
+      rtcore_replay_release_gate_aggregate_stats_log_limit()) {
+    return;
+  }
+
+  g_rtcore_replay_cycle_release_gate_shadow_stats.aggregate_logged_records++;
+  printf("GPGPU-Sim RTCORE_REPLAY_RELEASE_GATE_AGGREGATE_STATS "
+         "owner_hw_sid=%u cycle=%llu evaluated_calls=%llu "
+         "activation_enabled_calls=%llu activation_blocked_calls=%llu "
+         "activation_allowed_calls=%llu "
+         "activation_allowed_after_block_calls=%llu "
+         "activation_blocked_cycle_total=%llu "
+         "activation_blocked_cycle_observations=%llu "
+         "activation_max_candidate_blocked_cycles=%llu "
+         "activation_pending_candidate_count=%zu\n",
+         result.owner_hw_sid, result.cycle,
+         g_rtcore_replay_cycle_release_gate_shadow_stats.evaluated_calls,
+         g_rtcore_replay_cycle_release_gate_shadow_stats.activation_enabled_calls,
+         g_rtcore_replay_cycle_release_gate_shadow_stats.activation_blocked_calls,
+         g_rtcore_replay_cycle_release_gate_shadow_stats.activation_allowed_calls,
+         g_rtcore_replay_cycle_release_gate_shadow_stats
+             .activation_allowed_after_block_calls,
+         g_rtcore_replay_cycle_release_gate_shadow_stats
+             .activation_blocked_cycle_total,
+         g_rtcore_replay_cycle_release_gate_shadow_stats
+             .activation_blocked_cycle_observations,
+         g_rtcore_replay_cycle_release_gate_shadow_stats
+             .activation_max_candidate_blocked_cycles,
+         g_rtcore_replay_release_gate_activation_blocked_cycles.size());
+  fflush(stdout);
+}
 
 static bool rtcore_replay_release_identity_join_shadow_enabled() {
   static int cached_enabled = -1;
@@ -532,7 +606,11 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
     bool candidate_all_lanes_shadow_release_allowed, bool activation_enabled,
     bool activation_blocked,
     unsigned long long candidate_release_gate_blocked_cycles) {
-  if (!rtcore_replay_cycle_release_gate_shadow_enabled()) {
+  const bool release_gate_shadow_enabled =
+      rtcore_replay_cycle_release_gate_shadow_enabled();
+  const bool aggregate_stats_log_enabled =
+      rtcore_replay_release_gate_aggregate_stats_log_enabled();
+  if (!release_gate_shadow_enabled && !aggregate_stats_log_enabled) {
     return;
   }
 
@@ -583,14 +661,41 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
     g_rtcore_replay_cycle_release_gate_shadow_stats
         .candidate_all_lanes_shadow_release_allowed_calls++;
   }
+  if (activation_enabled) {
+    g_rtcore_replay_cycle_release_gate_shadow_stats.activation_enabled_calls++;
+  }
+  const bool activation_allowed =
+      activation_enabled && candidate_all_lanes_shadow_release_allowed;
+  const bool activation_allowed_after_block =
+      activation_allowed && candidate_release_gate_blocked_cycles > 0;
   if (activation_blocked) {
     g_rtcore_replay_cycle_release_gate_shadow_stats.activation_blocked_calls++;
-  } else if (activation_enabled && candidate_all_lanes_shadow_release_allowed) {
+    g_rtcore_replay_cycle_release_gate_shadow_stats
+        .activation_blocked_cycle_total++;
+  } else if (activation_allowed) {
     g_rtcore_replay_cycle_release_gate_shadow_stats.activation_allowed_calls++;
+  }
+  if (activation_allowed_after_block) {
+    g_rtcore_replay_cycle_release_gate_shadow_stats
+        .activation_allowed_after_block_calls++;
   }
   if (candidate_release_gate_blocked_cycles > 0) {
     g_rtcore_replay_cycle_release_gate_shadow_stats
         .activation_blocked_cycle_observations++;
+    if (candidate_release_gate_blocked_cycles >
+        g_rtcore_replay_cycle_release_gate_shadow_stats
+            .activation_max_candidate_blocked_cycles) {
+      g_rtcore_replay_cycle_release_gate_shadow_stats
+          .activation_max_candidate_blocked_cycles =
+          candidate_release_gate_blocked_cycles;
+    }
+  }
+
+  rtcore_maybe_log_replay_release_gate_aggregate_stats(
+      result, activation_blocked || activation_allowed_after_block);
+
+  if (!release_gate_shadow_enabled) {
+    return;
   }
 
   const bool should_log =
