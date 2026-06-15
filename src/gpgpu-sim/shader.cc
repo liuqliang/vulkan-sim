@@ -76,6 +76,82 @@ static bool rtcore_replay_cycle_hook_enabled() {
   return cached_enabled != 0;
 }
 
+struct rtcore_replay_cycle_hook_smoke_stats {
+  unsigned long long hook_calls;
+  unsigned long long service_enabled_calls;
+  unsigned long long progressed_calls;
+  unsigned long long memory_progressed_calls;
+  unsigned long long ready_progressed_calls;
+  unsigned last_owner_hw_sid;
+  unsigned long long last_cycle;
+};
+
+static rtcore_replay_cycle_hook_smoke_stats
+    g_rtcore_replay_cycle_hook_smoke_stats = {};
+static unsigned g_rtcore_replay_cycle_hook_smoke_logs_emitted = 0;
+
+static bool rtcore_replay_cycle_hook_smoke_log_enabled() {
+  static int cached_enabled = -1;
+  if (cached_enabled < 0) {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_CYCLE_HOOK_SMOKE_LOG");
+    cached_enabled =
+        (value != NULL && *value != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+  }
+  return cached_enabled != 0;
+}
+
+static void rtcore_maybe_log_replay_cycle_hook_smoke(
+    unsigned owner_hw_sid, unsigned long long current_cycle,
+    bool service_enabled, bool memory_progressed, bool ready_progressed,
+    bool progressed) {
+  if (!rtcore_replay_cycle_hook_smoke_log_enabled() ||
+      g_rtcore_replay_cycle_hook_smoke_logs_emitted >= 8) {
+    return;
+  }
+
+  g_rtcore_replay_cycle_hook_smoke_logs_emitted++;
+  printf("GPGPU-Sim RTCORE_REPLAY_CYCLE_HOOK_SMOKE "
+         "owner_hw_sid=%u cycle=%llu hook_calls=%llu "
+         "service_enabled=%u progressed=%u memory_progressed=%u "
+         "ready_progressed=%u service_enabled_calls=%llu "
+         "progressed_calls=%llu memory_progressed_calls=%llu "
+         "ready_progressed_calls=%llu\n",
+         owner_hw_sid, current_cycle,
+         g_rtcore_replay_cycle_hook_smoke_stats.hook_calls,
+         service_enabled ? 1 : 0, progressed ? 1 : 0,
+         memory_progressed ? 1 : 0, ready_progressed ? 1 : 0,
+         g_rtcore_replay_cycle_hook_smoke_stats.service_enabled_calls,
+         g_rtcore_replay_cycle_hook_smoke_stats.progressed_calls,
+         g_rtcore_replay_cycle_hook_smoke_stats.memory_progressed_calls,
+         g_rtcore_replay_cycle_hook_smoke_stats.ready_progressed_calls);
+}
+
+static void rtcore_record_replay_cycle_hook_smoke(
+    unsigned owner_hw_sid, unsigned long long current_cycle,
+    bool service_enabled, bool memory_progressed, bool ready_progressed,
+    bool progressed) {
+  g_rtcore_replay_cycle_hook_smoke_stats.hook_calls++;
+  g_rtcore_replay_cycle_hook_smoke_stats.last_owner_hw_sid = owner_hw_sid;
+  g_rtcore_replay_cycle_hook_smoke_stats.last_cycle = current_cycle;
+  if (service_enabled) {
+    g_rtcore_replay_cycle_hook_smoke_stats.service_enabled_calls++;
+  }
+  if (progressed) {
+    g_rtcore_replay_cycle_hook_smoke_stats.progressed_calls++;
+  }
+  if (memory_progressed) {
+    g_rtcore_replay_cycle_hook_smoke_stats.memory_progressed_calls++;
+  }
+  if (ready_progressed) {
+    g_rtcore_replay_cycle_hook_smoke_stats.ready_progressed_calls++;
+  }
+
+  rtcore_maybe_log_replay_cycle_hook_smoke(
+      owner_hw_sid, current_cycle, service_enabled, memory_progressed,
+      ready_progressed, progressed);
+}
+
 static void rtcore_maybe_service_replay_cycle_from_rt_unit(
     unsigned owner_hw_sid, unsigned long long current_cycle) {
   if (!rtcore_replay_cycle_hook_enabled()) {
@@ -85,10 +161,13 @@ static void rtcore_maybe_service_replay_cycle_from_rt_unit(
   bool service_enabled = false;
   bool memory_progressed = false;
   bool ready_progressed = false;
-  (void)rtcore_service_replay_cycle_for_sm(owner_hw_sid, current_cycle,
-                                           &service_enabled,
-                                           &memory_progressed,
-                                           &ready_progressed);
+  bool progressed = rtcore_service_replay_cycle_for_sm(owner_hw_sid, current_cycle,
+                                                       &service_enabled,
+                                                       &memory_progressed,
+                                                       &ready_progressed);
+  rtcore_record_replay_cycle_hook_smoke(owner_hw_sid, current_cycle,
+                                        service_enabled, memory_progressed,
+                                        ready_progressed, progressed);
 }
 
 struct rtcore_scheduler_credit_ledger_shadow_table_owner_key {
