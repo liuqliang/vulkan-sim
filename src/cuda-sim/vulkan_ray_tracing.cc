@@ -225,6 +225,16 @@ enum rtcore_compact_trace_hit_update_kind {
     RTCORE_TRACE_HIT_UPDATE_KIND_CLOSEST_HIT,
 };
 
+enum rtcore_replay_lane_request_state {
+    RTCORE_REPLAY_QUEUED = 0,
+    RTCORE_REPLAY_READY_NODE,
+    RTCORE_REPLAY_READY_PRIMITIVE,
+    RTCORE_REPLAY_READY_STACK,
+    RTCORE_REPLAY_WAITING_MEMORY,
+    RTCORE_REPLAY_READY_COMPLETION,
+    RTCORE_REPLAY_DONE,
+};
+
 struct rtcore_compact_trace_event {
     uint64_t address_or_ref;
     uint32_t packed_fields;
@@ -251,10 +261,38 @@ struct rtcore_compact_trace_export_record {
 static std::map<unsigned, rtcore_compact_trace_export_record>
     g_rtcore_compact_trace_exports;
 
+struct rtcore_replay_lane_request {
+    bool valid;
+    unsigned thread_uid;
+    unsigned lane_id;
+    unsigned next_event_index;
+    unsigned event_count;
+    unsigned node_event_count;
+    unsigned primitive_event_count;
+    unsigned stack_event_count;
+    unsigned memory_event_count;
+    unsigned completion_event_count;
+    bool timing_trace_overflowed;
+    rtcore_replay_lane_request_state state;
+    std::vector<rtcore_compact_trace_event> events;
+};
+
+static std::map<unsigned, rtcore_replay_lane_request>
+    g_rtcore_replay_lane_requests;
+
 static bool rtcore_bounded_trace_collection_enabled()
 {
     static int enabled = []() {
         const char *value = getenv("VULKAN_SIM_RTCORE_BOUNDED_TRACE_COLLECTION");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_admission_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_ADMISSION");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -276,6 +314,37 @@ static uint16_t rtcore_pack_compact_trace_count_bytes(unsigned count,
     unsigned compact_count = count > 255 ? 255 : count;
     unsigned compact_bytes = bytes > 255 ? 255 : bytes;
     return static_cast<uint16_t>((compact_bytes << 8) | compact_count);
+}
+
+static rtcore_compact_trace_event_type rtcore_unpack_compact_trace_event_type(
+    const rtcore_compact_trace_event &event)
+{
+    return static_cast<rtcore_compact_trace_event_type>(
+        (event.packed_fields >> 16) & 0xffu);
+}
+
+static rtcore_replay_lane_request_state rtcore_classify_replay_state(
+    rtcore_compact_trace_event_type event_type)
+{
+    switch (event_type) {
+    case RTCORE_TRACE_NODE_FETCH:
+    case RTCORE_TRACE_NODE_TEST:
+        return RTCORE_REPLAY_READY_NODE;
+    case RTCORE_TRACE_PRIMITIVE_FETCH:
+    case RTCORE_TRACE_PRIMITIVE_TEST:
+    case RTCORE_TRACE_HIT_UPDATE:
+        return RTCORE_REPLAY_READY_PRIMITIVE;
+    case RTCORE_TRACE_STACK_PUSH:
+    case RTCORE_TRACE_STACK_POP:
+        return RTCORE_REPLAY_READY_STACK;
+    case RTCORE_TRACE_MEMORY_WAIT:
+        return RTCORE_REPLAY_WAITING_MEMORY;
+    case RTCORE_TRACE_COMPLETION:
+    case RTCORE_TRACE_OVERFLOW_SUMMARY:
+        return RTCORE_REPLAY_READY_COMPLETION;
+    default:
+        return RTCORE_REPLAY_DONE;
+    }
 }
 
 static unsigned rtcore_trace_node_fetch_flags(
@@ -471,6 +540,71 @@ static bool rtcore_get_compact_trace_export(
         *record = it->second;
     }
     return true;
+}
+
+static rtcore_replay_lane_request rtcore_build_replay_lane_request(
+    const rtcore_compact_trace_export_record &record)
+{
+    rtcore_replay_lane_request request = {};
+    request.valid = record.valid;
+    request.thread_uid = record.thread_uid;
+    request.lane_id = record.lane_id;
+    request.next_event_index = 0;
+    request.event_count = record.event_count;
+    request.timing_trace_overflowed = record.timing_trace_overflowed;
+    request.state = RTCORE_REPLAY_DONE;
+    request.events = record.events;
+
+    for (unsigned i = 0; i < request.events.size(); ++i) {
+        rtcore_compact_trace_event_type event_type =
+            rtcore_unpack_compact_trace_event_type(request.events[i]);
+        switch (rtcore_classify_replay_state(event_type)) {
+        case RTCORE_REPLAY_READY_NODE:
+            request.node_event_count++;
+            break;
+        case RTCORE_REPLAY_READY_PRIMITIVE:
+            request.primitive_event_count++;
+            break;
+        case RTCORE_REPLAY_READY_STACK:
+            request.stack_event_count++;
+            break;
+        case RTCORE_REPLAY_WAITING_MEMORY:
+            request.memory_event_count++;
+            break;
+        case RTCORE_REPLAY_READY_COMPLETION:
+            request.completion_event_count++;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (!request.events.empty()) {
+        request.state = rtcore_classify_replay_state(
+            rtcore_unpack_compact_trace_event_type(request.events[0]));
+    } else if (request.valid) {
+        request.state = RTCORE_REPLAY_QUEUED;
+    }
+    return request;
+}
+
+static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
+{
+    if (!rtcore_replay_admission_enabled() || !thread) {
+        return;
+    }
+
+    rtcore_compact_trace_export_record record = {};
+    if (!rtcore_get_compact_trace_export(thread->get_uid(), &record)) {
+        return;
+    }
+    if (!record.valid) {
+        return;
+    }
+
+    rtcore_replay_lane_request request =
+        rtcore_build_replay_lane_request(record);
+    g_rtcore_replay_lane_requests[request.thread_uid] = request;
 }
 
 float get_norm(float4 v)
@@ -1656,7 +1790,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.rtcore_primitive_tests = total_primitive_tests;
     rtcore_compact_trace.append_completion_summary(total_nodes_accessed,
                                                    total_primitive_tests);
-    rtcore_publish_compact_trace_export(thread, rtcore_compact_trace.export_record());
+    rtcore_compact_trace_export_record rtcore_trace_export = rtcore_compact_trace.export_record();
+    rtcore_publish_compact_trace_export(thread, rtcore_trace_export);
+    rtcore_admit_compact_trace_for_replay(thread);
     mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);
     thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
     
