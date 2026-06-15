@@ -188,6 +188,69 @@ static bool rtcore_replay_release_gate_activation_enabled() {
   return cached_enabled != 0;
 }
 
+struct rtcore_replay_release_gate_activation_block_key {
+  bool operator<(
+      const rtcore_replay_release_gate_activation_block_key &other) const {
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    if (warp_uid != other.warp_uid) {
+      return warp_uid < other.warp_uid;
+    }
+    if (warp_id != other.warp_id) {
+      return warp_id < other.warp_id;
+    }
+    return active_mask < other.active_mask;
+  }
+
+  unsigned owner_hw_sid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned active_mask;
+};
+
+static std::map<rtcore_replay_release_gate_activation_block_key,
+                unsigned long long>
+    g_rtcore_replay_release_gate_activation_blocked_cycles;
+
+static unsigned long long
+rtcore_update_replay_release_gate_activation_blocked_cycles(
+    bool key_valid, unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, bool activation_blocked,
+    bool candidate_all_lanes_shadow_release_allowed) {
+  if (!key_valid) {
+    return 0;
+  }
+
+  rtcore_replay_release_gate_activation_block_key key = {};
+  key.owner_hw_sid = owner_hw_sid;
+  key.warp_uid = warp_uid;
+  key.warp_id = warp_id;
+  key.active_mask = active_mask;
+
+  if (activation_blocked) {
+    unsigned long long &blocked_cycles =
+        g_rtcore_replay_release_gate_activation_blocked_cycles[key];
+    blocked_cycles++;
+    return blocked_cycles;
+  }
+
+  if (!candidate_all_lanes_shadow_release_allowed) {
+    return 0;
+  }
+
+  std::map<rtcore_replay_release_gate_activation_block_key,
+           unsigned long long>::iterator it =
+      g_rtcore_replay_release_gate_activation_blocked_cycles.find(key);
+  if (it == g_rtcore_replay_release_gate_activation_blocked_cycles.end()) {
+    return 0;
+  }
+
+  const unsigned long long blocked_cycles = it->second;
+  g_rtcore_replay_release_gate_activation_blocked_cycles.erase(it);
+  return blocked_cycles;
+}
+
 struct rtcore_replay_cycle_release_gate_shadow_stats {
   unsigned long long evaluated_calls;
   unsigned long long legacy_ready_calls;
@@ -199,6 +262,7 @@ struct rtcore_replay_cycle_release_gate_shadow_stats {
   unsigned long long candidate_all_lanes_shadow_release_allowed_calls;
   unsigned long long activation_blocked_calls;
   unsigned long long activation_allowed_calls;
+  unsigned long long activation_blocked_cycle_observations;
   unsigned long long logged_records;
   unsigned last_owner_hw_sid;
   unsigned long long last_cycle;
@@ -466,7 +530,8 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
     bool candidate_warp_completion_shadow_found,
     bool candidate_warp_completion_all_active_lanes_complete,
     bool candidate_all_lanes_shadow_release_allowed, bool activation_enabled,
-    bool activation_blocked) {
+    bool activation_blocked,
+    unsigned long long candidate_release_gate_blocked_cycles) {
   if (!rtcore_replay_cycle_release_gate_shadow_enabled()) {
     return;
   }
@@ -523,6 +588,10 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
   } else if (activation_enabled && candidate_all_lanes_shadow_release_allowed) {
     g_rtcore_replay_cycle_release_gate_shadow_stats.activation_allowed_calls++;
   }
+  if (candidate_release_gate_blocked_cycles > 0) {
+    g_rtcore_replay_cycle_release_gate_shadow_stats
+        .activation_blocked_cycle_observations++;
+  }
 
   const bool should_log =
       (legacy_ready || release_identity_joined ||
@@ -546,7 +615,8 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
          "candidate_warp_completion_shadow_found=%u "
          "candidate_warp_completion_all_active_lanes_complete=%u "
          "candidate_all_lanes_shadow_release_allowed=%u "
-         "activation_enabled=%u activation_blocked=%u\n",
+         "activation_enabled=%u activation_blocked=%u "
+         "candidate_release_gate_blocked_cycles=%llu\n",
          result.owner_hw_sid, result.cycle, legacy_ready ? 1 : 0,
          result.hook_enabled ? 1 : 0, result.service_enabled ? 1 : 0,
          result.progressed ? 1 : 0, release_identity_joined ? 1 : 0,
@@ -559,7 +629,8 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
          candidate_warp_completion_shadow_found ? 1 : 0,
          candidate_warp_completion_all_active_lanes_complete ? 1 : 0,
          candidate_all_lanes_shadow_release_allowed ? 1 : 0,
-         activation_enabled ? 1 : 0, activation_blocked ? 1 : 0);
+         activation_enabled ? 1 : 0, activation_blocked ? 1 : 0,
+         candidate_release_gate_blocked_cycles);
   fflush(stdout);
 }
 
@@ -7647,6 +7718,13 @@ void rt_unit::cycle() {
         synthetic_submit_completion_ready &&
         (!activation_enabled || it->second.rt_subop != RT_CORE_SUBOP_SUBMIT ||
          candidate_all_lanes_shadow_release_allowed);
+    const unsigned long long candidate_release_gate_blocked_cycles =
+        rtcore_update_replay_release_gate_activation_blocked_cycles(
+            synthetic_submit_release_candidate &&
+                candidate_completion_event_found,
+            m_sid, it->second.get_uid(), it->second.warp_id(),
+            candidate_issued_active_mask, activation_blocked,
+            candidate_all_lanes_shadow_release_allowed);
     rtcore_record_replay_cycle_release_gate_shadow_decision(
         replay_cycle_result, synthetic_submit_completion_ready,
         release_identity_join.joined,
@@ -7656,7 +7734,7 @@ void rt_unit::cycle() {
         candidate_completion.enabled, candidate_completion.found,
         candidate_completion.all_active_lanes_complete,
         candidate_all_lanes_shadow_release_allowed, activation_enabled,
-        activation_blocked);
+        activation_blocked, candidate_release_gate_blocked_cycles);
     // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
     if (gated_synthetic_submit_completion_ready &&
         it->second.rt_mem_accesses_empty() &&
