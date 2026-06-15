@@ -205,6 +205,12 @@ enum rtcore_compact_trace_resource_class {
     RTCORE_TRACE_RESOURCE_SUMMARY,
 };
 
+enum rtcore_compact_trace_node_kind {
+    RTCORE_TRACE_NODE_KIND_BVH_HEADER = 0,
+    RTCORE_TRACE_NODE_KIND_INTERNAL,
+    RTCORE_TRACE_NODE_KIND_INSTANCE_LEAF,
+};
+
 struct rtcore_compact_trace_event {
     uint64_t address_or_ref;
     uint32_t packed_fields;
@@ -241,6 +247,20 @@ static uint16_t rtcore_pack_compact_trace_count_bytes(unsigned count,
     unsigned compact_count = count > 255 ? 255 : count;
     unsigned compact_bytes = bytes > 255 ? 255 : bytes;
     return static_cast<uint16_t>((compact_bytes << 8) | compact_count);
+}
+
+static unsigned rtcore_trace_node_fetch_flags(
+    bool top_level, rtcore_compact_trace_node_kind node_kind)
+{
+    unsigned level_flag = top_level ? 0x1u : 0x2u;
+    return level_flag | ((static_cast<unsigned>(node_kind) & 0x7u) << 2);
+}
+
+static unsigned rtcore_trace_node_test_flags(unsigned child_index, bool hit,
+                                             bool top_level)
+{
+    return (hit ? 0x1u : 0u) | (top_level ? 0x2u : 0u) |
+           ((child_index & 0x7u) << 2);
 }
 
 struct rtcore_bounded_trace_collector {
@@ -293,6 +313,20 @@ struct rtcore_bounded_trace_collector {
         event.packed_count_bytes =
             rtcore_pack_compact_trace_count_bytes(count, bytes);
         events.push_back(event);
+    }
+
+    void append_node_fetch(uint64_t address, unsigned bytes, unsigned flags)
+    {
+        append(RTCORE_TRACE_NODE_FETCH, RTCORE_TRACE_RESOURCE_NODE, address,
+               bytes, 1, flags);
+    }
+
+    void append_node_test(uint64_t parent_node_address, unsigned child_index,
+                          bool hit, bool top_level)
+    {
+        append(RTCORE_TRACE_NODE_TEST, RTCORE_TRACE_RESOURCE_NODE,
+               parent_node_address, 0, 1,
+               rtcore_trace_node_test_flags(child_index, hit, top_level));
     }
 
     void append_completion_summary(unsigned node_events,
@@ -791,6 +825,10 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     GEN_RT_BVH_unpack(&topBVH, (uint8_t*)_topLevelAS);
     transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)_topLevelAS + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
+    rtcore_compact_trace.append_node_fetch(
+        (uint64_t)_topLevelAS + device_offset, GEN_RT_BVH_length * 4,
+        rtcore_trace_node_fetch_flags(
+            true, RTCORE_TRACE_NODE_KIND_BVH_HEADER));
 
     uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
     traversal_data.rtcore_traversable_proxy_id =
@@ -828,7 +866,10 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         hi.z = topBVH.BoundsMax.Z;
 
         float thit;
-        if(ray_box_test(lo, hi, calculate_idir(ray.get_direction()), ray.get_origin(), ray.get_tmin(), ray.get_tmax(), thit))
+        bool root_hit = ray_box_test(lo, hi, calculate_idir(ray.get_direction()), ray.get_origin(), ray.get_tmin(), ray.get_tmax(), thit);
+        rtcore_compact_trace.append_node_test(
+            (uint64_t)topRootAddr + device_offset, 0, root_hit, true);
+        if(root_hit)
             stack.push_back(StackEntry(topRootAddr, true, false));
     }
 
@@ -858,6 +899,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)node_addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
             total_nodes_accessed++;
+            rtcore_compact_trace.append_node_fetch(
+                (uint64_t)node_addr + device_offset,
+                GEN_RT_BVH_INTERNAL_NODE_length * 4,
+                rtcore_trace_node_fetch_flags(
+                    true, RTCORE_TRACE_NODE_KIND_INTERNAL));
 
             if (debugTraversal)
             {
@@ -881,6 +927,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     child_hit[i] = ray_box_test(lo, hi, idir, ray.get_origin(), ray.get_tmin(), ray.get_tmax(), thit[i]);
                     if(child_hit[i] && thit[i] >= min_thit)
                         child_hit[i] = false;
+                    rtcore_compact_trace.append_node_test(
+                        (uint64_t)node_addr + device_offset, i,
+                        child_hit[i], true);
 
                     
                     if (debugTraversal)
@@ -959,6 +1008,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
             total_nodes_accessed++;
+            rtcore_compact_trace.append_node_fetch(
+                (uint64_t)leaf_addr + device_offset,
+                GEN_RT_BVH_INSTANCE_LEAF_length * 4,
+                rtcore_trace_node_fetch_flags(
+                    true, RTCORE_TRACE_NODE_KIND_INSTANCE_LEAF));
 
 
             if (debugTraversal)
@@ -982,6 +1036,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
             transactions.push_back(MemoryTransactionRecord((uint8_t*)(botLevelRootAddr + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
+            rtcore_compact_trace.append_node_fetch(
+                (uint64_t)botLevelRootAddr + device_offset,
+                GEN_RT_BVH_length * 4,
+                rtcore_trace_node_fetch_flags(
+                    false, RTCORE_TRACE_NODE_KIND_BVH_HEADER));
 
             if (debugTraversal)
             {
@@ -1034,6 +1093,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)node_addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
                     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
                     total_nodes_accessed++;
+                    rtcore_compact_trace.append_node_fetch(
+                        (uint64_t)node_addr + device_offset,
+                        GEN_RT_BVH_INTERNAL_NODE_length * 4,
+                        rtcore_trace_node_fetch_flags(
+                            false, RTCORE_TRACE_NODE_KIND_INTERNAL));
 
                     if (debugTraversal)
                     {
@@ -1057,6 +1121,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             child_hit[i] = ray_box_test(lo, hi, idir, objectRay.get_origin(), objectRay.get_tmin(), objectRay.get_tmax(), thit[i]);
                             if(child_hit[i] && thit[i] >= min_thit * worldToObject_tMultiplier)
                                 child_hit[i] = false;
+                            rtcore_compact_trace.append_node_test(
+                                (uint64_t)node_addr + device_offset, i,
+                                child_hit[i], false);
 
                             if (debugTraversal)
                             {
