@@ -62,6 +62,11 @@ struct rtcore_replay_service_cycle_identity_snapshot {
   unsigned owner_hw_sid;
   unsigned thread_uid;
   unsigned lane_id;
+  bool has_warp_metadata;
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned active_mask;
+  unsigned static_inst_uid;
 };
 
 extern "C" bool rtcore_symbolic_submit_issue_resources_available(
@@ -103,6 +108,11 @@ struct rtcore_replay_cycle_hook_result {
   unsigned identity_owner_hw_sid;
   unsigned identity_thread_uid;
   unsigned identity_lane_id;
+  bool identity_has_warp_metadata;
+  unsigned identity_warp_uid;
+  unsigned identity_warp_id;
+  unsigned identity_active_mask;
+  unsigned identity_static_inst_uid;
 };
 
 struct rtcore_replay_cycle_hook_consumer_stats {
@@ -141,6 +151,52 @@ struct rtcore_replay_cycle_release_gate_shadow_stats {
 
 static rtcore_replay_cycle_release_gate_shadow_stats
     g_rtcore_replay_cycle_release_gate_shadow_stats = {};
+
+static bool rtcore_replay_release_identity_join_shadow_enabled() {
+  static int cached_enabled = -1;
+  if (cached_enabled < 0) {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_RELEASE_IDENTITY_JOIN_SHADOW");
+    cached_enabled =
+        (value != NULL && *value != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+  }
+  return cached_enabled != 0;
+}
+
+static unsigned rtcore_replay_release_identity_join_shadow_log_limit() {
+  static unsigned cached_limit = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_RELEASE_IDENTITY_JOIN_SHADOW_LOG_LIMIT");
+    if (value == NULL || *value == '\0') {
+      return 16u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value) {
+      return 16u;
+    }
+    if (parsed > 1024) {
+      return 1024u;
+    }
+    return static_cast<unsigned>(parsed);
+  }();
+  return cached_limit;
+}
+
+struct rtcore_replay_release_identity_join_shadow_stats {
+  unsigned long long evaluated_calls;
+  unsigned long long joined_calls;
+  unsigned long long logged_records;
+  unsigned long long joined_logged_records;
+  unsigned long long last_cycle;
+  unsigned last_owner_hw_sid;
+  unsigned last_identity_thread_uid;
+  unsigned last_identity_lane_id;
+  unsigned last_joined_warp_uid;
+};
+
+static rtcore_replay_release_identity_join_shadow_stats
+    g_rtcore_replay_release_identity_join_shadow_stats = {};
 
 struct rtcore_replay_cycle_hook_smoke_stats {
   unsigned long long hook_calls;
@@ -233,7 +289,10 @@ static void rtcore_maybe_log_replay_cycle_hook_smoke(
          "ready_progressed=%u identity_valid=%u "
          "identity_owner_hw_sid=%u identity_thread_uid=%u "
          "identity_lane_id=%u identity_memory_progressed=%u "
-         "identity_ready_progressed=%u service_enabled_calls=%llu "
+         "identity_ready_progressed=%u identity_has_warp_metadata=%u "
+         "identity_warp_uid=%u identity_warp_id=%u "
+         "identity_active_mask=0x%08x identity_static_inst_uid=%u "
+         "service_enabled_calls=%llu "
          "progressed_calls=%llu memory_progressed_calls=%llu "
          "ready_progressed_calls=%llu\n",
          owner_hw_sid, current_cycle,
@@ -244,6 +303,9 @@ static void rtcore_maybe_log_replay_cycle_hook_smoke(
          identity_snapshot.thread_uid, identity_snapshot.lane_id,
          identity_snapshot.memory_progressed ? 1 : 0,
          identity_snapshot.ready_progressed ? 1 : 0,
+         identity_snapshot.has_warp_metadata ? 1 : 0,
+         identity_snapshot.warp_uid, identity_snapshot.warp_id,
+         identity_snapshot.active_mask, identity_snapshot.static_inst_uid,
          g_rtcore_replay_cycle_hook_smoke_stats.service_enabled_calls,
          g_rtcore_replay_cycle_hook_smoke_stats.progressed_calls,
          g_rtcore_replay_cycle_hook_smoke_stats.memory_progressed_calls,
@@ -304,6 +366,11 @@ rtcore_maybe_service_replay_cycle_from_rt_unit(
   result.identity_owner_hw_sid = identity_snapshot.owner_hw_sid;
   result.identity_thread_uid = identity_snapshot.thread_uid;
   result.identity_lane_id = identity_snapshot.lane_id;
+  result.identity_has_warp_metadata = identity_snapshot.has_warp_metadata;
+  result.identity_warp_uid = identity_snapshot.warp_uid;
+  result.identity_warp_id = identity_snapshot.warp_id;
+  result.identity_active_mask = identity_snapshot.active_mask;
+  result.identity_static_inst_uid = identity_snapshot.static_inst_uid;
   rtcore_record_replay_cycle_hook_smoke(owner_hw_sid, current_cycle,
                                         service_enabled, memory_progressed,
                                         ready_progressed, progressed,
@@ -336,7 +403,8 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
 }
 
 static void rtcore_record_replay_cycle_release_gate_shadow_decision(
-    const rtcore_replay_cycle_hook_result &result, bool legacy_ready) {
+    const rtcore_replay_cycle_hook_result &result, bool legacy_ready,
+    bool release_identity_joined) {
   if (!rtcore_replay_cycle_release_gate_shadow_enabled()) {
     return;
   }
@@ -351,9 +419,13 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
   if (result.progressed) {
     g_rtcore_replay_cycle_release_gate_shadow_stats.hook_progressed_calls++;
   }
+  const bool identity_ready =
+      rtcore_replay_release_identity_join_shadow_enabled()
+          ? release_identity_joined
+          : result.identity_valid;
   const bool shadow_release_allowed =
       legacy_ready && result.hook_enabled && result.service_enabled &&
-      result.progressed && result.identity_valid;
+      result.progressed && identity_ready;
   if (shadow_release_allowed) {
     g_rtcore_replay_cycle_release_gate_shadow_stats
         .shadow_release_allowed_calls++;
@@ -6547,6 +6619,136 @@ void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {
   }
 }
 
+rt_unit::rtcore_replay_release_identity_join_snapshot
+rt_unit::rtcore_make_replay_release_identity_join_snapshot(
+    bool identity_valid, bool progressed, bool memory_progressed,
+    bool ready_progressed, unsigned identity_owner_hw_sid,
+    unsigned identity_thread_uid, unsigned identity_lane_id,
+    bool identity_has_warp_metadata, unsigned identity_warp_uid,
+    unsigned identity_warp_id, unsigned identity_active_mask,
+    unsigned identity_static_inst_uid,
+    unsigned long long cycle, warp_inst_t &inst) const {
+  rtcore_replay_release_identity_join_snapshot snapshot;
+  snapshot.enabled = rtcore_replay_release_identity_join_shadow_enabled();
+  snapshot.identity_valid = identity_valid;
+  snapshot.progressed = progressed;
+  snapshot.memory_progressed = memory_progressed;
+  snapshot.ready_progressed = ready_progressed;
+  snapshot.identity_has_warp_metadata = identity_has_warp_metadata;
+  snapshot.owner_hw_sid = m_sid;
+  snapshot.cycle = cycle;
+  snapshot.identity_owner_hw_sid = identity_owner_hw_sid;
+  snapshot.identity_thread_uid = identity_thread_uid;
+  snapshot.identity_lane_id = identity_lane_id;
+  snapshot.identity_warp_uid = identity_warp_uid;
+  snapshot.identity_warp_id = identity_warp_id;
+  snapshot.identity_active_mask = identity_active_mask;
+  snapshot.identity_static_inst_uid = identity_static_inst_uid;
+  snapshot.joined_warp_uid = inst.get_uid();
+  snapshot.joined_warp_id = inst.warp_id();
+  snapshot.joined_static_inst_pc = inst.pc;
+
+  if (!snapshot.enabled || !identity_valid || !identity_has_warp_metadata) {
+    return snapshot;
+  }
+
+  snapshot.owner_sid_match = identity_owner_hw_sid == m_sid;
+  snapshot.identity_warp_uid_match = identity_warp_uid == inst.get_uid();
+  snapshot.identity_warp_id_match = identity_warp_id == inst.warp_id();
+  snapshot.lane_in_range =
+      identity_lane_id < inst.warp_size() && identity_lane_id < 32;
+  std::map<unsigned, rtcore_synthetic_completion_event>::const_iterator event =
+      m_synthetic_completion_queue.find(inst.get_uid());
+  snapshot.completion_event_found =
+      event != m_synthetic_completion_queue.end();
+  if (snapshot.completion_event_found) {
+    snapshot.joined_issued_active_mask = event->second.issued_active_mask;
+  }
+
+  if (snapshot.completion_event_found && snapshot.lane_in_range) {
+    snapshot.issued_lane_active =
+        (event->second.issued_active_mask & (1u << identity_lane_id)) != 0;
+  }
+  snapshot.joined = progressed && snapshot.owner_sid_match &&
+                    snapshot.lane_in_range &&
+                    snapshot.identity_warp_uid_match &&
+                    snapshot.identity_warp_id_match &&
+                    snapshot.issued_lane_active &&
+                    snapshot.completion_event_found;
+  return snapshot;
+}
+
+void rt_unit::rtcore_record_replay_release_identity_join_shadow(
+    const rtcore_replay_release_identity_join_snapshot &snapshot) const {
+  if (!snapshot.enabled) {
+    return;
+  }
+
+  g_rtcore_replay_release_identity_join_shadow_stats.evaluated_calls++;
+  g_rtcore_replay_release_identity_join_shadow_stats.last_cycle =
+      snapshot.cycle;
+  g_rtcore_replay_release_identity_join_shadow_stats.last_owner_hw_sid =
+      snapshot.owner_hw_sid;
+  g_rtcore_replay_release_identity_join_shadow_stats.last_identity_thread_uid =
+      snapshot.identity_thread_uid;
+  g_rtcore_replay_release_identity_join_shadow_stats.last_identity_lane_id =
+      snapshot.identity_lane_id;
+  if (snapshot.joined) {
+    g_rtcore_replay_release_identity_join_shadow_stats.joined_calls++;
+    g_rtcore_replay_release_identity_join_shadow_stats.last_joined_warp_uid =
+        snapshot.joined_warp_uid;
+  }
+
+  const unsigned log_limit =
+      rtcore_replay_release_identity_join_shadow_log_limit();
+  bool should_log =
+      g_rtcore_replay_release_identity_join_shadow_stats.logged_records <
+      log_limit;
+  if (!should_log && snapshot.joined &&
+      g_rtcore_replay_release_identity_join_shadow_stats
+              .joined_logged_records < log_limit) {
+    should_log = true;
+  }
+  if (!should_log) {
+    return;
+  }
+
+  g_rtcore_replay_release_identity_join_shadow_stats.logged_records++;
+  if (snapshot.joined) {
+    g_rtcore_replay_release_identity_join_shadow_stats.joined_logged_records++;
+  }
+
+  printf("GPGPU-Sim RTCORE_REPLAY_RELEASE_IDENTITY_JOIN_SHADOW "
+         "owner_hw_sid=%u cycle=%llu identity_valid=%u progressed=%u "
+         "identity_owner_hw_sid=%u identity_thread_uid=%u "
+         "identity_lane_id=%u identity_has_warp_metadata=%u "
+         "identity_warp_uid=%u identity_warp_id=%u "
+         "identity_active_mask=0x%08x identity_static_inst_uid=%u "
+         "owner_sid_match=%u lane_in_range=%u "
+         "identity_warp_uid_match=%u identity_warp_id_match=%u "
+         "issued_lane_active=%u "
+         "completion_event_found=%u joined=%u joined_warp_uid=%u "
+         "joined_warp_id=%u joined_static_inst_pc=0x%llx "
+         "joined_issued_active_mask=0x%08x\n",
+         snapshot.owner_hw_sid, snapshot.cycle,
+         snapshot.identity_valid ? 1 : 0, snapshot.progressed ? 1 : 0,
+         snapshot.identity_owner_hw_sid, snapshot.identity_thread_uid,
+         snapshot.identity_lane_id,
+         snapshot.identity_has_warp_metadata ? 1 : 0,
+         snapshot.identity_warp_uid, snapshot.identity_warp_id,
+         snapshot.identity_active_mask, snapshot.identity_static_inst_uid,
+         snapshot.owner_sid_match ? 1 : 0,
+         snapshot.lane_in_range ? 1 : 0,
+         snapshot.identity_warp_uid_match ? 1 : 0,
+         snapshot.identity_warp_id_match ? 1 : 0,
+         snapshot.issued_lane_active ? 1 : 0,
+         snapshot.completion_event_found ? 1 : 0, snapshot.joined ? 1 : 0,
+         snapshot.joined_warp_uid, snapshot.joined_warp_id,
+         static_cast<unsigned long long>(snapshot.joined_static_inst_pc),
+         snapshot.joined_issued_active_mask);
+  fflush(stdout);
+}
+
 rt_unit::rtcore_synthetic_release_snapshot
 rt_unit::rtcore_make_synthetic_release_snapshot(
     const warp_inst_t &inst, const rtcore_synthetic_completion_event &event,
@@ -7232,8 +7434,25 @@ void rt_unit::cycle() {
     RT_DPRINTF("Checking warp inst uid: %d\n", debug_inst.get_uid());
     const bool synthetic_submit_completion_ready =
         synthetic_completion_ready(it->second, current_cycle);
+    rtcore_replay_release_identity_join_snapshot release_identity_join =
+        rtcore_make_replay_release_identity_join_snapshot(
+            replay_cycle_result.identity_valid, replay_cycle_result.progressed,
+            replay_cycle_result.memory_progressed,
+            replay_cycle_result.ready_progressed,
+            replay_cycle_result.identity_owner_hw_sid,
+            replay_cycle_result.identity_thread_uid,
+            replay_cycle_result.identity_lane_id,
+            replay_cycle_result.identity_has_warp_metadata,
+            replay_cycle_result.identity_warp_uid,
+            replay_cycle_result.identity_warp_id,
+            replay_cycle_result.identity_active_mask,
+            replay_cycle_result.identity_static_inst_uid,
+            replay_cycle_result.cycle,
+            it->second);
+    rtcore_record_replay_release_identity_join_shadow(release_identity_join);
     rtcore_record_replay_cycle_release_gate_shadow_decision(
-        replay_cycle_result, synthetic_submit_completion_ready);
+        replay_cycle_result, synthetic_submit_completion_ready,
+        release_identity_join.joined);
     // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
     if (synthetic_submit_completion_ready &&
         it->second.rt_mem_accesses_empty() &&

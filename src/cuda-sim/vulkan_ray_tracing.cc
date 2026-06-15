@@ -258,6 +258,11 @@ struct rtcore_compact_trace_export_record {
     unsigned thread_uid;
     unsigned owner_hw_sid;
     unsigned lane_id;
+    bool has_warp_metadata;
+    unsigned warp_uid;
+    unsigned warp_id;
+    unsigned active_mask;
+    unsigned static_inst_uid;
     unsigned event_count;
     unsigned max_trace_events_per_lane;
     bool timing_trace_overflowed;
@@ -273,6 +278,11 @@ struct rtcore_replay_lane_request {
     unsigned thread_uid;
     unsigned owner_hw_sid;
     unsigned lane_id;
+    bool has_warp_metadata;
+    unsigned warp_uid;
+    unsigned warp_id;
+    unsigned active_mask;
+    unsigned static_inst_uid;
     unsigned next_event_index;
     unsigned event_count;
     unsigned node_event_count;
@@ -313,6 +323,11 @@ struct rtcore_replay_service_cycle_identity_snapshot {
     unsigned owner_hw_sid;
     unsigned thread_uid;
     unsigned lane_id;
+    bool has_warp_metadata;
+    unsigned warp_uid;
+    unsigned warp_id;
+    unsigned active_mask;
+    unsigned static_inst_uid;
 };
 
 struct rtcore_replay_service_tick_result {
@@ -705,6 +720,11 @@ struct rtcore_bounded_trace_collector {
         record.thread_uid = 0;
         record.owner_hw_sid = 0;
         record.lane_id = lane_id;
+        record.has_warp_metadata = false;
+        record.warp_uid = 0;
+        record.warp_id = 0;
+        record.active_mask = 0;
+        record.static_inst_uid = 0;
         record.event_count = events.size();
         record.max_trace_events_per_lane = max_trace_events_per_lane;
         record.timing_trace_overflowed = timing_trace_overflowed;
@@ -725,6 +745,14 @@ static void rtcore_publish_compact_trace_export(
     rtcore_compact_trace_export_record stored = record;
     stored.thread_uid = thread ? thread->get_uid() : 0;
     stored.owner_hw_sid = thread ? thread->get_hw_sid() : 0;
+    ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
+    if (thread && thread->get_rtcore_current_warp_metadata(&warp_metadata)) {
+        stored.has_warp_metadata = true;
+        stored.warp_uid = warp_metadata.warp_uid;
+        stored.warp_id = warp_metadata.warp_id;
+        stored.active_mask = warp_metadata.active_mask;
+        stored.static_inst_uid = warp_metadata.static_inst_uid;
+    }
     g_rtcore_compact_trace_exports[stored.thread_uid] = stored;
 }
 
@@ -750,6 +778,11 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.thread_uid = record.thread_uid;
     request.owner_hw_sid = record.owner_hw_sid;
     request.lane_id = record.lane_id;
+    request.has_warp_metadata = record.has_warp_metadata;
+    request.warp_uid = record.warp_uid;
+    request.warp_id = record.warp_id;
+    request.active_mask = record.active_mask;
+    request.static_inst_uid = record.static_inst_uid;
     request.next_event_index = 0;
     request.event_count = record.event_count;
     request.timing_trace_overflowed = record.timing_trace_overflowed;
@@ -883,6 +916,11 @@ rtcore_make_replay_service_progress_identity(unsigned thread_uid,
     snapshot.owner_hw_sid = request.owner_hw_sid;
     snapshot.thread_uid = request.thread_uid;
     snapshot.lane_id = request.lane_id;
+    snapshot.has_warp_metadata = request.has_warp_metadata;
+    snapshot.warp_uid = request.warp_uid;
+    snapshot.warp_id = request.warp_id;
+    snapshot.active_mask = request.active_mask;
+    snapshot.static_inst_uid = request.static_inst_uid;
     return snapshot;
 }
 

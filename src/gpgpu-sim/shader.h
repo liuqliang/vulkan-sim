@@ -1694,6 +1694,62 @@ class rt_unit : public pipelined_simd_unit {
         unsigned long long ready_cycle;
         unsigned completion_latency;
       };
+      struct rtcore_replay_release_identity_join_snapshot {
+        rtcore_replay_release_identity_join_snapshot()
+            : enabled(false),
+              identity_valid(false),
+              progressed(false),
+              memory_progressed(false),
+              ready_progressed(false),
+              identity_has_warp_metadata(false),
+              owner_sid_match(false),
+              lane_in_range(false),
+              identity_warp_uid_match(false),
+              identity_warp_id_match(false),
+              issued_lane_active(false),
+              completion_event_found(false),
+              joined(false),
+              owner_hw_sid(0),
+              cycle(0),
+              identity_owner_hw_sid(0),
+              identity_thread_uid(0),
+              identity_lane_id(0),
+              identity_warp_uid(0),
+              identity_warp_id(0),
+              identity_active_mask(0),
+              identity_static_inst_uid(0),
+              joined_warp_uid(0),
+              joined_warp_id(0),
+              joined_static_inst_pc(0),
+              joined_issued_active_mask(0) {}
+
+        bool enabled;
+        bool identity_valid;
+        bool progressed;
+        bool memory_progressed;
+        bool ready_progressed;
+        bool identity_has_warp_metadata;
+        bool owner_sid_match;
+        bool lane_in_range;
+        bool identity_warp_uid_match;
+        bool identity_warp_id_match;
+        bool issued_lane_active;
+        bool completion_event_found;
+        bool joined;
+        unsigned owner_hw_sid;
+        unsigned long long cycle;
+        unsigned identity_owner_hw_sid;
+        unsigned identity_thread_uid;
+        unsigned identity_lane_id;
+        unsigned identity_warp_uid;
+        unsigned identity_warp_id;
+        unsigned identity_active_mask;
+        unsigned identity_static_inst_uid;
+        unsigned joined_warp_uid;
+        unsigned joined_warp_id;
+        unsigned long long joined_static_inst_pc;
+        unsigned joined_issued_active_mask;
+      };
       struct rtcore_synthetic_release_snapshot {
         rtcore_synthetic_release_snapshot()
             : action(RTCORE_SYNTHETIC_RELEASE_ACTION_RELEASE),
@@ -2026,6 +2082,17 @@ class rt_unit : public pipelined_simd_unit {
           const warp_inst_t &inst,
           const rtcore_synthetic_completion_event &event,
           unsigned long long current_cycle) const;
+      rtcore_replay_release_identity_join_snapshot
+      rtcore_make_replay_release_identity_join_snapshot(
+          bool identity_valid, bool progressed, bool memory_progressed,
+          bool ready_progressed, unsigned identity_owner_hw_sid,
+          unsigned identity_thread_uid, unsigned identity_lane_id,
+          bool identity_has_warp_metadata, unsigned identity_warp_uid,
+          unsigned identity_warp_id, unsigned identity_active_mask,
+          unsigned identity_static_inst_uid,
+          unsigned long long cycle, warp_inst_t &inst) const;
+      void rtcore_record_replay_release_identity_join_shadow(
+          const rtcore_replay_release_identity_join_snapshot &snapshot) const;
       void rtcore_apply_synthetic_release_snapshot(
           const rtcore_synthetic_release_snapshot &snapshot) const;
       rtcore_shadow_table_release_snapshot
