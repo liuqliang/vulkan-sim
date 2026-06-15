@@ -60,8 +60,36 @@ extern "C" bool rtcore_symbolic_submit_issue_resources_available(
     unsigned long long static_inst_pc);
 extern "C" bool
 rtcore_symbolic_submit_issue_resource_backpressure_is_enabled();
+extern "C" bool rtcore_service_replay_cycle_for_sm(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    bool *service_enabled, bool *memory_progressed, bool *ready_progressed);
 
 namespace {
+
+static bool rtcore_replay_cycle_hook_enabled() {
+  static int cached_enabled = -1;
+  if (cached_enabled < 0) {
+    const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_CYCLE_HOOK");
+    cached_enabled =
+        (value != NULL && *value != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+  }
+  return cached_enabled != 0;
+}
+
+static void rtcore_maybe_service_replay_cycle_from_rt_unit(
+    unsigned owner_hw_sid, unsigned long long current_cycle) {
+  if (!rtcore_replay_cycle_hook_enabled()) {
+    return;
+  }
+
+  bool service_enabled = false;
+  bool memory_progressed = false;
+  bool ready_progressed = false;
+  (void)rtcore_service_replay_cycle_for_sm(owner_hw_sid, current_cycle,
+                                           &service_enabled,
+                                           &memory_progressed,
+                                           &ready_progressed);
+}
 
 struct rtcore_scheduler_credit_ledger_shadow_table_owner_key {
   unsigned owner_hw_sid;
@@ -6730,6 +6758,8 @@ void rt_unit::cycle() {
   
   unsigned long long current_cycle =  m_core->get_gpu()->gpu_sim_cycle +
                                       m_core->get_gpu()->gpu_tot_sim_cycle;
+
+  rtcore_maybe_service_replay_cycle_from_rt_unit(m_sid, current_cycle);
 
   // RT unit stats
   if (!pipe_reg.empty()) {
