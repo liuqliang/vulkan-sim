@@ -219,6 +219,11 @@ enum rtcore_compact_trace_primitive_kind {
     RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED,
 };
 
+enum rtcore_compact_trace_hit_update_kind {
+    RTCORE_TRACE_HIT_UPDATE_KIND_ANY_HIT = 0,
+    RTCORE_TRACE_HIT_UPDATE_KIND_CLOSEST_HIT,
+};
+
 struct rtcore_compact_trace_event {
     uint64_t address_or_ref;
     uint32_t packed_fields;
@@ -284,6 +289,12 @@ static unsigned rtcore_trace_primitive_flags(
 {
     return (static_cast<unsigned>(primitive_kind) & 0x0fu) |
            (hit ? 0x10u : 0u) | (deferred ? 0x20u : 0u);
+}
+
+static unsigned rtcore_trace_hit_update_flags(
+    rtcore_compact_trace_hit_update_kind hit_update_kind)
+{
+    return static_cast<unsigned>(hit_update_kind) & 0xffu;
 }
 
 struct rtcore_bounded_trace_collector {
@@ -385,6 +396,13 @@ struct rtcore_bounded_trace_collector {
         append(RTCORE_TRACE_PRIMITIVE_TEST,
                RTCORE_TRACE_RESOURCE_PRIMITIVE, address_or_ref, 0, 1,
                flags | (hit ? 0x10u : 0u));
+    }
+
+    void append_hit_update(uint64_t address_or_ref, unsigned hit_count,
+                           unsigned flags)
+    {
+        append(RTCORE_TRACE_HIT_UPDATE, RTCORE_TRACE_RESOURCE_COMPLETION,
+               address_or_ref, 0, hit_count, flags);
     }
 
     void append_completion_summary(unsigned node_events,
@@ -1425,6 +1443,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 thread->RT_thread_data->all_hit_data.push_back(device_hit_attributes);
 
                                 traversal_data.n_all_hits++;
+                                rtcore_compact_trace.append_hit_update(
+                                    (uint64_t)device_hit_attributes,
+                                    traversal_data.n_all_hits,
+                                    rtcore_trace_hit_update_flags(
+                                        RTCORE_TRACE_HIT_UPDATE_KIND_ANY_HIT));
                             }
 
                             if(terminateOnFirstHit)
@@ -1519,6 +1542,10 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         //closest_objectRay.at(min_thit_object);
         float3 barycentric = Barycentric(object_intersection_point, p[0], p[1], p[2]);
         traversal_data.closest_hit.barycentric_coordinates = barycentric;
+        rtcore_compact_trace.append_hit_update(
+            closest_leaf.PrimitiveIndex0, traversal_data.n_all_hits,
+            rtcore_trace_hit_update_flags(
+                RTCORE_TRACE_HIT_UPDATE_KIND_CLOSEST_HIT));
         thread->RT_thread_data->set_hitAttribute(barycentric, pI, thread);
 
         // store_transactions.push_back(MemoryStoreTransactionRecord(&traversal_data, sizeof(traversal_data), StoreTransactionType::Traversal_Results));
