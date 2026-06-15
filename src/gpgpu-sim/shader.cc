@@ -89,6 +89,9 @@ struct rtcore_replay_cycle_hook_smoke_stats {
 static rtcore_replay_cycle_hook_smoke_stats
     g_rtcore_replay_cycle_hook_smoke_stats = {};
 static unsigned g_rtcore_replay_cycle_hook_smoke_logs_emitted = 0;
+static unsigned g_rtcore_replay_cycle_hook_smoke_progress_logs_emitted = 0;
+static unsigned long long
+    g_rtcore_replay_cycle_hook_smoke_last_logged_progressed_calls = 0;
 
 static bool rtcore_replay_cycle_hook_smoke_log_enabled() {
   static int cached_enabled = -1;
@@ -101,16 +104,62 @@ static bool rtcore_replay_cycle_hook_smoke_log_enabled() {
   return cached_enabled != 0;
 }
 
+static unsigned rtcore_replay_cycle_hook_smoke_progress_log_limit() {
+  static unsigned cached_limit = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_CYCLE_HOOK_SMOKE_PROGRESS_LOG_LIMIT");
+    if (value == NULL || *value == '\0') {
+      return 8u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value) {
+      return 8u;
+    }
+    if (parsed > 1024) {
+      return 1024u;
+    }
+    return static_cast<unsigned>(parsed);
+  }();
+  return cached_limit;
+}
+
+static bool rtcore_should_log_replay_cycle_hook_smoke() {
+  if (g_rtcore_replay_cycle_hook_smoke_logs_emitted < 8) {
+    g_rtcore_replay_cycle_hook_smoke_logs_emitted++;
+    if (g_rtcore_replay_cycle_hook_smoke_stats.progressed_calls >
+        g_rtcore_replay_cycle_hook_smoke_last_logged_progressed_calls) {
+      g_rtcore_replay_cycle_hook_smoke_last_logged_progressed_calls =
+          g_rtcore_replay_cycle_hook_smoke_stats.progressed_calls;
+    }
+    return true;
+  }
+
+  if (g_rtcore_replay_cycle_hook_smoke_stats.progressed_calls <=
+      g_rtcore_replay_cycle_hook_smoke_last_logged_progressed_calls) {
+    return false;
+  }
+  if (g_rtcore_replay_cycle_hook_smoke_progress_logs_emitted >=
+      rtcore_replay_cycle_hook_smoke_progress_log_limit()) {
+    return false;
+  }
+
+  g_rtcore_replay_cycle_hook_smoke_logs_emitted++;
+  g_rtcore_replay_cycle_hook_smoke_progress_logs_emitted++;
+  g_rtcore_replay_cycle_hook_smoke_last_logged_progressed_calls =
+      g_rtcore_replay_cycle_hook_smoke_stats.progressed_calls;
+  return true;
+}
+
 static void rtcore_maybe_log_replay_cycle_hook_smoke(
     unsigned owner_hw_sid, unsigned long long current_cycle,
     bool service_enabled, bool memory_progressed, bool ready_progressed,
     bool progressed) {
   if (!rtcore_replay_cycle_hook_smoke_log_enabled() ||
-      g_rtcore_replay_cycle_hook_smoke_logs_emitted >= 8) {
+      !rtcore_should_log_replay_cycle_hook_smoke()) {
     return;
   }
 
-  g_rtcore_replay_cycle_hook_smoke_logs_emitted++;
   printf("GPGPU-Sim RTCORE_REPLAY_CYCLE_HOOK_SMOKE "
          "owner_hw_sid=%u cycle=%llu hook_calls=%llu "
          "service_enabled=%u progressed=%u memory_progressed=%u "
