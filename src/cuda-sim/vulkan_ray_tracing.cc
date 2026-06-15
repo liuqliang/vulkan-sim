@@ -607,6 +607,53 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
     g_rtcore_replay_lane_requests[request.thread_uid] = request;
 }
 
+static bool rtcore_replay_request_done(
+    const rtcore_replay_lane_request &request)
+{
+    return !request.valid || request.state == RTCORE_REPLAY_DONE ||
+           request.next_event_index >= request.events.size();
+}
+
+static bool rtcore_replay_advance_lane_request(
+    rtcore_replay_lane_request *request)
+{
+    if (!request || !request->valid) {
+        return false;
+    }
+    if (request->events.empty()) {
+        request->state = RTCORE_REPLAY_DONE;
+        return false;
+    }
+    if (request->next_event_index >= request->events.size()) {
+        request->state = RTCORE_REPLAY_DONE;
+        return false;
+    }
+
+    request->next_event_index++;
+    if (request->next_event_index >= request->events.size()) {
+        request->state = RTCORE_REPLAY_DONE;
+        return true;
+    }
+
+    request->state = rtcore_classify_replay_state(
+        rtcore_unpack_compact_trace_event_type(
+            request->events[request->next_event_index]));
+    return true;
+}
+
+static bool rtcore_step_admitted_replay_request(unsigned thread_uid)
+{
+    std::map<unsigned, rtcore_replay_lane_request>::iterator it =
+        g_rtcore_replay_lane_requests.find(thread_uid);
+    if (it == g_rtcore_replay_lane_requests.end()) {
+        return false;
+    }
+    if (rtcore_replay_request_done(it->second)) {
+        return false;
+    }
+    return rtcore_replay_advance_lane_request(&it->second);
+}
+
 float get_norm(float4 v)
 {
     return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w);
