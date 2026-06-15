@@ -310,7 +310,15 @@ struct rtcore_replay_service_tick_result {
     bool ready_progressed;
 };
 
+struct rtcore_replay_service_tick_stats {
+    unsigned tick_attempts;
+    unsigned ticks_progressed;
+    unsigned memory_ticks_progressed;
+    unsigned ready_ticks_progressed;
+};
+
 static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
+static rtcore_replay_service_tick_stats g_rtcore_replay_service_tick_stats;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -913,6 +921,8 @@ static bool rtcore_dequeue_selected_ready_request(unsigned thread_uid)
     return false;
 }
 
+static void rtcore_try_service_replay_after_admission();
+
 static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 {
     if (!rtcore_replay_admission_enabled() || !thread) {
@@ -932,6 +942,7 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
     request.ready_order = g_rtcore_next_replay_ready_order++;
     g_rtcore_replay_lane_requests[request.thread_uid] = request;
     rtcore_route_admitted_replay_request(request.thread_uid);
+    rtcore_try_service_replay_after_admission();
 }
 
 static bool rtcore_replay_request_done(
@@ -1137,6 +1148,31 @@ static rtcore_replay_service_tick_result rtcore_maybe_service_replay_tick()
         return result;
     }
     return rtcore_service_replay_tick();
+}
+
+static void rtcore_record_replay_service_tick_result(
+    const rtcore_replay_service_tick_result &result)
+{
+    g_rtcore_replay_service_tick_stats.tick_attempts++;
+    if (result.progressed) {
+        g_rtcore_replay_service_tick_stats.ticks_progressed++;
+    }
+    if (result.memory_progressed) {
+        g_rtcore_replay_service_tick_stats.memory_ticks_progressed++;
+    }
+    if (result.ready_progressed) {
+        g_rtcore_replay_service_tick_stats.ready_ticks_progressed++;
+    }
+}
+
+static void rtcore_try_service_replay_after_admission()
+{
+    if (!rtcore_replay_service_tick_enabled()) {
+        return;
+    }
+    rtcore_replay_service_tick_result result =
+        rtcore_maybe_service_replay_tick();
+    rtcore_record_replay_service_tick_result(result);
 }
 
 float get_norm(float4 v)
