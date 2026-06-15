@@ -177,6 +177,134 @@ static unsigned rtcore_launch_id_x_for_thread(ptx_thread_info *thread);
 static unsigned rtcore_launch_id_y_for_thread(ptx_thread_info *thread);
 static bool rtcore_pixel_trace_matches_thread(ptx_thread_info *thread);
 
+static const char *RTCORE_TRACE_REPLAY_MODEL_NAME =
+    "RTCORE_SM_LOCAL_BOUNDED_TRACE_REPLAY_V0_1";
+static const unsigned RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE = 64;
+static const unsigned RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR = 256;
+static const unsigned RTCORE_COMPACT_TRACE_EVENT_TARGET_BYTES = 16;
+
+enum rtcore_compact_trace_event_type {
+    RTCORE_TRACE_NODE_FETCH = 0,
+    RTCORE_TRACE_NODE_TEST,
+    RTCORE_TRACE_STACK_PUSH,
+    RTCORE_TRACE_STACK_POP,
+    RTCORE_TRACE_PRIMITIVE_FETCH,
+    RTCORE_TRACE_PRIMITIVE_TEST,
+    RTCORE_TRACE_MEMORY_WAIT,
+    RTCORE_TRACE_HIT_UPDATE,
+    RTCORE_TRACE_COMPLETION,
+    RTCORE_TRACE_OVERFLOW_SUMMARY,
+};
+
+enum rtcore_compact_trace_resource_class {
+    RTCORE_TRACE_RESOURCE_NODE = 0,
+    RTCORE_TRACE_RESOURCE_PRIMITIVE,
+    RTCORE_TRACE_RESOURCE_MEMORY,
+    RTCORE_TRACE_RESOURCE_STACK,
+    RTCORE_TRACE_RESOURCE_COMPLETION,
+    RTCORE_TRACE_RESOURCE_SUMMARY,
+};
+
+struct rtcore_compact_trace_event {
+    uint64_t address_or_ref;
+    uint32_t packed_fields;
+    uint16_t event_seq;
+    uint16_t packed_count_bytes;
+};
+
+static_assert(sizeof(rtcore_compact_trace_event) <=
+                  RTCORE_COMPACT_TRACE_EVENT_TARGET_BYTES,
+              "rtcore_compact_trace_event must stay within the compact target");
+
+static bool rtcore_bounded_trace_collection_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv("VULKAN_SIM_RTCORE_BOUNDED_TRACE_COLLECTION");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static uint32_t rtcore_pack_compact_trace_fields(
+    unsigned lane_id, rtcore_compact_trace_event_type event_type,
+    rtcore_compact_trace_resource_class resource_class, unsigned flags)
+{
+    return ((lane_id & 0xffu) << 24) |
+           ((static_cast<unsigned>(event_type) & 0xffu) << 16) |
+           ((static_cast<unsigned>(resource_class) & 0xffu) << 8) |
+           (flags & 0xffu);
+}
+
+static uint16_t rtcore_pack_compact_trace_count_bytes(unsigned count,
+                                                      unsigned bytes)
+{
+    unsigned compact_count = count > 255 ? 255 : count;
+    unsigned compact_bytes = bytes > 255 ? 255 : bytes;
+    return static_cast<uint16_t>((compact_bytes << 8) | compact_count);
+}
+
+struct rtcore_bounded_trace_collector {
+    bool enabled;
+    unsigned lane_id;
+    unsigned max_trace_events_per_lane;
+    unsigned next_event_seq;
+    bool timing_trace_overflowed;
+    unsigned overflow_summary_events;
+    std::vector<rtcore_compact_trace_event> events;
+
+    explicit rtcore_bounded_trace_collector(ptx_thread_info *thread)
+        : enabled(rtcore_bounded_trace_collection_enabled()),
+          lane_id(thread ? (thread->get_tid().x & 31u) : 0),
+          max_trace_events_per_lane(
+              RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE),
+          next_event_seq(0), timing_trace_overflowed(false),
+          overflow_summary_events(0)
+    {
+        if (enabled) {
+            if (max_trace_events_per_lane >
+                RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR) {
+                max_trace_events_per_lane =
+                    RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR;
+            }
+            events.reserve(max_trace_events_per_lane);
+        }
+    }
+
+    void append(rtcore_compact_trace_event_type event_type,
+                rtcore_compact_trace_resource_class resource_class,
+                uint64_t address_or_ref, unsigned bytes, unsigned count,
+                unsigned flags)
+    {
+        if (!enabled) {
+            return;
+        }
+        if (events.size() >= max_trace_events_per_lane) {
+            timing_trace_overflowed = true;
+            overflow_summary_events = 1;
+            return;
+        }
+
+        rtcore_compact_trace_event event = {};
+        event.address_or_ref = address_or_ref;
+        event.packed_fields =
+            rtcore_pack_compact_trace_fields(lane_id, event_type,
+                                             resource_class, flags);
+        event.event_seq = static_cast<uint16_t>(next_event_seq++);
+        event.packed_count_bytes =
+            rtcore_pack_compact_trace_count_bytes(count, bytes);
+        events.push_back(event);
+    }
+
+    void append_completion_summary(unsigned node_events,
+                                   unsigned primitive_events)
+    {
+        append(RTCORE_TRACE_COMPLETION, RTCORE_TRACE_RESOURCE_COMPLETION, 0, 0,
+               node_events + primitive_events, 0);
+    }
+
+    const char *model_name() const { return RTCORE_TRACE_REPLAY_MODEL_NAME; }
+};
+
 float get_norm(float4 v)
 {
     return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w);
@@ -594,6 +722,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.rtcore_root_proxy_id = 0;
     traversal_data.rtcore_node_visits = 0;
     traversal_data.rtcore_primitive_tests = 0;
+
+    rtcore_bounded_trace_collector rtcore_compact_trace(thread);
 
     const bool pixel_trace_enabled = rtcore_pixel_trace_matches_thread(thread);
     if (pixel_trace_enabled) {
@@ -1255,6 +1385,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     Traversal_data* device_traversal_data = (Traversal_data*) VulkanRayTracing::gpgpusim_alloc(sizeof(Traversal_data));
     traversal_data.rtcore_node_visits = total_nodes_accessed;
     traversal_data.rtcore_primitive_tests = total_primitive_tests;
+    rtcore_compact_trace.append_completion_summary(total_nodes_accessed,
+                                                   total_primitive_tests);
     mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);
     thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
     
