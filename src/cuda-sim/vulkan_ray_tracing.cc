@@ -297,6 +297,13 @@ struct rtcore_replay_ready_queues {
     std::deque<unsigned> done_queue;
 };
 
+struct rtcore_replay_issue_budget {
+    unsigned node_issue_budget;
+    unsigned primitive_issue_budget;
+    unsigned stack_issue_budget;
+    unsigned completion_issue_budget;
+};
+
 static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
@@ -334,6 +341,49 @@ rtcore_replay_ready_selection_policy()
         return static_cast<int>(RTCORE_REPLAY_SELECT_OLDEST_READY_FIRST);
     }();
     return static_cast<enum rtcore_replay_ready_selection_policy>(policy);
+}
+
+static unsigned rtcore_replay_issue_budget_from_env(const char *name,
+                                                    unsigned default_budget)
+{
+    const char *value = getenv(name);
+    if (!value || value[0] == '\0') {
+        return default_budget;
+    }
+
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value) {
+        return default_budget;
+    }
+    if (parsed > 32) {
+        return 32;
+    }
+    return static_cast<unsigned>(parsed);
+}
+
+static rtcore_replay_issue_budget rtcore_replay_issue_budget_config()
+{
+    static rtcore_replay_issue_budget budget = []() {
+        rtcore_replay_issue_budget parsed = {};
+        parsed.node_issue_budget = rtcore_replay_issue_budget_from_env(
+            "VULKAN_SIM_RTCORE_REPLAY_NODE_ISSUE_BUDGET", 1);
+        parsed.primitive_issue_budget = rtcore_replay_issue_budget_from_env(
+            "VULKAN_SIM_RTCORE_REPLAY_PRIMITIVE_ISSUE_BUDGET", 1);
+        parsed.stack_issue_budget = rtcore_replay_issue_budget_from_env(
+            "VULKAN_SIM_RTCORE_REPLAY_STACK_ISSUE_BUDGET", 1);
+        parsed.completion_issue_budget = rtcore_replay_issue_budget_from_env(
+            "VULKAN_SIM_RTCORE_REPLAY_COMPLETION_ISSUE_BUDGET", 1);
+        return parsed;
+    }();
+    return budget;
+}
+
+static bool rtcore_replay_issue_budget_available(
+    const rtcore_replay_issue_budget &budget)
+{
+    return budget.node_issue_budget || budget.primitive_issue_budget ||
+           budget.stack_issue_budget || budget.completion_issue_budget;
 }
 
 static uint32_t rtcore_pack_compact_trace_fields(
@@ -909,10 +959,63 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid)
     return rtcore_replay_advance_lane_request(&it->second);
 }
 
-static bool rtcore_step_selected_ready_replay_request()
+static bool rtcore_consume_replay_issue_budget_for_state(
+    rtcore_replay_lane_request_state state, rtcore_replay_issue_budget *budget)
+{
+    if (!budget) {
+        return false;
+    }
+
+    switch (state) {
+    case RTCORE_REPLAY_READY_NODE:
+        if (budget->node_issue_budget == 0) {
+            return false;
+        }
+        budget->node_issue_budget--;
+        return true;
+    case RTCORE_REPLAY_READY_PRIMITIVE:
+        if (budget->primitive_issue_budget == 0) {
+            return false;
+        }
+        budget->primitive_issue_budget--;
+        return true;
+    case RTCORE_REPLAY_READY_STACK:
+        if (budget->stack_issue_budget == 0) {
+            return false;
+        }
+        budget->stack_issue_budget--;
+        return true;
+    case RTCORE_REPLAY_READY_COMPLETION:
+        if (budget->completion_issue_budget == 0) {
+            return false;
+        }
+        budget->completion_issue_budget--;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool rtcore_consume_replay_issue_budget(unsigned thread_uid,
+                                               rtcore_replay_issue_budget *budget)
+{
+    std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+        g_rtcore_replay_lane_requests.find(thread_uid);
+    if (it == g_rtcore_replay_lane_requests.end()) {
+        return false;
+    }
+    return rtcore_consume_replay_issue_budget_for_state(it->second.state,
+                                                        budget);
+}
+
+static bool rtcore_step_selected_ready_replay_request_with_budget(
+    rtcore_replay_issue_budget *budget)
 {
     unsigned thread_uid = 0;
     if (!rtcore_select_ready_replay_request(&thread_uid)) {
+        return false;
+    }
+    if (!rtcore_consume_replay_issue_budget(thread_uid, budget)) {
         return false;
     }
     if (!rtcore_dequeue_selected_ready_request(thread_uid)) {
@@ -922,6 +1025,25 @@ static bool rtcore_step_selected_ready_replay_request()
         return false;
     }
     return rtcore_route_admitted_replay_request(thread_uid);
+}
+
+static bool rtcore_step_selected_ready_replay_request()
+{
+    rtcore_replay_issue_budget budget = rtcore_replay_issue_budget_config();
+    return rtcore_step_selected_ready_replay_request_with_budget(&budget);
+}
+
+static bool rtcore_service_replay_ready_requests_with_budget(
+    rtcore_replay_issue_budget budget)
+{
+    bool progressed = false;
+    while (rtcore_replay_issue_budget_available(budget)) {
+        if (!rtcore_step_selected_ready_replay_request_with_budget(&budget)) {
+            break;
+        }
+        progressed = true;
+    }
+    return progressed;
 }
 
 float get_norm(float4 v)
