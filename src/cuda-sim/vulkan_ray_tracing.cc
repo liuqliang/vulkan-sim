@@ -37,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #define BOOST_FILESYSTEM_VERSION 3
 #define BOOST_FILESYSTEM_NO_DEPRECATED 
 #include <boost/filesystem.hpp>
@@ -235,6 +236,21 @@ static_assert(sizeof(rtcore_compact_trace_event) <=
                   RTCORE_COMPACT_TRACE_EVENT_TARGET_BYTES,
               "rtcore_compact_trace_event must stay within the compact target");
 
+struct rtcore_compact_trace_export_record {
+    bool valid;
+    const char *model_name;
+    unsigned thread_uid;
+    unsigned lane_id;
+    unsigned event_count;
+    unsigned max_trace_events_per_lane;
+    bool timing_trace_overflowed;
+    unsigned overflow_summary_events;
+    std::vector<rtcore_compact_trace_event> events;
+};
+
+static std::map<unsigned, rtcore_compact_trace_export_record>
+    g_rtcore_compact_trace_exports;
+
 static bool rtcore_bounded_trace_collection_enabled()
 {
     static int enabled = []() {
@@ -413,7 +429,49 @@ struct rtcore_bounded_trace_collector {
     }
 
     const char *model_name() const { return RTCORE_TRACE_REPLAY_MODEL_NAME; }
+
+    rtcore_compact_trace_export_record export_record() const
+    {
+        rtcore_compact_trace_export_record record = {};
+        record.valid = enabled;
+        record.model_name = RTCORE_TRACE_REPLAY_MODEL_NAME;
+        record.thread_uid = 0;
+        record.lane_id = lane_id;
+        record.event_count = events.size();
+        record.max_trace_events_per_lane = max_trace_events_per_lane;
+        record.timing_trace_overflowed = timing_trace_overflowed;
+        record.overflow_summary_events = overflow_summary_events;
+        if (enabled) {
+            record.events = events;
+        }
+        return record;
+    }
 };
+
+static void rtcore_publish_compact_trace_export(
+    ptx_thread_info *thread, const rtcore_compact_trace_export_record &record)
+{
+    if (!record.valid) {
+        return;
+    }
+    rtcore_compact_trace_export_record stored = record;
+    stored.thread_uid = thread ? thread->get_uid() : 0;
+    g_rtcore_compact_trace_exports[stored.thread_uid] = stored;
+}
+
+static bool rtcore_get_compact_trace_export(
+    unsigned thread_uid, rtcore_compact_trace_export_record *record)
+{
+    std::map<unsigned, rtcore_compact_trace_export_record>::const_iterator it =
+        g_rtcore_compact_trace_exports.find(thread_uid);
+    if (it == g_rtcore_compact_trace_exports.end()) {
+        return false;
+    }
+    if (record) {
+        *record = it->second;
+    }
+    return true;
+}
 
 float get_norm(float4 v)
 {
@@ -1598,6 +1656,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.rtcore_primitive_tests = total_primitive_tests;
     rtcore_compact_trace.append_completion_summary(total_nodes_accessed,
                                                    total_primitive_tests);
+    rtcore_publish_compact_trace_export(thread, rtcore_compact_trace.export_record());
     mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);
     thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
     
