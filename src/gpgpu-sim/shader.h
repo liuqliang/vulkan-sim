@@ -1709,6 +1709,9 @@ class rt_unit : public pipelined_simd_unit {
               issued_lane_active(false),
               completion_event_found(false),
               joined(false),
+              warp_completion_shadow_enabled(false),
+              warp_completion_shadow_found(false),
+              warp_completion_all_active_lanes_complete(false),
               owner_hw_sid(0),
               cycle(0),
               identity_owner_hw_sid(0),
@@ -1721,7 +1724,11 @@ class rt_unit : public pipelined_simd_unit {
               joined_warp_uid(0),
               joined_warp_id(0),
               joined_static_inst_pc(0),
-              joined_issued_active_mask(0) {}
+              joined_issued_active_mask(0),
+              warp_completion_active_mask(0),
+              warp_completion_admitted_lane_mask(0),
+              warp_completion_completed_lane_mask(0),
+              warp_completion_completed_lane_count(0) {}
 
         bool enabled;
         bool identity_valid;
@@ -1736,6 +1743,9 @@ class rt_unit : public pipelined_simd_unit {
         bool issued_lane_active;
         bool completion_event_found;
         bool joined;
+        bool warp_completion_shadow_enabled;
+        bool warp_completion_shadow_found;
+        bool warp_completion_all_active_lanes_complete;
         unsigned owner_hw_sid;
         unsigned long long cycle;
         unsigned identity_owner_hw_sid;
@@ -1749,6 +1759,10 @@ class rt_unit : public pipelined_simd_unit {
         unsigned joined_warp_id;
         unsigned long long joined_static_inst_pc;
         unsigned joined_issued_active_mask;
+        unsigned warp_completion_active_mask;
+        unsigned warp_completion_admitted_lane_mask;
+        unsigned warp_completion_completed_lane_mask;
+        unsigned warp_completion_completed_lane_count;
       };
       struct rtcore_synthetic_release_snapshot {
         rtcore_synthetic_release_snapshot()

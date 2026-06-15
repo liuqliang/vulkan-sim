@@ -69,6 +69,19 @@ struct rtcore_replay_service_cycle_identity_snapshot {
   unsigned static_inst_uid;
 };
 
+struct rtcore_replay_warp_completion_shadow_snapshot {
+  bool enabled;
+  bool found;
+  bool all_active_lanes_complete;
+  unsigned owner_hw_sid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned active_mask;
+  unsigned admitted_lane_mask;
+  unsigned completed_lane_mask;
+  unsigned completed_lane_count;
+};
+
 extern "C" bool rtcore_symbolic_submit_issue_resources_available(
     unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
     unsigned long long static_inst_pc);
@@ -81,6 +94,10 @@ extern "C" bool rtcore_service_replay_cycle_for_sm_with_identity(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot);
+extern "C" bool rtcore_query_replay_warp_completion_shadow(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask,
+    rtcore_replay_warp_completion_shadow_snapshot *snapshot);
 
 namespace {
 
@@ -6648,6 +6665,25 @@ rt_unit::rtcore_make_replay_release_identity_join_snapshot(
   snapshot.joined_warp_id = inst.warp_id();
   snapshot.joined_static_inst_pc = inst.pc;
 
+  if (identity_valid && identity_has_warp_metadata) {
+    rtcore_replay_warp_completion_shadow_snapshot completion_snapshot = {};
+    rtcore_query_replay_warp_completion_shadow(
+        identity_owner_hw_sid, identity_warp_uid, identity_warp_id,
+        identity_active_mask, &completion_snapshot);
+    snapshot.warp_completion_shadow_enabled =
+        completion_snapshot.enabled;
+    snapshot.warp_completion_shadow_found = completion_snapshot.found;
+    snapshot.warp_completion_all_active_lanes_complete =
+        completion_snapshot.all_active_lanes_complete;
+    snapshot.warp_completion_active_mask = completion_snapshot.active_mask;
+    snapshot.warp_completion_admitted_lane_mask =
+        completion_snapshot.admitted_lane_mask;
+    snapshot.warp_completion_completed_lane_mask =
+        completion_snapshot.completed_lane_mask;
+    snapshot.warp_completion_completed_lane_count =
+        completion_snapshot.completed_lane_count;
+  }
+
   if (!snapshot.enabled || !identity_valid || !identity_has_warp_metadata) {
     return snapshot;
   }
@@ -6729,7 +6765,14 @@ void rt_unit::rtcore_record_replay_release_identity_join_shadow(
          "issued_lane_active=%u "
          "completion_event_found=%u joined=%u joined_warp_uid=%u "
          "joined_warp_id=%u joined_static_inst_pc=0x%llx "
-         "joined_issued_active_mask=0x%08x\n",
+         "joined_issued_active_mask=0x%08x "
+         "warp_completion_shadow_enabled=%u "
+         "warp_completion_shadow_found=%u "
+         "warp_completion_active_mask=0x%08x "
+         "warp_completion_completed_lane_mask=0x%08x "
+         "warp_completion_all_active_lanes_complete=%u "
+         "warp_completion_admitted_lane_mask=0x%08x "
+         "warp_completion_completed_lane_count=%u\n",
          snapshot.owner_hw_sid, snapshot.cycle,
          snapshot.identity_valid ? 1 : 0, snapshot.progressed ? 1 : 0,
          snapshot.identity_owner_hw_sid, snapshot.identity_thread_uid,
@@ -6745,7 +6788,14 @@ void rt_unit::rtcore_record_replay_release_identity_join_shadow(
          snapshot.completion_event_found ? 1 : 0, snapshot.joined ? 1 : 0,
          snapshot.joined_warp_uid, snapshot.joined_warp_id,
          static_cast<unsigned long long>(snapshot.joined_static_inst_pc),
-         snapshot.joined_issued_active_mask);
+         snapshot.joined_issued_active_mask,
+         snapshot.warp_completion_shadow_enabled ? 1 : 0,
+         snapshot.warp_completion_shadow_found ? 1 : 0,
+         snapshot.warp_completion_active_mask,
+         snapshot.warp_completion_completed_lane_mask,
+         snapshot.warp_completion_all_active_lanes_complete ? 1 : 0,
+         snapshot.warp_completion_admitted_lane_mask,
+         snapshot.warp_completion_completed_lane_count);
   fflush(stdout);
 }
 
