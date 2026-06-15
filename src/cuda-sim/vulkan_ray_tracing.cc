@@ -333,7 +333,7 @@ typedef rtcore_replay_service_tick_stats_snapshot
 struct rtcore_replay_service_cycle_result {
     bool service_enabled;
     unsigned owner_hw_sid;
-    unsigned service_cycle;
+    unsigned long long service_cycle;
     rtcore_replay_service_tick_result tick_result;
     rtcore_service_tick_stats_snapshot stats_snapshot;
 };
@@ -1495,7 +1495,7 @@ static void rtcore_publish_replay_service_tick_stats_snapshot()
 }
 
 static rtcore_replay_service_cycle_result
-rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned service_cycle)
+rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cycle)
 {
     rtcore_replay_service_cycle_result result = {};
     result.owner_hw_sid = owner_hw_sid;
@@ -1510,6 +1510,23 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned service_cycle)
     rtcore_publish_replay_service_tick_stats_snapshot();
     result.stats_snapshot = g_rtcore_replay_service_tick_stats_snapshot;
     return result;
+}
+
+extern "C" bool rtcore_service_replay_cycle_for_sm(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    bool *service_enabled, bool *memory_progressed, bool *ready_progressed)
+{
+    rtcore_replay_service_cycle_result result = rtcore_service_replay_cycle(owner_hw_sid, service_cycle);
+    if (service_enabled) {
+        *service_enabled = result.service_enabled;
+    }
+    if (memory_progressed) {
+        *memory_progressed = result.tick_result.memory_progressed;
+    }
+    if (ready_progressed) {
+        *ready_progressed = result.tick_result.ready_progressed;
+    }
+    return result.tick_result.progressed;
 }
 
 static void rtcore_try_service_replay_after_admission(unsigned owner_hw_sid)
