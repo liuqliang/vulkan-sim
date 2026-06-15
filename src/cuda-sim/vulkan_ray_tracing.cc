@@ -236,6 +236,11 @@ enum rtcore_replay_lane_request_state {
     RTCORE_REPLAY_DONE,
 };
 
+enum rtcore_replay_ready_selection_policy {
+    RTCORE_REPLAY_SELECT_OLDEST_READY_FIRST = 0,
+    RTCORE_REPLAY_SELECT_ROUND_ROBIN_READY_ORDER,
+};
+
 struct rtcore_compact_trace_event {
     uint64_t address_or_ref;
     uint32_t packed_fields;
@@ -273,6 +278,7 @@ struct rtcore_replay_lane_request {
     unsigned stack_event_count;
     unsigned memory_event_count;
     unsigned completion_event_count;
+    unsigned ready_order;
     bool timing_trace_overflowed;
     rtcore_replay_lane_request_state state;
     std::vector<rtcore_compact_trace_event> events;
@@ -292,6 +298,8 @@ struct rtcore_replay_ready_queues {
 };
 
 static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
+static unsigned g_rtcore_next_replay_ready_order = 0;
+static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
 static bool rtcore_bounded_trace_collection_enabled()
 {
@@ -309,6 +317,23 @@ static bool rtcore_replay_admission_enabled()
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
+}
+
+static rtcore_replay_ready_selection_policy
+rtcore_replay_ready_selection_policy()
+{
+    static int policy = []() {
+        const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_READY_SELECTION");
+        if (value && strcmp(value, "round_robin_ready_order") == 0) {
+            return static_cast<int>(
+                RTCORE_REPLAY_SELECT_ROUND_ROBIN_READY_ORDER);
+        }
+        if (value && strcmp(value, "oldest_ready_first") == 0) {
+            return static_cast<int>(RTCORE_REPLAY_SELECT_OLDEST_READY_FIRST);
+        }
+        return static_cast<int>(RTCORE_REPLAY_SELECT_OLDEST_READY_FIRST);
+    }();
+    return static_cast<enum rtcore_replay_ready_selection_policy>(policy);
 }
 
 static uint32_t rtcore_pack_compact_trace_fields(
@@ -649,6 +674,130 @@ static bool rtcore_route_admitted_replay_request(unsigned thread_uid)
     return true;
 }
 
+static bool rtcore_get_replay_request_ready_order(unsigned thread_uid,
+                                                  unsigned *ready_order)
+{
+    std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+        g_rtcore_replay_lane_requests.find(thread_uid);
+    if (it == g_rtcore_replay_lane_requests.end()) {
+        return false;
+    }
+    if (ready_order) {
+        *ready_order = it->second.ready_order;
+    }
+    return true;
+}
+
+static bool rtcore_consider_oldest_ready_queue_front(
+    const std::deque<unsigned> &queue, bool *has_selection,
+    unsigned *selected_thread_uid, unsigned *selected_order)
+{
+    if (queue.empty()) {
+        return false;
+    }
+
+    unsigned candidate_order = 0;
+    if (!rtcore_get_replay_request_ready_order(queue.front(),
+                                               &candidate_order)) {
+        return false;
+    }
+    if (!has_selection || !selected_thread_uid || !selected_order ||
+        !*has_selection || candidate_order < *selected_order) {
+        if (has_selection) {
+            *has_selection = true;
+        }
+        if (selected_thread_uid) {
+            *selected_thread_uid = queue.front();
+        }
+        if (selected_order) {
+            *selected_order = candidate_order;
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool rtcore_select_oldest_ready_request(unsigned *thread_uid)
+{
+    bool has_selection = false;
+    unsigned selected_thread_uid = 0;
+    unsigned selected_order = 0;
+
+    rtcore_consider_oldest_ready_queue_front(
+        g_rtcore_replay_ready_queues.ready_node_queue, &has_selection,
+        &selected_thread_uid, &selected_order);
+    rtcore_consider_oldest_ready_queue_front(
+        g_rtcore_replay_ready_queues.ready_primitive_queue,
+        &has_selection, &selected_thread_uid, &selected_order);
+    rtcore_consider_oldest_ready_queue_front(
+        g_rtcore_replay_ready_queues.ready_stack_queue, &has_selection,
+        &selected_thread_uid, &selected_order);
+    rtcore_consider_oldest_ready_queue_front(
+        g_rtcore_replay_ready_queues.ready_completion_queue,
+        &has_selection, &selected_thread_uid, &selected_order);
+
+    if (!has_selection) {
+        return false;
+    }
+    if (thread_uid) {
+        *thread_uid = selected_thread_uid;
+    }
+    return true;
+}
+
+static bool rtcore_ready_queue_front_by_round_robin_slot(unsigned slot,
+                                                        unsigned *thread_uid)
+{
+    const std::deque<unsigned> *queue = NULL;
+    switch (slot) {
+    case 0:
+        queue = &g_rtcore_replay_ready_queues.ready_node_queue;
+        break;
+    case 1:
+        queue = &g_rtcore_replay_ready_queues.ready_primitive_queue;
+        break;
+    case 2:
+        queue = &g_rtcore_replay_ready_queues.ready_stack_queue;
+        break;
+    case 3:
+        queue = &g_rtcore_replay_ready_queues.ready_completion_queue;
+        break;
+    default:
+        return false;
+    }
+
+    if (!queue || queue->empty()) {
+        return false;
+    }
+    if (thread_uid) {
+        *thread_uid = queue->front();
+    }
+    return true;
+}
+
+static bool rtcore_select_round_robin_ready_request(unsigned *thread_uid)
+{
+    for (unsigned offset = 0; offset < 4; ++offset) {
+        unsigned slot = (g_rtcore_replay_round_robin_cursor + offset) % 4;
+        if (rtcore_ready_queue_front_by_round_robin_slot(slot, thread_uid)) {
+            g_rtcore_replay_round_robin_cursor = (slot + 1) % 4;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool rtcore_select_ready_replay_request(unsigned *thread_uid)
+{
+    switch (rtcore_replay_ready_selection_policy()) {
+    case RTCORE_REPLAY_SELECT_ROUND_ROBIN_READY_ORDER:
+        return rtcore_select_round_robin_ready_request(thread_uid);
+    case RTCORE_REPLAY_SELECT_OLDEST_READY_FIRST:
+    default:
+        return rtcore_select_oldest_ready_request(thread_uid);
+    }
+}
+
 static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 {
     if (!rtcore_replay_admission_enabled() || !thread) {
@@ -665,6 +814,7 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 
     rtcore_replay_lane_request request =
         rtcore_build_replay_lane_request(record);
+    request.ready_order = g_rtcore_next_replay_ready_order++;
     g_rtcore_replay_lane_requests[request.thread_uid] = request;
     rtcore_route_admitted_replay_request(request.thread_uid);
 }
