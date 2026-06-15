@@ -804,6 +804,19 @@ static bool rtcore_get_replay_request_ready_order(unsigned thread_uid,
     return true;
 }
 
+static bool rtcore_replay_request_owned_by_sm(unsigned thread_uid,
+                                              unsigned owner_hw_sid)
+{
+    std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+        g_rtcore_replay_lane_requests.find(thread_uid);
+    if (it == g_rtcore_replay_lane_requests.end()) {
+        return false;
+    }
+
+    const rtcore_replay_lane_request &request = it->second;
+    return request.owner_hw_sid == owner_hw_sid;
+}
+
 static bool rtcore_consider_oldest_ready_queue_front(
     const std::deque<unsigned> &queue, bool *has_selection,
     unsigned *selected_thread_uid, unsigned *selected_order)
@@ -833,6 +846,46 @@ static bool rtcore_consider_oldest_ready_queue_front(
     return false;
 }
 
+static bool rtcore_consider_oldest_ready_queue_for_owner(
+    const std::deque<unsigned> &queue, unsigned owner_hw_sid,
+    bool *has_selection, unsigned *selected_thread_uid,
+    unsigned *selected_order)
+{
+    if (queue.empty()) {
+        return false;
+    }
+
+    bool considered = false;
+    for (std::deque<unsigned>::const_iterator it = queue.begin();
+         it != queue.end(); ++it) {
+        unsigned candidate_thread_uid = *it;
+        if (!rtcore_replay_request_owned_by_sm(candidate_thread_uid,
+                                               owner_hw_sid)) {
+            continue;
+        }
+
+        unsigned candidate_order = 0;
+        if (!rtcore_get_replay_request_ready_order(candidate_thread_uid,
+                                                   &candidate_order)) {
+            continue;
+        }
+        if (!has_selection || !selected_thread_uid || !selected_order ||
+            !*has_selection || candidate_order < *selected_order) {
+            if (has_selection) {
+                *has_selection = true;
+            }
+            if (selected_thread_uid) {
+                *selected_thread_uid = candidate_thread_uid;
+            }
+            if (selected_order) {
+                *selected_order = candidate_order;
+            }
+            considered = true;
+        }
+    }
+    return considered;
+}
+
 static bool rtcore_select_oldest_ready_request(unsigned *thread_uid)
 {
     bool has_selection = false;
@@ -850,6 +903,35 @@ static bool rtcore_select_oldest_ready_request(unsigned *thread_uid)
         &selected_thread_uid, &selected_order);
     rtcore_consider_oldest_ready_queue_front(
         g_rtcore_replay_ready_queues.ready_completion_queue,
+        &has_selection, &selected_thread_uid, &selected_order);
+
+    if (!has_selection) {
+        return false;
+    }
+    if (thread_uid) {
+        *thread_uid = selected_thread_uid;
+    }
+    return true;
+}
+
+static bool rtcore_select_oldest_ready_request_for_owner(
+    unsigned owner_hw_sid, unsigned *thread_uid)
+{
+    bool has_selection = false;
+    unsigned selected_thread_uid = 0;
+    unsigned selected_order = 0;
+
+    rtcore_consider_oldest_ready_queue_for_owner(
+        g_rtcore_replay_ready_queues.ready_node_queue, owner_hw_sid,
+        &has_selection, &selected_thread_uid, &selected_order);
+    rtcore_consider_oldest_ready_queue_for_owner(
+        g_rtcore_replay_ready_queues.ready_primitive_queue, owner_hw_sid,
+        &has_selection, &selected_thread_uid, &selected_order);
+    rtcore_consider_oldest_ready_queue_for_owner(
+        g_rtcore_replay_ready_queues.ready_stack_queue, owner_hw_sid,
+        &has_selection, &selected_thread_uid, &selected_order);
+    rtcore_consider_oldest_ready_queue_for_owner(
+        g_rtcore_replay_ready_queues.ready_completion_queue, owner_hw_sid,
         &has_selection, &selected_thread_uid, &selected_order);
 
     if (!has_selection) {
@@ -891,11 +973,63 @@ static bool rtcore_ready_queue_front_by_round_robin_slot(unsigned slot,
     return true;
 }
 
+static bool rtcore_ready_queue_request_by_round_robin_slot_for_owner(
+    unsigned slot, unsigned owner_hw_sid, unsigned *thread_uid)
+{
+    const std::deque<unsigned> *queue = NULL;
+    switch (slot) {
+    case 0:
+        queue = &g_rtcore_replay_ready_queues.ready_node_queue;
+        break;
+    case 1:
+        queue = &g_rtcore_replay_ready_queues.ready_primitive_queue;
+        break;
+    case 2:
+        queue = &g_rtcore_replay_ready_queues.ready_stack_queue;
+        break;
+    case 3:
+        queue = &g_rtcore_replay_ready_queues.ready_completion_queue;
+        break;
+    default:
+        return false;
+    }
+
+    if (!queue || queue->empty()) {
+        return false;
+    }
+
+    for (std::deque<unsigned>::const_iterator it = queue->begin();
+         it != queue->end(); ++it) {
+        if (!rtcore_replay_request_owned_by_sm(*it, owner_hw_sid)) {
+            continue;
+        }
+        if (thread_uid) {
+            *thread_uid = *it;
+        }
+        return true;
+    }
+    return false;
+}
+
 static bool rtcore_select_round_robin_ready_request(unsigned *thread_uid)
 {
     for (unsigned offset = 0; offset < 4; ++offset) {
         unsigned slot = (g_rtcore_replay_round_robin_cursor + offset) % 4;
         if (rtcore_ready_queue_front_by_round_robin_slot(slot, thread_uid)) {
+            g_rtcore_replay_round_robin_cursor = (slot + 1) % 4;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool rtcore_select_round_robin_ready_request_for_owner(
+    unsigned owner_hw_sid, unsigned *thread_uid)
+{
+    for (unsigned offset = 0; offset < 4; ++offset) {
+        unsigned slot = (g_rtcore_replay_round_robin_cursor + offset) % 4;
+        if (rtcore_ready_queue_request_by_round_robin_slot_for_owner(
+                slot, owner_hw_sid, thread_uid)) {
             g_rtcore_replay_round_robin_cursor = (slot + 1) % 4;
             return true;
         }
@@ -911,6 +1045,20 @@ static bool rtcore_select_ready_replay_request(unsigned *thread_uid)
     case RTCORE_REPLAY_SELECT_OLDEST_READY_FIRST:
     default:
         return rtcore_select_oldest_ready_request(thread_uid);
+    }
+}
+
+static bool rtcore_select_ready_replay_request_for_owner(
+    unsigned owner_hw_sid, unsigned *thread_uid)
+{
+    switch (rtcore_replay_ready_selection_policy()) {
+    case RTCORE_REPLAY_SELECT_ROUND_ROBIN_READY_ORDER:
+        return rtcore_select_round_robin_ready_request_for_owner(owner_hw_sid,
+                                                                 thread_uid);
+    case RTCORE_REPLAY_SELECT_OLDEST_READY_FIRST:
+    default:
+        return rtcore_select_oldest_ready_request_for_owner(owner_hw_sid,
+                                                            thread_uid);
     }
 }
 
@@ -1096,6 +1244,25 @@ static bool rtcore_step_selected_ready_replay_request_with_budget(
     return rtcore_route_admitted_replay_request(thread_uid);
 }
 
+static bool rtcore_step_selected_ready_replay_request_with_budget_for_owner(
+    unsigned owner_hw_sid, rtcore_replay_issue_budget *budget)
+{
+    unsigned thread_uid = 0;
+    if (!rtcore_select_ready_replay_request_for_owner(owner_hw_sid, &thread_uid)) {
+        return false;
+    }
+    if (!rtcore_consume_replay_issue_budget(thread_uid, budget)) {
+        return false;
+    }
+    if (!rtcore_dequeue_selected_ready_request(thread_uid)) {
+        return false;
+    }
+    if (!rtcore_step_admitted_replay_request(thread_uid)) {
+        return false;
+    }
+    return rtcore_route_admitted_replay_request(thread_uid);
+}
+
 static bool rtcore_step_selected_ready_replay_request()
 {
     rtcore_replay_issue_budget budget = rtcore_replay_issue_budget_config();
@@ -1115,6 +1282,20 @@ static bool rtcore_service_replay_ready_requests_with_budget(
     return progressed;
 }
 
+static bool rtcore_service_replay_ready_requests_with_budget_for_owner(
+    unsigned owner_hw_sid, rtcore_replay_issue_budget budget)
+{
+    bool progressed = false;
+    while (rtcore_replay_issue_budget_available(budget)) {
+        if (!rtcore_step_selected_ready_replay_request_with_budget_for_owner(
+                owner_hw_sid, &budget)) {
+            break;
+        }
+        progressed = true;
+    }
+    return progressed;
+}
+
 static bool rtcore_dequeue_waiting_memory_request(unsigned *thread_uid)
 {
     if (g_rtcore_replay_ready_queues.waiting_memory_queue.empty()) {
@@ -1126,6 +1307,29 @@ static bool rtcore_dequeue_waiting_memory_request(unsigned *thread_uid)
     }
     g_rtcore_replay_ready_queues.waiting_memory_queue.pop_front();
     return true;
+}
+
+static bool rtcore_dequeue_waiting_memory_request_for_owner(
+    unsigned owner_hw_sid, unsigned *thread_uid)
+{
+    std::deque<unsigned> &queue =
+        g_rtcore_replay_ready_queues.waiting_memory_queue;
+    if (queue.empty()) {
+        return false;
+    }
+
+    for (std::deque<unsigned>::iterator it = queue.begin();
+         it != queue.end(); ++it) {
+        if (!rtcore_replay_request_owned_by_sm(*it, owner_hw_sid)) {
+            continue;
+        }
+        if (thread_uid) {
+            *thread_uid = *it;
+        }
+        queue.erase(it);
+        return true;
+    }
+    return false;
 }
 
 static bool rtcore_wake_waiting_memory_replay_request(unsigned thread_uid)
@@ -1162,10 +1366,37 @@ static bool rtcore_service_waiting_memory_replay_requests(unsigned wake_budget)
     return progressed;
 }
 
+static bool rtcore_service_waiting_memory_replay_requests_for_owner(
+    unsigned owner_hw_sid, unsigned wake_budget)
+{
+    bool progressed = false;
+    while (wake_budget > 0) {
+        unsigned thread_uid = 0;
+        if (!rtcore_dequeue_waiting_memory_request_for_owner(owner_hw_sid,
+                                                             &thread_uid)) {
+            break;
+        }
+        if (!rtcore_wake_waiting_memory_replay_request(thread_uid)) {
+            rtcore_route_admitted_replay_request(thread_uid);
+            break;
+        }
+        wake_budget--;
+        progressed = true;
+    }
+    return progressed;
+}
+
 static bool rtcore_service_waiting_memory_replay_requests()
 {
     return rtcore_service_waiting_memory_replay_requests(
         rtcore_replay_memory_wake_budget_config());
+}
+
+static bool rtcore_service_waiting_memory_replay_requests_for_owner(
+    unsigned owner_hw_sid)
+{
+    return rtcore_service_waiting_memory_replay_requests_for_owner(
+        owner_hw_sid, rtcore_replay_memory_wake_budget_config());
 }
 
 static rtcore_replay_service_tick_result rtcore_service_replay_tick()
@@ -1177,6 +1408,18 @@ static rtcore_replay_service_tick_result rtcore_service_replay_tick()
     return result;
 }
 
+static rtcore_replay_service_tick_result
+rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid)
+{
+    rtcore_replay_service_tick_result result = {};
+    result.memory_progressed =
+        rtcore_service_waiting_memory_replay_requests_for_owner(owner_hw_sid);
+    result.ready_progressed =
+        rtcore_service_replay_ready_requests_with_budget_for_owner(owner_hw_sid, rtcore_replay_issue_budget_config());
+    result.progressed = result.memory_progressed || result.ready_progressed;
+    return result;
+}
+
 static rtcore_replay_service_tick_result rtcore_maybe_service_replay_tick()
 {
     rtcore_replay_service_tick_result result = {};
@@ -1184,6 +1427,16 @@ static rtcore_replay_service_tick_result rtcore_maybe_service_replay_tick()
         return result;
     }
     return rtcore_service_replay_tick();
+}
+
+static rtcore_replay_service_tick_result
+rtcore_maybe_service_replay_tick(unsigned owner_hw_sid)
+{
+    rtcore_replay_service_tick_result result = {};
+    if (!rtcore_replay_service_tick_enabled()) {
+        return result;
+    }
+    return rtcore_service_replay_tick_for_owner(owner_hw_sid);
 }
 
 static void rtcore_record_replay_service_tick_result(
@@ -1252,7 +1505,7 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned service_cycle)
         return result;
     }
 
-    result.tick_result = rtcore_maybe_service_replay_tick();
+    result.tick_result = rtcore_maybe_service_replay_tick(owner_hw_sid);
     rtcore_record_replay_service_tick_result(result.tick_result);
     rtcore_publish_replay_service_tick_stats_snapshot();
     result.stats_snapshot = g_rtcore_replay_service_tick_stats_snapshot;
