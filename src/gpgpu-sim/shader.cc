@@ -55,6 +55,15 @@
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
+struct rtcore_replay_service_cycle_identity_snapshot {
+  bool valid;
+  bool memory_progressed;
+  bool ready_progressed;
+  unsigned owner_hw_sid;
+  unsigned thread_uid;
+  unsigned lane_id;
+};
+
 extern "C" bool rtcore_symbolic_submit_issue_resources_available(
     unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
     unsigned long long static_inst_pc);
@@ -63,6 +72,10 @@ rtcore_symbolic_submit_issue_resource_backpressure_is_enabled();
 extern "C" bool rtcore_service_replay_cycle_for_sm(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed);
+extern "C" bool rtcore_service_replay_cycle_for_sm_with_identity(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
+    rtcore_replay_service_cycle_identity_snapshot *identity_snapshot);
 
 namespace {
 
@@ -84,6 +97,12 @@ struct rtcore_replay_cycle_hook_result {
   bool memory_progressed;
   bool ready_progressed;
   bool progressed;
+  bool identity_valid;
+  bool identity_memory_progressed;
+  bool identity_ready_progressed;
+  unsigned identity_owner_hw_sid;
+  unsigned identity_thread_uid;
+  unsigned identity_lane_id;
 };
 
 struct rtcore_replay_cycle_hook_consumer_stats {
@@ -201,7 +220,8 @@ static bool rtcore_should_log_replay_cycle_hook_smoke() {
 static void rtcore_maybe_log_replay_cycle_hook_smoke(
     unsigned owner_hw_sid, unsigned long long current_cycle,
     bool service_enabled, bool memory_progressed, bool ready_progressed,
-    bool progressed) {
+    bool progressed,
+    const rtcore_replay_service_cycle_identity_snapshot &identity_snapshot) {
   if (!rtcore_replay_cycle_hook_smoke_log_enabled() ||
       !rtcore_should_log_replay_cycle_hook_smoke()) {
     return;
@@ -210,13 +230,20 @@ static void rtcore_maybe_log_replay_cycle_hook_smoke(
   printf("GPGPU-Sim RTCORE_REPLAY_CYCLE_HOOK_SMOKE "
          "owner_hw_sid=%u cycle=%llu hook_calls=%llu "
          "service_enabled=%u progressed=%u memory_progressed=%u "
-         "ready_progressed=%u service_enabled_calls=%llu "
+         "ready_progressed=%u identity_valid=%u "
+         "identity_owner_hw_sid=%u identity_thread_uid=%u "
+         "identity_lane_id=%u identity_memory_progressed=%u "
+         "identity_ready_progressed=%u service_enabled_calls=%llu "
          "progressed_calls=%llu memory_progressed_calls=%llu "
          "ready_progressed_calls=%llu\n",
          owner_hw_sid, current_cycle,
          g_rtcore_replay_cycle_hook_smoke_stats.hook_calls,
          service_enabled ? 1 : 0, progressed ? 1 : 0,
          memory_progressed ? 1 : 0, ready_progressed ? 1 : 0,
+         identity_snapshot.valid ? 1 : 0, identity_snapshot.owner_hw_sid,
+         identity_snapshot.thread_uid, identity_snapshot.lane_id,
+         identity_snapshot.memory_progressed ? 1 : 0,
+         identity_snapshot.ready_progressed ? 1 : 0,
          g_rtcore_replay_cycle_hook_smoke_stats.service_enabled_calls,
          g_rtcore_replay_cycle_hook_smoke_stats.progressed_calls,
          g_rtcore_replay_cycle_hook_smoke_stats.memory_progressed_calls,
@@ -226,7 +253,8 @@ static void rtcore_maybe_log_replay_cycle_hook_smoke(
 static void rtcore_record_replay_cycle_hook_smoke(
     unsigned owner_hw_sid, unsigned long long current_cycle,
     bool service_enabled, bool memory_progressed, bool ready_progressed,
-    bool progressed) {
+    bool progressed,
+    const rtcore_replay_service_cycle_identity_snapshot &identity_snapshot) {
   g_rtcore_replay_cycle_hook_smoke_stats.hook_calls++;
   g_rtcore_replay_cycle_hook_smoke_stats.last_owner_hw_sid = owner_hw_sid;
   g_rtcore_replay_cycle_hook_smoke_stats.last_cycle = current_cycle;
@@ -245,7 +273,7 @@ static void rtcore_record_replay_cycle_hook_smoke(
 
   rtcore_maybe_log_replay_cycle_hook_smoke(
       owner_hw_sid, current_cycle, service_enabled, memory_progressed,
-      ready_progressed, progressed);
+      ready_progressed, progressed, identity_snapshot);
 }
 
 static rtcore_replay_cycle_hook_result
@@ -261,18 +289,25 @@ rtcore_maybe_service_replay_cycle_from_rt_unit(
   bool service_enabled = false;
   bool memory_progressed = false;
   bool ready_progressed = false;
-  bool progressed = rtcore_service_replay_cycle_for_sm(owner_hw_sid, current_cycle,
-                                                       &service_enabled,
-                                                       &memory_progressed,
-                                                       &ready_progressed);
+  rtcore_replay_service_cycle_identity_snapshot identity_snapshot = {};
+  bool progressed = rtcore_service_replay_cycle_for_sm_with_identity(
+      owner_hw_sid, current_cycle, &service_enabled, &memory_progressed,
+      &ready_progressed, &identity_snapshot);
   result.hook_enabled = true;
   result.service_enabled = service_enabled;
   result.memory_progressed = memory_progressed;
   result.ready_progressed = ready_progressed;
   result.progressed = progressed;
+  result.identity_valid = identity_snapshot.valid;
+  result.identity_memory_progressed = identity_snapshot.memory_progressed;
+  result.identity_ready_progressed = identity_snapshot.ready_progressed;
+  result.identity_owner_hw_sid = identity_snapshot.owner_hw_sid;
+  result.identity_thread_uid = identity_snapshot.thread_uid;
+  result.identity_lane_id = identity_snapshot.lane_id;
   rtcore_record_replay_cycle_hook_smoke(owner_hw_sid, current_cycle,
                                         service_enabled, memory_progressed,
-                                        ready_progressed, progressed);
+                                        ready_progressed, progressed,
+                                        identity_snapshot);
   return result;
 }
 
@@ -318,7 +353,7 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
   }
   const bool shadow_release_allowed =
       legacy_ready && result.hook_enabled && result.service_enabled &&
-      result.progressed;
+      result.progressed && result.identity_valid;
   if (shadow_release_allowed) {
     g_rtcore_replay_cycle_release_gate_shadow_stats
         .shadow_release_allowed_calls++;
