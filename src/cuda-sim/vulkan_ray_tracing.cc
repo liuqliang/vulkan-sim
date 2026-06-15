@@ -211,6 +211,14 @@ enum rtcore_compact_trace_node_kind {
     RTCORE_TRACE_NODE_KIND_INSTANCE_LEAF,
 };
 
+enum rtcore_compact_trace_primitive_kind {
+    RTCORE_TRACE_PRIMITIVE_KIND_LEAF_DESCRIPTOR = 0,
+    RTCORE_TRACE_PRIMITIVE_KIND_QUAD_LEAF,
+    RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_LEAF,
+    RTCORE_TRACE_PRIMITIVE_KIND_TRIANGLE_TEST,
+    RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED,
+};
+
 struct rtcore_compact_trace_event {
     uint64_t address_or_ref;
     uint32_t packed_fields;
@@ -268,6 +276,14 @@ static unsigned rtcore_trace_stack_flags(bool top_level, bool leaf,
 {
     return (top_level ? 0x1u : 0x2u) | (leaf ? 0x4u : 0u) |
            (clear ? 0x8u : 0u);
+}
+
+static unsigned rtcore_trace_primitive_flags(
+    rtcore_compact_trace_primitive_kind primitive_kind, bool hit,
+    bool deferred)
+{
+    return (static_cast<unsigned>(primitive_kind) & 0x0fu) |
+           (hit ? 0x10u : 0u) | (deferred ? 0x20u : 0u);
 }
 
 struct rtcore_bounded_trace_collector {
@@ -354,6 +370,21 @@ struct rtcore_bounded_trace_collector {
     {
         append(RTCORE_TRACE_STACK_POP, RTCORE_TRACE_RESOURCE_STACK, 0, 0,
                entries, rtcore_trace_stack_flags(false, false, true));
+    }
+
+    void append_primitive_fetch(uint64_t address, unsigned bytes,
+                                unsigned flags)
+    {
+        append(RTCORE_TRACE_PRIMITIVE_FETCH,
+               RTCORE_TRACE_RESOURCE_PRIMITIVE, address, bytes, 1, flags);
+    }
+
+    void append_primitive_test(uint64_t address_or_ref, bool hit,
+                               unsigned flags)
+    {
+        append(RTCORE_TRACE_PRIMITIVE_TEST,
+               RTCORE_TRACE_RESOURCE_PRIMITIVE, address_or_ref, 0, 1,
+               flags | (hit ? 0x10u : 0u));
     }
 
     void append_completion_summary(unsigned node_events,
@@ -1251,11 +1282,23 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(&leaf_descriptor, leaf_addr);
                     transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR));
                     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR)]++;
+                    rtcore_compact_trace.append_primitive_fetch(
+                        (uint64_t)leaf_addr + device_offset,
+                        GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4,
+                        rtcore_trace_primitive_flags(
+                            RTCORE_TRACE_PRIMITIVE_KIND_LEAF_DESCRIPTOR,
+                            false, false));
 
                     if (leaf_descriptor.LeafType == TYPE_QUAD)
                     {
                         struct GEN_RT_BVH_QUAD_LEAF leaf;
                         GEN_RT_BVH_QUAD_LEAF_unpack(&leaf, leaf_addr);
+                        rtcore_compact_trace.append_primitive_fetch(
+                            (uint64_t)leaf_addr + device_offset,
+                            GEN_RT_BVH_QUAD_LEAF_length * 4,
+                            rtcore_trace_primitive_flags(
+                                RTCORE_TRACE_PRIMITIVE_KIND_QUAD_LEAF, false,
+                                false));
 
                         // if(leaf.PrimitiveIndex0 == 9600)
                         // {
@@ -1274,6 +1317,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         float thit;
                         total_primitive_tests++;
                         bool hit = VulkanRayTracing::mt_ray_triangle_test(p[0], p[1], p[2], objectRay, &thit);
+                        rtcore_compact_trace.append_primitive_test(
+                            (uint64_t)leaf_addr + device_offset, hit,
+                            rtcore_trace_primitive_flags(
+                                RTCORE_TRACE_PRIMITIVE_KIND_TRIANGLE_TEST,
+                                hit, false));
 
                         assert(leaf.PrimitiveIndex1Delta == 0);
 
@@ -1403,11 +1451,22 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
                         ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PROCEDURAL_LEAF)]++;
                         total_nodes_accessed++;
+                        rtcore_compact_trace.append_primitive_fetch(
+                            (uint64_t)leaf_addr + device_offset,
+                            GEN_RT_BVH_PROCEDURAL_LEAF_length * 4,
+                            rtcore_trace_primitive_flags(
+                                RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_LEAF,
+                                false, false));
 
                         uint32_t hit_group_index = instanceLeaf.InstanceContributionToHitGroupIndex;
 
                         warp_intersection_table* table = intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
                         auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex[0], instanceLeaf.InstanceID, pI, thread); // TODO: switch these to device addresses
+                        rtcore_compact_trace.append_primitive_test(
+                            (uint64_t)leaf_addr + device_offset, true,
+                            rtcore_trace_primitive_flags(
+                                RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED,
+                                true, true));
                         
                         // transactions.insert(transactions.end(), intersectionTransactions.first.begin(), intersectionTransactions.first.end());
                         for(auto & newTransaction : intersectionTransactions.first)
