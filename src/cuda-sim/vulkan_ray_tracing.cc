@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <deque>
 #define BOOST_FILESYSTEM_VERSION 3
 #define BOOST_FILESYSTEM_NO_DEPRECATED 
 #include <boost/filesystem.hpp>
@@ -279,6 +280,18 @@ struct rtcore_replay_lane_request {
 
 static std::map<unsigned, rtcore_replay_lane_request>
     g_rtcore_replay_lane_requests;
+
+struct rtcore_replay_ready_queues {
+    std::deque<unsigned> queued_queue;
+    std::deque<unsigned> ready_node_queue;
+    std::deque<unsigned> ready_primitive_queue;
+    std::deque<unsigned> ready_stack_queue;
+    std::deque<unsigned> waiting_memory_queue;
+    std::deque<unsigned> ready_completion_queue;
+    std::deque<unsigned> done_queue;
+};
+
+static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
 
 static bool rtcore_bounded_trace_collection_enabled()
 {
@@ -588,6 +601,54 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     return request;
 }
 
+static void rtcore_enqueue_replay_request_by_state(
+    const rtcore_replay_lane_request &request)
+{
+    if (!request.valid) {
+        return;
+    }
+
+    switch (request.state) {
+    case RTCORE_REPLAY_QUEUED:
+        g_rtcore_replay_ready_queues.queued_queue.push_back(request.thread_uid);
+        break;
+    case RTCORE_REPLAY_READY_NODE:
+        g_rtcore_replay_ready_queues.ready_node_queue.push_back(
+            request.thread_uid);
+        break;
+    case RTCORE_REPLAY_READY_PRIMITIVE:
+        g_rtcore_replay_ready_queues.ready_primitive_queue.push_back(
+            request.thread_uid);
+        break;
+    case RTCORE_REPLAY_READY_STACK:
+        g_rtcore_replay_ready_queues.ready_stack_queue.push_back(
+            request.thread_uid);
+        break;
+    case RTCORE_REPLAY_WAITING_MEMORY:
+        g_rtcore_replay_ready_queues.waiting_memory_queue.push_back(
+            request.thread_uid);
+        break;
+    case RTCORE_REPLAY_READY_COMPLETION:
+        g_rtcore_replay_ready_queues.ready_completion_queue.push_back(
+            request.thread_uid);
+        break;
+    case RTCORE_REPLAY_DONE:
+        g_rtcore_replay_ready_queues.done_queue.push_back(request.thread_uid);
+        break;
+    }
+}
+
+static bool rtcore_route_admitted_replay_request(unsigned thread_uid)
+{
+    std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+        g_rtcore_replay_lane_requests.find(thread_uid);
+    if (it == g_rtcore_replay_lane_requests.end()) {
+        return false;
+    }
+    rtcore_enqueue_replay_request_by_state(it->second);
+    return true;
+}
+
 static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 {
     if (!rtcore_replay_admission_enabled() || !thread) {
@@ -605,6 +666,7 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
     rtcore_replay_lane_request request =
         rtcore_build_replay_lane_request(record);
     g_rtcore_replay_lane_requests[request.thread_uid] = request;
+    rtcore_route_admitted_replay_request(request.thread_uid);
 }
 
 static bool rtcore_replay_request_done(
