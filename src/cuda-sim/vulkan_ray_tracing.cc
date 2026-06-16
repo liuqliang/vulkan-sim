@@ -311,6 +311,9 @@ struct rtcore_replay_lane_request {
     unsigned completion_event_count;
     unsigned ready_order;
     bool timing_trace_overflowed;
+    rtcore_trace_timing_precision_class timing_precision_class;
+    unsigned overflow_summary_events;
+    rtcore_compact_trace_overflow_summary overflow_summary;
     rtcore_replay_lane_request_state state;
     std::vector<rtcore_compact_trace_event> events;
 };
@@ -411,6 +414,16 @@ struct rtcore_replay_service_tick_stats {
     unsigned ready_ticks_progressed;
 };
 
+struct rtcore_replay_overflow_summary_estimate_stats {
+    unsigned overflow_summary_requests_consumed;
+    unsigned estimated_overflow_node_events;
+    unsigned estimated_overflow_primitive_events;
+    unsigned estimated_overflow_stack_events;
+    unsigned estimated_overflow_memory_wait_events;
+    unsigned estimated_overflow_memory_bytes;
+    unsigned estimated_overflow_completion_events;
+};
+
 struct rtcore_replay_unit_arbitration_stats {
     unsigned node_unit_issue_attempts;
     unsigned node_unit_issued;
@@ -447,6 +460,8 @@ struct rtcore_replay_service_cycle_result {
 
 static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
 static rtcore_replay_service_tick_stats g_rtcore_replay_service_tick_stats;
+static rtcore_replay_overflow_summary_estimate_stats
+    g_rtcore_replay_overflow_summary_estimate_stats;
 static rtcore_replay_unit_arbitration_stats
     g_rtcore_replay_unit_arbitration_stats;
 static rtcore_service_tick_stats_snapshot
@@ -464,6 +479,8 @@ static unsigned
     g_rtcore_replay_unit_arbitration_stats_last_logged_total_budget_exhausted =
         0;
 static unsigned g_rtcore_compact_trace_overflow_stats_logs_emitted = 0;
+static unsigned g_rtcore_replay_overflow_summary_estimate_stats_logs_emitted =
+    0;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -512,6 +529,16 @@ static bool rtcore_compact_trace_overflow_stats_log_enabled()
     static int enabled = []() {
         const char *value =
             getenv("VULKAN_SIM_RTCORE_COMPACT_TRACE_OVERFLOW_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_overflow_summary_estimate_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_OVERFLOW_SUMMARY_ESTIMATE_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -618,6 +645,13 @@ static unsigned rtcore_compact_trace_overflow_stats_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_COMPACT_TRACE_OVERFLOW_STATS_LOG_LIMIT", 16);
+    return limit;
+}
+
+static unsigned rtcore_replay_overflow_summary_estimate_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_OVERFLOW_SUMMARY_ESTIMATE_LOG_LIMIT", 16);
     return limit;
 }
 
@@ -1179,6 +1213,9 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.next_event_index = 0;
     request.event_count = record.event_count;
     request.timing_trace_overflowed = record.timing_trace_overflowed;
+    request.timing_precision_class = record.timing_precision_class;
+    request.overflow_summary_events = record.overflow_summary_events;
+    request.overflow_summary = record.overflow_summary;
     request.state = RTCORE_REPLAY_DONE;
     request.events = record.events;
 
@@ -1702,6 +1739,79 @@ static bool rtcore_remove_replay_request_from_queue(
     return false;
 }
 
+static void rtcore_maybe_log_replay_overflow_summary_estimate_stats(
+    unsigned owner_hw_sid)
+{
+    if (!rtcore_replay_overflow_summary_estimate_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_overflow_summary_estimate_stats_logs_emitted >=
+        rtcore_replay_overflow_summary_estimate_log_limit()) {
+        return;
+    }
+    g_rtcore_replay_overflow_summary_estimate_stats_logs_emitted++;
+
+    printf("GPGPU-Sim RTCORE_REPLAY_OVERFLOW_SUMMARY_ESTIMATE_STATS "
+           "owner_hw_sid=%u overflow_summary_requests_consumed=%u "
+           "estimated_overflow_node_events=%u "
+           "estimated_overflow_primitive_events=%u "
+           "estimated_overflow_stack_events=%u "
+           "estimated_overflow_memory_wait_events=%u "
+           "estimated_overflow_memory_bytes=%u "
+           "estimated_overflow_completion_events=%u\n",
+           owner_hw_sid,
+           g_rtcore_replay_overflow_summary_estimate_stats
+               .overflow_summary_requests_consumed,
+           g_rtcore_replay_overflow_summary_estimate_stats
+               .estimated_overflow_node_events,
+           g_rtcore_replay_overflow_summary_estimate_stats
+               .estimated_overflow_primitive_events,
+           g_rtcore_replay_overflow_summary_estimate_stats
+               .estimated_overflow_stack_events,
+           g_rtcore_replay_overflow_summary_estimate_stats
+               .estimated_overflow_memory_wait_events,
+           g_rtcore_replay_overflow_summary_estimate_stats
+               .estimated_overflow_memory_bytes,
+           g_rtcore_replay_overflow_summary_estimate_stats
+               .estimated_overflow_completion_events);
+    fflush(stdout);
+}
+
+static void rtcore_record_replay_overflow_summary_estimate(
+    const rtcore_replay_lane_request &request)
+{
+    if (!request.timing_trace_overflowed ||
+        request.overflow_summary_events == 0) {
+        return;
+    }
+
+    const rtcore_compact_trace_overflow_summary &summary =
+        request.overflow_summary;
+    g_rtcore_replay_overflow_summary_estimate_stats
+        .overflow_summary_requests_consumed++;
+    g_rtcore_replay_overflow_summary_estimate_stats
+        .estimated_overflow_node_events +=
+        summary.overflow_node_fetch_count + summary.overflow_node_test_count;
+    g_rtcore_replay_overflow_summary_estimate_stats
+        .estimated_overflow_primitive_events +=
+        summary.overflow_primitive_fetch_count +
+        summary.overflow_primitive_test_count;
+    g_rtcore_replay_overflow_summary_estimate_stats
+        .estimated_overflow_stack_events +=
+        summary.overflow_stack_push_count + summary.overflow_stack_pop_count;
+    g_rtcore_replay_overflow_summary_estimate_stats
+        .estimated_overflow_memory_wait_events +=
+        summary.overflow_memory_wait_count;
+    g_rtcore_replay_overflow_summary_estimate_stats
+        .estimated_overflow_memory_bytes += summary.overflow_memory_bytes;
+    g_rtcore_replay_overflow_summary_estimate_stats
+        .estimated_overflow_completion_events +=
+        summary.overflow_completion_count;
+
+    rtcore_maybe_log_replay_overflow_summary_estimate_stats(
+        request.owner_hw_sid);
+}
+
 static bool rtcore_step_admitted_replay_request(unsigned thread_uid);
 
 static bool rtcore_select_ready_request_from_queue_for_owner(
@@ -1863,6 +1973,12 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid)
     }
     if (rtcore_replay_request_done(it->second)) {
         return false;
+    }
+    if (it->second.next_event_index < it->second.events.size() &&
+        rtcore_unpack_compact_trace_event_type(
+            it->second.events[it->second.next_event_index]) ==
+            RTCORE_TRACE_OVERFLOW_SUMMARY) {
+        rtcore_record_replay_overflow_summary_estimate(it->second);
     }
     const bool advanced = rtcore_replay_advance_lane_request(&it->second);
     if (advanced && rtcore_replay_request_done(it->second)) {
