@@ -184,6 +184,7 @@ static const char *RTCORE_TRACE_REPLAY_MODEL_NAME =
 static const unsigned RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE = 64;
 static const unsigned RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR = 256;
 static const unsigned RTCORE_COMPACT_TRACE_EVENT_TARGET_BYTES = 16;
+static const unsigned RTCORE_REPLAY_MEMORY_DEMAND_CACHE_LINE_BYTES = 64;
 
 enum rtcore_compact_trace_event_type {
     RTCORE_TRACE_NODE_FETCH = 0,
@@ -424,6 +425,16 @@ struct rtcore_replay_overflow_summary_estimate_stats {
     unsigned estimated_overflow_completion_events;
 };
 
+struct rtcore_replay_memory_demand_estimate_stats {
+    unsigned explicit_memory_wait_events;
+    unsigned explicit_fetch_memory_bytes;
+    unsigned overflow_memory_wait_events;
+    unsigned overflow_memory_bytes;
+    unsigned estimated_memory_demand_events;
+    unsigned estimated_memory_demand_bytes;
+    unsigned estimated_cache_lines_64b;
+};
+
 struct rtcore_replay_unit_arbitration_stats {
     unsigned node_unit_issue_attempts;
     unsigned node_unit_issued;
@@ -462,6 +473,8 @@ static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
 static rtcore_replay_service_tick_stats g_rtcore_replay_service_tick_stats;
 static rtcore_replay_overflow_summary_estimate_stats
     g_rtcore_replay_overflow_summary_estimate_stats;
+static rtcore_replay_memory_demand_estimate_stats
+    g_rtcore_replay_memory_demand_estimate_stats;
 static rtcore_replay_unit_arbitration_stats
     g_rtcore_replay_unit_arbitration_stats;
 static rtcore_service_tick_stats_snapshot
@@ -481,6 +494,7 @@ static unsigned
 static unsigned g_rtcore_compact_trace_overflow_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_overflow_summary_estimate_stats_logs_emitted =
     0;
+static unsigned g_rtcore_replay_memory_demand_estimate_stats_logs_emitted = 0;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -539,6 +553,16 @@ static bool rtcore_replay_overflow_summary_estimate_log_enabled()
     static int enabled = []() {
         const char *value =
             getenv("VULKAN_SIM_RTCORE_REPLAY_OVERFLOW_SUMMARY_ESTIMATE_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_memory_demand_estimate_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_DEMAND_ESTIMATE_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -652,6 +676,13 @@ static unsigned rtcore_replay_overflow_summary_estimate_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_OVERFLOW_SUMMARY_ESTIMATE_LOG_LIMIT", 16);
+    return limit;
+}
+
+static unsigned rtcore_replay_memory_demand_estimate_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_DEMAND_ESTIMATE_LOG_LIMIT", 16);
     return limit;
 }
 
@@ -1812,6 +1843,117 @@ static void rtcore_record_replay_overflow_summary_estimate(
         request.owner_hw_sid);
 }
 
+static unsigned rtcore_replay_estimated_cache_lines_64b(unsigned bytes)
+{
+    if (bytes == 0) {
+        return 0;
+    }
+    return (bytes + RTCORE_REPLAY_MEMORY_DEMAND_CACHE_LINE_BYTES - 1) /
+           RTCORE_REPLAY_MEMORY_DEMAND_CACHE_LINE_BYTES;
+}
+
+static void rtcore_update_replay_memory_demand_totals()
+{
+    g_rtcore_replay_memory_demand_estimate_stats
+        .estimated_memory_demand_bytes =
+        g_rtcore_replay_memory_demand_estimate_stats
+            .explicit_fetch_memory_bytes +
+        g_rtcore_replay_memory_demand_estimate_stats.overflow_memory_bytes;
+    g_rtcore_replay_memory_demand_estimate_stats.estimated_cache_lines_64b =
+        rtcore_replay_estimated_cache_lines_64b(
+            g_rtcore_replay_memory_demand_estimate_stats
+                .estimated_memory_demand_bytes);
+    g_rtcore_replay_memory_demand_estimate_stats
+        .estimated_memory_demand_events =
+        g_rtcore_replay_memory_demand_estimate_stats
+            .explicit_memory_wait_events +
+        g_rtcore_replay_memory_demand_estimate_stats
+            .overflow_memory_wait_events +
+        g_rtcore_replay_memory_demand_estimate_stats.estimated_cache_lines_64b;
+}
+
+static void rtcore_maybe_log_replay_memory_demand_estimate_stats(
+    unsigned owner_hw_sid)
+{
+    if (!rtcore_replay_memory_demand_estimate_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_memory_demand_estimate_stats_logs_emitted >=
+        rtcore_replay_memory_demand_estimate_log_limit()) {
+        return;
+    }
+    g_rtcore_replay_memory_demand_estimate_stats_logs_emitted++;
+
+    printf("GPGPU-Sim RTCORE_REPLAY_MEMORY_DEMAND_ESTIMATE_STATS "
+           "owner_hw_sid=%u explicit_memory_wait_events=%u "
+           "explicit_fetch_memory_bytes=%u overflow_memory_wait_events=%u "
+           "overflow_memory_bytes=%u estimated_memory_demand_events=%u "
+           "estimated_memory_demand_bytes=%u estimated_cache_lines_64b=%u\n",
+           owner_hw_sid,
+           g_rtcore_replay_memory_demand_estimate_stats
+               .explicit_memory_wait_events,
+           g_rtcore_replay_memory_demand_estimate_stats
+               .explicit_fetch_memory_bytes,
+           g_rtcore_replay_memory_demand_estimate_stats
+               .overflow_memory_wait_events,
+           g_rtcore_replay_memory_demand_estimate_stats.overflow_memory_bytes,
+           g_rtcore_replay_memory_demand_estimate_stats
+               .estimated_memory_demand_events,
+           g_rtcore_replay_memory_demand_estimate_stats
+               .estimated_memory_demand_bytes,
+           g_rtcore_replay_memory_demand_estimate_stats
+               .estimated_cache_lines_64b);
+    fflush(stdout);
+}
+
+static void rtcore_record_replay_memory_demand_estimate(
+    const rtcore_replay_lane_request &request)
+{
+    if (request.next_event_index >= request.events.size()) {
+        return;
+    }
+
+    const rtcore_compact_trace_event &event =
+        request.events[request.next_event_index];
+    const rtcore_compact_trace_event_type event_type =
+        rtcore_unpack_compact_trace_event_type(event);
+    const rtcore_compact_trace_resource_class resource_class =
+        rtcore_unpack_compact_trace_resource_class(event);
+    const unsigned count = rtcore_unpack_compact_trace_count(event) == 0
+                               ? 1
+                               : rtcore_unpack_compact_trace_count(event);
+    const unsigned bytes = rtcore_unpack_compact_trace_bytes(event);
+    bool changed = false;
+
+    if (event_type == RTCORE_TRACE_MEMORY_WAIT) {
+        g_rtcore_replay_memory_demand_estimate_stats
+            .explicit_memory_wait_events += count;
+        changed = true;
+    }
+    if (event_type == RTCORE_TRACE_NODE_FETCH ||
+        event_type == RTCORE_TRACE_PRIMITIVE_FETCH ||
+        resource_class == RTCORE_TRACE_RESOURCE_MEMORY) {
+        g_rtcore_replay_memory_demand_estimate_stats
+            .explicit_fetch_memory_bytes += bytes * count;
+        changed = true;
+    }
+    if (event_type == RTCORE_TRACE_OVERFLOW_SUMMARY &&
+        request.timing_trace_overflowed && request.overflow_summary_events) {
+        g_rtcore_replay_memory_demand_estimate_stats
+            .overflow_memory_wait_events +=
+            request.overflow_summary.overflow_memory_wait_count;
+        g_rtcore_replay_memory_demand_estimate_stats.overflow_memory_bytes +=
+            request.overflow_summary.overflow_memory_bytes;
+        changed = true;
+    }
+
+    if (!changed) {
+        return;
+    }
+    rtcore_update_replay_memory_demand_totals();
+    rtcore_maybe_log_replay_memory_demand_estimate_stats(request.owner_hw_sid);
+}
+
 static bool rtcore_step_admitted_replay_request(unsigned thread_uid);
 
 static bool rtcore_select_ready_request_from_queue_for_owner(
@@ -1974,6 +2116,7 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid)
     if (rtcore_replay_request_done(it->second)) {
         return false;
     }
+    rtcore_record_replay_memory_demand_estimate(it->second);
     if (it->second.next_event_index < it->second.events.size() &&
         rtcore_unpack_compact_trace_event_type(
             it->second.events[it->second.next_event_index]) ==
