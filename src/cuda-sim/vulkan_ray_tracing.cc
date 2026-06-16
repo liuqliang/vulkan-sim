@@ -2175,13 +2175,16 @@ static void rtcore_maybe_log_replay_memory_wake_latency_gate_stats(
             : 0;
 
     printf("GPGPU-Sim RTCORE_REPLAY_MEMORY_WAKE_LATENCY_GATE_STATS "
-           "owner_hw_sid=%u thread_uid=%u lane_id=%u event_index=%u "
-           "event_type=%u gate_enabled=%u armed=%u blocked=%u woken=%u "
-           "service_cycle=%llu ready_cycle=%llu latency_cycles=%u "
-           "blocked_cycles=%llu gate_evaluations=%u gate_armed_count=%u "
-           "gate_blocked_count=%u gate_woken_count=%u max_latency_cycles=%u "
-           "max_blocked_cycles=%u\n",
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u "
+           "has_warp_metadata=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+           "static_inst_uid=%u event_index=%u event_type=%u gate_enabled=%u "
+           "armed=%u blocked=%u woken=%u service_cycle=%llu "
+           "ready_cycle=%llu latency_cycles=%u blocked_cycles=%llu "
+           "gate_evaluations=%u gate_armed_count=%u gate_blocked_count=%u "
+           "gate_woken_count=%u max_latency_cycles=%u max_blocked_cycles=%u\n",
            request.owner_hw_sid, request.thread_uid, request.lane_id,
+           request.has_warp_metadata ? 1u : 0u, request.warp_uid,
+           request.warp_id, request.active_mask, request.static_inst_uid,
            request.memory_wake_event_index, event_type,
            rtcore_replay_memory_wake_latency_gate_enabled() ? 1u : 0u,
            armed ? 1u : 0u, blocked ? 1u : 0u, woken ? 1u : 0u,

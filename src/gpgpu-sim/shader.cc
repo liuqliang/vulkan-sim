@@ -605,6 +605,8 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
     bool candidate_warp_completion_all_active_lanes_complete,
     bool candidate_all_lanes_shadow_release_allowed, bool activation_enabled,
     bool activation_blocked,
+    bool candidate_warp_key_valid, unsigned candidate_warp_uid,
+    unsigned candidate_warp_id, unsigned candidate_active_mask,
     unsigned long long candidate_release_gate_blocked_cycles) {
   const bool release_gate_shadow_enabled =
       rtcore_replay_cycle_release_gate_shadow_enabled();
@@ -721,6 +723,8 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
          "candidate_warp_completion_all_active_lanes_complete=%u "
          "candidate_all_lanes_shadow_release_allowed=%u "
          "activation_enabled=%u activation_blocked=%u "
+         "candidate_warp_key_valid=%u candidate_warp_uid=%u "
+         "candidate_warp_id=%u candidate_active_mask=0x%08x "
          "candidate_release_gate_blocked_cycles=%llu\n",
          result.owner_hw_sid, result.cycle, legacy_ready ? 1 : 0,
          result.hook_enabled ? 1 : 0, result.service_enabled ? 1 : 0,
@@ -735,6 +739,8 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
          candidate_warp_completion_all_active_lanes_complete ? 1 : 0,
          candidate_all_lanes_shadow_release_allowed ? 1 : 0,
          activation_enabled ? 1 : 0, activation_blocked ? 1 : 0,
+         candidate_warp_key_valid ? 1 : 0, candidate_warp_uid,
+         candidate_warp_id, candidate_active_mask,
          candidate_release_gate_blocked_cycles);
   fflush(stdout);
 }
@@ -7803,6 +7809,8 @@ void rt_unit::cycle() {
         candidate_completion_event_found
             ? candidate_completion_event->second.issued_active_mask
             : 0;
+    const bool candidate_warp_key_valid =
+        synthetic_submit_release_candidate && candidate_completion_event_found;
     if (synthetic_submit_release_candidate &&
         candidate_completion_event_found) {
       rtcore_query_replay_warp_completion_shadow(m_sid, it->second.get_uid(),
@@ -7839,7 +7847,9 @@ void rt_unit::cycle() {
         candidate_completion.enabled, candidate_completion.found,
         candidate_completion.all_active_lanes_complete,
         candidate_all_lanes_shadow_release_allowed, activation_enabled,
-        activation_blocked, candidate_release_gate_blocked_cycles);
+        activation_blocked, candidate_warp_key_valid, it->second.get_uid(),
+        it->second.warp_id(), candidate_issued_active_mask,
+        candidate_release_gate_blocked_cycles);
     // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
     if (gated_synthetic_submit_completion_ready &&
         it->second.rt_mem_accesses_empty() &&
