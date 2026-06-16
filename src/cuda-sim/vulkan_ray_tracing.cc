@@ -316,6 +316,11 @@ struct rtcore_replay_lane_request {
     unsigned overflow_summary_events;
     rtcore_compact_trace_overflow_summary overflow_summary;
     rtcore_replay_lane_request_state state;
+    bool memory_wake_latency_gate_pending;
+    unsigned memory_wake_event_index;
+    unsigned memory_wake_latency_cycles;
+    unsigned long long memory_wake_armed_cycle;
+    unsigned long long memory_wake_ready_cycle;
     std::vector<rtcore_compact_trace_event> events;
 };
 
@@ -452,6 +457,15 @@ struct rtcore_replay_memory_latency_blocked_cycle_stats {
     unsigned current_estimated_total_memory_latency_cycles;
 };
 
+struct rtcore_replay_memory_wake_latency_gate_stats {
+    unsigned gate_evaluations;
+    unsigned gate_armed_count;
+    unsigned gate_blocked_count;
+    unsigned gate_woken_count;
+    unsigned max_latency_cycles;
+    unsigned max_blocked_cycles;
+};
+
 struct rtcore_replay_unit_arbitration_stats {
     unsigned node_unit_issue_attempts;
     unsigned node_unit_issued;
@@ -496,6 +510,8 @@ static rtcore_replay_memory_latency_policy_stats
     g_rtcore_replay_memory_latency_policy_stats;
 static rtcore_replay_memory_latency_blocked_cycle_stats
     g_rtcore_replay_memory_latency_blocked_cycle_stats;
+static rtcore_replay_memory_wake_latency_gate_stats
+    g_rtcore_replay_memory_wake_latency_gate_stats;
 static rtcore_replay_unit_arbitration_stats
     g_rtcore_replay_unit_arbitration_stats;
 static rtcore_service_tick_stats_snapshot
@@ -521,6 +537,7 @@ static unsigned
     g_rtcore_replay_memory_latency_blocked_cycle_stats_logs_emitted = 0;
 static unsigned
     g_rtcore_replay_memory_latency_blocked_cycle_last_total_cycles = 0;
+static unsigned g_rtcore_replay_memory_wake_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -609,6 +626,26 @@ static bool rtcore_replay_memory_latency_blocked_cycle_stats_log_enabled()
     static int enabled = []() {
         const char *value = getenv(
             "VULKAN_SIM_RTCORE_REPLAY_MEMORY_LATENCY_BLOCKED_CYCLE_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_memory_wake_latency_gate_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_WAKE_LATENCY_GATE");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_memory_wake_latency_gate_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv(
+            "VULKAN_SIM_RTCORE_REPLAY_MEMORY_WAKE_LATENCY_GATE_STATS_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -744,6 +781,14 @@ static unsigned rtcore_replay_memory_latency_blocked_cycle_stats_log_limit()
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_MEMORY_LATENCY_BLOCKED_CYCLE_STATS_LOG_LIMIT",
         16);
+    return limit;
+}
+
+static unsigned rtcore_replay_memory_wake_latency_gate_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_WAKE_LATENCY_GATE_STATS_LOG_LIMIT",
+        64);
     return limit;
 }
 
@@ -2080,6 +2125,147 @@ static void rtcore_record_replay_memory_latency_blocked_cycle_stats(
     rtcore_maybe_log_replay_memory_latency_blocked_cycle_stats(owner_hw_sid);
 }
 
+static unsigned rtcore_replay_memory_wake_latency_cycles_for_event(
+    const rtcore_compact_trace_event &event)
+{
+    const rtcore_compact_trace_event_type event_type =
+        rtcore_unpack_compact_trace_event_type(event);
+    const rtcore_compact_trace_resource_class resource_class =
+        rtcore_unpack_compact_trace_resource_class(event);
+    const unsigned count = rtcore_unpack_compact_trace_count(event) == 0
+                               ? 1
+                               : rtcore_unpack_compact_trace_count(event);
+    const unsigned bytes = rtcore_unpack_compact_trace_bytes(event);
+    unsigned latency_cycles = 0;
+
+    if (event_type == RTCORE_TRACE_MEMORY_WAIT) {
+        latency_cycles += count * rtcore_replay_memory_wait_event_latency_config();
+    }
+    if (event_type == RTCORE_TRACE_NODE_FETCH ||
+        event_type == RTCORE_TRACE_PRIMITIVE_FETCH ||
+        resource_class == RTCORE_TRACE_RESOURCE_MEMORY) {
+        latency_cycles +=
+            rtcore_replay_estimated_cache_lines_64b(bytes * count) *
+            rtcore_replay_memory_cache_line_latency_config();
+    }
+    return latency_cycles;
+}
+
+static void rtcore_maybe_log_replay_memory_wake_latency_gate_stats(
+    const rtcore_replay_lane_request &request, bool armed, bool blocked,
+    bool woken, unsigned long long service_cycle)
+{
+    if (!rtcore_replay_memory_wake_latency_gate_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_memory_wake_latency_gate_stats_logs_emitted >=
+        rtcore_replay_memory_wake_latency_gate_stats_log_limit()) {
+        return;
+    }
+    g_rtcore_replay_memory_wake_latency_gate_stats_logs_emitted++;
+
+    const unsigned long long blocked_cycles =
+        request.memory_wake_ready_cycle > service_cycle
+            ? request.memory_wake_ready_cycle - service_cycle
+            : 0;
+    const unsigned event_type =
+        request.memory_wake_event_index < request.events.size()
+            ? static_cast<unsigned>(rtcore_unpack_compact_trace_event_type(
+                  request.events[request.memory_wake_event_index]))
+            : 0;
+
+    printf("GPGPU-Sim RTCORE_REPLAY_MEMORY_WAKE_LATENCY_GATE_STATS "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u event_index=%u "
+           "event_type=%u gate_enabled=%u armed=%u blocked=%u woken=%u "
+           "service_cycle=%llu ready_cycle=%llu latency_cycles=%u "
+           "blocked_cycles=%llu gate_evaluations=%u gate_armed_count=%u "
+           "gate_blocked_count=%u gate_woken_count=%u max_latency_cycles=%u "
+           "max_blocked_cycles=%u\n",
+           request.owner_hw_sid, request.thread_uid, request.lane_id,
+           request.memory_wake_event_index, event_type,
+           rtcore_replay_memory_wake_latency_gate_enabled() ? 1u : 0u,
+           armed ? 1u : 0u, blocked ? 1u : 0u, woken ? 1u : 0u,
+           service_cycle, request.memory_wake_ready_cycle,
+           request.memory_wake_latency_cycles, blocked_cycles,
+           g_rtcore_replay_memory_wake_latency_gate_stats.gate_evaluations,
+           g_rtcore_replay_memory_wake_latency_gate_stats.gate_armed_count,
+           g_rtcore_replay_memory_wake_latency_gate_stats.gate_blocked_count,
+           g_rtcore_replay_memory_wake_latency_gate_stats.gate_woken_count,
+           g_rtcore_replay_memory_wake_latency_gate_stats.max_latency_cycles,
+           g_rtcore_replay_memory_wake_latency_gate_stats.max_blocked_cycles);
+    fflush(stdout);
+}
+
+static bool rtcore_maybe_arm_replay_memory_wake_latency_gate(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    if (!request || !request->valid ||
+        !rtcore_replay_memory_wake_latency_gate_enabled()) {
+        return false;
+    }
+    if (request->next_event_index >= request->events.size()) {
+        return false;
+    }
+    if (request->memory_wake_latency_gate_pending &&
+        request->memory_wake_event_index == request->next_event_index) {
+        return false;
+    }
+
+    const unsigned latency_cycles =
+        rtcore_replay_memory_wake_latency_cycles_for_event(
+            request->events[request->next_event_index]);
+    if (latency_cycles == 0) {
+        return false;
+    }
+
+    request->memory_wake_latency_gate_pending = true;
+    request->memory_wake_event_index = request->next_event_index;
+    request->memory_wake_latency_cycles = latency_cycles;
+    request->memory_wake_armed_cycle = service_cycle;
+    request->memory_wake_ready_cycle = service_cycle + latency_cycles;
+    request->state = RTCORE_REPLAY_WAITING_MEMORY;
+
+    g_rtcore_replay_memory_wake_latency_gate_stats.gate_evaluations++;
+    g_rtcore_replay_memory_wake_latency_gate_stats.gate_armed_count++;
+    if (latency_cycles >
+        g_rtcore_replay_memory_wake_latency_gate_stats.max_latency_cycles) {
+        g_rtcore_replay_memory_wake_latency_gate_stats.max_latency_cycles =
+            latency_cycles;
+    }
+    rtcore_maybe_log_replay_memory_wake_latency_gate_stats(
+        *request, true, false, false, service_cycle);
+    return true;
+}
+
+static bool rtcore_replay_memory_wake_latency_gate_ready(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    if (!request || !request->memory_wake_latency_gate_pending) {
+        return true;
+    }
+    if (service_cycle < request->memory_wake_ready_cycle) {
+        const unsigned blocked_cycles = static_cast<unsigned>(
+            request->memory_wake_ready_cycle - service_cycle);
+        g_rtcore_replay_memory_wake_latency_gate_stats.gate_evaluations++;
+        g_rtcore_replay_memory_wake_latency_gate_stats.gate_blocked_count++;
+        if (blocked_cycles >
+            g_rtcore_replay_memory_wake_latency_gate_stats.max_blocked_cycles) {
+            g_rtcore_replay_memory_wake_latency_gate_stats.max_blocked_cycles =
+                blocked_cycles;
+        }
+        rtcore_maybe_log_replay_memory_wake_latency_gate_stats(
+            *request, false, true, false, service_cycle);
+        return false;
+    }
+
+    g_rtcore_replay_memory_wake_latency_gate_stats.gate_evaluations++;
+    g_rtcore_replay_memory_wake_latency_gate_stats.gate_woken_count++;
+    rtcore_maybe_log_replay_memory_wake_latency_gate_stats(
+        *request, false, false, true, service_cycle);
+    request->memory_wake_latency_gate_pending = false;
+    return true;
+}
+
 static void rtcore_record_replay_memory_latency_policy_estimate(
     unsigned owner_hw_sid)
 {
@@ -2170,7 +2356,8 @@ static void rtcore_record_replay_memory_demand_estimate(
     rtcore_maybe_log_replay_memory_demand_estimate_stats(request.owner_hw_sid);
 }
 
-static bool rtcore_step_admitted_replay_request(unsigned thread_uid);
+static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
+                                                unsigned long long service_cycle = 0);
 
 static bool rtcore_select_ready_request_from_queue_for_owner(
     const std::deque<unsigned> &queue, unsigned owner_hw_sid,
@@ -2196,7 +2383,8 @@ static bool rtcore_select_ready_request_from_queue_for_owner(
 static bool rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
     std::deque<unsigned> &queue, unsigned owner_hw_sid, unsigned *issue_budget,
     unsigned *issue_attempts, unsigned *issued, unsigned *budget_exhausted,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity)
+    rtcore_replay_service_cycle_identity_snapshot *last_identity,
+    unsigned long long service_cycle)
 {
     bool progressed = false;
     while (true) {
@@ -2219,7 +2407,7 @@ static bool rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
         if (!rtcore_remove_replay_request_from_queue(queue, thread_uid)) {
             break;
         }
-        if (!rtcore_step_admitted_replay_request(thread_uid)) {
+        if (!rtcore_step_admitted_replay_request(thread_uid, service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid);
             break;
         }
@@ -2322,7 +2510,8 @@ static bool rtcore_replay_advance_lane_request(
     return true;
 }
 
-static bool rtcore_step_admitted_replay_request(unsigned thread_uid)
+static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
+                                                unsigned long long service_cycle)
 {
     std::map<unsigned, rtcore_replay_lane_request>::iterator it =
         g_rtcore_replay_lane_requests.find(thread_uid);
@@ -2332,12 +2521,23 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid)
     if (rtcore_replay_request_done(it->second)) {
         return false;
     }
-    rtcore_record_replay_memory_demand_estimate(it->second);
-    if (it->second.next_event_index < it->second.events.size() &&
-        rtcore_unpack_compact_trace_event_type(
-            it->second.events[it->second.next_event_index]) ==
-            RTCORE_TRACE_OVERFLOW_SUMMARY) {
-        rtcore_record_replay_overflow_summary_estimate(it->second);
+    if (it->second.memory_wake_latency_gate_pending) {
+        if (!rtcore_replay_memory_wake_latency_gate_ready(&it->second,
+                                                          service_cycle)) {
+            return false;
+        }
+    } else {
+        rtcore_record_replay_memory_demand_estimate(it->second);
+        if (it->second.next_event_index < it->second.events.size() &&
+            rtcore_unpack_compact_trace_event_type(
+                it->second.events[it->second.next_event_index]) ==
+                RTCORE_TRACE_OVERFLOW_SUMMARY) {
+            rtcore_record_replay_overflow_summary_estimate(it->second);
+        }
+        if (rtcore_maybe_arm_replay_memory_wake_latency_gate(&it->second,
+                                                             service_cycle)) {
+            return true;
+        }
     }
     const bool advanced = rtcore_replay_advance_lane_request(&it->second);
     if (advanced && rtcore_replay_request_done(it->second)) {
@@ -2396,7 +2596,8 @@ static bool rtcore_consume_replay_issue_budget(unsigned thread_uid,
 }
 
 static bool rtcore_step_selected_ready_replay_request_with_budget(
-    rtcore_replay_issue_budget *budget, unsigned *serviced_thread_uid = NULL)
+    rtcore_replay_issue_budget *budget, unsigned *serviced_thread_uid = NULL,
+    unsigned long long service_cycle = 0)
 {
     unsigned thread_uid = 0;
     if (!rtcore_select_ready_replay_request(&thread_uid)) {
@@ -2408,7 +2609,7 @@ static bool rtcore_step_selected_ready_replay_request_with_budget(
     if (!rtcore_dequeue_selected_ready_request(thread_uid)) {
         return false;
     }
-    if (!rtcore_step_admitted_replay_request(thread_uid)) {
+    if (!rtcore_step_admitted_replay_request(thread_uid, service_cycle)) {
         return false;
     }
     if (serviced_thread_uid) {
@@ -2419,7 +2620,7 @@ static bool rtcore_step_selected_ready_replay_request_with_budget(
 
 static bool rtcore_step_selected_ready_replay_request_with_budget_for_owner(
     unsigned owner_hw_sid, rtcore_replay_issue_budget *budget,
-    unsigned *serviced_thread_uid = NULL)
+    unsigned *serviced_thread_uid = NULL, unsigned long long service_cycle = 0)
 {
     unsigned thread_uid = 0;
     if (!rtcore_select_ready_replay_request_for_owner(owner_hw_sid, &thread_uid)) {
@@ -2431,7 +2632,7 @@ static bool rtcore_step_selected_ready_replay_request_with_budget_for_owner(
     if (!rtcore_dequeue_selected_ready_request(thread_uid)) {
         return false;
     }
-    if (!rtcore_step_admitted_replay_request(thread_uid)) {
+    if (!rtcore_step_admitted_replay_request(thread_uid, service_cycle)) {
         return false;
     }
     if (serviced_thread_uid) {
@@ -2448,13 +2649,14 @@ static bool rtcore_step_selected_ready_replay_request()
 
 static bool rtcore_service_replay_ready_requests_with_budget(
     rtcore_replay_issue_budget budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL)
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
+    unsigned long long service_cycle = 0)
 {
     bool progressed = false;
     while (rtcore_replay_issue_budget_available(budget)) {
         unsigned serviced_thread_uid = 0;
         if (!rtcore_step_selected_ready_replay_request_with_budget(
-                &budget, &serviced_thread_uid)) {
+                &budget, &serviced_thread_uid, service_cycle)) {
             break;
         }
         if (last_identity) {
@@ -2468,13 +2670,14 @@ static bool rtcore_service_replay_ready_requests_with_budget(
 
 static bool rtcore_service_replay_ready_requests_with_budget_for_owner(
     unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL)
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
+    unsigned long long service_cycle = 0)
 {
     bool progressed = false;
     while (rtcore_replay_issue_budget_available(budget)) {
         unsigned serviced_thread_uid = 0;
         if (!rtcore_step_selected_ready_replay_request_with_budget_for_owner(
-                owner_hw_sid, &budget, &serviced_thread_uid)) {
+                owner_hw_sid, &budget, &serviced_thread_uid, service_cycle)) {
             break;
         }
         if (last_identity) {
@@ -2489,7 +2692,8 @@ static bool rtcore_service_replay_ready_requests_with_budget_for_owner(
 static bool
 rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
     unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL)
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
+    unsigned long long service_cycle = 0)
 {
     bool progressed = false;
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
@@ -2498,7 +2702,7 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
         &g_rtcore_replay_unit_arbitration_stats.node_unit_issue_attempts,
         &g_rtcore_replay_unit_arbitration_stats.node_unit_issued,
         &g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted,
-        last_identity);
+        last_identity, service_cycle);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
         g_rtcore_replay_ready_queues.ready_primitive_queue, owner_hw_sid,
         &budget.primitive_issue_budget,
@@ -2506,14 +2710,14 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
         &g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued,
         &g_rtcore_replay_unit_arbitration_stats
              .primitive_unit_budget_exhausted,
-        last_identity);
+        last_identity, service_cycle);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
         g_rtcore_replay_ready_queues.ready_stack_queue, owner_hw_sid,
         &budget.stack_issue_budget,
         &g_rtcore_replay_unit_arbitration_stats.stack_unit_issue_attempts,
         &g_rtcore_replay_unit_arbitration_stats.stack_unit_issued,
         &g_rtcore_replay_unit_arbitration_stats.stack_unit_budget_exhausted,
-        last_identity);
+        last_identity, service_cycle);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
         g_rtcore_replay_ready_queues.ready_completion_queue, owner_hw_sid,
         &budget.completion_issue_budget,
@@ -2522,7 +2726,7 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
         &g_rtcore_replay_unit_arbitration_stats.completion_unit_issued,
         &g_rtcore_replay_unit_arbitration_stats
              .completion_unit_budget_exhausted,
-        last_identity);
+        last_identity, service_cycle);
     return progressed;
 }
 
@@ -2562,7 +2766,8 @@ static bool rtcore_dequeue_waiting_memory_request_for_owner(
     return false;
 }
 
-static bool rtcore_wake_waiting_memory_replay_request(unsigned thread_uid)
+static bool rtcore_wake_waiting_memory_replay_request(
+    unsigned thread_uid, unsigned long long service_cycle)
 {
     std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
         g_rtcore_replay_lane_requests.find(thread_uid);
@@ -2572,7 +2777,7 @@ static bool rtcore_wake_waiting_memory_replay_request(unsigned thread_uid)
     if (it->second.state != RTCORE_REPLAY_WAITING_MEMORY) {
         return false;
     }
-    if (!rtcore_step_admitted_replay_request(thread_uid)) {
+    if (!rtcore_step_admitted_replay_request(thread_uid, service_cycle)) {
         return false;
     }
     return rtcore_route_admitted_replay_request(thread_uid);
@@ -2580,7 +2785,8 @@ static bool rtcore_wake_waiting_memory_replay_request(unsigned thread_uid)
 
 static bool rtcore_service_waiting_memory_replay_requests(
     unsigned wake_budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL)
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
+    unsigned long long service_cycle = 0)
 {
     bool progressed = false;
     while (wake_budget > 0) {
@@ -2588,7 +2794,8 @@ static bool rtcore_service_waiting_memory_replay_requests(
         if (!rtcore_dequeue_waiting_memory_request(&thread_uid)) {
             break;
         }
-        if (!rtcore_wake_waiting_memory_replay_request(thread_uid)) {
+        if (!rtcore_wake_waiting_memory_replay_request(thread_uid,
+                                                       service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid);
             break;
         }
@@ -2604,7 +2811,8 @@ static bool rtcore_service_waiting_memory_replay_requests(
 
 static bool rtcore_service_waiting_memory_replay_requests_for_owner(
     unsigned owner_hw_sid, unsigned wake_budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL)
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
+    unsigned long long service_cycle = 0)
 {
     bool progressed = false;
     while (wake_budget > 0) {
@@ -2613,7 +2821,8 @@ static bool rtcore_service_waiting_memory_replay_requests_for_owner(
                                                              &thread_uid)) {
             break;
         }
-        if (!rtcore_wake_waiting_memory_replay_request(thread_uid)) {
+        if (!rtcore_wake_waiting_memory_replay_request(thread_uid,
+                                                       service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid);
             break;
         }
@@ -2640,16 +2849,18 @@ static bool rtcore_service_waiting_memory_replay_requests_for_owner(
         owner_hw_sid, rtcore_replay_memory_wake_budget_config());
 }
 
-static rtcore_replay_service_tick_result rtcore_service_replay_tick()
+static rtcore_replay_service_tick_result
+rtcore_service_replay_tick(unsigned long long service_cycle = 0)
 {
     rtcore_replay_service_tick_result result = {};
     rtcore_replay_service_cycle_identity_snapshot memory_identity = {};
     rtcore_replay_service_cycle_identity_snapshot ready_identity = {};
     result.memory_progressed =
         rtcore_service_waiting_memory_replay_requests(
-            rtcore_replay_memory_wake_budget_config(), &memory_identity);
+            rtcore_replay_memory_wake_budget_config(), &memory_identity,
+            service_cycle);
     result.ready_progressed = rtcore_service_replay_ready_requests_with_budget(
-        rtcore_replay_issue_budget_config(), &ready_identity);
+        rtcore_replay_issue_budget_config(), &ready_identity, service_cycle);
     result.progressed = result.memory_progressed || result.ready_progressed;
     if (result.ready_progressed) {
         result.last_progress_identity = ready_identity;
@@ -2660,7 +2871,8 @@ static rtcore_replay_service_tick_result rtcore_service_replay_tick()
 }
 
 static rtcore_replay_service_tick_result
-rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid)
+rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
+                                     unsigned long long service_cycle = 0)
 {
     rtcore_replay_service_tick_result result = {};
     rtcore_replay_service_cycle_identity_snapshot memory_identity = {};
@@ -2668,15 +2880,15 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid)
     result.memory_progressed =
         rtcore_service_waiting_memory_replay_requests_for_owner(
             owner_hw_sid, rtcore_replay_memory_wake_budget_config(),
-            &memory_identity);
+            &memory_identity, service_cycle);
     result.ready_progressed =
         rtcore_replay_unit_arbitration_enabled()
             ? rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
                   owner_hw_sid, rtcore_replay_issue_budget_config(),
-                  &ready_identity)
+                  &ready_identity, service_cycle)
             : rtcore_service_replay_ready_requests_with_budget_for_owner(
                   owner_hw_sid, rtcore_replay_issue_budget_config(),
-                  &ready_identity);
+                  &ready_identity, service_cycle);
     result.progressed = result.memory_progressed || result.ready_progressed;
     if (result.ready_progressed) {
         result.last_progress_identity = ready_identity;
@@ -2686,23 +2898,25 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid)
     return result;
 }
 
-static rtcore_replay_service_tick_result rtcore_maybe_service_replay_tick()
+static rtcore_replay_service_tick_result
+rtcore_maybe_service_replay_tick(unsigned long long service_cycle = 0)
 {
     rtcore_replay_service_tick_result result = {};
     if (!rtcore_replay_service_tick_enabled()) {
         return result;
     }
-    return rtcore_service_replay_tick();
+    return rtcore_service_replay_tick(service_cycle);
 }
 
 static rtcore_replay_service_tick_result
-rtcore_maybe_service_replay_tick(unsigned owner_hw_sid)
+rtcore_maybe_service_replay_tick(unsigned owner_hw_sid,
+                                 unsigned long long service_cycle = 0)
 {
     rtcore_replay_service_tick_result result = {};
     if (!rtcore_replay_service_tick_enabled()) {
         return result;
     }
-    return rtcore_service_replay_tick_for_owner(owner_hw_sid);
+    return rtcore_service_replay_tick_for_owner(owner_hw_sid, service_cycle);
 }
 
 static void rtcore_record_replay_service_tick_result(
@@ -2899,7 +3113,8 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
         return result;
     }
 
-    result.tick_result = rtcore_maybe_service_replay_tick(owner_hw_sid);
+    result.tick_result =
+        rtcore_maybe_service_replay_tick(owner_hw_sid, service_cycle);
     rtcore_record_replay_service_tick_result(result.tick_result);
     rtcore_publish_replay_service_tick_stats_snapshot();
     rtcore_maybe_log_replay_unit_arbitration_stats(owner_hw_sid);
