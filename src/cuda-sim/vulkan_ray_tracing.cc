@@ -392,6 +392,21 @@ struct rtcore_replay_service_tick_stats {
     unsigned ready_ticks_progressed;
 };
 
+struct rtcore_replay_unit_arbitration_stats {
+    unsigned node_unit_issue_attempts;
+    unsigned node_unit_issued;
+    unsigned node_unit_budget_exhausted;
+    unsigned primitive_unit_issue_attempts;
+    unsigned primitive_unit_issued;
+    unsigned primitive_unit_budget_exhausted;
+    unsigned stack_unit_issue_attempts;
+    unsigned stack_unit_issued;
+    unsigned stack_unit_budget_exhausted;
+    unsigned completion_unit_issue_attempts;
+    unsigned completion_unit_issued;
+    unsigned completion_unit_budget_exhausted;
+};
+
 struct rtcore_replay_service_tick_stats_snapshot {
     bool valid;
     unsigned tick_attempts;
@@ -413,12 +428,22 @@ struct rtcore_replay_service_cycle_result {
 
 static rtcore_replay_ready_queues g_rtcore_replay_ready_queues;
 static rtcore_replay_service_tick_stats g_rtcore_replay_service_tick_stats;
+static rtcore_replay_unit_arbitration_stats
+    g_rtcore_replay_unit_arbitration_stats;
 static rtcore_service_tick_stats_snapshot
     g_rtcore_replay_service_tick_stats_snapshot;
 static unsigned g_rtcore_replay_service_tick_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_service_tick_stats_progress_logs_emitted = 0;
 static unsigned g_rtcore_replay_service_tick_stats_last_logged_ticks_progressed =
     0;
+static unsigned g_rtcore_replay_unit_arbitration_stats_logs_emitted = 0;
+static unsigned
+    g_rtcore_replay_unit_arbitration_stats_progress_logs_emitted = 0;
+static unsigned
+    g_rtcore_replay_unit_arbitration_stats_last_logged_total_issued = 0;
+static unsigned
+    g_rtcore_replay_unit_arbitration_stats_last_logged_total_budget_exhausted =
+        0;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -429,6 +454,28 @@ static bool rtcore_bounded_trace_collection_enabled()
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
+}
+
+static unsigned rtcore_compact_trace_events_per_lane_config()
+{
+    static unsigned events_per_lane = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_COMPACT_TRACE_EVENTS_PER_LANE");
+        if (!value || value[0] == '\0') {
+            return RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE;
+        }
+
+        char *end = NULL;
+        unsigned long parsed = strtoul(value, &end, 10);
+        if (end == value || parsed == 0) {
+            return RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE;
+        }
+        if (parsed > RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR) {
+            return RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR;
+        }
+        return static_cast<unsigned>(parsed);
+    }();
+    return events_per_lane;
 }
 
 static bool rtcore_replay_admission_enabled()
@@ -454,6 +501,26 @@ static bool rtcore_replay_service_tick_stats_log_enabled()
     static int enabled = []() {
         const char *value =
             getenv("VULKAN_SIM_RTCORE_REPLAY_SERVICE_TICK_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_unit_arbitration_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_UNIT_ARBITRATION");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_unit_arbitration_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_UNIT_ARBITRATION_STATS_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -499,6 +566,21 @@ static unsigned rtcore_replay_service_tick_stats_progress_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_SERVICE_TICK_STATS_PROGRESS_LOG_LIMIT", 8);
+    return limit;
+}
+
+static unsigned rtcore_replay_unit_arbitration_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_UNIT_ARBITRATION_STATS_LOG_LIMIT", 8);
+    return limit;
+}
+
+static unsigned rtcore_replay_unit_arbitration_stats_progress_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_UNIT_ARBITRATION_STATS_PROGRESS_LOG_LIMIT",
+        8);
     return limit;
 }
 
@@ -666,7 +748,7 @@ struct rtcore_bounded_trace_collector {
         : enabled(rtcore_bounded_trace_collection_enabled()),
           lane_id(thread ? (thread->get_tid().x & 31u) : 0),
           max_trace_events_per_lane(
-              RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE),
+              rtcore_compact_trace_events_per_lane_config()),
           next_event_seq(0), timing_trace_overflowed(false),
           overflow_summary_events(0)
     {
@@ -1367,6 +1449,75 @@ static bool rtcore_remove_replay_request_from_queue(
     return false;
 }
 
+static bool rtcore_step_admitted_replay_request(unsigned thread_uid);
+
+static bool rtcore_select_ready_request_from_queue_for_owner(
+    const std::deque<unsigned> &queue, unsigned owner_hw_sid,
+    unsigned *thread_uid)
+{
+    if (queue.empty()) {
+        return false;
+    }
+
+    for (std::deque<unsigned>::const_iterator it = queue.begin();
+         it != queue.end(); ++it) {
+        if (!rtcore_replay_request_owned_by_sm(*it, owner_hw_sid)) {
+            continue;
+        }
+        if (thread_uid) {
+            *thread_uid = *it;
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    std::deque<unsigned> &queue, unsigned owner_hw_sid, unsigned *issue_budget,
+    unsigned *issue_attempts, unsigned *issued, unsigned *budget_exhausted,
+    rtcore_replay_service_cycle_identity_snapshot *last_identity)
+{
+    bool progressed = false;
+    while (true) {
+        unsigned thread_uid = 0;
+        if (!rtcore_select_ready_request_from_queue_for_owner(
+                queue, owner_hw_sid, &thread_uid)) {
+            break;
+        }
+        if (issue_attempts) {
+            (*issue_attempts)++;
+        }
+        if (!issue_budget || *issue_budget == 0) {
+            if (budget_exhausted) {
+                (*budget_exhausted)++;
+            }
+            break;
+        }
+
+        (*issue_budget)--;
+        if (!rtcore_remove_replay_request_from_queue(queue, thread_uid)) {
+            break;
+        }
+        if (!rtcore_step_admitted_replay_request(thread_uid)) {
+            rtcore_route_admitted_replay_request(thread_uid);
+            break;
+        }
+
+        if (issued) {
+            (*issued)++;
+        }
+        if (last_identity) {
+            *last_identity = rtcore_make_replay_service_progress_identity(
+                thread_uid, false, true);
+        }
+        progressed = true;
+        if (!rtcore_route_admitted_replay_request(thread_uid)) {
+            break;
+        }
+    }
+    return progressed;
+}
+
 static bool rtcore_dequeue_selected_ready_request(unsigned thread_uid)
 {
     if (rtcore_remove_replay_request_from_queue(
@@ -1607,6 +1758,46 @@ static bool rtcore_service_replay_ready_requests_with_budget_for_owner(
     return progressed;
 }
 
+static bool
+rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
+    unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL)
+{
+    bool progressed = false;
+    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+        g_rtcore_replay_ready_queues.ready_node_queue, owner_hw_sid,
+        &budget.node_issue_budget,
+        &g_rtcore_replay_unit_arbitration_stats.node_unit_issue_attempts,
+        &g_rtcore_replay_unit_arbitration_stats.node_unit_issued,
+        &g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted,
+        last_identity);
+    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+        g_rtcore_replay_ready_queues.ready_primitive_queue, owner_hw_sid,
+        &budget.primitive_issue_budget,
+        &g_rtcore_replay_unit_arbitration_stats.primitive_unit_issue_attempts,
+        &g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued,
+        &g_rtcore_replay_unit_arbitration_stats
+             .primitive_unit_budget_exhausted,
+        last_identity);
+    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+        g_rtcore_replay_ready_queues.ready_stack_queue, owner_hw_sid,
+        &budget.stack_issue_budget,
+        &g_rtcore_replay_unit_arbitration_stats.stack_unit_issue_attempts,
+        &g_rtcore_replay_unit_arbitration_stats.stack_unit_issued,
+        &g_rtcore_replay_unit_arbitration_stats.stack_unit_budget_exhausted,
+        last_identity);
+    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+        g_rtcore_replay_ready_queues.ready_completion_queue, owner_hw_sid,
+        &budget.completion_issue_budget,
+        &g_rtcore_replay_unit_arbitration_stats
+             .completion_unit_issue_attempts,
+        &g_rtcore_replay_unit_arbitration_stats.completion_unit_issued,
+        &g_rtcore_replay_unit_arbitration_stats
+             .completion_unit_budget_exhausted,
+        last_identity);
+    return progressed;
+}
+
 static bool rtcore_dequeue_waiting_memory_request(unsigned *thread_uid)
 {
     if (g_rtcore_replay_ready_queues.waiting_memory_queue.empty()) {
@@ -1751,8 +1942,13 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid)
             owner_hw_sid, rtcore_replay_memory_wake_budget_config(),
             &memory_identity);
     result.ready_progressed =
-        rtcore_service_replay_ready_requests_with_budget_for_owner(
-            owner_hw_sid, rtcore_replay_issue_budget_config(), &ready_identity);
+        rtcore_replay_unit_arbitration_enabled()
+            ? rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
+                  owner_hw_sid, rtcore_replay_issue_budget_config(),
+                  &ready_identity)
+            : rtcore_service_replay_ready_requests_with_budget_for_owner(
+                  owner_hw_sid, rtcore_replay_issue_budget_config(),
+                  &ready_identity);
     result.progressed = result.memory_progressed || result.ready_progressed;
     if (result.ready_progressed) {
         result.last_progress_identity = ready_identity;
@@ -1860,6 +2056,100 @@ static void rtcore_log_replay_service_tick_stats_snapshot(
            snapshot.memory_ticks_progressed, snapshot.ready_ticks_progressed);
 }
 
+static unsigned rtcore_replay_unit_arbitration_total_issued()
+{
+    return g_rtcore_replay_unit_arbitration_stats.node_unit_issued +
+           g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued +
+           g_rtcore_replay_unit_arbitration_stats.stack_unit_issued +
+           g_rtcore_replay_unit_arbitration_stats.completion_unit_issued;
+}
+
+static unsigned rtcore_replay_unit_arbitration_total_budget_exhausted()
+{
+    return g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted +
+           g_rtcore_replay_unit_arbitration_stats
+               .primitive_unit_budget_exhausted +
+           g_rtcore_replay_unit_arbitration_stats.stack_unit_budget_exhausted +
+           g_rtcore_replay_unit_arbitration_stats
+               .completion_unit_budget_exhausted;
+}
+
+static bool rtcore_should_log_replay_unit_arbitration_stats()
+{
+    const unsigned total_issued = rtcore_replay_unit_arbitration_total_issued();
+    const unsigned total_budget_exhausted =
+        rtcore_replay_unit_arbitration_total_budget_exhausted();
+
+    if (g_rtcore_replay_unit_arbitration_stats_logs_emitted <
+        rtcore_replay_unit_arbitration_stats_log_limit()) {
+        g_rtcore_replay_unit_arbitration_stats_logs_emitted++;
+        g_rtcore_replay_unit_arbitration_stats_last_logged_total_issued =
+            total_issued;
+        g_rtcore_replay_unit_arbitration_stats_last_logged_total_budget_exhausted =
+            total_budget_exhausted;
+        return true;
+    }
+
+    if (total_issued <=
+            g_rtcore_replay_unit_arbitration_stats_last_logged_total_issued &&
+        total_budget_exhausted <=
+            g_rtcore_replay_unit_arbitration_stats_last_logged_total_budget_exhausted) {
+        return false;
+    }
+    if (g_rtcore_replay_unit_arbitration_stats_progress_logs_emitted >=
+        rtcore_replay_unit_arbitration_stats_progress_log_limit()) {
+        return false;
+    }
+
+    g_rtcore_replay_unit_arbitration_stats_logs_emitted++;
+    g_rtcore_replay_unit_arbitration_stats_progress_logs_emitted++;
+    g_rtcore_replay_unit_arbitration_stats_last_logged_total_issued =
+        total_issued;
+    g_rtcore_replay_unit_arbitration_stats_last_logged_total_budget_exhausted =
+        total_budget_exhausted;
+    return true;
+}
+
+static void rtcore_maybe_log_replay_unit_arbitration_stats(
+    unsigned owner_hw_sid)
+{
+    if (!rtcore_replay_unit_arbitration_stats_log_enabled()) {
+        return;
+    }
+    if (!rtcore_should_log_replay_unit_arbitration_stats()) {
+        return;
+    }
+
+    printf("GPGPU-Sim RTCORE_REPLAY_UNIT_ARBITRATION_STATS "
+           "owner_hw_sid=%u "
+           "node_unit_issue_attempts=%u node_unit_issued=%u "
+           "node_unit_budget_exhausted=%u "
+           "primitive_unit_issue_attempts=%u primitive_unit_issued=%u "
+           "primitive_unit_budget_exhausted=%u "
+           "stack_unit_issue_attempts=%u stack_unit_issued=%u "
+           "stack_unit_budget_exhausted=%u "
+           "completion_unit_issue_attempts=%u completion_unit_issued=%u "
+           "completion_unit_budget_exhausted=%u\n",
+           owner_hw_sid,
+           g_rtcore_replay_unit_arbitration_stats.node_unit_issue_attempts,
+           g_rtcore_replay_unit_arbitration_stats.node_unit_issued,
+           g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted,
+           g_rtcore_replay_unit_arbitration_stats
+               .primitive_unit_issue_attempts,
+           g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued,
+           g_rtcore_replay_unit_arbitration_stats
+               .primitive_unit_budget_exhausted,
+           g_rtcore_replay_unit_arbitration_stats.stack_unit_issue_attempts,
+           g_rtcore_replay_unit_arbitration_stats.stack_unit_issued,
+           g_rtcore_replay_unit_arbitration_stats.stack_unit_budget_exhausted,
+           g_rtcore_replay_unit_arbitration_stats
+               .completion_unit_issue_attempts,
+           g_rtcore_replay_unit_arbitration_stats.completion_unit_issued,
+           g_rtcore_replay_unit_arbitration_stats
+               .completion_unit_budget_exhausted);
+    fflush(stdout);
+}
+
 static void rtcore_publish_replay_service_tick_stats_snapshot()
 {
     g_rtcore_replay_service_tick_stats_snapshot =
@@ -1884,6 +2174,7 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
     result.tick_result = rtcore_maybe_service_replay_tick(owner_hw_sid);
     rtcore_record_replay_service_tick_result(result.tick_result);
     rtcore_publish_replay_service_tick_stats_snapshot();
+    rtcore_maybe_log_replay_unit_arbitration_stats(owner_hw_sid);
     result.stats_snapshot = g_rtcore_replay_service_tick_stats_snapshot;
     return result;
 }
