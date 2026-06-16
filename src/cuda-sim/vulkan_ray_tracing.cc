@@ -444,6 +444,14 @@ struct rtcore_replay_memory_latency_policy_stats {
     unsigned estimated_total_memory_latency_cycles;
 };
 
+struct rtcore_replay_memory_latency_blocked_cycle_stats {
+    unsigned policy_evaluations;
+    unsigned blocked_cycle_total;
+    unsigned max_delta_blocked_cycles;
+    unsigned last_delta_blocked_cycles;
+    unsigned current_estimated_total_memory_latency_cycles;
+};
+
 struct rtcore_replay_unit_arbitration_stats {
     unsigned node_unit_issue_attempts;
     unsigned node_unit_issued;
@@ -486,6 +494,8 @@ static rtcore_replay_memory_demand_estimate_stats
     g_rtcore_replay_memory_demand_estimate_stats;
 static rtcore_replay_memory_latency_policy_stats
     g_rtcore_replay_memory_latency_policy_stats;
+static rtcore_replay_memory_latency_blocked_cycle_stats
+    g_rtcore_replay_memory_latency_blocked_cycle_stats;
 static rtcore_replay_unit_arbitration_stats
     g_rtcore_replay_unit_arbitration_stats;
 static rtcore_service_tick_stats_snapshot
@@ -507,6 +517,10 @@ static unsigned g_rtcore_replay_overflow_summary_estimate_stats_logs_emitted =
     0;
 static unsigned g_rtcore_replay_memory_demand_estimate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_memory_latency_policy_stats_logs_emitted = 0;
+static unsigned
+    g_rtcore_replay_memory_latency_blocked_cycle_stats_logs_emitted = 0;
+static unsigned
+    g_rtcore_replay_memory_latency_blocked_cycle_last_total_cycles = 0;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -585,6 +599,16 @@ static bool rtcore_replay_memory_latency_policy_log_enabled()
     static int enabled = []() {
         const char *value =
             getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_LATENCY_POLICY_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_memory_latency_blocked_cycle_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv(
+            "VULKAN_SIM_RTCORE_REPLAY_MEMORY_LATENCY_BLOCKED_CYCLE_STATS_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -712,6 +736,14 @@ static unsigned rtcore_replay_memory_latency_policy_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_MEMORY_LATENCY_POLICY_LOG_LIMIT", 16);
+    return limit;
+}
+
+static unsigned rtcore_replay_memory_latency_blocked_cycle_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_LATENCY_BLOCKED_CYCLE_STATS_LOG_LIMIT",
+        16);
     return limit;
 }
 
@@ -1984,6 +2016,70 @@ static void rtcore_maybe_log_replay_memory_latency_policy_stats(
     fflush(stdout);
 }
 
+static void rtcore_maybe_log_replay_memory_latency_blocked_cycle_stats(
+    unsigned owner_hw_sid)
+{
+    if (!rtcore_replay_memory_latency_blocked_cycle_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_memory_latency_blocked_cycle_stats_logs_emitted >=
+        rtcore_replay_memory_latency_blocked_cycle_stats_log_limit()) {
+        return;
+    }
+    g_rtcore_replay_memory_latency_blocked_cycle_stats_logs_emitted++;
+
+    printf("GPGPU-Sim RTCORE_REPLAY_MEMORY_LATENCY_BLOCKED_CYCLE_STATS "
+           "owner_hw_sid=%u policy_evaluations=%u blocked_cycle_total=%u "
+           "max_delta_blocked_cycles=%u last_delta_blocked_cycles=%u "
+           "current_estimated_total_memory_latency_cycles=%u\n",
+           owner_hw_sid,
+           g_rtcore_replay_memory_latency_blocked_cycle_stats
+               .policy_evaluations,
+           g_rtcore_replay_memory_latency_blocked_cycle_stats
+               .blocked_cycle_total,
+           g_rtcore_replay_memory_latency_blocked_cycle_stats
+               .max_delta_blocked_cycles,
+           g_rtcore_replay_memory_latency_blocked_cycle_stats
+               .last_delta_blocked_cycles,
+           g_rtcore_replay_memory_latency_blocked_cycle_stats
+               .current_estimated_total_memory_latency_cycles);
+    fflush(stdout);
+}
+
+static void rtcore_record_replay_memory_latency_blocked_cycle_stats(
+    unsigned owner_hw_sid)
+{
+    if (!rtcore_replay_memory_latency_blocked_cycle_stats_log_enabled()) {
+        return;
+    }
+
+    const unsigned current_total =
+        g_rtcore_replay_memory_latency_policy_stats
+            .estimated_total_memory_latency_cycles;
+    const unsigned previous_total =
+        g_rtcore_replay_memory_latency_blocked_cycle_last_total_cycles;
+    const unsigned delta =
+        current_total > previous_total ? current_total - previous_total : 0;
+
+    g_rtcore_replay_memory_latency_blocked_cycle_last_total_cycles =
+        current_total;
+    g_rtcore_replay_memory_latency_blocked_cycle_stats.policy_evaluations =
+        g_rtcore_replay_memory_latency_policy_stats.policy_evaluations;
+    g_rtcore_replay_memory_latency_blocked_cycle_stats
+        .last_delta_blocked_cycles = delta;
+    g_rtcore_replay_memory_latency_blocked_cycle_stats
+        .current_estimated_total_memory_latency_cycles = current_total;
+    g_rtcore_replay_memory_latency_blocked_cycle_stats.blocked_cycle_total +=
+        delta;
+    if (delta > g_rtcore_replay_memory_latency_blocked_cycle_stats
+                    .max_delta_blocked_cycles) {
+        g_rtcore_replay_memory_latency_blocked_cycle_stats
+            .max_delta_blocked_cycles = delta;
+    }
+
+    rtcore_maybe_log_replay_memory_latency_blocked_cycle_stats(owner_hw_sid);
+}
+
 static void rtcore_record_replay_memory_latency_policy_estimate(
     unsigned owner_hw_sid)
 {
@@ -2021,6 +2117,7 @@ static void rtcore_record_replay_memory_latency_policy_estimate(
         g_rtcore_replay_memory_latency_policy_stats
             .estimated_memory_wait_latency_cycles;
 
+    rtcore_record_replay_memory_latency_blocked_cycle_stats(owner_hw_sid);
     rtcore_maybe_log_replay_memory_latency_policy_stats(owner_hw_sid);
 }
 
