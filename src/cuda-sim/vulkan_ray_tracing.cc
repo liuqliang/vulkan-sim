@@ -226,6 +226,23 @@ enum rtcore_compact_trace_hit_update_kind {
     RTCORE_TRACE_HIT_UPDATE_KIND_CLOSEST_HIT,
 };
 
+enum rtcore_trace_timing_precision_class {
+    RTCORE_TRACE_TIMING_PRECISION_EXACT = 0,
+    RTCORE_TRACE_TIMING_PRECISION_BOUNDED_OVERFLOW_SUMMARY,
+};
+
+struct rtcore_compact_trace_overflow_summary {
+    unsigned overflow_node_fetch_count;
+    unsigned overflow_node_test_count;
+    unsigned overflow_primitive_fetch_count;
+    unsigned overflow_primitive_test_count;
+    unsigned overflow_stack_push_count;
+    unsigned overflow_stack_pop_count;
+    unsigned overflow_memory_wait_count;
+    unsigned overflow_memory_bytes;
+    unsigned overflow_completion_count;
+};
+
 enum rtcore_replay_lane_request_state {
     RTCORE_REPLAY_QUEUED = 0,
     RTCORE_REPLAY_READY_NODE,
@@ -266,7 +283,9 @@ struct rtcore_compact_trace_export_record {
     unsigned event_count;
     unsigned max_trace_events_per_lane;
     bool timing_trace_overflowed;
+    rtcore_trace_timing_precision_class timing_precision_class;
     unsigned overflow_summary_events;
+    rtcore_compact_trace_overflow_summary overflow_summary;
     std::vector<rtcore_compact_trace_event> events;
 };
 
@@ -444,6 +463,7 @@ static unsigned
 static unsigned
     g_rtcore_replay_unit_arbitration_stats_last_logged_total_budget_exhausted =
         0;
+static unsigned g_rtcore_compact_trace_overflow_stats_logs_emitted = 0;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -482,6 +502,16 @@ static bool rtcore_replay_admission_enabled()
 {
     static int enabled = []() {
         const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_ADMISSION");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_compact_trace_overflow_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_COMPACT_TRACE_OVERFLOW_STATS_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -584,6 +614,13 @@ static unsigned rtcore_replay_unit_arbitration_stats_progress_log_limit()
     return limit;
 }
 
+static unsigned rtcore_compact_trace_overflow_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_COMPACT_TRACE_OVERFLOW_STATS_LOG_LIMIT", 16);
+    return limit;
+}
+
 static rtcore_replay_ready_selection_policy
 rtcore_replay_ready_selection_policy()
 {
@@ -669,11 +706,77 @@ static uint16_t rtcore_pack_compact_trace_count_bytes(unsigned count,
     return static_cast<uint16_t>((compact_bytes << 8) | compact_count);
 }
 
+static uint16_t rtcore_saturate_u16(unsigned value)
+{
+    return static_cast<uint16_t>(value > 0xffffu ? 0xffffu : value);
+}
+
 static rtcore_compact_trace_event_type rtcore_unpack_compact_trace_event_type(
     const rtcore_compact_trace_event &event)
 {
     return static_cast<rtcore_compact_trace_event_type>(
         (event.packed_fields >> 16) & 0xffu);
+}
+
+static rtcore_compact_trace_resource_class
+rtcore_unpack_compact_trace_resource_class(
+    const rtcore_compact_trace_event &event)
+{
+    return static_cast<rtcore_compact_trace_resource_class>(
+        (event.packed_fields >> 8) & 0xffu);
+}
+
+static unsigned rtcore_unpack_compact_trace_count(
+    const rtcore_compact_trace_event &event)
+{
+    return event.packed_count_bytes & 0xffu;
+}
+
+static unsigned rtcore_unpack_compact_trace_bytes(
+    const rtcore_compact_trace_event &event)
+{
+    return (event.packed_count_bytes >> 8) & 0xffu;
+}
+
+static const char *rtcore_trace_timing_precision_class_name(
+    rtcore_trace_timing_precision_class precision_class)
+{
+    switch (precision_class) {
+    case RTCORE_TRACE_TIMING_PRECISION_EXACT:
+        return "exact";
+    case RTCORE_TRACE_TIMING_PRECISION_BOUNDED_OVERFLOW_SUMMARY:
+        return "bounded_overflow_summary";
+    default:
+        return "unknown";
+    }
+}
+
+static uint64_t rtcore_pack_overflow_summary_address(
+    const rtcore_compact_trace_overflow_summary &summary)
+{
+    return static_cast<uint64_t>(
+               rtcore_saturate_u16(summary.overflow_node_fetch_count)) |
+           (static_cast<uint64_t>(
+                rtcore_saturate_u16(summary.overflow_node_test_count))
+            << 16) |
+           (static_cast<uint64_t>(
+                rtcore_saturate_u16(summary.overflow_primitive_fetch_count))
+            << 32) |
+           (static_cast<uint64_t>(
+                rtcore_saturate_u16(summary.overflow_primitive_test_count))
+            << 48);
+}
+
+static unsigned rtcore_overflow_summary_total_count(
+    const rtcore_compact_trace_overflow_summary &summary)
+{
+    return summary.overflow_node_fetch_count +
+           summary.overflow_node_test_count +
+           summary.overflow_primitive_fetch_count +
+           summary.overflow_primitive_test_count +
+           summary.overflow_stack_push_count + summary.overflow_stack_pop_count +
+           summary.overflow_memory_wait_count +
+           summary.overflow_completion_count;
 }
 
 static rtcore_replay_lane_request_state rtcore_classify_replay_state(
@@ -741,7 +844,11 @@ struct rtcore_bounded_trace_collector {
     unsigned max_trace_events_per_lane;
     unsigned next_event_seq;
     bool timing_trace_overflowed;
+    rtcore_trace_timing_precision_class timing_precision_class;
     unsigned overflow_summary_events;
+    rtcore_compact_trace_overflow_summary overflow_summary;
+    bool has_overflow_summary_event;
+    unsigned overflow_summary_event_index;
     std::vector<rtcore_compact_trace_event> events;
 
     explicit rtcore_bounded_trace_collector(ptx_thread_info *thread)
@@ -750,7 +857,9 @@ struct rtcore_bounded_trace_collector {
           max_trace_events_per_lane(
               rtcore_compact_trace_events_per_lane_config()),
           next_event_seq(0), timing_trace_overflowed(false),
-          overflow_summary_events(0)
+          timing_precision_class(RTCORE_TRACE_TIMING_PRECISION_EXACT),
+          overflow_summary_events(0), overflow_summary(),
+          has_overflow_summary_event(false), overflow_summary_event_index(0)
     {
         if (enabled) {
             if (max_trace_events_per_lane >
@@ -759,6 +868,107 @@ struct rtcore_bounded_trace_collector {
                     RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR;
             }
             events.reserve(max_trace_events_per_lane);
+        }
+    }
+
+    void record_overflow_event(rtcore_compact_trace_event_type event_type,
+                               rtcore_compact_trace_resource_class resource_class,
+                               unsigned bytes, unsigned count)
+    {
+        const unsigned effective_count = count == 0 ? 1 : count;
+        switch (event_type) {
+        case RTCORE_TRACE_NODE_FETCH:
+            overflow_summary.overflow_node_fetch_count += effective_count;
+            break;
+        case RTCORE_TRACE_NODE_TEST:
+            overflow_summary.overflow_node_test_count += effective_count;
+            break;
+        case RTCORE_TRACE_PRIMITIVE_FETCH:
+            overflow_summary.overflow_primitive_fetch_count += effective_count;
+            break;
+        case RTCORE_TRACE_PRIMITIVE_TEST:
+            overflow_summary.overflow_primitive_test_count += effective_count;
+            break;
+        case RTCORE_TRACE_STACK_PUSH:
+            overflow_summary.overflow_stack_push_count += effective_count;
+            break;
+        case RTCORE_TRACE_STACK_POP:
+            overflow_summary.overflow_stack_pop_count += effective_count;
+            break;
+        case RTCORE_TRACE_MEMORY_WAIT:
+            overflow_summary.overflow_memory_wait_count += effective_count;
+            break;
+        case RTCORE_TRACE_HIT_UPDATE:
+        case RTCORE_TRACE_COMPLETION:
+            overflow_summary.overflow_completion_count += effective_count;
+            break;
+        default:
+            break;
+        }
+        if (resource_class == RTCORE_TRACE_RESOURCE_MEMORY ||
+            event_type == RTCORE_TRACE_NODE_FETCH ||
+            event_type == RTCORE_TRACE_PRIMITIVE_FETCH) {
+            overflow_summary.overflow_memory_bytes += bytes * effective_count;
+        }
+    }
+
+    void record_overflow_event(const rtcore_compact_trace_event &event)
+    {
+        record_overflow_event(
+            rtcore_unpack_compact_trace_event_type(event),
+            rtcore_unpack_compact_trace_resource_class(event),
+            rtcore_unpack_compact_trace_bytes(event),
+            rtcore_unpack_compact_trace_count(event));
+    }
+
+    rtcore_compact_trace_event make_overflow_summary_event(
+        uint16_t event_seq) const
+    {
+        rtcore_compact_trace_event event = {};
+        event.address_or_ref =
+            rtcore_pack_overflow_summary_address(overflow_summary);
+        event.packed_fields = rtcore_pack_compact_trace_fields(
+            lane_id, RTCORE_TRACE_OVERFLOW_SUMMARY,
+            RTCORE_TRACE_RESOURCE_SUMMARY, 0);
+        event.event_seq = event_seq;
+        event.packed_count_bytes = rtcore_pack_compact_trace_count_bytes(
+            rtcore_overflow_summary_total_count(overflow_summary),
+            overflow_summary.overflow_memory_bytes);
+        return event;
+    }
+
+    void append_or_update_overflow_summary()
+    {
+        timing_trace_overflowed = true;
+        timing_precision_class =
+            RTCORE_TRACE_TIMING_PRECISION_BOUNDED_OVERFLOW_SUMMARY;
+        overflow_summary_events = 1;
+
+        if (has_overflow_summary_event &&
+            overflow_summary_event_index < events.size()) {
+            const uint16_t event_seq =
+                events[overflow_summary_event_index].event_seq;
+            events[overflow_summary_event_index] =
+                make_overflow_summary_event(event_seq);
+            return;
+        }
+
+        if (events.size() < max_trace_events_per_lane) {
+            overflow_summary_event_index = events.size();
+            has_overflow_summary_event = true;
+            events.push_back(make_overflow_summary_event(
+                static_cast<uint16_t>(next_event_seq++)));
+            return;
+        }
+
+        if (!events.empty()) {
+            overflow_summary_event_index = events.size() - 1;
+            record_overflow_event(events[overflow_summary_event_index]);
+            has_overflow_summary_event = true;
+            const uint16_t event_seq =
+                events[overflow_summary_event_index].event_seq;
+            events[overflow_summary_event_index] =
+                make_overflow_summary_event(event_seq);
         }
     }
 
@@ -771,8 +981,8 @@ struct rtcore_bounded_trace_collector {
             return;
         }
         if (events.size() >= max_trace_events_per_lane) {
-            timing_trace_overflowed = true;
-            overflow_summary_events = 1;
+            record_overflow_event(event_type, resource_class, bytes, count);
+            append_or_update_overflow_summary();
             return;
         }
 
@@ -868,13 +1078,55 @@ struct rtcore_bounded_trace_collector {
         record.event_count = events.size();
         record.max_trace_events_per_lane = max_trace_events_per_lane;
         record.timing_trace_overflowed = timing_trace_overflowed;
+        record.timing_precision_class = timing_precision_class;
         record.overflow_summary_events = overflow_summary_events;
+        record.overflow_summary = overflow_summary;
         if (enabled) {
             record.events = events;
         }
         return record;
     }
 };
+
+static void rtcore_maybe_log_compact_trace_overflow_summary(
+    const rtcore_compact_trace_export_record &record)
+{
+    if (!rtcore_compact_trace_overflow_stats_log_enabled() ||
+        !record.timing_trace_overflowed) {
+        return;
+    }
+    if (g_rtcore_compact_trace_overflow_stats_logs_emitted >=
+        rtcore_compact_trace_overflow_stats_log_limit()) {
+        return;
+    }
+    g_rtcore_compact_trace_overflow_stats_logs_emitted++;
+
+    printf("GPGPU-Sim RTCORE_COMPACT_TRACE_OVERFLOW_SUMMARY "
+           "thread_uid=%u owner_hw_sid=%u lane_id=%u "
+           "event_count=%u max_trace_events_per_lane=%u "
+           "overflow_summary_events=%u "
+           "overflow_node_fetch_count=%u overflow_node_test_count=%u "
+           "overflow_primitive_fetch_count=%u "
+           "overflow_primitive_test_count=%u "
+           "overflow_stack_push_count=%u overflow_stack_pop_count=%u "
+           "overflow_memory_wait_count=%u overflow_memory_bytes=%u "
+           "overflow_completion_count=%u timing_precision_class=%s\n",
+           record.thread_uid, record.owner_hw_sid, record.lane_id,
+           record.event_count, record.max_trace_events_per_lane,
+           record.overflow_summary_events,
+           record.overflow_summary.overflow_node_fetch_count,
+           record.overflow_summary.overflow_node_test_count,
+           record.overflow_summary.overflow_primitive_fetch_count,
+           record.overflow_summary.overflow_primitive_test_count,
+           record.overflow_summary.overflow_stack_push_count,
+           record.overflow_summary.overflow_stack_pop_count,
+           record.overflow_summary.overflow_memory_wait_count,
+           record.overflow_summary.overflow_memory_bytes,
+           record.overflow_summary.overflow_completion_count,
+           rtcore_trace_timing_precision_class_name(
+               record.timing_precision_class));
+    fflush(stdout);
+}
 
 static void rtcore_publish_compact_trace_export(
     ptx_thread_info *thread, const rtcore_compact_trace_export_record &record)
@@ -894,6 +1146,7 @@ static void rtcore_publish_compact_trace_export(
         stored.static_inst_uid = warp_metadata.static_inst_uid;
     }
     g_rtcore_compact_trace_exports[stored.thread_uid] = stored;
+    rtcore_maybe_log_compact_trace_overflow_summary(stored);
 }
 
 static bool rtcore_get_compact_trace_export(
