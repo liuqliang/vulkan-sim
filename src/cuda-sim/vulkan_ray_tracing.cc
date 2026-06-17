@@ -323,6 +323,8 @@ struct rtcore_replay_lane_request {
     unsigned overflow_summary_events;
     rtcore_compact_trace_overflow_summary overflow_summary;
     rtcore_replay_lane_request_state state;
+    bool unit_queue_capacity_gate_pending;
+    rtcore_replay_lane_request_state unit_queue_capacity_target_state;
     bool memory_wake_latency_gate_pending;
     unsigned memory_wake_event_index;
     unsigned memory_wake_latency_cycles;
@@ -532,6 +534,13 @@ struct rtcore_replay_unit_arbitration_stats {
     unsigned completion_unit_budget_exhausted;
 };
 
+struct rtcore_replay_unit_queue_capacity_gate_stats {
+    unsigned gate_evaluations;
+    unsigned unit_queue_capacity_blocked_count;
+    unsigned unit_queue_capacity_released_count;
+    unsigned max_unit_queue_occupancy;
+};
+
 struct rtcore_replay_service_tick_stats_snapshot {
     bool valid;
     unsigned tick_attempts;
@@ -571,6 +580,8 @@ static rtcore_replay_unit_latency_gate_stats
     g_rtcore_replay_unit_latency_gate_stats;
 static rtcore_replay_unit_arbitration_stats
     g_rtcore_replay_unit_arbitration_stats;
+static rtcore_replay_unit_queue_capacity_gate_stats
+    g_rtcore_replay_unit_queue_capacity_gate_stats;
 static rtcore_service_tick_stats_snapshot
     g_rtcore_replay_service_tick_stats_snapshot;
 static unsigned g_rtcore_replay_service_tick_stats_logs_emitted = 0;
@@ -585,6 +596,7 @@ static unsigned
 static unsigned
     g_rtcore_replay_unit_arbitration_stats_last_logged_total_budget_exhausted =
         0;
+static unsigned g_rtcore_replay_unit_queue_capacity_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_compact_trace_overflow_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_overflow_summary_estimate_stats_logs_emitted =
     0;
@@ -769,6 +781,26 @@ static bool rtcore_replay_unit_arbitration_stats_log_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_replay_unit_queue_capacity_gate_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_UNIT_QUEUE_CAPACITY_GATE");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_unit_queue_capacity_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_UNIT_QUEUE_CAPACITY_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_replay_unit_latency_gate_enabled()
 {
     static int enabled = []() {
@@ -844,6 +876,20 @@ static unsigned rtcore_replay_unit_arbitration_stats_progress_log_limit()
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_UNIT_ARBITRATION_STATS_PROGRESS_LOG_LIMIT",
         8);
+    return limit;
+}
+
+static unsigned rtcore_replay_unit_queue_capacity_config()
+{
+    static unsigned capacity = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_UNIT_QUEUE_CAPACITY", 0);
+    return capacity;
+}
+
+static unsigned rtcore_replay_unit_queue_capacity_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_UNIT_QUEUE_CAPACITY_STATS_LOG_LIMIT", 16);
     return limit;
 }
 
@@ -1557,6 +1603,130 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     return request;
 }
 
+static bool rtcore_replay_unit_queue_capacity_state(
+    rtcore_replay_lane_request_state state)
+{
+    return state == RTCORE_REPLAY_READY_NODE ||
+           state == RTCORE_REPLAY_READY_PRIMITIVE;
+}
+
+static const std::deque<unsigned> *rtcore_replay_ready_unit_queue_for_state(
+    rtcore_replay_lane_request_state state)
+{
+    switch (state) {
+    case RTCORE_REPLAY_READY_NODE:
+        return &g_rtcore_replay_ready_queues.ready_node_queue;
+    case RTCORE_REPLAY_READY_PRIMITIVE:
+        return &g_rtcore_replay_ready_queues.ready_primitive_queue;
+    default:
+        return NULL;
+    }
+}
+
+static unsigned rtcore_count_replay_ready_unit_queue_for_owner(
+    rtcore_replay_lane_request_state state, unsigned owner_hw_sid)
+{
+    const std::deque<unsigned> *queue =
+        rtcore_replay_ready_unit_queue_for_state(state);
+    if (!queue) {
+        return 0;
+    }
+
+    unsigned count = 0;
+    for (std::deque<unsigned>::const_iterator it = queue->begin();
+         it != queue->end(); ++it) {
+        std::map<unsigned, rtcore_replay_lane_request>::const_iterator request =
+            g_rtcore_replay_lane_requests.find(*it);
+        if (request == g_rtcore_replay_lane_requests.end()) {
+            continue;
+        }
+        if (request->second.owner_hw_sid == owner_hw_sid) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static void rtcore_maybe_log_replay_unit_queue_capacity_gate_stats(
+    const rtcore_replay_lane_request &request,
+    rtcore_replay_lane_request_state target_state, unsigned queue_occupancy,
+    bool capacity_blocked, bool released)
+{
+    if (!rtcore_replay_unit_queue_capacity_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_unit_queue_capacity_gate_stats_logs_emitted >=
+        rtcore_replay_unit_queue_capacity_stats_log_limit()) {
+        return;
+    }
+    g_rtcore_replay_unit_queue_capacity_gate_stats_logs_emitted++;
+
+    printf("GPGPU-Sim RTCORE_REPLAY_UNIT_QUEUE_CAPACITY_STATS "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u "
+           "has_warp_metadata=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x static_inst_uid=%u target_state=%u "
+           "gate_enabled=%u queue_capacity=%u queue_occupancy=%u "
+           "capacity_blocked=%u released=%u gate_evaluations=%u "
+           "unit_queue_capacity_blocked_count=%u "
+           "unit_queue_capacity_released_count=%u "
+           "max_unit_queue_occupancy=%u\n",
+           request.owner_hw_sid, request.thread_uid, request.lane_id,
+           request.has_warp_metadata ? 1u : 0u, request.warp_uid,
+           request.warp_id, request.active_mask, request.static_inst_uid,
+           static_cast<unsigned>(target_state),
+           rtcore_replay_unit_queue_capacity_gate_enabled() ? 1u : 0u,
+           rtcore_replay_unit_queue_capacity_config(), queue_occupancy,
+           capacity_blocked ? 1u : 0u, released ? 1u : 0u,
+           g_rtcore_replay_unit_queue_capacity_gate_stats.gate_evaluations,
+           g_rtcore_replay_unit_queue_capacity_gate_stats
+               .unit_queue_capacity_blocked_count,
+           g_rtcore_replay_unit_queue_capacity_gate_stats
+               .unit_queue_capacity_released_count,
+           g_rtcore_replay_unit_queue_capacity_gate_stats
+               .max_unit_queue_occupancy);
+    fflush(stdout);
+}
+
+static bool rtcore_maybe_route_replay_unit_queue_capacity_gate(
+    rtcore_replay_lane_request *request)
+{
+    if (!request || !request->valid ||
+        !rtcore_replay_unit_queue_capacity_gate_enabled() ||
+        !rtcore_replay_unit_queue_capacity_state(request->state)) {
+        return false;
+    }
+
+    const unsigned queue_capacity =
+        rtcore_replay_unit_queue_capacity_config();
+    if (queue_capacity == 0) {
+        return false;
+    }
+
+    const unsigned queue_occupancy =
+        rtcore_count_replay_ready_unit_queue_for_owner(
+            request->state, request->owner_hw_sid);
+    if (queue_occupancy >
+        g_rtcore_replay_unit_queue_capacity_gate_stats
+            .max_unit_queue_occupancy) {
+        g_rtcore_replay_unit_queue_capacity_gate_stats
+            .max_unit_queue_occupancy = queue_occupancy;
+    }
+    if (queue_occupancy < queue_capacity) {
+        return false;
+    }
+
+    request->unit_queue_capacity_gate_pending = true;
+    request->unit_queue_capacity_target_state = request->state;
+    request->state = RTCORE_REPLAY_WAITING_UNIT;
+    g_rtcore_replay_unit_queue_capacity_gate_stats.gate_evaluations++;
+    g_rtcore_replay_unit_queue_capacity_gate_stats
+        .unit_queue_capacity_blocked_count++;
+    rtcore_maybe_log_replay_unit_queue_capacity_gate_stats(
+        *request, request->unit_queue_capacity_target_state, queue_occupancy,
+        true, false);
+    return true;
+}
+
 static void rtcore_enqueue_replay_request_by_state(
     const rtcore_replay_lane_request &request)
 {
@@ -1600,11 +1770,12 @@ static void rtcore_enqueue_replay_request_by_state(
 
 static bool rtcore_route_admitted_replay_request(unsigned thread_uid)
 {
-    std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+    std::map<unsigned, rtcore_replay_lane_request>::iterator it =
         g_rtcore_replay_lane_requests.find(thread_uid);
     if (it == g_rtcore_replay_lane_requests.end()) {
         return false;
     }
+    rtcore_maybe_route_replay_unit_queue_capacity_gate(&it->second);
     rtcore_enqueue_replay_request_by_state(it->second);
     return true;
 }
@@ -2761,6 +2932,47 @@ static void rtcore_maybe_log_replay_unit_latency_gate_stats(
     fflush(stdout);
 }
 
+static bool rtcore_replay_unit_queue_capacity_gate_ready(
+    rtcore_replay_lane_request *request)
+{
+    if (!request || !request->unit_queue_capacity_gate_pending) {
+        return true;
+    }
+
+    const rtcore_replay_lane_request_state target_state =
+        request->unit_queue_capacity_target_state;
+    const unsigned queue_capacity =
+        rtcore_replay_unit_queue_capacity_config();
+    const unsigned queue_occupancy =
+        rtcore_count_replay_ready_unit_queue_for_owner(
+            target_state, request->owner_hw_sid);
+    if (queue_occupancy >
+        g_rtcore_replay_unit_queue_capacity_gate_stats
+            .max_unit_queue_occupancy) {
+        g_rtcore_replay_unit_queue_capacity_gate_stats
+            .max_unit_queue_occupancy = queue_occupancy;
+    }
+
+    g_rtcore_replay_unit_queue_capacity_gate_stats.gate_evaluations++;
+    if (rtcore_replay_unit_queue_capacity_gate_enabled() &&
+        queue_capacity > 0 && queue_occupancy >= queue_capacity) {
+        g_rtcore_replay_unit_queue_capacity_gate_stats
+            .unit_queue_capacity_blocked_count++;
+        rtcore_maybe_log_replay_unit_queue_capacity_gate_stats(
+            *request, target_state, queue_occupancy, true, false);
+        return false;
+    }
+
+    request->unit_queue_capacity_gate_pending = false;
+    request->unit_queue_capacity_target_state = RTCORE_REPLAY_QUEUED;
+    request->state = target_state;
+    g_rtcore_replay_unit_queue_capacity_gate_stats
+        .unit_queue_capacity_released_count++;
+    rtcore_maybe_log_replay_unit_queue_capacity_gate_stats(
+        *request, target_state, queue_occupancy, false, true);
+    return true;
+}
+
 static bool rtcore_maybe_arm_replay_unit_latency_gate(
     rtcore_replay_lane_request *request, unsigned long long service_cycle)
 {
@@ -3094,6 +3306,12 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
         return false;
     }
     bool memory_contention_resolved_this_step = false;
+    if (it->second.unit_queue_capacity_gate_pending) {
+        if (!rtcore_replay_unit_queue_capacity_gate_ready(&it->second)) {
+            return false;
+        }
+        return true;
+    }
     if (it->second.memory_contention_capacity_gate_pending) {
         if (!rtcore_replay_memory_contention_capacity_gate_ready(
                 &it->second, service_cycle)) {
