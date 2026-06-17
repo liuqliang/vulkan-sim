@@ -549,6 +549,26 @@ struct rtcore_replay_service_tick_stats_snapshot {
     unsigned ready_ticks_progressed;
 };
 
+struct rtcore_replay_model_summary_progress_snapshot {
+    bool valid;
+    unsigned service_ticks_progressed;
+    unsigned admitted_lane_requests;
+    unsigned completed_lane_requests;
+    unsigned total_unit_issued;
+    unsigned total_unit_busy_cycles;
+    unsigned memory_blocked_events;
+    unsigned memory_wake_blocked_count;
+    unsigned memory_wake_max_blocked_cycles;
+    unsigned memory_contention_gate_armed_count;
+    unsigned memory_contention_gate_blocked_count;
+    unsigned memory_contention_gate_woken_count;
+    unsigned memory_contention_max_contention_cycles;
+    unsigned memory_contention_max_queue_delay_cycles;
+    unsigned memory_contention_capacity_blocked_count;
+    unsigned warp_aggregated_completion_count;
+    unsigned long long max_observed_ready_cycle;
+};
+
 typedef rtcore_replay_service_tick_stats_snapshot
     rtcore_service_tick_stats_snapshot;
 
@@ -610,6 +630,8 @@ static unsigned g_rtcore_replay_memory_wake_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_memory_contention_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_unit_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_model_summary_stats_logs_emitted = 0;
+static std::map<unsigned, rtcore_replay_model_summary_progress_snapshot>
+    g_rtcore_replay_model_summary_progress_snapshots;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -893,6 +915,8 @@ static bool rtcore_replay_warp_completion_aggregation_shadow_enabled()
     return enabled != 0;
 }
 
+static const unsigned RTCORE_REPLAY_STATS_LOG_LIMIT_MAX = 4096;
+
 static unsigned rtcore_replay_service_tick_stats_log_limit_from_env(
     const char *name, unsigned default_limit)
 {
@@ -906,8 +930,8 @@ static unsigned rtcore_replay_service_tick_stats_log_limit_from_env(
     if (end == value) {
         return default_limit;
     }
-    if (parsed > 1024) {
-        return 1024;
+    if (parsed > RTCORE_REPLAY_STATS_LOG_LIMIT_MAX) {
+        return RTCORE_REPLAY_STATS_LOG_LIMIT_MAX;
     }
     return static_cast<unsigned>(parsed);
 }
@@ -2178,6 +2202,55 @@ static const char *rtcore_replay_dominant_busy_unit(unsigned *busy_cycles)
     return unit;
 }
 
+static bool rtcore_should_log_replay_model_summary_stats(
+    unsigned owner_hw_sid,
+    const rtcore_replay_model_summary_progress_snapshot &snapshot)
+{
+    if (!snapshot.valid) {
+        return false;
+    }
+
+    rtcore_replay_model_summary_progress_snapshot &last_snapshot =
+        g_rtcore_replay_model_summary_progress_snapshots[owner_hw_sid];
+    const bool changed =
+        !last_snapshot.valid ||
+        last_snapshot.service_ticks_progressed !=
+            snapshot.service_ticks_progressed ||
+        last_snapshot.admitted_lane_requests !=
+            snapshot.admitted_lane_requests ||
+        last_snapshot.completed_lane_requests !=
+            snapshot.completed_lane_requests ||
+        last_snapshot.total_unit_issued != snapshot.total_unit_issued ||
+        last_snapshot.total_unit_busy_cycles !=
+            snapshot.total_unit_busy_cycles ||
+        last_snapshot.memory_blocked_events !=
+            snapshot.memory_blocked_events ||
+        last_snapshot.memory_wake_blocked_count !=
+            snapshot.memory_wake_blocked_count ||
+        last_snapshot.memory_wake_max_blocked_cycles !=
+            snapshot.memory_wake_max_blocked_cycles ||
+        last_snapshot.memory_contention_gate_armed_count !=
+            snapshot.memory_contention_gate_armed_count ||
+        last_snapshot.memory_contention_gate_blocked_count !=
+            snapshot.memory_contention_gate_blocked_count ||
+        last_snapshot.memory_contention_gate_woken_count !=
+            snapshot.memory_contention_gate_woken_count ||
+        last_snapshot.memory_contention_max_contention_cycles !=
+            snapshot.memory_contention_max_contention_cycles ||
+        last_snapshot.memory_contention_max_queue_delay_cycles !=
+            snapshot.memory_contention_max_queue_delay_cycles ||
+        last_snapshot.memory_contention_capacity_blocked_count !=
+            snapshot.memory_contention_capacity_blocked_count ||
+        last_snapshot.warp_aggregated_completion_count !=
+            snapshot.warp_aggregated_completion_count;
+    if (!changed) {
+        return false;
+    }
+
+    last_snapshot = snapshot;
+    return true;
+}
+
 static void rtcore_maybe_log_replay_model_summary_stats(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -2200,7 +2273,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         return;
     }
 
-    g_rtcore_replay_model_summary_stats_logs_emitted++;
     const rtcore_replay_issue_budget budget =
         rtcore_replay_issue_budget_config();
     const unsigned warp_aggregated_completion_count =
@@ -2208,6 +2280,66 @@ static void rtcore_maybe_log_replay_model_summary_stats(
     const unsigned memory_blocked_events =
         g_rtcore_replay_memory_wake_latency_gate_stats.gate_blocked_count +
         g_rtcore_replay_memory_contention_gate_stats.gate_blocked_count;
+    const unsigned total_unit_issued = rtcore_replay_total_unit_issued();
+    const unsigned node_unit_busy_cycles =
+        rtcore_replay_node_unit_busy_cycles();
+    const unsigned primitive_unit_busy_cycles =
+        rtcore_replay_primitive_unit_busy_cycles();
+    const unsigned stack_unit_busy_cycles =
+        rtcore_replay_stack_unit_busy_cycles();
+    const unsigned completion_unit_busy_cycles =
+        rtcore_replay_completion_unit_busy_cycles();
+    const unsigned total_unit_busy_cycles =
+        rtcore_replay_total_unit_busy_cycles();
+    const unsigned memory_wake_blocked_count =
+        g_rtcore_replay_memory_wake_latency_gate_stats.gate_blocked_count;
+    const unsigned memory_wake_max_blocked_cycles =
+        g_rtcore_replay_memory_wake_latency_gate_stats.max_blocked_cycles;
+    const unsigned memory_contention_gate_armed_count =
+        g_rtcore_replay_memory_contention_gate_stats.gate_armed_count;
+    const unsigned memory_contention_gate_blocked_count =
+        g_rtcore_replay_memory_contention_gate_stats.gate_blocked_count;
+    const unsigned memory_contention_gate_woken_count =
+        g_rtcore_replay_memory_contention_gate_stats.gate_woken_count;
+    const unsigned memory_contention_max_contention_cycles =
+        g_rtcore_replay_memory_contention_gate_stats.max_contention_cycles;
+    const unsigned memory_contention_max_queue_delay_cycles =
+        g_rtcore_replay_memory_contention_gate_stats.max_queue_delay_cycles;
+    const unsigned memory_contention_capacity_blocked_count =
+        g_rtcore_replay_memory_contention_gate_stats.capacity_blocked_count;
+    rtcore_replay_model_summary_progress_snapshot progress_snapshot = {};
+    progress_snapshot.valid = true;
+    progress_snapshot.service_ticks_progressed =
+        g_rtcore_replay_service_tick_stats.ticks_progressed;
+    progress_snapshot.admitted_lane_requests = admitted_lane_requests;
+    progress_snapshot.completed_lane_requests = completed_lane_requests;
+    progress_snapshot.total_unit_issued = total_unit_issued;
+    progress_snapshot.total_unit_busy_cycles = total_unit_busy_cycles;
+    progress_snapshot.memory_blocked_events = memory_blocked_events;
+    progress_snapshot.memory_wake_blocked_count = memory_wake_blocked_count;
+    progress_snapshot.memory_wake_max_blocked_cycles =
+        memory_wake_max_blocked_cycles;
+    progress_snapshot.memory_contention_gate_armed_count =
+        memory_contention_gate_armed_count;
+    progress_snapshot.memory_contention_gate_blocked_count =
+        memory_contention_gate_blocked_count;
+    progress_snapshot.memory_contention_gate_woken_count =
+        memory_contention_gate_woken_count;
+    progress_snapshot.memory_contention_max_contention_cycles =
+        memory_contention_max_contention_cycles;
+    progress_snapshot.memory_contention_max_queue_delay_cycles =
+        memory_contention_max_queue_delay_cycles;
+    progress_snapshot.memory_contention_capacity_blocked_count =
+        memory_contention_capacity_blocked_count;
+    progress_snapshot.warp_aggregated_completion_count =
+        warp_aggregated_completion_count;
+    progress_snapshot.max_observed_ready_cycle = service_cycle;
+    if (!rtcore_should_log_replay_model_summary_stats(owner_hw_sid,
+                                                      progress_snapshot)) {
+        return;
+    }
+
+    g_rtcore_replay_model_summary_stats_logs_emitted++;
     unsigned dominant_busy_cycles = 0;
     const char *dominant_busy_unit =
         rtcore_replay_dominant_busy_unit(&dominant_busy_cycles);
@@ -2239,6 +2371,13 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "total_unit_busy_cycles=%u "
            "dominant_busy_unit=%s dominant_busy_cycles=%u "
            "memory_blocked_events=%u "
+           "memory_wake_blocked_count=%u "
+           "memory_wake_max_blocked_cycles=%u "
+           "memory_contention_gate_armed_count=%u "
+           "memory_contention_gate_blocked_count=%u "
+           "memory_contention_gate_woken_count=%u "
+           "memory_contention_max_contention_cycles=%u "
+           "memory_contention_max_queue_delay_cycles=%u "
            "memory_contention_capacity_blocked_count=%u "
            "warp_aggregated_completion_count=%u "
            "max_observed_ready_cycle=%llu\n",
@@ -2257,15 +2396,18 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued,
            g_rtcore_replay_unit_arbitration_stats.stack_unit_issued,
            g_rtcore_replay_unit_arbitration_stats.completion_unit_issued,
-           rtcore_replay_total_unit_issued(), dominant_issue_unit,
-           dominant_issue_count, rtcore_replay_node_unit_busy_cycles(),
-           rtcore_replay_primitive_unit_busy_cycles(),
-           rtcore_replay_stack_unit_busy_cycles(),
-           rtcore_replay_completion_unit_busy_cycles(),
-           rtcore_replay_total_unit_busy_cycles(), dominant_busy_unit,
-           dominant_busy_cycles, memory_blocked_events,
-           g_rtcore_replay_memory_contention_gate_stats
-               .capacity_blocked_count,
+           total_unit_issued, dominant_issue_unit, dominant_issue_count,
+           node_unit_busy_cycles, primitive_unit_busy_cycles,
+           stack_unit_busy_cycles, completion_unit_busy_cycles,
+           total_unit_busy_cycles, dominant_busy_unit, dominant_busy_cycles,
+           memory_blocked_events, memory_wake_blocked_count,
+           memory_wake_max_blocked_cycles,
+           memory_contention_gate_armed_count,
+           memory_contention_gate_blocked_count,
+           memory_contention_gate_woken_count,
+           memory_contention_max_contention_cycles,
+           memory_contention_max_queue_delay_cycles,
+           memory_contention_capacity_blocked_count,
            warp_aggregated_completion_count, service_cycle);
     fflush(stdout);
 }
