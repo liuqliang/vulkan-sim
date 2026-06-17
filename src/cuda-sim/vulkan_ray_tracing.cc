@@ -612,11 +612,63 @@ static unsigned g_rtcore_replay_unit_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
+static bool rtcore_replay_model_preset_simple_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_MODEL_PRESET");
+        if (!value || value[0] == '\0' || strcmp(value, "0") == 0) {
+            return 0;
+        }
+        return (strcmp(value, "simple") == 0 ||
+                strcmp(value, "simple_replay_local") == 0 ||
+                strcmp(value, "1") == 0)
+                   ? 1
+                   : 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_env_enabled_or_model_preset(const char *name,
+                                                       bool preset_enabled)
+{
+    const char *value = getenv(name);
+    if (value && value[0] != '\0') {
+        return strcmp(value, "0") != 0;
+    }
+    return preset_enabled && rtcore_replay_model_preset_simple_enabled();
+}
+
+static unsigned rtcore_replay_uint_config_or_model_preset(
+    const char *name, unsigned default_value, unsigned preset_value,
+    unsigned max_value, bool allow_zero)
+{
+    const char *value = getenv(name);
+    if (!value || value[0] == '\0') {
+        return rtcore_replay_model_preset_simple_enabled() ? preset_value
+                                                          : default_value;
+    }
+
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value) {
+        return default_value;
+    }
+    if (parsed == 0 && !allow_zero) {
+        return default_value;
+    }
+    if (parsed > max_value) {
+        return max_value;
+    }
+    return static_cast<unsigned>(parsed);
+}
+
 static bool rtcore_bounded_trace_collection_enabled()
 {
     static int enabled = []() {
-        const char *value = getenv("VULKAN_SIM_RTCORE_BOUNDED_TRACE_COLLECTION");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_BOUNDED_TRACE_COLLECTION", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -624,21 +676,10 @@ static bool rtcore_bounded_trace_collection_enabled()
 static unsigned rtcore_compact_trace_events_per_lane_config()
 {
     static unsigned events_per_lane = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_COMPACT_TRACE_EVENTS_PER_LANE");
-        if (!value || value[0] == '\0') {
-            return RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE;
-        }
-
-        char *end = NULL;
-        unsigned long parsed = strtoul(value, &end, 10);
-        if (end == value || parsed == 0) {
-            return RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE;
-        }
-        if (parsed > RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR) {
-            return RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR;
-        }
-        return static_cast<unsigned>(parsed);
+        return rtcore_replay_uint_config_or_model_preset(
+            "VULKAN_SIM_RTCORE_COMPACT_TRACE_EVENTS_PER_LANE",
+            RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE, 64,
+            RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR, false);
     }();
     return events_per_lane;
 }
@@ -646,8 +687,10 @@ static unsigned rtcore_compact_trace_events_per_lane_config()
 static bool rtcore_replay_admission_enabled()
 {
     static int enabled = []() {
-        const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_ADMISSION");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_ADMISSION", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -725,9 +768,10 @@ static bool rtcore_replay_memory_wake_latency_gate_stats_log_enabled()
 static bool rtcore_replay_memory_contention_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_CONTENTION_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_MEMORY_CONTENTION_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -745,8 +789,10 @@ static bool rtcore_replay_memory_contention_gate_stats_log_enabled()
 static bool rtcore_replay_service_tick_enabled()
 {
     static int enabled = []() {
-        const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_SERVICE_TICK");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_SERVICE_TICK", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -764,9 +810,10 @@ static bool rtcore_replay_service_tick_stats_log_enabled()
 static bool rtcore_replay_unit_arbitration_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_UNIT_ARBITRATION");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_UNIT_ARBITRATION", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -784,9 +831,10 @@ static bool rtcore_replay_unit_arbitration_stats_log_enabled()
 static bool rtcore_replay_unit_queue_capacity_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_UNIT_QUEUE_CAPACITY_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_UNIT_QUEUE_CAPACITY_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -804,9 +852,10 @@ static bool rtcore_replay_unit_queue_capacity_stats_log_enabled()
 static bool rtcore_replay_unit_latency_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_UNIT_LATENCY_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_UNIT_LATENCY_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -824,9 +873,11 @@ static bool rtcore_replay_unit_latency_gate_stats_log_enabled()
 static bool rtcore_replay_warp_completion_aggregation_shadow_enabled()
 {
     static int enabled = []() {
-        const char *value = getenv(
-            "VULKAN_SIM_RTCORE_REPLAY_WARP_COMPLETION_AGGREGATION_SHADOW");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_WARP_COMPLETION_AGGREGATION_SHADOW",
+                   true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -881,8 +932,8 @@ static unsigned rtcore_replay_unit_arbitration_stats_progress_log_limit()
 
 static unsigned rtcore_replay_unit_queue_capacity_config()
 {
-    static unsigned capacity = rtcore_replay_service_tick_stats_log_limit_from_env(
-        "VULKAN_SIM_RTCORE_REPLAY_UNIT_QUEUE_CAPACITY", 0);
+    static unsigned capacity = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_UNIT_QUEUE_CAPACITY", 0, 1, 1024, true);
     return capacity;
 }
 
@@ -953,17 +1004,17 @@ static unsigned rtcore_replay_unit_latency_gate_stats_log_limit()
 
 static unsigned rtcore_replay_memory_contention_cache_lines_per_cycle_config()
 {
-    static unsigned lines_per_cycle =
-        rtcore_replay_service_tick_stats_log_limit_from_env(
-            "VULKAN_SIM_RTCORE_REPLAY_MEMORY_CONTENTION_CACHE_LINES_PER_CYCLE",
-            4);
+    static unsigned lines_per_cycle = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_CONTENTION_CACHE_LINES_PER_CYCLE", 4,
+        1, 1024, false);
     return lines_per_cycle == 0 ? 1 : lines_per_cycle;
 }
 
 static unsigned rtcore_replay_memory_contention_queue_capacity_config()
 {
-    static unsigned capacity = rtcore_replay_service_tick_stats_log_limit_from_env(
-        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_CONTENTION_QUEUE_CAPACITY", 0);
+    static unsigned capacity = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_CONTENTION_QUEUE_CAPACITY", 0, 1,
+        1024, true);
     return capacity;
 }
 

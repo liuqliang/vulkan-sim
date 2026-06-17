@@ -101,12 +101,37 @@ extern "C" bool rtcore_query_replay_warp_completion_shadow(
 
 namespace {
 
+static bool rtcore_replay_model_preset_simple_enabled() {
+  static int enabled = []() {
+    const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_MODEL_PRESET");
+    if (value == NULL || *value == '\0' || strcmp(value, "0") == 0) {
+      return 0;
+    }
+    return (strcmp(value, "simple") == 0 ||
+            strcmp(value, "simple_replay_local") == 0 ||
+            strcmp(value, "1") == 0)
+               ? 1
+               : 0;
+  }();
+  return enabled != 0;
+}
+
+static bool rtcore_replay_env_enabled_or_model_preset(const char *name,
+                                                      bool preset_enabled) {
+  const char *value = getenv(name);
+  if (value != NULL && *value != '\0') {
+    return strcmp(value, "0") != 0;
+  }
+  return preset_enabled && rtcore_replay_model_preset_simple_enabled();
+}
+
 static bool rtcore_replay_cycle_hook_enabled() {
   static int cached_enabled = -1;
   if (cached_enabled < 0) {
-    const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_CYCLE_HOOK");
-    cached_enabled =
-        (value != NULL && *value != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+    cached_enabled = rtcore_replay_env_enabled_or_model_preset(
+                         "VULKAN_SIM_RTCORE_REPLAY_CYCLE_HOOK", true)
+                         ? 1
+                         : 0;
   }
   return cached_enabled != 0;
 }
@@ -149,10 +174,11 @@ static rtcore_replay_cycle_hook_consumer_stats
 static bool rtcore_replay_cycle_release_gate_shadow_enabled() {
   static int cached_enabled = -1;
   if (cached_enabled < 0) {
-    const char *value =
-        getenv("VULKAN_SIM_RTCORE_REPLAY_CYCLE_RELEASE_GATE_SHADOW");
-    cached_enabled =
-        (value != NULL && *value != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+    cached_enabled = rtcore_replay_env_enabled_or_model_preset(
+                         "VULKAN_SIM_RTCORE_REPLAY_CYCLE_RELEASE_GATE_SHADOW",
+                         true)
+                         ? 1
+                         : 0;
   }
   return cached_enabled != 0;
 }
@@ -180,10 +206,11 @@ static unsigned rtcore_replay_cycle_release_gate_shadow_log_limit() {
 static bool rtcore_replay_release_gate_activation_enabled() {
   static int cached_enabled = -1;
   if (cached_enabled < 0) {
-    const char *value =
-        getenv("VULKAN_SIM_RTCORE_REPLAY_RELEASE_GATE_ACTIVATION");
-    cached_enabled =
-        (value != NULL && *value != '\0' && strcmp(value, "0") != 0) ? 1 : 0;
+    cached_enabled = rtcore_replay_env_enabled_or_model_preset(
+                         "VULKAN_SIM_RTCORE_REPLAY_RELEASE_GATE_ACTIVATION",
+                         true)
+                         ? 1
+                         : 0;
   }
   return cached_enabled != 0;
 }
