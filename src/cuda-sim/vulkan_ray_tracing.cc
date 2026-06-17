@@ -2202,6 +2202,47 @@ static const char *rtcore_replay_dominant_busy_unit(unsigned *busy_cycles)
     return unit;
 }
 
+static unsigned rtcore_replay_memory_pressure_cycles()
+{
+    unsigned cycles = 0;
+    if (g_rtcore_replay_memory_wake_latency_gate_stats.max_blocked_cycles >
+        cycles) {
+        cycles =
+            g_rtcore_replay_memory_wake_latency_gate_stats.max_blocked_cycles;
+    }
+    if (g_rtcore_replay_memory_contention_gate_stats.max_contention_cycles >
+        cycles) {
+        cycles =
+            g_rtcore_replay_memory_contention_gate_stats.max_contention_cycles;
+    }
+    if (g_rtcore_replay_memory_contention_gate_stats.max_queue_delay_cycles >
+        cycles) {
+        cycles =
+            g_rtcore_replay_memory_contention_gate_stats.max_queue_delay_cycles;
+    }
+    return cycles;
+}
+
+static const char *rtcore_replay_dominant_pressure_source(
+    const char *dominant_busy_unit, unsigned dominant_busy_cycles,
+    unsigned memory_pressure_cycles, unsigned *pressure_cycles)
+{
+    const char *source = "none";
+    unsigned cycles = 0;
+    if (dominant_busy_cycles > cycles) {
+        source = dominant_busy_unit;
+        cycles = dominant_busy_cycles;
+    }
+    if (memory_pressure_cycles > cycles) {
+        source = "memory";
+        cycles = memory_pressure_cycles;
+    }
+    if (pressure_cycles) {
+        *pressure_cycles = cycles;
+    }
+    return source;
+}
+
 static bool rtcore_should_log_replay_model_summary_stats(
     unsigned owner_hw_sid,
     const rtcore_replay_model_summary_progress_snapshot &snapshot)
@@ -2346,6 +2387,13 @@ static void rtcore_maybe_log_replay_model_summary_stats(
     unsigned dominant_issue_count = 0;
     const char *dominant_issue_unit =
         rtcore_replay_dominant_issue_unit(&dominant_issue_count);
+    const unsigned memory_pressure_cycles =
+        rtcore_replay_memory_pressure_cycles();
+    unsigned dominant_pressure_cycles = 0;
+    const char *dominant_pressure_source =
+        rtcore_replay_dominant_pressure_source(
+            dominant_busy_unit, dominant_busy_cycles, memory_pressure_cycles,
+            &dominant_pressure_cycles);
 
     printf("GPGPU-Sim RTCORE_REPLAY_MODEL_SUMMARY_STATS "
            "owner_hw_sid=%u model_name=%s model_version=0.1 "
@@ -2379,6 +2427,8 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "memory_contention_max_contention_cycles=%u "
            "memory_contention_max_queue_delay_cycles=%u "
            "memory_contention_capacity_blocked_count=%u "
+           "memory_pressure_cycles=%u "
+           "dominant_pressure_source=%s dominant_pressure_cycles=%u "
            "warp_aggregated_completion_count=%u "
            "max_observed_ready_cycle=%llu\n",
            owner_hw_sid, RTCORE_TRACE_REPLAY_MODEL_NAME,
@@ -2408,6 +2458,8 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            memory_contention_max_contention_cycles,
            memory_contention_max_queue_delay_cycles,
            memory_contention_capacity_blocked_count,
+           memory_pressure_cycles, dominant_pressure_source,
+           dominant_pressure_cycles,
            warp_aggregated_completion_count, service_cycle);
     fflush(stdout);
 }
