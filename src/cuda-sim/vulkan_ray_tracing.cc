@@ -2095,6 +2095,46 @@ static unsigned rtcore_replay_completion_unit_busy_cycles()
     return g_rtcore_replay_unit_arbitration_stats.completion_unit_issued;
 }
 
+static unsigned rtcore_replay_total_unit_busy_cycles()
+{
+    return rtcore_replay_node_unit_busy_cycles() +
+           rtcore_replay_primitive_unit_busy_cycles() +
+           rtcore_replay_stack_unit_busy_cycles() +
+           rtcore_replay_completion_unit_busy_cycles();
+}
+
+static const char *rtcore_replay_dominant_busy_unit(unsigned *busy_cycles)
+{
+    const unsigned node_cycles = rtcore_replay_node_unit_busy_cycles();
+    const unsigned primitive_cycles = rtcore_replay_primitive_unit_busy_cycles();
+    const unsigned stack_cycles = rtcore_replay_stack_unit_busy_cycles();
+    const unsigned completion_cycles =
+        rtcore_replay_completion_unit_busy_cycles();
+
+    const char *unit = "none";
+    unsigned cycles = 0;
+    if (node_cycles > cycles) {
+        unit = "node";
+        cycles = node_cycles;
+    }
+    if (primitive_cycles > cycles) {
+        unit = "primitive";
+        cycles = primitive_cycles;
+    }
+    if (stack_cycles > cycles) {
+        unit = "stack";
+        cycles = stack_cycles;
+    }
+    if (completion_cycles > cycles) {
+        unit = "completion";
+        cycles = completion_cycles;
+    }
+    if (busy_cycles) {
+        *busy_cycles = cycles;
+    }
+    return unit;
+}
+
 static void rtcore_maybe_log_replay_model_summary_stats(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -2125,6 +2165,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
     const unsigned memory_blocked_events =
         g_rtcore_replay_memory_wake_latency_gate_stats.gate_blocked_count +
         g_rtcore_replay_memory_contention_gate_stats.gate_blocked_count;
+    unsigned dominant_busy_cycles = 0;
+    const char *dominant_busy_unit =
+        rtcore_replay_dominant_busy_unit(&dominant_busy_cycles);
 
     printf("GPGPU-Sim RTCORE_REPLAY_MODEL_SUMMARY_STATS "
            "owner_hw_sid=%u model_name=%s model_version=0.1 "
@@ -2144,7 +2187,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "completed_lane_requests=%u node_unit_busy_cycles=%u "
            "primitive_unit_busy_cycles=%u stack_unit_issued=%u "
            "completion_unit_issued=%u stack_unit_busy_cycles=%u "
-           "completion_unit_busy_cycles=%u memory_blocked_events=%u "
+           "completion_unit_busy_cycles=%u total_unit_busy_cycles=%u "
+           "dominant_busy_unit=%s dominant_busy_cycles=%u "
+           "memory_blocked_events=%u "
            "memory_contention_capacity_blocked_count=%u "
            "warp_aggregated_completion_count=%u "
            "max_observed_ready_cycle=%llu\n",
@@ -2164,7 +2209,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            g_rtcore_replay_unit_arbitration_stats.stack_unit_issued,
            g_rtcore_replay_unit_arbitration_stats.completion_unit_issued,
            rtcore_replay_stack_unit_busy_cycles(),
-           rtcore_replay_completion_unit_busy_cycles(), memory_blocked_events,
+           rtcore_replay_completion_unit_busy_cycles(),
+           rtcore_replay_total_unit_busy_cycles(), dominant_busy_unit,
+           dominant_busy_cycles, memory_blocked_events,
            g_rtcore_replay_memory_contention_gate_stats
                .capacity_blocked_count,
            warp_aggregated_completion_count, service_cycle);
