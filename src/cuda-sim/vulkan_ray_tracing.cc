@@ -609,6 +609,7 @@ static unsigned
 static unsigned g_rtcore_replay_memory_wake_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_memory_contention_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_unit_latency_gate_stats_logs_emitted = 0;
+static unsigned g_rtcore_replay_model_summary_stats_logs_emitted = 0;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
 
@@ -870,6 +871,16 @@ static bool rtcore_replay_unit_latency_gate_stats_log_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_replay_model_summary_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_MODEL_SUMMARY_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_replay_warp_completion_aggregation_shadow_enabled()
 {
     static int enabled = []() {
@@ -999,6 +1010,13 @@ static unsigned rtcore_replay_unit_latency_gate_stats_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_UNIT_LATENCY_GATE_STATS_LOG_LIMIT", 64);
+    return limit;
+}
+
+static unsigned rtcore_replay_model_summary_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_MODEL_SUMMARY_STATS_LOG_LIMIT", 16);
     return limit;
 }
 
@@ -2001,6 +2019,140 @@ static bool rtcore_record_replay_lane_completion_shadow(unsigned thread_uid)
 
     rtcore_record_replay_lane_completion_shadow(it->second);
     return true;
+}
+
+static void rtcore_count_replay_model_lane_requests(
+    unsigned owner_hw_sid, unsigned *admitted_lane_requests,
+    unsigned *completed_lane_requests)
+{
+    unsigned admitted = 0;
+    unsigned completed = 0;
+    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+             g_rtcore_replay_lane_requests.begin();
+         it != g_rtcore_replay_lane_requests.end(); ++it) {
+        const rtcore_replay_lane_request &request = it->second;
+        if (!request.valid || request.owner_hw_sid != owner_hw_sid) {
+            continue;
+        }
+        admitted++;
+        if (request.state == RTCORE_REPLAY_DONE) {
+            completed++;
+        }
+    }
+    if (admitted_lane_requests) {
+        *admitted_lane_requests = admitted;
+    }
+    if (completed_lane_requests) {
+        *completed_lane_requests = completed;
+    }
+}
+
+static unsigned
+rtcore_count_replay_model_completed_warp_aggregations(unsigned owner_hw_sid)
+{
+    unsigned completed_warps = 0;
+    for (std::map<rtcore_replay_warp_completion_shadow_key,
+                  rtcore_replay_warp_completion_shadow_state>::const_iterator
+             it = g_rtcore_replay_warp_completion_shadow.begin();
+         it != g_rtcore_replay_warp_completion_shadow.end(); ++it) {
+        if (!it->second.valid || it->second.key.owner_hw_sid != owner_hw_sid) {
+            continue;
+        }
+        if (it->second.all_active_lanes_complete) {
+            completed_warps++;
+        }
+    }
+    return completed_warps;
+}
+
+static unsigned rtcore_replay_node_unit_busy_cycles()
+{
+    const unsigned node_latency = rtcore_replay_node_test_latency_config();
+    const unsigned node_extra_cycles = node_latency > 0 ? node_latency - 1 : 0;
+    return g_rtcore_replay_unit_arbitration_stats.node_unit_issued +
+           g_rtcore_replay_unit_latency_gate_stats.node_gate_armed_count *
+               node_extra_cycles;
+}
+
+static unsigned rtcore_replay_primitive_unit_busy_cycles()
+{
+    const unsigned primitive_latency =
+        rtcore_replay_primitive_test_latency_config();
+    const unsigned primitive_extra_cycles =
+        primitive_latency > 0 ? primitive_latency - 1 : 0;
+    return g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued +
+           g_rtcore_replay_unit_latency_gate_stats.primitive_gate_armed_count *
+               primitive_extra_cycles;
+}
+
+static void rtcore_maybe_log_replay_model_summary_stats(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    if (!rtcore_replay_model_summary_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_model_summary_stats_logs_emitted >=
+        rtcore_replay_model_summary_stats_log_limit()) {
+        return;
+    }
+    if (g_rtcore_replay_service_tick_stats.ticks_progressed == 0) {
+        return;
+    }
+
+    unsigned admitted_lane_requests = 0;
+    unsigned completed_lane_requests = 0;
+    rtcore_count_replay_model_lane_requests(
+        owner_hw_sid, &admitted_lane_requests, &completed_lane_requests);
+    if (admitted_lane_requests == 0) {
+        return;
+    }
+
+    g_rtcore_replay_model_summary_stats_logs_emitted++;
+    const rtcore_replay_issue_budget budget =
+        rtcore_replay_issue_budget_config();
+    const unsigned warp_aggregated_completion_count =
+        rtcore_count_replay_model_completed_warp_aggregations(owner_hw_sid);
+    const unsigned memory_blocked_events =
+        g_rtcore_replay_memory_wake_latency_gate_stats.gate_blocked_count +
+        g_rtcore_replay_memory_contention_gate_stats.gate_blocked_count;
+
+    printf("GPGPU-Sim RTCORE_REPLAY_MODEL_SUMMARY_STATS "
+           "owner_hw_sid=%u model_name=%s model_version=0.1 "
+           "rt_core_scope=per_sm_logical_attached_rt_core rt_cores_per_sm=1 "
+           "internal_request_granularity=per_active_lane_rt_request "
+           "external_wakeup_granularity=warp_aggregated_completion "
+           "functional_oracle=VulkanRayTracing::traceRay "
+           "claims_new_hardware_bvh_engine=0 "
+           "max_trace_events_per_lane=%u "
+           "node_issue_budget=%u primitive_issue_budget=%u "
+           "stack_issue_budget=%u completion_issue_budget=%u "
+           "unit_queue_capacity=%u node_event_base_cycles=%u "
+           "primitive_event_base_cycles=%u "
+           "memory_contention_cache_lines_per_cycle=%u "
+           "memory_contention_queue_capacity=%u "
+           "service_ticks_progressed=%u admitted_lane_requests=%u "
+           "completed_lane_requests=%u node_unit_busy_cycles=%u "
+           "primitive_unit_busy_cycles=%u memory_blocked_events=%u "
+           "memory_contention_capacity_blocked_count=%u "
+           "warp_aggregated_completion_count=%u "
+           "max_observed_ready_cycle=%llu\n",
+           owner_hw_sid, RTCORE_TRACE_REPLAY_MODEL_NAME,
+           rtcore_compact_trace_events_per_lane_config(),
+           budget.node_issue_budget, budget.primitive_issue_budget,
+           budget.stack_issue_budget, budget.completion_issue_budget,
+           rtcore_replay_unit_queue_capacity_config(),
+           rtcore_replay_node_test_latency_config(),
+           rtcore_replay_primitive_test_latency_config(),
+           rtcore_replay_memory_contention_cache_lines_per_cycle_config(),
+           rtcore_replay_memory_contention_queue_capacity_config(),
+           g_rtcore_replay_service_tick_stats.ticks_progressed,
+           admitted_lane_requests, completed_lane_requests,
+           rtcore_replay_node_unit_busy_cycles(),
+           rtcore_replay_primitive_unit_busy_cycles(), memory_blocked_events,
+           g_rtcore_replay_memory_contention_gate_stats
+               .capacity_blocked_count,
+           warp_aggregated_completion_count, service_cycle);
+    fflush(stdout);
 }
 
 static bool rtcore_consider_oldest_ready_queue_front(
@@ -4121,6 +4273,7 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
     rtcore_record_replay_service_tick_result(result.tick_result);
     rtcore_publish_replay_service_tick_stats_snapshot();
     rtcore_maybe_log_replay_unit_arbitration_stats(owner_hw_sid);
+    rtcore_maybe_log_replay_model_summary_stats(owner_hw_sid, service_cycle);
     result.stats_snapshot = g_rtcore_replay_service_tick_stats_snapshot;
     return result;
 }
