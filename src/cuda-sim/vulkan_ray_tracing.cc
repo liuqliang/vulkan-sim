@@ -2085,6 +2085,16 @@ static unsigned rtcore_replay_primitive_unit_busy_cycles()
                primitive_extra_cycles;
 }
 
+static unsigned rtcore_replay_stack_unit_busy_cycles()
+{
+    return g_rtcore_replay_unit_arbitration_stats.stack_unit_issued;
+}
+
+static unsigned rtcore_replay_completion_unit_busy_cycles()
+{
+    return g_rtcore_replay_unit_arbitration_stats.completion_unit_issued;
+}
+
 static void rtcore_maybe_log_replay_model_summary_stats(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -2132,7 +2142,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "memory_contention_queue_capacity=%u "
            "service_ticks_progressed=%u admitted_lane_requests=%u "
            "completed_lane_requests=%u node_unit_busy_cycles=%u "
-           "primitive_unit_busy_cycles=%u memory_blocked_events=%u "
+           "primitive_unit_busy_cycles=%u stack_unit_issued=%u "
+           "completion_unit_issued=%u stack_unit_busy_cycles=%u "
+           "completion_unit_busy_cycles=%u memory_blocked_events=%u "
            "memory_contention_capacity_blocked_count=%u "
            "warp_aggregated_completion_count=%u "
            "max_observed_ready_cycle=%llu\n",
@@ -2148,7 +2160,11 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            g_rtcore_replay_service_tick_stats.ticks_progressed,
            admitted_lane_requests, completed_lane_requests,
            rtcore_replay_node_unit_busy_cycles(),
-           rtcore_replay_primitive_unit_busy_cycles(), memory_blocked_events,
+           rtcore_replay_primitive_unit_busy_cycles(),
+           g_rtcore_replay_unit_arbitration_stats.stack_unit_issued,
+           g_rtcore_replay_unit_arbitration_stats.completion_unit_issued,
+           rtcore_replay_stack_unit_busy_cycles(),
+           rtcore_replay_completion_unit_busy_cycles(), memory_blocked_events,
            g_rtcore_replay_memory_contention_gate_stats
                .capacity_blocked_count,
            warp_aggregated_completion_count, service_cycle);
