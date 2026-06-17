@@ -329,6 +329,7 @@ struct rtcore_replay_lane_request {
     unsigned long long memory_wake_armed_cycle;
     unsigned long long memory_wake_ready_cycle;
     bool memory_contention_gate_pending;
+    bool memory_contention_capacity_gate_pending;
     unsigned memory_contention_event_index;
     unsigned memory_contention_cache_lines;
     unsigned memory_contention_cycles;
@@ -493,14 +494,17 @@ struct rtcore_replay_memory_contention_gate_stats {
     unsigned gate_armed_count;
     unsigned gate_blocked_count;
     unsigned gate_woken_count;
+    unsigned capacity_blocked_count;
     unsigned max_cache_lines;
     unsigned max_contention_cycles;
     unsigned max_queue_delay_cycles;
+    unsigned max_inflight_reservations;
 };
 
 struct rtcore_replay_memory_contention_owner_state {
     unsigned long long next_available_cycle;
     unsigned reservations;
+    unsigned inflight_reservations;
 };
 
 struct rtcore_replay_unit_latency_gate_stats {
@@ -908,6 +912,13 @@ static unsigned rtcore_replay_memory_contention_cache_lines_per_cycle_config()
             "VULKAN_SIM_RTCORE_REPLAY_MEMORY_CONTENTION_CACHE_LINES_PER_CYCLE",
             4);
     return lines_per_cycle == 0 ? 1 : lines_per_cycle;
+}
+
+static unsigned rtcore_replay_memory_contention_queue_capacity_config()
+{
+    static unsigned capacity = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_CONTENTION_QUEUE_CAPACITY", 0);
+    return capacity;
 }
 
 static unsigned rtcore_replay_memory_cache_line_latency_config()
@@ -2441,7 +2452,7 @@ static unsigned rtcore_replay_memory_contention_cache_lines_for_event(
 
 static void rtcore_maybe_log_replay_memory_contention_gate_stats(
     const rtcore_replay_lane_request &request, bool armed, bool blocked,
-    bool woken, unsigned long long service_cycle)
+    bool woken, bool capacity_blocked, unsigned long long service_cycle)
 {
     if (!rtcore_replay_memory_contention_gate_stats_log_enabled()) {
         return;
@@ -2461,6 +2472,16 @@ static void rtcore_maybe_log_replay_memory_contention_gate_stats(
             ? static_cast<unsigned>(rtcore_unpack_compact_trace_event_type(
                   request.events[request.memory_contention_event_index]))
             : 0;
+    const unsigned queue_capacity =
+        rtcore_replay_memory_contention_queue_capacity_config();
+    unsigned inflight_reservations = 0;
+    std::map<unsigned, rtcore_replay_memory_contention_owner_state>::
+        const_iterator owner_it =
+            g_rtcore_replay_memory_contention_owner_states.find(
+                request.owner_hw_sid);
+    if (owner_it != g_rtcore_replay_memory_contention_owner_states.end()) {
+        inflight_reservations = owner_it->second.inflight_reservations;
+    }
 
     printf("GPGPU-Sim RTCORE_REPLAY_MEMORY_CONTENTION_GATE_STATS "
            "owner_hw_sid=%u thread_uid=%u lane_id=%u has_warp_metadata=%u "
@@ -2471,7 +2492,9 @@ static void rtcore_maybe_log_replay_memory_contention_gate_stats(
            "contention_cycles=%u queue_delay_cycles=%u blocked_cycles=%llu "
            "gate_evaluations=%u gate_armed_count=%u gate_blocked_count=%u "
            "gate_woken_count=%u max_cache_lines=%u "
-           "max_contention_cycles=%u max_queue_delay_cycles=%u\n",
+           "max_contention_cycles=%u max_queue_delay_cycles=%u "
+           "queue_capacity=%u inflight_reservations=%u capacity_blocked=%u "
+           "capacity_blocked_count=%u max_inflight_reservations=%u\n",
            request.owner_hw_sid, request.thread_uid, request.lane_id,
            request.has_warp_metadata ? 1u : 0u, request.warp_uid,
            request.warp_id, request.active_mask, request.static_inst_uid,
@@ -2491,7 +2514,13 @@ static void rtcore_maybe_log_replay_memory_contention_gate_stats(
            g_rtcore_replay_memory_contention_gate_stats
                .max_contention_cycles,
            g_rtcore_replay_memory_contention_gate_stats
-               .max_queue_delay_cycles);
+               .max_queue_delay_cycles,
+           queue_capacity, inflight_reservations,
+           capacity_blocked ? 1u : 0u,
+           g_rtcore_replay_memory_contention_gate_stats
+               .capacity_blocked_count,
+           g_rtcore_replay_memory_contention_gate_stats
+               .max_inflight_reservations);
     fflush(stdout);
 }
 
@@ -2523,6 +2552,28 @@ static bool rtcore_maybe_arm_replay_memory_contention_gate(
         (cache_lines + lines_per_cycle - 1) / lines_per_cycle;
     rtcore_replay_memory_contention_owner_state &owner_state =
         g_rtcore_replay_memory_contention_owner_states[request->owner_hw_sid];
+    const unsigned queue_capacity =
+        rtcore_replay_memory_contention_queue_capacity_config();
+    if (queue_capacity > 0 &&
+        owner_state.inflight_reservations >= queue_capacity) {
+        request->memory_contention_capacity_gate_pending = true;
+        request->memory_contention_event_index = request->next_event_index;
+        request->memory_contention_cache_lines = cache_lines;
+        request->memory_contention_cycles =
+            contention_cycles == 0 ? 1 : contention_cycles;
+        request->memory_contention_queue_delay_cycles = 0;
+        request->memory_contention_armed_cycle = service_cycle;
+        request->memory_contention_start_cycle = service_cycle;
+        request->memory_contention_ready_cycle = owner_state.next_available_cycle;
+        request->state = RTCORE_REPLAY_WAITING_MEMORY;
+
+        g_rtcore_replay_memory_contention_gate_stats.gate_evaluations++;
+        g_rtcore_replay_memory_contention_gate_stats.capacity_blocked_count++;
+        rtcore_maybe_log_replay_memory_contention_gate_stats(
+            *request, false, false, false, true, service_cycle);
+        return true;
+    }
+
     const unsigned long long start_cycle =
         owner_state.next_available_cycle > service_cycle
             ? owner_state.next_available_cycle
@@ -2534,8 +2585,10 @@ static bool rtcore_maybe_arm_replay_memory_contention_gate(
 
     owner_state.next_available_cycle = ready_cycle;
     owner_state.reservations++;
+    owner_state.inflight_reservations++;
 
     request->memory_contention_gate_pending = true;
+    request->memory_contention_capacity_gate_pending = false;
     request->memory_contention_event_index = request->next_event_index;
     request->memory_contention_cache_lines = cache_lines;
     request->memory_contention_cycles =
@@ -2565,9 +2618,43 @@ static bool rtcore_maybe_arm_replay_memory_contention_gate(
             .max_queue_delay_cycles =
             request->memory_contention_queue_delay_cycles;
     }
+    if (owner_state.inflight_reservations >
+        g_rtcore_replay_memory_contention_gate_stats
+            .max_inflight_reservations) {
+        g_rtcore_replay_memory_contention_gate_stats
+            .max_inflight_reservations =
+            owner_state.inflight_reservations;
+    }
     rtcore_maybe_log_replay_memory_contention_gate_stats(
-        *request, true, false, false, service_cycle);
+        *request, true, false, false, false, service_cycle);
     return true;
+}
+
+static bool rtcore_replay_memory_contention_capacity_gate_ready(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    if (!request || !request->memory_contention_capacity_gate_pending) {
+        return true;
+    }
+    std::map<unsigned, rtcore_replay_memory_contention_owner_state>::iterator
+        owner_it =
+            g_rtcore_replay_memory_contention_owner_states.find(
+                request->owner_hw_sid);
+    const unsigned queue_capacity =
+        rtcore_replay_memory_contention_queue_capacity_config();
+    if (queue_capacity > 0 &&
+        owner_it != g_rtcore_replay_memory_contention_owner_states.end() &&
+        owner_it->second.inflight_reservations >= queue_capacity) {
+        g_rtcore_replay_memory_contention_gate_stats.gate_evaluations++;
+        g_rtcore_replay_memory_contention_gate_stats.capacity_blocked_count++;
+        rtcore_maybe_log_replay_memory_contention_gate_stats(
+            *request, false, false, false, true, service_cycle);
+        return false;
+    }
+
+    request->memory_contention_capacity_gate_pending = false;
+    return rtcore_maybe_arm_replay_memory_contention_gate(request,
+                                                          service_cycle);
 }
 
 static bool rtcore_replay_memory_contention_gate_ready(
@@ -2580,14 +2667,22 @@ static bool rtcore_replay_memory_contention_gate_ready(
         g_rtcore_replay_memory_contention_gate_stats.gate_evaluations++;
         g_rtcore_replay_memory_contention_gate_stats.gate_blocked_count++;
         rtcore_maybe_log_replay_memory_contention_gate_stats(
-            *request, false, true, false, service_cycle);
+            *request, false, true, false, false, service_cycle);
         return false;
     }
 
     g_rtcore_replay_memory_contention_gate_stats.gate_evaluations++;
     g_rtcore_replay_memory_contention_gate_stats.gate_woken_count++;
+    std::map<unsigned, rtcore_replay_memory_contention_owner_state>::iterator
+        owner_it =
+            g_rtcore_replay_memory_contention_owner_states.find(
+                request->owner_hw_sid);
+    if (owner_it != g_rtcore_replay_memory_contention_owner_states.end() &&
+        owner_it->second.inflight_reservations > 0) {
+        owner_it->second.inflight_reservations--;
+    }
     rtcore_maybe_log_replay_memory_contention_gate_stats(
-        *request, false, false, true, service_cycle);
+        *request, false, false, true, false, service_cycle);
     request->memory_contention_gate_pending = false;
     return true;
 }
@@ -2999,6 +3094,13 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
         return false;
     }
     bool memory_contention_resolved_this_step = false;
+    if (it->second.memory_contention_capacity_gate_pending) {
+        if (!rtcore_replay_memory_contention_capacity_gate_ready(
+                &it->second, service_cycle)) {
+            return false;
+        }
+        return true;
+    }
     if (it->second.memory_contention_gate_pending) {
         if (!rtcore_replay_memory_contention_gate_ready(&it->second,
                                                         service_cycle)) {
