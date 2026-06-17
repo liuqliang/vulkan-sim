@@ -2103,6 +2103,49 @@ static unsigned rtcore_replay_total_unit_busy_cycles()
            rtcore_replay_completion_unit_busy_cycles();
 }
 
+static unsigned rtcore_replay_total_unit_issued()
+{
+    return g_rtcore_replay_unit_arbitration_stats.node_unit_issued +
+           g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued +
+           g_rtcore_replay_unit_arbitration_stats.stack_unit_issued +
+           g_rtcore_replay_unit_arbitration_stats.completion_unit_issued;
+}
+
+static const char *rtcore_replay_dominant_issue_unit(unsigned *issue_count)
+{
+    const unsigned node_issued =
+        g_rtcore_replay_unit_arbitration_stats.node_unit_issued;
+    const unsigned primitive_issued =
+        g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued;
+    const unsigned stack_issued =
+        g_rtcore_replay_unit_arbitration_stats.stack_unit_issued;
+    const unsigned completion_issued =
+        g_rtcore_replay_unit_arbitration_stats.completion_unit_issued;
+
+    const char *unit = "none";
+    unsigned count = 0;
+    if (node_issued > count) {
+        unit = "node";
+        count = node_issued;
+    }
+    if (primitive_issued > count) {
+        unit = "primitive";
+        count = primitive_issued;
+    }
+    if (stack_issued > count) {
+        unit = "stack";
+        count = stack_issued;
+    }
+    if (completion_issued > count) {
+        unit = "completion";
+        count = completion_issued;
+    }
+    if (issue_count) {
+        *issue_count = count;
+    }
+    return unit;
+}
+
 static const char *rtcore_replay_dominant_busy_unit(unsigned *busy_cycles)
 {
     const unsigned node_cycles = rtcore_replay_node_unit_busy_cycles();
@@ -2168,6 +2211,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
     unsigned dominant_busy_cycles = 0;
     const char *dominant_busy_unit =
         rtcore_replay_dominant_busy_unit(&dominant_busy_cycles);
+    unsigned dominant_issue_count = 0;
+    const char *dominant_issue_unit =
+        rtcore_replay_dominant_issue_unit(&dominant_issue_count);
 
     printf("GPGPU-Sim RTCORE_REPLAY_MODEL_SUMMARY_STATS "
            "owner_hw_sid=%u model_name=%s model_version=0.1 "
@@ -2184,10 +2230,13 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "memory_contention_cache_lines_per_cycle=%u "
            "memory_contention_queue_capacity=%u "
            "service_ticks_progressed=%u admitted_lane_requests=%u "
-           "completed_lane_requests=%u node_unit_busy_cycles=%u "
-           "primitive_unit_busy_cycles=%u stack_unit_issued=%u "
-           "completion_unit_issued=%u stack_unit_busy_cycles=%u "
-           "completion_unit_busy_cycles=%u total_unit_busy_cycles=%u "
+           "completed_lane_requests=%u node_unit_issued=%u "
+           "primitive_unit_issued=%u stack_unit_issued=%u "
+           "completion_unit_issued=%u total_unit_issued=%u "
+           "dominant_issue_unit=%s dominant_issue_count=%u "
+           "node_unit_busy_cycles=%u primitive_unit_busy_cycles=%u "
+           "stack_unit_busy_cycles=%u completion_unit_busy_cycles=%u "
+           "total_unit_busy_cycles=%u "
            "dominant_busy_unit=%s dominant_busy_cycles=%u "
            "memory_blocked_events=%u "
            "memory_contention_capacity_blocked_count=%u "
@@ -2204,10 +2253,13 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            rtcore_replay_memory_contention_queue_capacity_config(),
            g_rtcore_replay_service_tick_stats.ticks_progressed,
            admitted_lane_requests, completed_lane_requests,
-           rtcore_replay_node_unit_busy_cycles(),
-           rtcore_replay_primitive_unit_busy_cycles(),
+           g_rtcore_replay_unit_arbitration_stats.node_unit_issued,
+           g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued,
            g_rtcore_replay_unit_arbitration_stats.stack_unit_issued,
            g_rtcore_replay_unit_arbitration_stats.completion_unit_issued,
+           rtcore_replay_total_unit_issued(), dominant_issue_unit,
+           dominant_issue_count, rtcore_replay_node_unit_busy_cycles(),
+           rtcore_replay_primitive_unit_busy_cycles(),
            rtcore_replay_stack_unit_busy_cycles(),
            rtcore_replay_completion_unit_busy_cycles(),
            rtcore_replay_total_unit_busy_cycles(), dominant_busy_unit,
