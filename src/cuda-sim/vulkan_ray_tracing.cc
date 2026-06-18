@@ -578,13 +578,30 @@ struct rtcore_replay_data_path_port_budget_gate_stats {
     unsigned last_queue_entry_delta;
     unsigned last_request_table_delta;
     unsigned last_request_state_delta;
+    unsigned last_queue_header_over_budget;
+    unsigned last_queue_entry_over_budget;
+    unsigned last_request_table_over_budget;
+    unsigned last_request_state_over_budget;
+    unsigned last_over_budget_resource_mask;
+    unsigned last_blocked_resource_mask;
     unsigned last_over_budget_accesses;
     unsigned last_blocked;
     unsigned max_queue_header_delta;
     unsigned max_queue_entry_delta;
     unsigned max_request_table_delta;
     unsigned max_request_state_delta;
+    unsigned max_queue_header_over_budget;
+    unsigned max_queue_entry_over_budget;
+    unsigned max_request_table_over_budget;
+    unsigned max_request_state_over_budget;
+    unsigned max_over_budget_resource_mask;
+    unsigned max_blocked_resource_mask;
     unsigned max_over_budget_accesses;
+};
+
+struct rtcore_replay_data_path_port_budget_block_state {
+    unsigned long long blocked_until_cycle;
+    unsigned resource_mask;
 };
 
 struct rtcore_replay_service_tick_stats_snapshot {
@@ -687,7 +704,7 @@ static std::map<unsigned, rtcore_replay_model_summary_progress_snapshot>
     g_rtcore_replay_model_summary_progress_snapshots;
 static unsigned g_rtcore_next_replay_ready_order = 0;
 static unsigned g_rtcore_replay_round_robin_cursor = 0;
-static std::map<unsigned, unsigned long long>
+static std::map<unsigned, rtcore_replay_data_path_port_budget_block_state>
     g_rtcore_replay_data_path_port_budget_gate_blocked_until_cycle_by_owner;
 
 static bool rtcore_replay_model_preset_simple_enabled()
@@ -1443,6 +1460,26 @@ static unsigned rtcore_replay_over_budget_accesses(unsigned observed,
     return observed - budget;
 }
 
+static unsigned rtcore_replay_data_path_port_budget_resource_mask(
+    unsigned queue_header_over_budget, unsigned queue_entry_over_budget,
+    unsigned request_table_over_budget, unsigned request_state_over_budget)
+{
+    unsigned resource_mask = 0;
+    if (queue_header_over_budget > 0) {
+        resource_mask |= 1u << 0;
+    }
+    if (queue_entry_over_budget > 0) {
+        resource_mask |= 1u << 1;
+    }
+    if (request_table_over_budget > 0) {
+        resource_mask |= 1u << 2;
+    }
+    if (request_state_over_budget > 0) {
+        resource_mask |= 1u << 3;
+    }
+    return resource_mask;
+}
+
 static void rtcore_update_replay_data_path_port_budget_max(unsigned value,
                                                            unsigned *maximum)
 {
@@ -1463,7 +1500,25 @@ static bool rtcore_replay_data_path_port_budget_gate_can_service(
     return blocked_until ==
                g_rtcore_replay_data_path_port_budget_gate_blocked_until_cycle_by_owner
                    .end() ||
-           service_cycle >= blocked_until->second;
+           service_cycle >= blocked_until->second.blocked_until_cycle;
+}
+
+static unsigned rtcore_replay_data_path_port_budget_blocked_resource_mask(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    if (!rtcore_replay_data_path_port_budget_gate_enabled()) {
+        return 0;
+    }
+    const auto blocked_until =
+        g_rtcore_replay_data_path_port_budget_gate_blocked_until_cycle_by_owner
+            .find(owner_hw_sid);
+    if (blocked_until ==
+            g_rtcore_replay_data_path_port_budget_gate_blocked_until_cycle_by_owner
+                .end() ||
+        service_cycle >= blocked_until->second.blocked_until_cycle) {
+        return 0;
+    }
+    return blocked_until->second.resource_mask;
 }
 
 static void rtcore_record_replay_data_path_port_budget_gate_result(
@@ -1508,7 +1563,16 @@ static void rtcore_record_replay_data_path_port_budget_gate_result(
     const unsigned over_budget_accesses =
         queue_header_over_budget + queue_entry_over_budget +
         request_table_over_budget + request_state_over_budget;
+    const unsigned over_budget_resource_mask =
+        rtcore_replay_data_path_port_budget_resource_mask(
+            queue_header_over_budget, queue_entry_over_budget,
+            request_table_over_budget, request_state_over_budget);
     const bool service_blocked = !service_allowed;
+    const unsigned blocked_resource_mask =
+        service_blocked
+            ? rtcore_replay_data_path_port_budget_blocked_resource_mask(
+                  owner_hw_sid, service_cycle)
+            : 0;
 
     g_rtcore_replay_data_path_port_budget_gate_stats.evaluations++;
     g_rtcore_replay_data_path_port_budget_gate_stats.last_queue_header_delta =
@@ -1519,6 +1583,18 @@ static void rtcore_record_replay_data_path_port_budget_gate_result(
         request_table_delta;
     g_rtcore_replay_data_path_port_budget_gate_stats.last_request_state_delta =
         request_state_delta;
+    g_rtcore_replay_data_path_port_budget_gate_stats
+        .last_queue_header_over_budget = queue_header_over_budget;
+    g_rtcore_replay_data_path_port_budget_gate_stats
+        .last_queue_entry_over_budget = queue_entry_over_budget;
+    g_rtcore_replay_data_path_port_budget_gate_stats
+        .last_request_table_over_budget = request_table_over_budget;
+    g_rtcore_replay_data_path_port_budget_gate_stats
+        .last_request_state_over_budget = request_state_over_budget;
+    g_rtcore_replay_data_path_port_budget_gate_stats
+        .last_over_budget_resource_mask = over_budget_resource_mask;
+    g_rtcore_replay_data_path_port_budget_gate_stats.last_blocked_resource_mask =
+        blocked_resource_mask;
     g_rtcore_replay_data_path_port_budget_gate_stats.last_over_budget_accesses =
         over_budget_accesses;
     g_rtcore_replay_data_path_port_budget_gate_stats.last_blocked =
@@ -1541,9 +1617,29 @@ static void rtcore_record_replay_data_path_port_budget_gate_result(
         &g_rtcore_replay_data_path_port_budget_gate_stats
              .max_request_state_delta);
     rtcore_update_replay_data_path_port_budget_max(
+        queue_header_over_budget,
+        &g_rtcore_replay_data_path_port_budget_gate_stats
+             .max_queue_header_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        queue_entry_over_budget,
+        &g_rtcore_replay_data_path_port_budget_gate_stats
+             .max_queue_entry_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        request_table_over_budget,
+        &g_rtcore_replay_data_path_port_budget_gate_stats
+             .max_request_table_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        request_state_over_budget,
+        &g_rtcore_replay_data_path_port_budget_gate_stats
+             .max_request_state_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
         over_budget_accesses,
         &g_rtcore_replay_data_path_port_budget_gate_stats
              .max_over_budget_accesses);
+    g_rtcore_replay_data_path_port_budget_gate_stats
+        .max_over_budget_resource_mask |= over_budget_resource_mask;
+    g_rtcore_replay_data_path_port_budget_gate_stats.max_blocked_resource_mask |=
+        blocked_resource_mask;
 
     if (service_blocked) {
         g_rtcore_replay_data_path_port_budget_gate_stats.blocked_count++;
@@ -1553,11 +1649,14 @@ static void rtcore_record_replay_data_path_port_budget_gate_result(
     }
     if (over_budget_accesses > 0) {
         const unsigned long long next_allowed_cycle = service_cycle + 2;
-        unsigned long long &blocked_until =
+        rtcore_replay_data_path_port_budget_block_state &blocked_until =
             g_rtcore_replay_data_path_port_budget_gate_blocked_until_cycle_by_owner
                 [owner_hw_sid];
-        if (blocked_until < next_allowed_cycle) {
-            blocked_until = next_allowed_cycle;
+        if (blocked_until.blocked_until_cycle < next_allowed_cycle) {
+            blocked_until.blocked_until_cycle = next_allowed_cycle;
+            blocked_until.resource_mask = over_budget_resource_mask;
+        } else if (blocked_until.blocked_until_cycle == next_allowed_cycle) {
+            blocked_until.resource_mask |= over_budget_resource_mask;
         }
     }
 }
@@ -5159,11 +5258,17 @@ static void rtcore_maybe_log_replay_data_path_port_budget_gate_stats(
            "request_table_budget=%u request_state_budget=%u "
            "queue_header_delta=%u queue_entry_delta=%u "
            "request_table_delta=%u request_state_delta=%u "
+           "queue_header_over_budget=%u queue_entry_over_budget=%u "
+           "request_table_over_budget=%u request_state_over_budget=%u "
+           "over_budget_resource_mask=%u blocked_resource_mask=%u "
            "blocked=%u over_budget_accesses=%u "
            "evaluations=%u allowed_count=%u blocked_count=%u "
            "blocked_cycle_total=%u max_queue_header_delta=%u "
            "max_queue_entry_delta=%u max_request_table_delta=%u "
-           "max_request_state_delta=%u max_over_budget_accesses=%u\n",
+           "max_request_state_delta=%u max_over_budget_accesses=%u "
+           "max_queue_header_over_budget=%u max_queue_entry_over_budget=%u "
+           "max_request_table_over_budget=%u max_request_state_over_budget=%u "
+           "max_over_budget_resource_mask=%u max_blocked_resource_mask=%u\n",
            owner_hw_sid, service_cycle,
            rtcore_replay_data_path_port_budget_gate_enabled() ? 1 : 0,
            rtcore_replay_data_path_queue_header_budget_config(),
@@ -5178,6 +5283,18 @@ static void rtcore_maybe_log_replay_data_path_port_budget_gate_stats(
                .last_request_table_delta,
            g_rtcore_replay_data_path_port_budget_gate_stats
                .last_request_state_delta,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .last_queue_header_over_budget,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .last_queue_entry_over_budget,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .last_request_table_over_budget,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .last_request_state_over_budget,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .last_over_budget_resource_mask,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .last_blocked_resource_mask,
            g_rtcore_replay_data_path_port_budget_gate_stats.last_blocked,
            g_rtcore_replay_data_path_port_budget_gate_stats
                .last_over_budget_accesses,
@@ -5194,7 +5311,19 @@ static void rtcore_maybe_log_replay_data_path_port_budget_gate_stats(
            g_rtcore_replay_data_path_port_budget_gate_stats
                .max_request_state_delta,
            g_rtcore_replay_data_path_port_budget_gate_stats
-               .max_over_budget_accesses);
+               .max_over_budget_accesses,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .max_queue_header_over_budget,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .max_queue_entry_over_budget,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .max_request_table_over_budget,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .max_request_state_over_budget,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .max_over_budget_resource_mask,
+           g_rtcore_replay_data_path_port_budget_gate_stats
+               .max_blocked_resource_mask);
     fflush(stdout);
 }
 
