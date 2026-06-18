@@ -611,6 +611,18 @@ struct rtcore_replay_queue_header_port_gate_stats {
     unsigned max_over_budget_accesses;
 };
 
+struct rtcore_replay_request_table_port_gate_stats {
+    unsigned evaluations;
+    unsigned allowed_count;
+    unsigned blocked_count;
+    unsigned armed_count;
+    unsigned last_request_table_delta;
+    unsigned last_over_budget_accesses;
+    unsigned last_blocked;
+    unsigned max_request_table_delta;
+    unsigned max_over_budget_accesses;
+};
+
 struct rtcore_replay_data_path_port_budget_block_state {
     unsigned long long blocked_until_cycle;
     unsigned resource_mask;
@@ -683,6 +695,8 @@ static rtcore_replay_data_path_port_budget_gate_stats
     g_rtcore_replay_data_path_port_budget_gate_stats;
 static rtcore_replay_queue_header_port_gate_stats
     g_rtcore_replay_queue_header_port_gate_stats;
+static rtcore_replay_request_table_port_gate_stats
+    g_rtcore_replay_request_table_port_gate_stats;
 static rtcore_service_tick_stats_snapshot
     g_rtcore_replay_service_tick_stats_snapshot;
 static unsigned g_rtcore_replay_service_tick_stats_logs_emitted = 0;
@@ -702,6 +716,7 @@ static unsigned g_rtcore_replay_data_path_access_stats_logs_emitted = 0;
 static unsigned
     g_rtcore_replay_data_path_port_budget_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_queue_header_port_gate_stats_logs_emitted = 0;
+static unsigned g_rtcore_replay_request_table_port_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_compact_trace_overflow_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_overflow_summary_estimate_stats_logs_emitted =
     0;
@@ -723,6 +738,8 @@ static std::map<unsigned, rtcore_replay_data_path_port_budget_block_state>
     g_rtcore_replay_data_path_port_budget_gate_blocked_until_cycle_by_owner;
 static std::map<unsigned, unsigned long long>
     g_rtcore_replay_queue_header_port_gate_blocked_until_cycle_by_owner;
+static std::map<unsigned, unsigned long long>
+    g_rtcore_replay_request_table_port_gate_blocked_until_cycle_by_owner;
 
 static bool rtcore_replay_model_preset_simple_enabled()
 {
@@ -1042,6 +1059,26 @@ static bool rtcore_replay_queue_header_port_gate_stats_log_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_replay_request_table_port_gate_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORT_GATE");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_request_table_port_gate_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv(
+            "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORT_GATE_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_replay_warp_completion_aggregation_shadow_enabled()
 {
     static int enabled = []() {
@@ -1205,6 +1242,13 @@ static unsigned rtcore_replay_queue_header_port_gate_stats_log_limit()
     return limit;
 }
 
+static unsigned rtcore_replay_request_table_port_gate_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORT_GATE_STATS_LOG_LIMIT", 64);
+    return limit;
+}
+
 static unsigned rtcore_replay_data_path_queue_header_budget_config()
 {
     static unsigned budget = rtcore_replay_uint_config_or_model_preset(
@@ -1218,6 +1262,14 @@ static unsigned rtcore_replay_queue_header_ports_per_cycle_config()
     static unsigned ports = rtcore_replay_uint_config_or_model_preset(
         "VULKAN_SIM_RTCORE_REPLAY_QUEUE_HEADER_PORTS_PER_CYCLE", 0, 0, 1048576,
         false);
+    return ports;
+}
+
+static unsigned rtcore_replay_request_table_ports_per_cycle_config()
+{
+    static unsigned ports = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORTS_PER_CYCLE", 0, 0,
+        1048576, false);
     return ports;
 }
 
@@ -1599,6 +1651,73 @@ static void rtcore_record_replay_queue_header_port_gate_result(
         const unsigned long long next_allowed_cycle = service_cycle + 2;
         unsigned long long &blocked_until =
             g_rtcore_replay_queue_header_port_gate_blocked_until_cycle_by_owner
+                [owner_hw_sid];
+        if (blocked_until < next_allowed_cycle) {
+            blocked_until = next_allowed_cycle;
+        }
+    }
+}
+
+static bool rtcore_replay_request_table_port_gate_can_service(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    if (!rtcore_replay_request_table_port_gate_enabled()) {
+        return true;
+    }
+    const auto blocked_until =
+        g_rtcore_replay_request_table_port_gate_blocked_until_cycle_by_owner
+            .find(owner_hw_sid);
+    return blocked_until ==
+               g_rtcore_replay_request_table_port_gate_blocked_until_cycle_by_owner
+                   .end() ||
+           service_cycle >= blocked_until->second;
+}
+
+static void rtcore_record_replay_request_table_port_gate_result(
+    unsigned owner_hw_sid,
+    const rtcore_replay_data_path_access_snapshot &before,
+    const rtcore_replay_data_path_access_snapshot &after,
+    bool service_allowed, unsigned long long service_cycle)
+{
+    if (!rtcore_replay_request_table_port_gate_enabled()) {
+        return;
+    }
+
+    const unsigned request_table_delta =
+        rtcore_replay_data_path_access_delta(after.request_table_accesses,
+                                             before.request_table_accesses);
+    const unsigned over_budget_accesses =
+        rtcore_replay_over_budget_accesses(
+            request_table_delta,
+            rtcore_replay_request_table_ports_per_cycle_config());
+    const bool service_blocked = !service_allowed;
+
+    g_rtcore_replay_request_table_port_gate_stats.evaluations++;
+    g_rtcore_replay_request_table_port_gate_stats.last_request_table_delta =
+        request_table_delta;
+    g_rtcore_replay_request_table_port_gate_stats.last_over_budget_accesses =
+        over_budget_accesses;
+    g_rtcore_replay_request_table_port_gate_stats.last_blocked =
+        service_blocked ? 1 : 0;
+    rtcore_update_replay_data_path_port_budget_max(
+        request_table_delta,
+        &g_rtcore_replay_request_table_port_gate_stats
+             .max_request_table_delta);
+    rtcore_update_replay_data_path_port_budget_max(
+        over_budget_accesses,
+        &g_rtcore_replay_request_table_port_gate_stats
+             .max_over_budget_accesses);
+
+    if (service_blocked) {
+        g_rtcore_replay_request_table_port_gate_stats.blocked_count++;
+    } else {
+        g_rtcore_replay_request_table_port_gate_stats.allowed_count++;
+    }
+    if (over_budget_accesses > 0) {
+        g_rtcore_replay_request_table_port_gate_stats.armed_count++;
+        const unsigned long long next_allowed_cycle = service_cycle + 2;
+        unsigned long long &blocked_until =
+            g_rtcore_replay_request_table_port_gate_blocked_until_cycle_by_owner
                 [owner_hw_sid];
         if (blocked_until < next_allowed_cycle) {
             blocked_until = next_allowed_cycle;
@@ -5485,6 +5604,55 @@ static void rtcore_maybe_log_replay_queue_header_port_gate_stats(
     fflush(stdout);
 }
 
+static void rtcore_maybe_log_replay_request_table_port_gate_stats(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    if (!rtcore_replay_request_table_port_gate_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_request_table_port_gate_stats_logs_emitted >=
+        rtcore_replay_request_table_port_gate_stats_log_limit()) {
+        return;
+    }
+    if (g_rtcore_replay_request_table_port_gate_stats.evaluations == 0) {
+        return;
+    }
+    if (g_rtcore_replay_request_table_port_gate_stats_logs_emitted > 0 &&
+        g_rtcore_replay_request_table_port_gate_stats
+                .last_request_table_delta == 0 &&
+        g_rtcore_replay_request_table_port_gate_stats
+                .last_over_budget_accesses == 0 &&
+        g_rtcore_replay_request_table_port_gate_stats.last_blocked == 0) {
+        return;
+    }
+
+    g_rtcore_replay_request_table_port_gate_stats_logs_emitted++;
+    printf("GPGPU-Sim RTCORE_REPLAY_REQUEST_TABLE_PORT_GATE "
+           "owner_hw_sid=%u service_cycle=%llu gate_enabled=%u "
+           "ports_per_cycle=%u request_table_delta=%u "
+           "over_budget_accesses=%u blocked=%u "
+           "evaluations=%u allowed_count=%u blocked_count=%u "
+           "armed_count=%u max_request_table_delta=%u "
+           "max_over_budget_accesses=%u\n",
+           owner_hw_sid, service_cycle,
+           rtcore_replay_request_table_port_gate_enabled() ? 1 : 0,
+           rtcore_replay_request_table_ports_per_cycle_config(),
+           g_rtcore_replay_request_table_port_gate_stats
+               .last_request_table_delta,
+           g_rtcore_replay_request_table_port_gate_stats
+               .last_over_budget_accesses,
+           g_rtcore_replay_request_table_port_gate_stats.last_blocked,
+           g_rtcore_replay_request_table_port_gate_stats.evaluations,
+           g_rtcore_replay_request_table_port_gate_stats.allowed_count,
+           g_rtcore_replay_request_table_port_gate_stats.blocked_count,
+           g_rtcore_replay_request_table_port_gate_stats.armed_count,
+           g_rtcore_replay_request_table_port_gate_stats
+               .max_request_table_delta,
+           g_rtcore_replay_request_table_port_gate_stats
+               .max_over_budget_accesses);
+    fflush(stdout);
+}
+
 static void rtcore_publish_replay_service_tick_stats_snapshot()
 {
     g_rtcore_replay_service_tick_stats_snapshot =
@@ -5511,8 +5679,12 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
     const bool queue_header_port_can_service =
         rtcore_replay_queue_header_port_gate_can_service(owner_hw_sid,
                                                          service_cycle);
+    const bool request_table_port_can_service =
+        rtcore_replay_request_table_port_gate_can_service(owner_hw_sid,
+                                                          service_cycle);
     const bool data_path_port_budget_can_service =
         queue_header_port_can_service &&
+        request_table_port_can_service &&
         rtcore_replay_data_path_port_budget_gate_can_service(owner_hw_sid,
                                                              service_cycle);
     if (data_path_port_budget_can_service) {
@@ -5526,6 +5698,11 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
         queue_header_port_can_service, service_cycle);
     rtcore_maybe_log_replay_queue_header_port_gate_stats(owner_hw_sid,
                                                          service_cycle);
+    rtcore_record_replay_request_table_port_gate_result(
+        owner_hw_sid, data_path_before, data_path_after,
+        request_table_port_can_service, service_cycle);
+    rtcore_maybe_log_replay_request_table_port_gate_stats(owner_hw_sid,
+                                                          service_cycle);
     rtcore_record_replay_data_path_port_budget_gate_result(
         owner_hw_sid, data_path_before, data_path_after,
         data_path_port_budget_can_service, service_cycle);
