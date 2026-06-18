@@ -245,14 +245,15 @@ struct rtcore_compact_trace_overflow_summary {
 };
 
 enum rtcore_replay_lane_request_state {
-    RTCORE_REPLAY_QUEUED = 0,
-    RTCORE_REPLAY_READY_NODE,
-    RTCORE_REPLAY_READY_PRIMITIVE,
-    RTCORE_REPLAY_READY_STACK,
-    RTCORE_REPLAY_WAITING_UNIT,
-    RTCORE_REPLAY_WAITING_MEMORY,
-    RTCORE_REPLAY_READY_COMPLETION,
-    RTCORE_REPLAY_DONE,
+    RTCORE_REPLAY_INVALID = 0,
+    RTCORE_REPLAY_ADMITTED,
+    RTCORE_REPLAY_READY,
+    RTCORE_REPLAY_ISSUED_NODE,
+    RTCORE_REPLAY_ISSUED_PRIMITIVE,
+    RTCORE_REPLAY_ISSUED_STACK,
+    RTCORE_REPLAY_ISSUED_MEMORY,
+    RTCORE_REPLAY_COMPLETION_PENDING,
+    RTCORE_REPLAY_COMPLETED,
 };
 
 enum rtcore_replay_unit_latency_gate_unit {
@@ -1263,21 +1264,21 @@ static rtcore_replay_lane_request_state rtcore_classify_replay_state(
     switch (event_type) {
     case RTCORE_TRACE_NODE_FETCH:
     case RTCORE_TRACE_NODE_TEST:
-        return RTCORE_REPLAY_READY_NODE;
+        return RTCORE_REPLAY_ISSUED_NODE;
     case RTCORE_TRACE_PRIMITIVE_FETCH:
     case RTCORE_TRACE_PRIMITIVE_TEST:
     case RTCORE_TRACE_HIT_UPDATE:
-        return RTCORE_REPLAY_READY_PRIMITIVE;
+        return RTCORE_REPLAY_ISSUED_PRIMITIVE;
     case RTCORE_TRACE_STACK_PUSH:
     case RTCORE_TRACE_STACK_POP:
-        return RTCORE_REPLAY_READY_STACK;
+        return RTCORE_REPLAY_ISSUED_STACK;
     case RTCORE_TRACE_MEMORY_WAIT:
-        return RTCORE_REPLAY_WAITING_MEMORY;
+        return RTCORE_REPLAY_ISSUED_MEMORY;
     case RTCORE_TRACE_COMPLETION:
     case RTCORE_TRACE_OVERFLOW_SUMMARY:
-        return RTCORE_REPLAY_READY_COMPLETION;
+        return RTCORE_REPLAY_COMPLETION_PENDING;
     default:
-        return RTCORE_REPLAY_DONE;
+        return RTCORE_REPLAY_COMPLETED;
     }
 }
 
@@ -1660,26 +1661,26 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.timing_precision_class = record.timing_precision_class;
     request.overflow_summary_events = record.overflow_summary_events;
     request.overflow_summary = record.overflow_summary;
-    request.state = RTCORE_REPLAY_DONE;
+    request.state = RTCORE_REPLAY_COMPLETED;
     request.events = record.events;
 
     for (unsigned i = 0; i < request.events.size(); ++i) {
         rtcore_compact_trace_event_type event_type =
             rtcore_unpack_compact_trace_event_type(request.events[i]);
         switch (rtcore_classify_replay_state(event_type)) {
-        case RTCORE_REPLAY_READY_NODE:
+        case RTCORE_REPLAY_ISSUED_NODE:
             request.node_event_count++;
             break;
-        case RTCORE_REPLAY_READY_PRIMITIVE:
+        case RTCORE_REPLAY_ISSUED_PRIMITIVE:
             request.primitive_event_count++;
             break;
-        case RTCORE_REPLAY_READY_STACK:
+        case RTCORE_REPLAY_ISSUED_STACK:
             request.stack_event_count++;
             break;
-        case RTCORE_REPLAY_WAITING_MEMORY:
+        case RTCORE_REPLAY_ISSUED_MEMORY:
             request.memory_event_count++;
             break;
-        case RTCORE_REPLAY_READY_COMPLETION:
+        case RTCORE_REPLAY_COMPLETION_PENDING:
             request.completion_event_count++;
             break;
         default:
@@ -1691,7 +1692,7 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
         request.state = rtcore_classify_replay_state(
             rtcore_unpack_compact_trace_event_type(request.events[0]));
     } else if (request.valid) {
-        request.state = RTCORE_REPLAY_QUEUED;
+        request.state = RTCORE_REPLAY_ADMITTED;
     }
     return request;
 }
@@ -1699,17 +1700,17 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
 static bool rtcore_replay_unit_queue_capacity_state(
     rtcore_replay_lane_request_state state)
 {
-    return state == RTCORE_REPLAY_READY_NODE ||
-           state == RTCORE_REPLAY_READY_PRIMITIVE;
+    return state == RTCORE_REPLAY_ISSUED_NODE ||
+           state == RTCORE_REPLAY_ISSUED_PRIMITIVE;
 }
 
 static const std::deque<unsigned> *rtcore_replay_ready_unit_queue_for_state(
     rtcore_replay_lane_request_state state)
 {
     switch (state) {
-    case RTCORE_REPLAY_READY_NODE:
+    case RTCORE_REPLAY_ISSUED_NODE:
         return &g_rtcore_replay_ready_queues.ready_node_queue;
-    case RTCORE_REPLAY_READY_PRIMITIVE:
+    case RTCORE_REPLAY_ISSUED_PRIMITIVE:
         return &g_rtcore_replay_ready_queues.ready_primitive_queue;
     default:
         return NULL;
@@ -1810,7 +1811,6 @@ static bool rtcore_maybe_route_replay_unit_queue_capacity_gate(
 
     request->unit_queue_capacity_gate_pending = true;
     request->unit_queue_capacity_target_state = request->state;
-    request->state = RTCORE_REPLAY_WAITING_UNIT;
     g_rtcore_replay_unit_queue_capacity_gate_stats.gate_evaluations++;
     g_rtcore_replay_unit_queue_capacity_gate_stats
         .unit_queue_capacity_blocked_count++;
@@ -1827,35 +1827,43 @@ static void rtcore_enqueue_replay_request_by_state(
         return;
     }
 
+    if (request.unit_queue_capacity_gate_pending ||
+        request.unit_latency_gate_pending) {
+        g_rtcore_replay_ready_queues.waiting_unit_queue.push_back(
+            request.thread_uid);
+        return;
+    }
+
     switch (request.state) {
-    case RTCORE_REPLAY_QUEUED:
+    case RTCORE_REPLAY_INVALID:
+        break;
+    case RTCORE_REPLAY_ADMITTED:
         g_rtcore_replay_ready_queues.queued_queue.push_back(request.thread_uid);
         break;
-    case RTCORE_REPLAY_READY_NODE:
+    case RTCORE_REPLAY_READY:
+        g_rtcore_replay_ready_queues.queued_queue.push_back(request.thread_uid);
+        break;
+    case RTCORE_REPLAY_ISSUED_NODE:
         g_rtcore_replay_ready_queues.ready_node_queue.push_back(
             request.thread_uid);
         break;
-    case RTCORE_REPLAY_READY_PRIMITIVE:
+    case RTCORE_REPLAY_ISSUED_PRIMITIVE:
         g_rtcore_replay_ready_queues.ready_primitive_queue.push_back(
             request.thread_uid);
         break;
-    case RTCORE_REPLAY_READY_STACK:
+    case RTCORE_REPLAY_ISSUED_STACK:
         g_rtcore_replay_ready_queues.ready_stack_queue.push_back(
             request.thread_uid);
         break;
-    case RTCORE_REPLAY_WAITING_UNIT:
-        g_rtcore_replay_ready_queues.waiting_unit_queue.push_back(
-            request.thread_uid);
-        break;
-    case RTCORE_REPLAY_WAITING_MEMORY:
+    case RTCORE_REPLAY_ISSUED_MEMORY:
         g_rtcore_replay_ready_queues.waiting_memory_queue.push_back(
             request.thread_uid);
         break;
-    case RTCORE_REPLAY_READY_COMPLETION:
+    case RTCORE_REPLAY_COMPLETION_PENDING:
         g_rtcore_replay_ready_queues.ready_completion_queue.push_back(
             request.thread_uid);
         break;
-    case RTCORE_REPLAY_DONE:
+    case RTCORE_REPLAY_COMPLETED:
         g_rtcore_replay_ready_queues.done_queue.push_back(request.thread_uid);
         break;
     }
@@ -2059,7 +2067,7 @@ static void rtcore_count_replay_model_lane_requests(
             continue;
         }
         admitted++;
-        if (request.state == RTCORE_REPLAY_DONE) {
+        if (request.state == RTCORE_REPLAY_COMPLETED) {
             completed++;
         }
     }
@@ -3065,7 +3073,7 @@ static bool rtcore_maybe_arm_replay_memory_wake_latency_gate(
     request->memory_wake_latency_cycles = latency_cycles;
     request->memory_wake_armed_cycle = service_cycle;
     request->memory_wake_ready_cycle = service_cycle + latency_cycles;
-    request->state = RTCORE_REPLAY_WAITING_MEMORY;
+    request->state = RTCORE_REPLAY_ISSUED_MEMORY;
 
     g_rtcore_replay_memory_wake_latency_gate_stats.gate_evaluations++;
     g_rtcore_replay_memory_wake_latency_gate_stats.gate_armed_count++;
@@ -3248,7 +3256,7 @@ static bool rtcore_maybe_arm_replay_memory_contention_gate(
         request->memory_contention_armed_cycle = service_cycle;
         request->memory_contention_start_cycle = service_cycle;
         request->memory_contention_ready_cycle = owner_state.next_available_cycle;
-        request->state = RTCORE_REPLAY_WAITING_MEMORY;
+        request->state = RTCORE_REPLAY_ISSUED_MEMORY;
 
         g_rtcore_replay_memory_contention_gate_stats.gate_evaluations++;
         g_rtcore_replay_memory_contention_gate_stats.capacity_blocked_count++;
@@ -3281,7 +3289,7 @@ static bool rtcore_maybe_arm_replay_memory_contention_gate(
     request->memory_contention_armed_cycle = service_cycle;
     request->memory_contention_start_cycle = start_cycle;
     request->memory_contention_ready_cycle = ready_cycle;
-    request->state = RTCORE_REPLAY_WAITING_MEMORY;
+    request->state = RTCORE_REPLAY_ISSUED_MEMORY;
 
     g_rtcore_replay_memory_contention_gate_stats.gate_evaluations++;
     g_rtcore_replay_memory_contention_gate_stats.gate_armed_count++;
@@ -3476,7 +3484,7 @@ static bool rtcore_replay_unit_queue_capacity_gate_ready(
     }
 
     request->unit_queue_capacity_gate_pending = false;
-    request->unit_queue_capacity_target_state = RTCORE_REPLAY_QUEUED;
+    request->unit_queue_capacity_target_state = RTCORE_REPLAY_INVALID;
     request->state = target_state;
     g_rtcore_replay_unit_queue_capacity_gate_stats
         .unit_queue_capacity_released_count++;
@@ -3514,7 +3522,11 @@ static bool rtcore_maybe_arm_replay_unit_latency_gate(
     request->unit_latency_cycles = latency_cycles;
     request->unit_latency_armed_cycle = service_cycle;
     request->unit_latency_ready_cycle = service_cycle + latency_cycles;
-    request->state = RTCORE_REPLAY_WAITING_UNIT;
+    if (unit == RTCORE_REPLAY_UNIT_LATENCY_NODE) {
+        request->state = RTCORE_REPLAY_ISSUED_NODE;
+    } else if (unit == RTCORE_REPLAY_UNIT_LATENCY_PRIMITIVE) {
+        request->state = RTCORE_REPLAY_ISSUED_PRIMITIVE;
+    }
 
     g_rtcore_replay_unit_latency_gate_stats.gate_evaluations++;
     if (unit == RTCORE_REPLAY_UNIT_LATENCY_NODE) {
@@ -3765,7 +3777,7 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
     request.ready_order = g_rtcore_next_replay_ready_order++;
     g_rtcore_replay_lane_requests[request.thread_uid] = request;
     rtcore_record_replay_lane_admission_shadow(request);
-    if (request.state == RTCORE_REPLAY_DONE) {
+    if (request.state == RTCORE_REPLAY_COMPLETED) {
         rtcore_record_replay_lane_completion_shadow(request);
     }
     rtcore_route_admitted_replay_request(request.thread_uid);
@@ -3775,7 +3787,7 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 static bool rtcore_replay_request_done(
     const rtcore_replay_lane_request &request)
 {
-    return !request.valid || request.state == RTCORE_REPLAY_DONE ||
+    return !request.valid || request.state == RTCORE_REPLAY_COMPLETED ||
            request.next_event_index >= request.events.size();
 }
 
@@ -3786,17 +3798,17 @@ static bool rtcore_replay_advance_lane_request(
         return false;
     }
     if (request->events.empty()) {
-        request->state = RTCORE_REPLAY_DONE;
+        request->state = RTCORE_REPLAY_COMPLETED;
         return false;
     }
     if (request->next_event_index >= request->events.size()) {
-        request->state = RTCORE_REPLAY_DONE;
+        request->state = RTCORE_REPLAY_COMPLETED;
         return false;
     }
 
     request->next_event_index++;
     if (request->next_event_index >= request->events.size()) {
-        request->state = RTCORE_REPLAY_DONE;
+        request->state = RTCORE_REPLAY_COMPLETED;
         return true;
     }
 
@@ -3885,25 +3897,25 @@ static bool rtcore_consume_replay_issue_budget_for_state(
     }
 
     switch (state) {
-    case RTCORE_REPLAY_READY_NODE:
+    case RTCORE_REPLAY_ISSUED_NODE:
         if (budget->node_issue_budget == 0) {
             return false;
         }
         budget->node_issue_budget--;
         return true;
-    case RTCORE_REPLAY_READY_PRIMITIVE:
+    case RTCORE_REPLAY_ISSUED_PRIMITIVE:
         if (budget->primitive_issue_budget == 0) {
             return false;
         }
         budget->primitive_issue_budget--;
         return true;
-    case RTCORE_REPLAY_READY_STACK:
+    case RTCORE_REPLAY_ISSUED_STACK:
         if (budget->stack_issue_budget == 0) {
             return false;
         }
         budget->stack_issue_budget--;
         return true;
-    case RTCORE_REPLAY_READY_COMPLETION:
+    case RTCORE_REPLAY_COMPLETION_PENDING:
         if (budget->completion_issue_budget == 0) {
             return false;
         }
@@ -4137,7 +4149,8 @@ static bool rtcore_wake_waiting_unit_replay_request(
     if (it == g_rtcore_replay_lane_requests.end()) {
         return false;
     }
-    if (it->second.state != RTCORE_REPLAY_WAITING_UNIT) {
+    if (!it->second.unit_queue_capacity_gate_pending &&
+        !it->second.unit_latency_gate_pending) {
         return false;
     }
     if (!rtcore_step_admitted_replay_request(thread_uid, service_cycle)) {
@@ -4207,7 +4220,7 @@ static bool rtcore_wake_waiting_memory_replay_request(
     if (it == g_rtcore_replay_lane_requests.end()) {
         return false;
     }
-    if (it->second.state != RTCORE_REPLAY_WAITING_MEMORY) {
+    if (it->second.state != RTCORE_REPLAY_ISSUED_MEMORY) {
         return false;
     }
     if (!rtcore_step_admitted_replay_request(thread_uid, service_cycle)) {
