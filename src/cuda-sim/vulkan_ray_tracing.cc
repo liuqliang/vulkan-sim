@@ -810,6 +810,26 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned request_table_port_gate_max_over_budget_accesses;
     unsigned request_state_port_gate_blocked_count;
     unsigned request_state_port_gate_max_over_budget_accesses;
+    unsigned v01_memory_queue_gate_evaluations;
+    unsigned v01_memory_queue_gate_armed_count;
+    unsigned v01_memory_queue_gate_blocked_count;
+    unsigned v01_memory_queue_gate_woken_count;
+    unsigned v01_memory_queue_capacity_blocked_count;
+    unsigned v01_memory_queue_released_chunks_total;
+    unsigned v01_memory_queue_max_chunk_count;
+    unsigned v01_memory_queue_max_inflight_chunks;
+    unsigned v01_memory_queue_max_ready_latency_cycles;
+    unsigned v01_issue_state_gate_evaluations;
+    unsigned v01_issue_state_node_gate_armed_count;
+    unsigned v01_issue_state_primitive_gate_armed_count;
+    unsigned v01_issue_state_stack_gate_armed_count;
+    unsigned v01_issue_state_completion_gate_armed_count;
+    unsigned v01_issue_state_gate_blocked_count;
+    unsigned v01_issue_state_gate_woken_count;
+    unsigned v01_issue_state_completion_capacity_blocked_count;
+    unsigned v01_issue_state_max_latency_cycles;
+    unsigned v01_issue_state_max_blocked_cycles;
+    unsigned v01_issue_state_max_completion_inflight;
     unsigned long long max_observed_ready_cycle;
 };
 
@@ -4059,6 +4079,47 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.request_state_port_gate_blocked_count ||
         last_snapshot.request_state_port_gate_max_over_budget_accesses !=
             snapshot.request_state_port_gate_max_over_budget_accesses;
+    const bool v01_gate_pressure_changed =
+        last_snapshot.v01_memory_queue_gate_evaluations !=
+            snapshot.v01_memory_queue_gate_evaluations ||
+        last_snapshot.v01_memory_queue_gate_armed_count !=
+            snapshot.v01_memory_queue_gate_armed_count ||
+        last_snapshot.v01_memory_queue_gate_blocked_count !=
+            snapshot.v01_memory_queue_gate_blocked_count ||
+        last_snapshot.v01_memory_queue_gate_woken_count !=
+            snapshot.v01_memory_queue_gate_woken_count ||
+        last_snapshot.v01_memory_queue_capacity_blocked_count !=
+            snapshot.v01_memory_queue_capacity_blocked_count ||
+        last_snapshot.v01_memory_queue_released_chunks_total !=
+            snapshot.v01_memory_queue_released_chunks_total ||
+        last_snapshot.v01_memory_queue_max_chunk_count !=
+            snapshot.v01_memory_queue_max_chunk_count ||
+        last_snapshot.v01_memory_queue_max_inflight_chunks !=
+            snapshot.v01_memory_queue_max_inflight_chunks ||
+        last_snapshot.v01_memory_queue_max_ready_latency_cycles !=
+            snapshot.v01_memory_queue_max_ready_latency_cycles ||
+        last_snapshot.v01_issue_state_gate_evaluations !=
+            snapshot.v01_issue_state_gate_evaluations ||
+        last_snapshot.v01_issue_state_node_gate_armed_count !=
+            snapshot.v01_issue_state_node_gate_armed_count ||
+        last_snapshot.v01_issue_state_primitive_gate_armed_count !=
+            snapshot.v01_issue_state_primitive_gate_armed_count ||
+        last_snapshot.v01_issue_state_stack_gate_armed_count !=
+            snapshot.v01_issue_state_stack_gate_armed_count ||
+        last_snapshot.v01_issue_state_completion_gate_armed_count !=
+            snapshot.v01_issue_state_completion_gate_armed_count ||
+        last_snapshot.v01_issue_state_gate_blocked_count !=
+            snapshot.v01_issue_state_gate_blocked_count ||
+        last_snapshot.v01_issue_state_gate_woken_count !=
+            snapshot.v01_issue_state_gate_woken_count ||
+        last_snapshot.v01_issue_state_completion_capacity_blocked_count !=
+            snapshot.v01_issue_state_completion_capacity_blocked_count ||
+        last_snapshot.v01_issue_state_max_latency_cycles !=
+            snapshot.v01_issue_state_max_latency_cycles ||
+        last_snapshot.v01_issue_state_max_blocked_cycles !=
+            snapshot.v01_issue_state_max_blocked_cycles ||
+        last_snapshot.v01_issue_state_max_completion_inflight !=
+            snapshot.v01_issue_state_max_completion_inflight;
     const bool changed =
         !last_snapshot.valid ||
         last_snapshot.service_ticks_progressed !=
@@ -4096,7 +4157,8 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.request_table_capacity_max_pending_admissions ||
         last_snapshot.warp_aggregated_completion_count !=
             snapshot.warp_aggregated_completion_count ||
-        independent_service_pressure_changed || data_path_pressure_changed;
+        independent_service_pressure_changed || data_path_pressure_changed ||
+        v01_gate_pressure_changed;
     if (!changed) {
         return false;
     }
@@ -4207,6 +4269,49 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         g_rtcore_replay_request_state_port_gate_stats.blocked_count;
     const unsigned request_state_port_gate_max_over_budget_accesses =
         g_rtcore_replay_request_state_port_gate_stats.max_over_budget_accesses;
+    const unsigned v01_memory_queue_gate_evaluations =
+        g_rtcore_replay_v01_memory_queue_gate_stats.gate_evaluations;
+    const unsigned v01_memory_queue_gate_armed_count =
+        g_rtcore_replay_v01_memory_queue_gate_stats.gate_armed_count;
+    const unsigned v01_memory_queue_gate_blocked_count =
+        g_rtcore_replay_v01_memory_queue_gate_stats.gate_blocked_count;
+    const unsigned v01_memory_queue_gate_woken_count =
+        g_rtcore_replay_v01_memory_queue_gate_stats.gate_woken_count;
+    const unsigned v01_memory_queue_capacity_blocked_count =
+        g_rtcore_replay_v01_memory_queue_gate_stats.capacity_blocked_count;
+    const unsigned v01_memory_queue_released_chunks_total =
+        g_rtcore_replay_v01_memory_queue_gate_stats.released_chunks_total;
+    const unsigned v01_memory_queue_max_chunk_count =
+        g_rtcore_replay_v01_memory_queue_gate_stats.max_chunk_count;
+    const unsigned v01_memory_queue_max_inflight_chunks =
+        g_rtcore_replay_v01_memory_queue_gate_stats.max_inflight_chunks;
+    const unsigned v01_memory_queue_max_ready_latency_cycles =
+        g_rtcore_replay_v01_memory_queue_gate_stats.max_ready_latency_cycles;
+    const unsigned v01_issue_state_gate_evaluations =
+        g_rtcore_replay_v01_issue_state_gate_stats.gate_evaluations;
+    const unsigned v01_issue_state_node_gate_armed_count =
+        g_rtcore_replay_v01_issue_state_gate_stats.node_gate_armed_count;
+    const unsigned v01_issue_state_primitive_gate_armed_count =
+        g_rtcore_replay_v01_issue_state_gate_stats
+            .primitive_gate_armed_count;
+    const unsigned v01_issue_state_stack_gate_armed_count =
+        g_rtcore_replay_v01_issue_state_gate_stats.stack_gate_armed_count;
+    const unsigned v01_issue_state_completion_gate_armed_count =
+        g_rtcore_replay_v01_issue_state_gate_stats
+            .completion_gate_armed_count;
+    const unsigned v01_issue_state_gate_blocked_count =
+        g_rtcore_replay_v01_issue_state_gate_stats.gate_blocked_count;
+    const unsigned v01_issue_state_gate_woken_count =
+        g_rtcore_replay_v01_issue_state_gate_stats.gate_woken_count;
+    const unsigned v01_issue_state_completion_capacity_blocked_count =
+        g_rtcore_replay_v01_issue_state_gate_stats
+            .completion_capacity_blocked_count;
+    const unsigned v01_issue_state_max_latency_cycles =
+        g_rtcore_replay_v01_issue_state_gate_stats.max_latency_cycles;
+    const unsigned v01_issue_state_max_blocked_cycles =
+        g_rtcore_replay_v01_issue_state_gate_stats.max_blocked_cycles;
+    const unsigned v01_issue_state_max_completion_inflight =
+        g_rtcore_replay_v01_issue_state_gate_stats.max_completion_inflight;
     rtcore_replay_model_summary_progress_snapshot progress_snapshot = {};
     progress_snapshot.valid = true;
     progress_snapshot.service_ticks_progressed =
@@ -4277,6 +4382,46 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         request_state_port_gate_blocked_count;
     progress_snapshot.request_state_port_gate_max_over_budget_accesses =
         request_state_port_gate_max_over_budget_accesses;
+    progress_snapshot.v01_memory_queue_gate_evaluations =
+        v01_memory_queue_gate_evaluations;
+    progress_snapshot.v01_memory_queue_gate_armed_count =
+        v01_memory_queue_gate_armed_count;
+    progress_snapshot.v01_memory_queue_gate_blocked_count =
+        v01_memory_queue_gate_blocked_count;
+    progress_snapshot.v01_memory_queue_gate_woken_count =
+        v01_memory_queue_gate_woken_count;
+    progress_snapshot.v01_memory_queue_capacity_blocked_count =
+        v01_memory_queue_capacity_blocked_count;
+    progress_snapshot.v01_memory_queue_released_chunks_total =
+        v01_memory_queue_released_chunks_total;
+    progress_snapshot.v01_memory_queue_max_chunk_count =
+        v01_memory_queue_max_chunk_count;
+    progress_snapshot.v01_memory_queue_max_inflight_chunks =
+        v01_memory_queue_max_inflight_chunks;
+    progress_snapshot.v01_memory_queue_max_ready_latency_cycles =
+        v01_memory_queue_max_ready_latency_cycles;
+    progress_snapshot.v01_issue_state_gate_evaluations =
+        v01_issue_state_gate_evaluations;
+    progress_snapshot.v01_issue_state_node_gate_armed_count =
+        v01_issue_state_node_gate_armed_count;
+    progress_snapshot.v01_issue_state_primitive_gate_armed_count =
+        v01_issue_state_primitive_gate_armed_count;
+    progress_snapshot.v01_issue_state_stack_gate_armed_count =
+        v01_issue_state_stack_gate_armed_count;
+    progress_snapshot.v01_issue_state_completion_gate_armed_count =
+        v01_issue_state_completion_gate_armed_count;
+    progress_snapshot.v01_issue_state_gate_blocked_count =
+        v01_issue_state_gate_blocked_count;
+    progress_snapshot.v01_issue_state_gate_woken_count =
+        v01_issue_state_gate_woken_count;
+    progress_snapshot.v01_issue_state_completion_capacity_blocked_count =
+        v01_issue_state_completion_capacity_blocked_count;
+    progress_snapshot.v01_issue_state_max_latency_cycles =
+        v01_issue_state_max_latency_cycles;
+    progress_snapshot.v01_issue_state_max_blocked_cycles =
+        v01_issue_state_max_blocked_cycles;
+    progress_snapshot.v01_issue_state_max_completion_inflight =
+        v01_issue_state_max_completion_inflight;
     progress_snapshot.max_observed_ready_cycle = service_cycle;
     if (!rtcore_should_log_replay_model_summary_stats(owner_hw_sid,
                                                       progress_snapshot)) {
@@ -4371,6 +4516,26 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "request_table_port_gate_max_over_budget_accesses=%u "
            "request_state_port_gate_blocked_count=%u "
            "request_state_port_gate_max_over_budget_accesses=%u "
+           "v01_memory_queue_gate_evaluations=%u "
+           "v01_memory_queue_gate_armed_count=%u "
+           "v01_memory_queue_gate_blocked_count=%u "
+           "v01_memory_queue_gate_woken_count=%u "
+           "v01_memory_queue_capacity_blocked_count=%u "
+           "v01_memory_queue_released_chunks_total=%u "
+           "v01_memory_queue_max_chunk_count=%u "
+           "v01_memory_queue_max_inflight_chunks=%u "
+           "v01_memory_queue_max_ready_latency_cycles=%u "
+           "v01_issue_state_gate_evaluations=%u "
+           "v01_issue_state_node_gate_armed_count=%u "
+           "v01_issue_state_primitive_gate_armed_count=%u "
+           "v01_issue_state_stack_gate_armed_count=%u "
+           "v01_issue_state_completion_gate_armed_count=%u "
+           "v01_issue_state_gate_blocked_count=%u "
+           "v01_issue_state_gate_woken_count=%u "
+           "v01_issue_state_completion_capacity_blocked_count=%u "
+           "v01_issue_state_max_latency_cycles=%u "
+           "v01_issue_state_max_blocked_cycles=%u "
+           "v01_issue_state_max_completion_inflight=%u "
            "max_observed_ready_cycle=%llu\n",
            owner_hw_sid, RTCORE_TRACE_REPLAY_MODEL_NAME,
            rtcore_compact_trace_events_per_lane_config(),
@@ -4439,6 +4604,26 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            request_table_port_gate_max_over_budget_accesses,
            request_state_port_gate_blocked_count,
            request_state_port_gate_max_over_budget_accesses,
+           v01_memory_queue_gate_evaluations,
+           v01_memory_queue_gate_armed_count,
+           v01_memory_queue_gate_blocked_count,
+           v01_memory_queue_gate_woken_count,
+           v01_memory_queue_capacity_blocked_count,
+           v01_memory_queue_released_chunks_total,
+           v01_memory_queue_max_chunk_count,
+           v01_memory_queue_max_inflight_chunks,
+           v01_memory_queue_max_ready_latency_cycles,
+           v01_issue_state_gate_evaluations,
+           v01_issue_state_node_gate_armed_count,
+           v01_issue_state_primitive_gate_armed_count,
+           v01_issue_state_stack_gate_armed_count,
+           v01_issue_state_completion_gate_armed_count,
+           v01_issue_state_gate_blocked_count,
+           v01_issue_state_gate_woken_count,
+           v01_issue_state_completion_capacity_blocked_count,
+           v01_issue_state_max_latency_cycles,
+           v01_issue_state_max_blocked_cycles,
+           v01_issue_state_max_completion_inflight,
            service_cycle);
     fflush(stdout);
 }
