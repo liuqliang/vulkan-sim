@@ -1144,9 +1144,10 @@ static bool rtcore_replay_memory_contention_gate_stats_log_enabled()
 static bool rtcore_replay_v01_memory_queue_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_V01_MEMORY_QUEUE_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_V01_MEMORY_QUEUE_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -1164,9 +1165,10 @@ static bool rtcore_replay_v01_memory_queue_gate_stats_log_enabled()
 static bool rtcore_replay_v01_issue_state_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_V01_ISSUE_STATE_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_V01_ISSUE_STATE_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -1184,9 +1186,10 @@ static bool rtcore_replay_v01_issue_state_gate_stats_log_enabled()
 static bool rtcore_replay_v01_independent_service_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_V01_INDEPENDENT_SERVICE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_V01_INDEPENDENT_SERVICE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -1787,7 +1790,7 @@ static unsigned rtcore_replay_memory_contention_queue_capacity_config()
 static unsigned rtcore_replay_v01_memory_queue_capacity_chunks_config()
 {
     static unsigned capacity = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_V01_MEMORY_QUEUE_CAPACITY_CHUNKS", 0, 0,
+        "VULKAN_SIM_RTCORE_REPLAY_V01_MEMORY_QUEUE_CAPACITY_CHUNKS", 0, 8,
         1048576, false);
     return capacity;
 }
@@ -1814,7 +1817,7 @@ static unsigned rtcore_replay_v01_node_latency_cycles_config()
 {
     static unsigned latency = rtcore_replay_uint_config_or_model_preset(
         "VULKAN_SIM_RTCORE_REPLAY_V01_NODE_LATENCY_CYCLES",
-        RTCORE_REPLAY_V01_NODE_LATENCY_CYCLES, 1, 1048576, false);
+        RTCORE_REPLAY_V01_NODE_LATENCY_CYCLES, 2, 1048576, false);
     return latency == 0 ? 1 : latency;
 }
 
@@ -1822,7 +1825,7 @@ static unsigned rtcore_replay_v01_primitive_latency_cycles_config()
 {
     static unsigned latency = rtcore_replay_uint_config_or_model_preset(
         "VULKAN_SIM_RTCORE_REPLAY_V01_PRIMITIVE_LATENCY_CYCLES",
-        RTCORE_REPLAY_V01_PRIMITIVE_LATENCY_CYCLES, 1, 1048576, false);
+        RTCORE_REPLAY_V01_PRIMITIVE_LATENCY_CYCLES, 4, 1048576, false);
     return latency == 0 ? 1 : latency;
 }
 
@@ -1830,7 +1833,7 @@ static unsigned rtcore_replay_v01_stack_latency_cycles_config()
 {
     static unsigned latency = rtcore_replay_uint_config_or_model_preset(
         "VULKAN_SIM_RTCORE_REPLAY_V01_STACK_LATENCY_CYCLES",
-        RTCORE_REPLAY_V01_STACK_LATENCY_CYCLES, 1, 1048576, false);
+        RTCORE_REPLAY_V01_STACK_LATENCY_CYCLES, 2, 1048576, false);
     return latency == 0 ? 1 : latency;
 }
 
@@ -1838,14 +1841,14 @@ static unsigned rtcore_replay_v01_completion_latency_cycles_config()
 {
     static unsigned latency = rtcore_replay_uint_config_or_model_preset(
         "VULKAN_SIM_RTCORE_REPLAY_V01_COMPLETION_LATENCY_CYCLES",
-        RTCORE_REPLAY_V01_COMPLETION_LATENCY_CYCLES, 1, 1048576, false);
+        RTCORE_REPLAY_V01_COMPLETION_LATENCY_CYCLES, 4, 1048576, false);
     return latency == 0 ? 1 : latency;
 }
 
 static unsigned rtcore_replay_v01_completion_queue_capacity_config()
 {
     static unsigned capacity = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_V01_COMPLETION_QUEUE_CAPACITY", 0, 0,
+        "VULKAN_SIM_RTCORE_REPLAY_V01_COMPLETION_QUEUE_CAPACITY", 0, 1,
         1048576, false);
     return capacity;
 }
