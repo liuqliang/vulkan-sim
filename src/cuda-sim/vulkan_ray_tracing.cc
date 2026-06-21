@@ -185,6 +185,15 @@ static const unsigned RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE = 64;
 static const unsigned RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR = 256;
 static const unsigned RTCORE_COMPACT_TRACE_EVENT_TARGET_BYTES = 16;
 static const unsigned RTCORE_REPLAY_MEMORY_DEMAND_CACHE_LINE_BYTES = 64;
+static const unsigned RTCORE_REPLAY_V01_MEMORY_REQUEST_GRANULE_BYTES = 32;
+static const unsigned RTCORE_REPLAY_V01_MEMORY_ISSUE_WIDTH_CHUNKS_PER_CYCLE = 1;
+static const unsigned RTCORE_REPLAY_V01_MEMORY_RETURN_WIDTH_CHUNKS_PER_CYCLE =
+    1;
+static const unsigned RTCORE_REPLAY_V01_MEMORY_BASE_LATENCY_CYCLES = 1;
+static const unsigned RTCORE_REPLAY_V01_NODE_LATENCY_CYCLES = 1;
+static const unsigned RTCORE_REPLAY_V01_PRIMITIVE_LATENCY_CYCLES = 4;
+static const unsigned RTCORE_REPLAY_V01_STACK_LATENCY_CYCLES = 1;
+static const unsigned RTCORE_REPLAY_V01_COMPLETION_LATENCY_CYCLES = 1;
 
 enum rtcore_compact_trace_event_type {
     RTCORE_TRACE_NODE_FETCH = 0,
@@ -1047,6 +1056,81 @@ static bool rtcore_replay_model_summary_stats_log_enabled()
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
+}
+
+static unsigned rtcore_replay_v01_contract_memory_issue_width_chunks_per_cycle()
+{
+    return RTCORE_REPLAY_V01_MEMORY_ISSUE_WIDTH_CHUNKS_PER_CYCLE;
+}
+
+static unsigned rtcore_replay_v01_contract_memory_return_width_chunks_per_cycle()
+{
+    return RTCORE_REPLAY_V01_MEMORY_RETURN_WIDTH_CHUNKS_PER_CYCLE;
+}
+
+static unsigned rtcore_replay_v01_contract_memory_base_latency_cycles()
+{
+    return RTCORE_REPLAY_V01_MEMORY_BASE_LATENCY_CYCLES;
+}
+
+static unsigned rtcore_replay_v01_contract_node_latency_cycles()
+{
+    return RTCORE_REPLAY_V01_NODE_LATENCY_CYCLES;
+}
+
+static unsigned rtcore_replay_v01_contract_primitive_latency_cycles()
+{
+    return RTCORE_REPLAY_V01_PRIMITIVE_LATENCY_CYCLES;
+}
+
+static unsigned rtcore_replay_v01_contract_stack_latency_cycles()
+{
+    return RTCORE_REPLAY_V01_STACK_LATENCY_CYCLES;
+}
+
+static unsigned rtcore_replay_v01_contract_completion_latency_cycles()
+{
+    return RTCORE_REPLAY_V01_COMPLETION_LATENCY_CYCLES;
+}
+
+static unsigned rtcore_replay_v01_contract_node_fetch_resource_memory()
+{
+    return 1;
+}
+
+static unsigned rtcore_replay_v01_contract_primitive_fetch_resource_memory()
+{
+    return 1;
+}
+
+static unsigned rtcore_replay_v01_contract_node_test_resource_node()
+{
+    return 1;
+}
+
+static unsigned rtcore_replay_v01_contract_primitive_test_resource_primitive()
+{
+    return 1;
+}
+
+static unsigned rtcore_replay_v01_contract_hit_update_resource_primitive()
+{
+    return 1;
+}
+
+static unsigned rtcore_replay_v01_contract_stack_push_resource_stack()
+{
+    return 1;
+}
+
+static unsigned rtcore_replay_v01_contract_stack_pop_resource_stack()
+{
+    return 1;
+}
+
+static unsigned rtcore_replay_v01_contract_completion_resource_completion()
+{
+    return 1;
 }
 
 static bool rtcore_replay_data_path_access_stats_log_enabled()
@@ -3615,6 +3699,22 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "primitive_event_base_cycles=%u "
            "memory_contention_cache_lines_per_cycle=%u "
            "memory_contention_queue_capacity=%u "
+           "v01_contract_memory_request_granule_bytes=%u "
+           "v01_contract_memory_issue_width_chunks_per_cycle=%u "
+           "v01_contract_memory_return_width_chunks_per_cycle=%u "
+           "v01_contract_memory_base_latency_cycles=%u "
+           "v01_contract_node_latency_cycles=%u "
+           "v01_contract_primitive_latency_cycles=%u "
+           "v01_contract_stack_latency_cycles=%u "
+           "v01_contract_completion_latency_cycles=%u "
+           "v01_contract_node_fetch_resource_memory=%u "
+           "v01_contract_primitive_fetch_resource_memory=%u "
+           "v01_contract_node_test_resource_node=%u "
+           "v01_contract_primitive_test_resource_primitive=%u "
+           "v01_contract_hit_update_resource_primitive=%u "
+           "v01_contract_stack_push_resource_stack=%u "
+           "v01_contract_stack_pop_resource_stack=%u "
+           "v01_contract_completion_resource_completion=%u "
            "service_ticks_progressed=%u admitted_lane_requests=%u "
            "completed_lane_requests=%u node_unit_issued=%u "
            "primitive_unit_issued=%u stack_unit_issued=%u "
@@ -3649,6 +3749,22 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            rtcore_replay_primitive_test_latency_config(),
            rtcore_replay_memory_contention_cache_lines_per_cycle_config(),
            rtcore_replay_memory_contention_queue_capacity_config(),
+           RTCORE_REPLAY_V01_MEMORY_REQUEST_GRANULE_BYTES,
+           rtcore_replay_v01_contract_memory_issue_width_chunks_per_cycle(),
+           rtcore_replay_v01_contract_memory_return_width_chunks_per_cycle(),
+           rtcore_replay_v01_contract_memory_base_latency_cycles(),
+           rtcore_replay_v01_contract_node_latency_cycles(),
+           rtcore_replay_v01_contract_primitive_latency_cycles(),
+           rtcore_replay_v01_contract_stack_latency_cycles(),
+           rtcore_replay_v01_contract_completion_latency_cycles(),
+           rtcore_replay_v01_contract_node_fetch_resource_memory(),
+           rtcore_replay_v01_contract_primitive_fetch_resource_memory(),
+           rtcore_replay_v01_contract_node_test_resource_node(),
+           rtcore_replay_v01_contract_primitive_test_resource_primitive(),
+           rtcore_replay_v01_contract_hit_update_resource_primitive(),
+           rtcore_replay_v01_contract_stack_push_resource_stack(),
+           rtcore_replay_v01_contract_stack_pop_resource_stack(),
+           rtcore_replay_v01_contract_completion_resource_completion(),
            g_rtcore_replay_service_tick_stats.ticks_progressed,
            admitted_lane_requests, completed_lane_requests,
            g_rtcore_replay_unit_arbitration_stats.node_unit_issued,
