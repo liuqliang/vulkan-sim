@@ -351,6 +351,8 @@ struct rtcore_replay_lane_request {
 
 static std::map<unsigned, rtcore_replay_lane_request>
     g_rtcore_replay_lane_requests;
+static std::deque<rtcore_replay_lane_request>
+    g_rtcore_replay_request_table_capacity_pending_admissions;
 
 struct rtcore_replay_warp_completion_shadow_key {
     unsigned owner_hw_sid;
@@ -623,6 +625,18 @@ struct rtcore_replay_request_table_port_gate_stats {
     unsigned max_over_budget_accesses;
 };
 
+struct rtcore_replay_request_table_capacity_gate_stats {
+    unsigned evaluations;
+    unsigned admitted_count;
+    unsigned blocked_count;
+    unsigned released_count;
+    unsigned last_occupancy;
+    unsigned last_capacity_blocked;
+    unsigned last_admitted;
+    unsigned last_released;
+    unsigned max_request_table_occupancy;
+};
+
 struct rtcore_replay_request_state_port_gate_stats {
     unsigned evaluations;
     unsigned allowed_count;
@@ -709,6 +723,8 @@ static rtcore_replay_queue_header_port_gate_stats
     g_rtcore_replay_queue_header_port_gate_stats;
 static rtcore_replay_request_table_port_gate_stats
     g_rtcore_replay_request_table_port_gate_stats;
+static rtcore_replay_request_table_capacity_gate_stats
+    g_rtcore_replay_request_table_capacity_gate_stats;
 static rtcore_replay_request_state_port_gate_stats
     g_rtcore_replay_request_state_port_gate_stats;
 static rtcore_service_tick_stats_snapshot
@@ -731,6 +747,8 @@ static unsigned
     g_rtcore_replay_data_path_port_budget_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_queue_header_port_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_request_table_port_gate_stats_logs_emitted = 0;
+static unsigned
+    g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_request_state_port_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_compact_trace_overflow_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_overflow_summary_estimate_stats_logs_emitted =
@@ -1096,6 +1114,26 @@ static bool rtcore_replay_request_table_port_gate_stats_log_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_replay_request_table_capacity_gate_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_CAPACITY_GATE");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_request_table_capacity_gate_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv(
+            "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_CAPACITY_GATE_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_replay_request_state_port_gate_enabled()
 {
     static int enabled = []() {
@@ -1286,6 +1324,14 @@ static unsigned rtcore_replay_request_table_port_gate_stats_log_limit()
     return limit;
 }
 
+static unsigned rtcore_replay_request_table_capacity_gate_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_CAPACITY_GATE_STATS_LOG_LIMIT",
+        64);
+    return limit;
+}
+
 static unsigned rtcore_replay_request_state_port_gate_stats_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
@@ -1315,6 +1361,14 @@ static unsigned rtcore_replay_request_table_ports_per_cycle_config()
         "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORTS_PER_CYCLE", 0, 0,
         1048576, false);
     return ports;
+}
+
+static unsigned rtcore_replay_request_table_capacity_config()
+{
+    static unsigned capacity = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_CAPACITY", 0, 32, 1048576,
+        true);
+    return capacity;
 }
 
 static unsigned rtcore_replay_request_state_ports_per_cycle_config()
@@ -2545,6 +2599,194 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
         request.state = RTCORE_REPLAY_ADMITTED;
     }
     return request;
+}
+
+static bool rtcore_replay_request_table_capacity_consumes_entry(
+    const rtcore_replay_lane_request &request)
+{
+    return request.valid && request.state != RTCORE_REPLAY_COMPLETED;
+}
+
+static unsigned rtcore_count_replay_request_table_occupied_entries_for_owner(
+    unsigned owner_hw_sid)
+{
+    unsigned occupancy = 0;
+    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+             g_rtcore_replay_lane_requests.begin();
+         it != g_rtcore_replay_lane_requests.end(); ++it) {
+        rtcore_record_replay_request_table_read();
+        const rtcore_replay_lane_request &request = it->second;
+        if (request.owner_hw_sid == owner_hw_sid &&
+            rtcore_replay_request_table_capacity_consumes_entry(request)) {
+            occupancy++;
+        }
+    }
+    return occupancy;
+}
+
+static void rtcore_update_replay_request_table_capacity_max(
+    unsigned occupancy)
+{
+    if (occupancy >
+        g_rtcore_replay_request_table_capacity_gate_stats
+            .max_request_table_occupancy) {
+        g_rtcore_replay_request_table_capacity_gate_stats
+            .max_request_table_occupancy = occupancy;
+    }
+}
+
+static void rtcore_queue_replay_request_table_capacity_pending_admission(
+    const rtcore_replay_lane_request &request)
+{
+    g_rtcore_replay_request_table_capacity_pending_admissions.push_back(
+        request);
+}
+
+static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
+    const rtcore_replay_lane_request &request, unsigned occupancy,
+    bool capacity_blocked, bool admitted, bool released)
+{
+    if (!rtcore_replay_request_table_capacity_gate_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted >=
+        rtcore_replay_request_table_capacity_gate_stats_log_limit()) {
+        return;
+    }
+    g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted++;
+
+    printf("GPGPU-Sim RTCORE_REPLAY_REQUEST_TABLE_CAPACITY_GATE "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u "
+           "has_warp_metadata=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x static_inst_uid=%u gate_enabled=%u "
+           "capacity=%u occupancy=%u capacity_blocked=%u admitted=%u released=%u "
+           "evaluations=%u admitted_count=%u "
+           "blocked_count=%u released_count=%u max_request_table_occupancy=%u\n",
+           request.owner_hw_sid, request.thread_uid, request.lane_id,
+           request.has_warp_metadata ? 1u : 0u, request.warp_uid,
+           request.warp_id, request.active_mask, request.static_inst_uid,
+           rtcore_replay_request_table_capacity_gate_enabled() ? 1u : 0u,
+           rtcore_replay_request_table_capacity_config(), occupancy,
+           capacity_blocked ? 1u : 0u, admitted ? 1u : 0u,
+           released ? 1u : 0u,
+           g_rtcore_replay_request_table_capacity_gate_stats.evaluations,
+           g_rtcore_replay_request_table_capacity_gate_stats.admitted_count,
+           g_rtcore_replay_request_table_capacity_gate_stats.blocked_count,
+           g_rtcore_replay_request_table_capacity_gate_stats.released_count,
+           g_rtcore_replay_request_table_capacity_gate_stats
+               .max_request_table_occupancy);
+    fflush(stdout);
+}
+
+static void rtcore_record_replay_request_table_capacity_admitted(
+    const rtcore_replay_lane_request &request, unsigned occupancy)
+{
+    g_rtcore_replay_request_table_capacity_gate_stats.evaluations++;
+    g_rtcore_replay_request_table_capacity_gate_stats.admitted_count++;
+    g_rtcore_replay_request_table_capacity_gate_stats.last_occupancy =
+        occupancy;
+    g_rtcore_replay_request_table_capacity_gate_stats.last_capacity_blocked =
+        0u;
+    g_rtcore_replay_request_table_capacity_gate_stats.last_admitted = 1u;
+    g_rtcore_replay_request_table_capacity_gate_stats.last_released = 0u;
+    rtcore_update_replay_request_table_capacity_max(occupancy);
+    rtcore_maybe_log_replay_request_table_capacity_gate_stats(
+        request, occupancy, false, true, false);
+}
+
+static bool rtcore_maybe_block_replay_request_table_capacity_admission(
+    const rtcore_replay_lane_request &request)
+{
+    if (!request.valid ||
+        !rtcore_replay_request_table_capacity_gate_enabled()) {
+        return false;
+    }
+
+    const unsigned capacity = rtcore_replay_request_table_capacity_config();
+    if (capacity == 0) {
+        return false;
+    }
+
+    const bool consumes_entry =
+        rtcore_replay_request_table_capacity_consumes_entry(request);
+    const unsigned current_occupancy =
+        rtcore_count_replay_request_table_occupied_entries_for_owner(
+            request.owner_hw_sid);
+    const bool capacity_blocked =
+        consumes_entry && current_occupancy >= capacity;
+    const unsigned resulting_occupancy =
+        capacity_blocked ? current_occupancy
+                         : current_occupancy + (consumes_entry ? 1u : 0u);
+
+    if (capacity_blocked) {
+        g_rtcore_replay_request_table_capacity_gate_stats.evaluations++;
+        g_rtcore_replay_request_table_capacity_gate_stats.last_occupancy =
+            resulting_occupancy;
+        g_rtcore_replay_request_table_capacity_gate_stats
+            .last_capacity_blocked = 1u;
+        g_rtcore_replay_request_table_capacity_gate_stats.last_admitted = 0u;
+        g_rtcore_replay_request_table_capacity_gate_stats.last_released = 0u;
+        rtcore_update_replay_request_table_capacity_max(resulting_occupancy);
+        g_rtcore_replay_request_table_capacity_gate_stats.blocked_count++;
+        rtcore_maybe_log_replay_request_table_capacity_gate_stats(
+            request, resulting_occupancy, true, false, false);
+        rtcore_queue_replay_request_table_capacity_pending_admission(request);
+        return true;
+    }
+
+    rtcore_record_replay_request_table_capacity_admitted(
+        request, resulting_occupancy);
+    return false;
+}
+
+static bool rtcore_try_drain_replay_request_table_capacity_pending_admissions(
+    unsigned owner_hw_sid);
+
+static void rtcore_record_replay_request_table_capacity_release(
+    const rtcore_replay_lane_request &request, unsigned long long service_cycle = 0)
+{
+    (void)service_cycle;
+    if (!request.valid ||
+        !rtcore_replay_request_table_capacity_gate_enabled()) {
+        return;
+    }
+
+    const unsigned capacity = rtcore_replay_request_table_capacity_config();
+    if (capacity == 0) {
+        return;
+    }
+
+    const unsigned occupancy =
+        rtcore_count_replay_request_table_occupied_entries_for_owner(
+            request.owner_hw_sid);
+    g_rtcore_replay_request_table_capacity_gate_stats.evaluations++;
+    g_rtcore_replay_request_table_capacity_gate_stats.released_count++;
+    g_rtcore_replay_request_table_capacity_gate_stats.last_occupancy =
+        occupancy;
+    g_rtcore_replay_request_table_capacity_gate_stats.last_capacity_blocked = 0u;
+    g_rtcore_replay_request_table_capacity_gate_stats.last_admitted = 0u;
+    g_rtcore_replay_request_table_capacity_gate_stats.last_released = 1u;
+    rtcore_update_replay_request_table_capacity_max(occupancy);
+    rtcore_maybe_log_replay_request_table_capacity_gate_stats(
+        request, occupancy, false, false, true);
+    (void)rtcore_try_drain_replay_request_table_capacity_pending_admissions(
+        request.owner_hw_sid);
+}
+
+static void rtcore_mark_replay_request_completed(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle = 0)
+{
+    if (!request) {
+        return;
+    }
+
+    const bool was_completed = request->state == RTCORE_REPLAY_COMPLETED;
+    request->state = RTCORE_REPLAY_COMPLETED;
+    rtcore_record_replay_request_state_write();
+    if (!was_completed) {
+        rtcore_record_replay_request_table_capacity_release(*request,
+                                                            service_cycle);
+    }
 }
 
 static bool rtcore_replay_unit_queue_capacity_state(
@@ -4672,6 +4914,63 @@ static bool rtcore_dequeue_selected_ready_request(unsigned thread_uid)
 
 static void rtcore_try_service_replay_after_admission(unsigned owner_hw_sid);
 
+static void rtcore_commit_replay_request_table_admission(
+    const rtcore_replay_lane_request &request)
+{
+    g_rtcore_replay_lane_requests[request.thread_uid] = request;
+    rtcore_record_replay_request_table_write();
+    rtcore_record_replay_request_state_write();
+    rtcore_record_replay_lane_admission_shadow(request);
+    if (request.state == RTCORE_REPLAY_COMPLETED) {
+        rtcore_record_replay_lane_completion_shadow(request);
+    }
+    rtcore_route_admitted_replay_request(request.thread_uid);
+}
+
+static bool rtcore_try_drain_replay_request_table_capacity_pending_admissions(
+    unsigned owner_hw_sid)
+{
+    if (!rtcore_replay_request_table_capacity_gate_enabled()) {
+        return false;
+    }
+
+    const unsigned capacity = rtcore_replay_request_table_capacity_config();
+    if (capacity == 0) {
+        return false;
+    }
+
+    bool admitted_any = false;
+    for (std::deque<rtcore_replay_lane_request>::iterator it =
+             g_rtcore_replay_request_table_capacity_pending_admissions.begin();
+         it !=
+         g_rtcore_replay_request_table_capacity_pending_admissions.end();) {
+        if (it->owner_hw_sid != owner_hw_sid) {
+            ++it;
+            continue;
+        }
+
+        const bool consumes_entry =
+            rtcore_replay_request_table_capacity_consumes_entry(*it);
+        const unsigned current_occupancy =
+            rtcore_count_replay_request_table_occupied_entries_for_owner(
+                owner_hw_sid);
+        if (consumes_entry && current_occupancy >= capacity) {
+            break;
+        }
+
+        rtcore_replay_lane_request request = *it;
+        it = g_rtcore_replay_request_table_capacity_pending_admissions.erase(
+            it);
+        const unsigned resulting_occupancy =
+            current_occupancy + (consumes_entry ? 1u : 0u);
+        rtcore_record_replay_request_table_capacity_admitted(
+            request, resulting_occupancy);
+        rtcore_commit_replay_request_table_admission(request);
+        admitted_any = true;
+    }
+    return admitted_any;
+}
+
 static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 {
     if (!rtcore_replay_admission_enabled() || !thread) {
@@ -4689,14 +4988,11 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
     rtcore_replay_lane_request request =
         rtcore_build_replay_lane_request(record);
     request.ready_order = g_rtcore_next_replay_ready_order++;
-    g_rtcore_replay_lane_requests[request.thread_uid] = request;
-    rtcore_record_replay_request_table_write();
-    rtcore_record_replay_request_state_write();
-    rtcore_record_replay_lane_admission_shadow(request);
-    if (request.state == RTCORE_REPLAY_COMPLETED) {
-        rtcore_record_replay_lane_completion_shadow(request);
+    if (rtcore_maybe_block_replay_request_table_capacity_admission(
+            request)) {
+        return;
     }
-    rtcore_route_admitted_replay_request(request.thread_uid);
+    rtcore_commit_replay_request_table_admission(request);
     rtcore_try_service_replay_after_admission(thread->get_hw_sid());
 }
 
@@ -4709,26 +5005,23 @@ static bool rtcore_replay_request_done(
 }
 
 static bool rtcore_replay_advance_lane_request(
-    rtcore_replay_lane_request *request)
+    rtcore_replay_lane_request *request, unsigned long long service_cycle = 0)
 {
     if (!request || !request->valid) {
         return false;
     }
     if (request->events.empty()) {
-        request->state = RTCORE_REPLAY_COMPLETED;
-        rtcore_record_replay_request_state_write();
+        rtcore_mark_replay_request_completed(request, service_cycle);
         return false;
     }
     if (request->next_event_index >= request->events.size()) {
-        request->state = RTCORE_REPLAY_COMPLETED;
-        rtcore_record_replay_request_state_write();
+        rtcore_mark_replay_request_completed(request, service_cycle);
         return false;
     }
 
     request->next_event_index++;
     if (request->next_event_index >= request->events.size()) {
-        request->state = RTCORE_REPLAY_COMPLETED;
-        rtcore_record_replay_request_state_write();
+        rtcore_mark_replay_request_completed(request, service_cycle);
         return true;
     }
 
@@ -4804,7 +5097,8 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
             return true;
         }
     }
-    const bool advanced = rtcore_replay_advance_lane_request(&it->second);
+    const bool advanced =
+        rtcore_replay_advance_lane_request(&it->second, service_cycle);
     if (advanced && rtcore_replay_request_done(it->second)) {
         rtcore_record_replay_lane_completion_shadow(it->second.thread_uid);
     }
