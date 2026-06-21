@@ -600,6 +600,9 @@ struct rtcore_replay_v01_independent_service_stats {
     unsigned waiting_unit_blocked_continue_count;
     unsigned waiting_unit_progress_after_block_count;
     unsigned waiting_unit_cross_resource_progress_after_block_count;
+    unsigned waiting_memory_blocked_continue_count;
+    unsigned waiting_memory_progress_after_block_count;
+    unsigned waiting_memory_cross_resource_progress_after_block_count;
     unsigned last_blocked_route;
     unsigned last_progress_route;
     unsigned blocked_route_mask;
@@ -803,6 +806,9 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned v01_independent_service_blocked_continue_count;
     unsigned v01_independent_service_progress_after_block_count;
     unsigned v01_independent_service_cross_resource_progress_after_block_count;
+    unsigned v01_independent_service_memory_blocked_continue_count;
+    unsigned v01_independent_service_memory_progress_after_block_count;
+    unsigned v01_independent_service_memory_cross_resource_progress_after_block_count;
     unsigned data_path_queue_header_accesses;
     unsigned data_path_queue_entry_accesses;
     unsigned data_path_request_table_accesses;
@@ -4061,7 +4067,16 @@ static bool rtcore_should_log_replay_model_summary_stats(
         last_snapshot.v01_independent_service_progress_after_block_count !=
             snapshot.v01_independent_service_progress_after_block_count ||
         last_independent_service_cross_progress !=
-            snapshot_independent_service_cross_progress;
+            snapshot_independent_service_cross_progress ||
+        last_snapshot.v01_independent_service_memory_blocked_continue_count !=
+            snapshot.v01_independent_service_memory_blocked_continue_count ||
+        last_snapshot.v01_independent_service_memory_progress_after_block_count !=
+            snapshot
+                .v01_independent_service_memory_progress_after_block_count ||
+        last_snapshot
+                .v01_independent_service_memory_cross_resource_progress_after_block_count !=
+            snapshot
+                .v01_independent_service_memory_cross_resource_progress_after_block_count;
     const bool data_path_pressure_changed =
         last_snapshot.data_path_queue_header_accesses !=
             snapshot.data_path_queue_header_accesses ||
@@ -4274,6 +4289,16 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         v01_independent_service_cross_resource_progress_after_block_count =
             g_rtcore_replay_v01_independent_service_stats
                 .waiting_unit_cross_resource_progress_after_block_count;
+    const unsigned v01_independent_service_memory_blocked_continue_count =
+        g_rtcore_replay_v01_independent_service_stats
+            .waiting_memory_blocked_continue_count;
+    const unsigned v01_independent_service_memory_progress_after_block_count =
+        g_rtcore_replay_v01_independent_service_stats
+            .waiting_memory_progress_after_block_count;
+    const unsigned
+        v01_independent_service_memory_cross_resource_progress_after_block_count =
+            g_rtcore_replay_v01_independent_service_stats
+                .waiting_memory_cross_resource_progress_after_block_count;
     rtcore_replay_data_path_access_snapshot data_path_access =
         rtcore_get_replay_data_path_access_snapshot();
     const unsigned data_path_max_queue_depth =
@@ -4405,6 +4430,13 @@ static void rtcore_maybe_log_replay_model_summary_stats(
     progress_snapshot
         .v01_independent_service_cross_resource_progress_after_block_count =
         v01_independent_service_cross_resource_progress_after_block_count;
+    progress_snapshot.v01_independent_service_memory_blocked_continue_count =
+        v01_independent_service_memory_blocked_continue_count;
+    progress_snapshot.v01_independent_service_memory_progress_after_block_count =
+        v01_independent_service_memory_progress_after_block_count;
+    progress_snapshot
+        .v01_independent_service_memory_cross_resource_progress_after_block_count =
+        v01_independent_service_memory_cross_resource_progress_after_block_count;
     progress_snapshot.data_path_queue_header_accesses =
         data_path_access.queue_header_accesses;
     progress_snapshot.data_path_queue_entry_accesses =
@@ -4569,6 +4601,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "v01_independent_service_blocked_continue_count=%u "
            "v01_independent_service_progress_after_block_count=%u "
            "v01_independent_service_cross_resource_progress_after_block_count=%u "
+           "v01_independent_service_memory_blocked_continue_count=%u "
+           "v01_independent_service_memory_progress_after_block_count=%u "
+           "v01_independent_service_memory_cross_resource_progress_after_block_count=%u "
            "data_path_queue_header_accesses=%u "
            "data_path_queue_entry_accesses=%u "
            "data_path_request_table_accesses=%u "
@@ -4665,6 +4700,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            v01_independent_service_blocked_continue_count,
            v01_independent_service_progress_after_block_count,
            v01_independent_service_cross_resource_progress_after_block_count,
+           v01_independent_service_memory_blocked_continue_count,
+           v01_independent_service_memory_progress_after_block_count,
+           v01_independent_service_memory_cross_resource_progress_after_block_count,
            data_path_access.queue_header_accesses,
            data_path_access.queue_entry_accesses,
            data_path_access.request_table_accesses,
@@ -6000,7 +6038,10 @@ static void rtcore_maybe_log_replay_v01_independent_service_stats(
            "blocked_route_mask=0x%x progress_route_mask=0x%x "
            "evaluations=%u waiting_unit_blocked_continue_count=%u "
            "waiting_unit_progress_after_block_count=%u "
-           "waiting_unit_cross_resource_progress_after_block_count=%u\n",
+           "waiting_unit_cross_resource_progress_after_block_count=%u "
+           "waiting_memory_blocked_continue_count=%u "
+           "waiting_memory_progress_after_block_count=%u "
+           "waiting_memory_cross_resource_progress_after_block_count=%u\n",
            owner_hw_sid, service_cycle,
            rtcore_replay_v01_independent_service_enabled() ? 1u : 0u,
            blocked_continue ? 1u : 0u, progress_after_block ? 1u : 0u,
@@ -6015,7 +6056,13 @@ static void rtcore_maybe_log_replay_v01_independent_service_stats(
            g_rtcore_replay_v01_independent_service_stats
                .waiting_unit_progress_after_block_count,
            g_rtcore_replay_v01_independent_service_stats
-               .waiting_unit_cross_resource_progress_after_block_count);
+               .waiting_unit_cross_resource_progress_after_block_count,
+           g_rtcore_replay_v01_independent_service_stats
+               .waiting_memory_blocked_continue_count,
+           g_rtcore_replay_v01_independent_service_stats
+               .waiting_memory_progress_after_block_count,
+           g_rtcore_replay_v01_independent_service_stats
+               .waiting_memory_cross_resource_progress_after_block_count);
     fflush(stdout);
 }
 
@@ -6058,6 +6105,56 @@ static void rtcore_record_replay_v01_independent_service_progress_after_block(
     if (cross_resource) {
         g_rtcore_replay_v01_independent_service_stats
             .waiting_unit_cross_resource_progress_after_block_count++;
+    }
+    g_rtcore_replay_v01_independent_service_stats.last_progress_route =
+        static_cast<unsigned>(progress_route);
+    g_rtcore_replay_v01_independent_service_stats.progress_route_mask |=
+        progress_route_mask;
+    rtcore_maybe_log_replay_v01_independent_service_stats(
+        owner_hw_sid, service_cycle, false, true, cross_resource);
+}
+
+static void
+rtcore_record_replay_v01_independent_memory_service_blocked_continue(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    rtcore_replay_v01_resource_route blocked_route)
+{
+    const unsigned route_mask = rtcore_replay_v01_route_mask(blocked_route);
+    if (route_mask == 0) {
+        return;
+    }
+    g_rtcore_replay_v01_independent_service_stats.evaluations++;
+    g_rtcore_replay_v01_independent_service_stats
+        .waiting_memory_blocked_continue_count++;
+    g_rtcore_replay_v01_independent_service_stats.last_blocked_route =
+        static_cast<unsigned>(blocked_route);
+    g_rtcore_replay_v01_independent_service_stats.blocked_route_mask |=
+        route_mask;
+    rtcore_maybe_log_replay_v01_independent_service_stats(
+        owner_hw_sid, service_cycle, true, false, false);
+}
+
+static void
+rtcore_record_replay_v01_independent_memory_service_progress_after_block(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    rtcore_replay_v01_resource_route progress_route,
+    rtcore_replay_v01_resource_route last_blocked_route,
+    unsigned blocked_route_mask)
+{
+    const unsigned progress_route_mask =
+        rtcore_replay_v01_route_mask(progress_route);
+    if (blocked_route_mask == 0 || progress_route_mask == 0) {
+        return;
+    }
+    const bool cross_resource =
+        last_blocked_route != RTCORE_REPLAY_V01_ROUTE_INVALID &&
+        last_blocked_route != progress_route;
+    g_rtcore_replay_v01_independent_service_stats.evaluations++;
+    g_rtcore_replay_v01_independent_service_stats
+        .waiting_memory_progress_after_block_count++;
+    if (cross_resource) {
+        g_rtcore_replay_v01_independent_service_stats
+            .waiting_memory_cross_resource_progress_after_block_count++;
     }
     g_rtcore_replay_v01_independent_service_stats.last_progress_route =
         static_cast<unsigned>(progress_route);
@@ -7380,15 +7477,43 @@ static bool rtcore_service_waiting_memory_replay_requests(
     unsigned long long service_cycle = 0)
 {
     bool progressed = false;
-    while (wake_budget > 0) {
+    const bool independent_service =
+        rtcore_replay_v01_independent_service_enabled();
+    unsigned attempts_remaining =
+        independent_service
+            ? static_cast<unsigned>(
+                  g_rtcore_replay_ready_queues.waiting_memory_queue.size())
+            : wake_budget;
+    unsigned blocked_route_mask = 0;
+    rtcore_replay_v01_resource_route last_blocked_route =
+        RTCORE_REPLAY_V01_ROUTE_INVALID;
+    while (wake_budget > 0 && attempts_remaining > 0) {
         unsigned thread_uid = 0;
+        attempts_remaining--;
         if (!rtcore_dequeue_waiting_memory_request(&thread_uid)) {
             break;
         }
+        const rtcore_replay_v01_resource_route pending_route =
+            rtcore_replay_v01_pending_route_for_independent_service(
+                thread_uid);
         if (!rtcore_wake_waiting_memory_replay_request(thread_uid,
                                                        service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid);
+            const unsigned pending_route_mask =
+                rtcore_replay_v01_route_mask(pending_route);
+            if (independent_service && pending_route_mask != 0) {
+                blocked_route_mask |= pending_route_mask;
+                last_blocked_route = pending_route;
+                rtcore_record_replay_v01_independent_memory_service_blocked_continue(
+                    0, service_cycle, pending_route);
+                continue;
+            }
             break;
+        }
+        if (independent_service && blocked_route_mask != 0) {
+            rtcore_record_replay_v01_independent_memory_service_progress_after_block(
+                0, service_cycle, pending_route, last_blocked_route,
+                blocked_route_mask);
         }
         if (last_identity) {
             *last_identity = rtcore_make_replay_service_progress_identity(
@@ -7406,16 +7531,44 @@ static bool rtcore_service_waiting_memory_replay_requests_for_owner(
     unsigned long long service_cycle = 0)
 {
     bool progressed = false;
-    while (wake_budget > 0) {
+    const bool independent_service =
+        rtcore_replay_v01_independent_service_enabled();
+    unsigned attempts_remaining =
+        independent_service
+            ? static_cast<unsigned>(
+                  g_rtcore_replay_ready_queues.waiting_memory_queue.size())
+            : wake_budget;
+    unsigned blocked_route_mask = 0;
+    rtcore_replay_v01_resource_route last_blocked_route =
+        RTCORE_REPLAY_V01_ROUTE_INVALID;
+    while (wake_budget > 0 && attempts_remaining > 0) {
         unsigned thread_uid = 0;
+        attempts_remaining--;
         if (!rtcore_dequeue_waiting_memory_request_for_owner(owner_hw_sid,
                                                              &thread_uid)) {
             break;
         }
+        const rtcore_replay_v01_resource_route pending_route =
+            rtcore_replay_v01_pending_route_for_independent_service(
+                thread_uid);
         if (!rtcore_wake_waiting_memory_replay_request(thread_uid,
                                                        service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid);
+            const unsigned pending_route_mask =
+                rtcore_replay_v01_route_mask(pending_route);
+            if (independent_service && pending_route_mask != 0) {
+                blocked_route_mask |= pending_route_mask;
+                last_blocked_route = pending_route;
+                rtcore_record_replay_v01_independent_memory_service_blocked_continue(
+                    owner_hw_sid, service_cycle, pending_route);
+                continue;
+            }
             break;
+        }
+        if (independent_service && blocked_route_mask != 0) {
+            rtcore_record_replay_v01_independent_memory_service_progress_after_block(
+                owner_hw_sid, service_cycle, pending_route, last_blocked_route,
+                blocked_route_mask);
         }
         if (last_identity) {
             *last_identity = rtcore_make_replay_service_progress_identity(
