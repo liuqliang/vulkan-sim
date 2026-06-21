@@ -634,7 +634,9 @@ struct rtcore_replay_request_table_capacity_gate_stats {
     unsigned last_capacity_blocked;
     unsigned last_admitted;
     unsigned last_released;
+    unsigned last_pending_admissions;
     unsigned max_request_table_occupancy;
+    unsigned max_pending_admissions;
 };
 
 struct rtcore_replay_request_state_port_gate_stats {
@@ -2635,11 +2637,46 @@ static void rtcore_update_replay_request_table_capacity_max(
     }
 }
 
+static unsigned
+rtcore_count_replay_request_table_capacity_pending_admissions_for_owner(
+    unsigned owner_hw_sid)
+{
+    unsigned pending_admissions = 0;
+    for (std::deque<rtcore_replay_lane_request>::const_iterator it =
+             g_rtcore_replay_request_table_capacity_pending_admissions.begin();
+         it !=
+         g_rtcore_replay_request_table_capacity_pending_admissions.end();
+         ++it) {
+        if (it->owner_hw_sid == owner_hw_sid) {
+            pending_admissions++;
+        }
+    }
+    return pending_admissions;
+}
+
+static void rtcore_update_replay_request_table_capacity_pending_max(
+    unsigned pending_admissions)
+{
+    if (pending_admissions >
+        g_rtcore_replay_request_table_capacity_gate_stats
+            .max_pending_admissions) {
+        g_rtcore_replay_request_table_capacity_gate_stats
+            .max_pending_admissions = pending_admissions;
+    }
+}
+
 static void rtcore_queue_replay_request_table_capacity_pending_admission(
     const rtcore_replay_lane_request &request)
 {
     g_rtcore_replay_request_table_capacity_pending_admissions.push_back(
         request);
+    const unsigned pending_admissions =
+        rtcore_count_replay_request_table_capacity_pending_admissions_for_owner(
+            request.owner_hw_sid);
+    g_rtcore_replay_request_table_capacity_gate_stats
+        .last_pending_admissions = pending_admissions;
+    rtcore_update_replay_request_table_capacity_pending_max(
+        pending_admissions);
 }
 
 static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
@@ -2654,6 +2691,13 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
         return;
     }
     g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted++;
+    const unsigned pending_admissions =
+        rtcore_count_replay_request_table_capacity_pending_admissions_for_owner(
+            request.owner_hw_sid);
+    g_rtcore_replay_request_table_capacity_gate_stats
+        .last_pending_admissions = pending_admissions;
+    rtcore_update_replay_request_table_capacity_pending_max(
+        pending_admissions);
 
     printf("GPGPU-Sim RTCORE_REPLAY_REQUEST_TABLE_CAPACITY_GATE "
            "owner_hw_sid=%u thread_uid=%u lane_id=%u "
@@ -2661,7 +2705,8 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
            "active_mask=0x%08x static_inst_uid=%u gate_enabled=%u "
            "capacity=%u occupancy=%u capacity_blocked=%u admitted=%u released=%u "
            "evaluations=%u admitted_count=%u "
-           "blocked_count=%u released_count=%u max_request_table_occupancy=%u\n",
+           "blocked_count=%u released_count=%u max_request_table_occupancy=%u "
+           "pending_count=%u max_pending_admissions=%u\n",
            request.owner_hw_sid, request.thread_uid, request.lane_id,
            request.has_warp_metadata ? 1u : 0u, request.warp_uid,
            request.warp_id, request.active_mask, request.static_inst_uid,
@@ -2674,7 +2719,10 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
            g_rtcore_replay_request_table_capacity_gate_stats.blocked_count,
            g_rtcore_replay_request_table_capacity_gate_stats.released_count,
            g_rtcore_replay_request_table_capacity_gate_stats
-               .max_request_table_occupancy);
+               .max_request_table_occupancy,
+           pending_admissions,
+           g_rtcore_replay_request_table_capacity_gate_stats
+               .max_pending_admissions);
     fflush(stdout);
 }
 
@@ -2728,9 +2776,9 @@ static bool rtcore_maybe_block_replay_request_table_capacity_admission(
         g_rtcore_replay_request_table_capacity_gate_stats.last_released = 0u;
         rtcore_update_replay_request_table_capacity_max(resulting_occupancy);
         g_rtcore_replay_request_table_capacity_gate_stats.blocked_count++;
+        rtcore_queue_replay_request_table_capacity_pending_admission(request);
         rtcore_maybe_log_replay_request_table_capacity_gate_stats(
             request, resulting_occupancy, true, false, false);
-        rtcore_queue_replay_request_table_capacity_pending_admission(request);
         return true;
     }
 
