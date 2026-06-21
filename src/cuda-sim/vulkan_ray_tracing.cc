@@ -680,6 +680,9 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned memory_contention_max_contention_cycles;
     unsigned memory_contention_max_queue_delay_cycles;
     unsigned memory_contention_capacity_blocked_count;
+    unsigned request_table_capacity_blocked_count;
+    unsigned request_table_capacity_max_occupancy;
+    unsigned request_table_capacity_max_pending_admissions;
     unsigned warp_aggregated_completion_count;
     unsigned long long max_observed_ready_cycle;
 };
@@ -3465,6 +3468,12 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.memory_contention_max_queue_delay_cycles ||
         last_snapshot.memory_contention_capacity_blocked_count !=
             snapshot.memory_contention_capacity_blocked_count ||
+        last_snapshot.request_table_capacity_blocked_count !=
+            snapshot.request_table_capacity_blocked_count ||
+        last_snapshot.request_table_capacity_max_occupancy !=
+            snapshot.request_table_capacity_max_occupancy ||
+        last_snapshot.request_table_capacity_max_pending_admissions !=
+            snapshot.request_table_capacity_max_pending_admissions ||
         last_snapshot.warp_aggregated_completion_count !=
             snapshot.warp_aggregated_completion_count;
     if (!changed) {
@@ -3531,6 +3540,14 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         g_rtcore_replay_memory_contention_gate_stats.max_queue_delay_cycles;
     const unsigned memory_contention_capacity_blocked_count =
         g_rtcore_replay_memory_contention_gate_stats.capacity_blocked_count;
+    const unsigned request_table_capacity_blocked_count =
+        g_rtcore_replay_request_table_capacity_gate_stats.blocked_count;
+    const unsigned request_table_capacity_max_occupancy =
+        g_rtcore_replay_request_table_capacity_gate_stats
+            .max_request_table_occupancy;
+    const unsigned request_table_capacity_max_pending_admissions =
+        g_rtcore_replay_request_table_capacity_gate_stats
+            .max_pending_admissions;
     rtcore_replay_model_summary_progress_snapshot progress_snapshot = {};
     progress_snapshot.valid = true;
     progress_snapshot.service_ticks_progressed =
@@ -3555,6 +3572,12 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         memory_contention_max_queue_delay_cycles;
     progress_snapshot.memory_contention_capacity_blocked_count =
         memory_contention_capacity_blocked_count;
+    progress_snapshot.request_table_capacity_blocked_count =
+        request_table_capacity_blocked_count;
+    progress_snapshot.request_table_capacity_max_occupancy =
+        request_table_capacity_max_occupancy;
+    progress_snapshot.request_table_capacity_max_pending_admissions =
+        request_table_capacity_max_pending_admissions;
     progress_snapshot.warp_aggregated_completion_count =
         warp_aggregated_completion_count;
     progress_snapshot.max_observed_ready_cycle = service_cycle;
@@ -3610,6 +3633,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "memory_contention_max_contention_cycles=%u "
            "memory_contention_max_queue_delay_cycles=%u "
            "memory_contention_capacity_blocked_count=%u "
+           "request_table_capacity_blocked_count=%u "
+           "request_table_capacity_max_occupancy=%u "
+           "request_table_capacity_max_pending_admissions=%u "
            "memory_pressure_cycles=%u "
            "dominant_pressure_source=%s dominant_pressure_cycles=%u "
            "warp_aggregated_completion_count=%u "
@@ -3641,6 +3667,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            memory_contention_max_contention_cycles,
            memory_contention_max_queue_delay_cycles,
            memory_contention_capacity_blocked_count,
+           request_table_capacity_blocked_count,
+           request_table_capacity_max_occupancy,
+           request_table_capacity_max_pending_admissions,
            memory_pressure_cycles, dominant_pressure_source,
            dominant_pressure_cycles,
            warp_aggregated_completion_count, service_cycle);
