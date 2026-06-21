@@ -476,6 +476,8 @@ struct rtcore_replay_service_tick_result {
     bool progressed;
     bool memory_progressed;
     bool ready_progressed;
+    bool unit_wake_progressed;
+    bool ready_issue_progressed;
     rtcore_replay_service_cycle_identity_snapshot last_progress_identity;
 };
 
@@ -484,6 +486,13 @@ struct rtcore_replay_service_tick_stats {
     unsigned ticks_progressed;
     unsigned memory_ticks_progressed;
     unsigned ready_ticks_progressed;
+    unsigned service_stage_memory_wake_progressed_count;
+    unsigned service_stage_unit_wake_progressed_count;
+    unsigned service_stage_ready_issue_progressed_count;
+    unsigned service_stage_memory_and_unit_progressed_count;
+    unsigned service_stage_memory_and_ready_issue_progressed_count;
+    unsigned service_stage_unit_and_ready_issue_progressed_count;
+    unsigned service_stage_all_progressed_count;
 };
 
 struct rtcore_replay_overflow_summary_estimate_stats {
@@ -830,6 +839,13 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned v01_issue_state_max_latency_cycles;
     unsigned v01_issue_state_max_blocked_cycles;
     unsigned v01_issue_state_max_completion_inflight;
+    unsigned v01_service_stage_memory_wake_progressed_count;
+    unsigned v01_service_stage_unit_wake_progressed_count;
+    unsigned v01_service_stage_ready_issue_progressed_count;
+    unsigned v01_service_stage_memory_and_unit_progressed_count;
+    unsigned v01_service_stage_memory_and_ready_issue_progressed_count;
+    unsigned v01_service_stage_unit_and_ready_issue_progressed_count;
+    unsigned v01_service_stage_all_progressed_count;
     unsigned long long max_observed_ready_cycle;
 };
 
@@ -4120,6 +4136,23 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.v01_issue_state_max_blocked_cycles ||
         last_snapshot.v01_issue_state_max_completion_inflight !=
             snapshot.v01_issue_state_max_completion_inflight;
+    const bool v01_service_stage_changed =
+        last_snapshot.v01_service_stage_memory_wake_progressed_count !=
+            snapshot.v01_service_stage_memory_wake_progressed_count ||
+        last_snapshot.v01_service_stage_unit_wake_progressed_count !=
+            snapshot.v01_service_stage_unit_wake_progressed_count ||
+        last_snapshot.v01_service_stage_ready_issue_progressed_count !=
+            snapshot.v01_service_stage_ready_issue_progressed_count ||
+        last_snapshot.v01_service_stage_memory_and_unit_progressed_count !=
+            snapshot.v01_service_stage_memory_and_unit_progressed_count ||
+        last_snapshot
+                .v01_service_stage_memory_and_ready_issue_progressed_count !=
+            snapshot
+                .v01_service_stage_memory_and_ready_issue_progressed_count ||
+        last_snapshot.v01_service_stage_unit_and_ready_issue_progressed_count !=
+            snapshot.v01_service_stage_unit_and_ready_issue_progressed_count ||
+        last_snapshot.v01_service_stage_all_progressed_count !=
+            snapshot.v01_service_stage_all_progressed_count;
     const bool changed =
         !last_snapshot.valid ||
         last_snapshot.service_ticks_progressed !=
@@ -4158,7 +4191,7 @@ static bool rtcore_should_log_replay_model_summary_stats(
         last_snapshot.warp_aggregated_completion_count !=
             snapshot.warp_aggregated_completion_count ||
         independent_service_pressure_changed || data_path_pressure_changed ||
-        v01_gate_pressure_changed;
+        v01_gate_pressure_changed || v01_service_stage_changed;
     if (!changed) {
         return false;
     }
@@ -4312,6 +4345,27 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         g_rtcore_replay_v01_issue_state_gate_stats.max_blocked_cycles;
     const unsigned v01_issue_state_max_completion_inflight =
         g_rtcore_replay_v01_issue_state_gate_stats.max_completion_inflight;
+    const unsigned v01_service_stage_memory_wake_progressed_count =
+        g_rtcore_replay_service_tick_stats
+            .service_stage_memory_wake_progressed_count;
+    const unsigned v01_service_stage_unit_wake_progressed_count =
+        g_rtcore_replay_service_tick_stats
+            .service_stage_unit_wake_progressed_count;
+    const unsigned v01_service_stage_ready_issue_progressed_count =
+        g_rtcore_replay_service_tick_stats
+            .service_stage_ready_issue_progressed_count;
+    const unsigned v01_service_stage_memory_and_unit_progressed_count =
+        g_rtcore_replay_service_tick_stats
+            .service_stage_memory_and_unit_progressed_count;
+    const unsigned
+        v01_service_stage_memory_and_ready_issue_progressed_count =
+            g_rtcore_replay_service_tick_stats
+                .service_stage_memory_and_ready_issue_progressed_count;
+    const unsigned v01_service_stage_unit_and_ready_issue_progressed_count =
+        g_rtcore_replay_service_tick_stats
+            .service_stage_unit_and_ready_issue_progressed_count;
+    const unsigned v01_service_stage_all_progressed_count =
+        g_rtcore_replay_service_tick_stats.service_stage_all_progressed_count;
     rtcore_replay_model_summary_progress_snapshot progress_snapshot = {};
     progress_snapshot.valid = true;
     progress_snapshot.service_ticks_progressed =
@@ -4422,6 +4476,21 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         v01_issue_state_max_blocked_cycles;
     progress_snapshot.v01_issue_state_max_completion_inflight =
         v01_issue_state_max_completion_inflight;
+    progress_snapshot.v01_service_stage_memory_wake_progressed_count =
+        v01_service_stage_memory_wake_progressed_count;
+    progress_snapshot.v01_service_stage_unit_wake_progressed_count =
+        v01_service_stage_unit_wake_progressed_count;
+    progress_snapshot.v01_service_stage_ready_issue_progressed_count =
+        v01_service_stage_ready_issue_progressed_count;
+    progress_snapshot.v01_service_stage_memory_and_unit_progressed_count =
+        v01_service_stage_memory_and_unit_progressed_count;
+    progress_snapshot
+        .v01_service_stage_memory_and_ready_issue_progressed_count =
+        v01_service_stage_memory_and_ready_issue_progressed_count;
+    progress_snapshot.v01_service_stage_unit_and_ready_issue_progressed_count =
+        v01_service_stage_unit_and_ready_issue_progressed_count;
+    progress_snapshot.v01_service_stage_all_progressed_count =
+        v01_service_stage_all_progressed_count;
     progress_snapshot.max_observed_ready_cycle = service_cycle;
     if (!rtcore_should_log_replay_model_summary_stats(owner_hw_sid,
                                                       progress_snapshot)) {
@@ -4536,6 +4605,13 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "v01_issue_state_max_latency_cycles=%u "
            "v01_issue_state_max_blocked_cycles=%u "
            "v01_issue_state_max_completion_inflight=%u "
+           "v01_service_stage_memory_wake_progressed_count=%u "
+           "v01_service_stage_unit_wake_progressed_count=%u "
+           "v01_service_stage_ready_issue_progressed_count=%u "
+           "v01_service_stage_memory_and_unit_progressed_count=%u "
+           "v01_service_stage_memory_and_ready_issue_progressed_count=%u "
+           "v01_service_stage_unit_and_ready_issue_progressed_count=%u "
+           "v01_service_stage_all_progressed_count=%u "
            "max_observed_ready_cycle=%llu\n",
            owner_hw_sid, RTCORE_TRACE_REPLAY_MODEL_NAME,
            rtcore_compact_trace_events_per_lane_config(),
@@ -4624,6 +4700,13 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            v01_issue_state_max_latency_cycles,
            v01_issue_state_max_blocked_cycles,
            v01_issue_state_max_completion_inflight,
+           v01_service_stage_memory_wake_progressed_count,
+           v01_service_stage_unit_wake_progressed_count,
+           v01_service_stage_ready_issue_progressed_count,
+           v01_service_stage_memory_and_unit_progressed_count,
+           v01_service_stage_memory_and_ready_issue_progressed_count,
+           v01_service_stage_unit_and_ready_issue_progressed_count,
+           v01_service_stage_all_progressed_count,
            service_cycle);
     fflush(stdout);
 }
@@ -7389,6 +7472,8 @@ rtcore_service_replay_tick(unsigned long long service_cycle = 0)
         rtcore_service_replay_ready_requests_with_budget(
             rtcore_replay_issue_budget_config(), &ready_identity,
             service_cycle);
+    result.unit_wake_progressed = unit_progressed;
+    result.ready_issue_progressed = ready_issue_progressed;
     result.ready_progressed = unit_progressed || ready_issue_progressed;
     result.progressed = result.memory_progressed || result.ready_progressed;
     if (ready_issue_progressed) {
@@ -7425,6 +7510,8 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
             : rtcore_service_replay_ready_requests_with_budget_for_owner(
                   owner_hw_sid, rtcore_replay_issue_budget_config(),
                   &ready_identity, service_cycle);
+    result.unit_wake_progressed = unit_progressed;
+    result.ready_issue_progressed = ready_issue_progressed;
     result.ready_progressed = unit_progressed || ready_issue_progressed;
     result.progressed = result.memory_progressed || result.ready_progressed;
     if (ready_issue_progressed) {
@@ -7467,9 +7554,36 @@ static void rtcore_record_replay_service_tick_result(
     }
     if (result.memory_progressed) {
         g_rtcore_replay_service_tick_stats.memory_ticks_progressed++;
+        g_rtcore_replay_service_tick_stats
+            .service_stage_memory_wake_progressed_count++;
     }
     if (result.ready_progressed) {
         g_rtcore_replay_service_tick_stats.ready_ticks_progressed++;
+    }
+    if (result.unit_wake_progressed) {
+        g_rtcore_replay_service_tick_stats
+            .service_stage_unit_wake_progressed_count++;
+    }
+    if (result.ready_issue_progressed) {
+        g_rtcore_replay_service_tick_stats
+            .service_stage_ready_issue_progressed_count++;
+    }
+    if (result.memory_progressed && result.unit_wake_progressed) {
+        g_rtcore_replay_service_tick_stats
+            .service_stage_memory_and_unit_progressed_count++;
+    }
+    if (result.memory_progressed && result.ready_issue_progressed) {
+        g_rtcore_replay_service_tick_stats
+            .service_stage_memory_and_ready_issue_progressed_count++;
+    }
+    if (result.unit_wake_progressed && result.ready_issue_progressed) {
+        g_rtcore_replay_service_tick_stats
+            .service_stage_unit_and_ready_issue_progressed_count++;
+    }
+    if (result.memory_progressed && result.unit_wake_progressed &&
+        result.ready_issue_progressed) {
+        g_rtcore_replay_service_tick_stats
+            .service_stage_all_progressed_count++;
     }
 }
 
