@@ -794,6 +794,22 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned v01_independent_service_blocked_continue_count;
     unsigned v01_independent_service_progress_after_block_count;
     unsigned v01_independent_service_cross_resource_progress_after_block_count;
+    unsigned data_path_queue_header_accesses;
+    unsigned data_path_queue_entry_accesses;
+    unsigned data_path_request_table_accesses;
+    unsigned data_path_request_state_accesses;
+    unsigned data_path_max_queue_depth;
+    unsigned data_path_max_request_table_entries;
+    unsigned data_path_port_budget_blocked_count;
+    unsigned data_path_port_budget_blocked_cycle_total;
+    unsigned data_path_port_budget_max_over_budget_accesses;
+    unsigned data_path_port_budget_max_over_budget_resource_mask;
+    unsigned queue_header_port_gate_blocked_count;
+    unsigned queue_header_port_gate_max_over_budget_accesses;
+    unsigned request_table_port_gate_blocked_count;
+    unsigned request_table_port_gate_max_over_budget_accesses;
+    unsigned request_state_port_gate_blocked_count;
+    unsigned request_state_port_gate_max_over_budget_accesses;
     unsigned long long max_observed_ready_cycle;
 };
 
@@ -4010,6 +4026,39 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.v01_independent_service_progress_after_block_count ||
         last_independent_service_cross_progress !=
             snapshot_independent_service_cross_progress;
+    const bool data_path_pressure_changed =
+        last_snapshot.data_path_queue_header_accesses !=
+            snapshot.data_path_queue_header_accesses ||
+        last_snapshot.data_path_queue_entry_accesses !=
+            snapshot.data_path_queue_entry_accesses ||
+        last_snapshot.data_path_request_table_accesses !=
+            snapshot.data_path_request_table_accesses ||
+        last_snapshot.data_path_request_state_accesses !=
+            snapshot.data_path_request_state_accesses ||
+        last_snapshot.data_path_max_queue_depth !=
+            snapshot.data_path_max_queue_depth ||
+        last_snapshot.data_path_max_request_table_entries !=
+            snapshot.data_path_max_request_table_entries ||
+        last_snapshot.data_path_port_budget_blocked_count !=
+            snapshot.data_path_port_budget_blocked_count ||
+        last_snapshot.data_path_port_budget_blocked_cycle_total !=
+            snapshot.data_path_port_budget_blocked_cycle_total ||
+        last_snapshot.data_path_port_budget_max_over_budget_accesses !=
+            snapshot.data_path_port_budget_max_over_budget_accesses ||
+        last_snapshot.data_path_port_budget_max_over_budget_resource_mask !=
+            snapshot.data_path_port_budget_max_over_budget_resource_mask ||
+        last_snapshot.queue_header_port_gate_blocked_count !=
+            snapshot.queue_header_port_gate_blocked_count ||
+        last_snapshot.queue_header_port_gate_max_over_budget_accesses !=
+            snapshot.queue_header_port_gate_max_over_budget_accesses ||
+        last_snapshot.request_table_port_gate_blocked_count !=
+            snapshot.request_table_port_gate_blocked_count ||
+        last_snapshot.request_table_port_gate_max_over_budget_accesses !=
+            snapshot.request_table_port_gate_max_over_budget_accesses ||
+        last_snapshot.request_state_port_gate_blocked_count !=
+            snapshot.request_state_port_gate_blocked_count ||
+        last_snapshot.request_state_port_gate_max_over_budget_accesses !=
+            snapshot.request_state_port_gate_max_over_budget_accesses;
     const bool changed =
         !last_snapshot.valid ||
         last_snapshot.service_ticks_progressed !=
@@ -4047,7 +4096,7 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.request_table_capacity_max_pending_admissions ||
         last_snapshot.warp_aggregated_completion_count !=
             snapshot.warp_aggregated_completion_count ||
-        independent_service_pressure_changed;
+        independent_service_pressure_changed || data_path_pressure_changed;
     if (!changed) {
         return false;
     }
@@ -4130,6 +4179,34 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         v01_independent_service_cross_resource_progress_after_block_count =
             g_rtcore_replay_v01_independent_service_stats
                 .waiting_unit_cross_resource_progress_after_block_count;
+    rtcore_replay_data_path_access_snapshot data_path_access =
+        rtcore_get_replay_data_path_access_snapshot();
+    const unsigned data_path_max_queue_depth =
+        g_rtcore_replay_data_path_access_stats.max_queue_depth;
+    const unsigned data_path_max_request_table_entries =
+        g_rtcore_replay_data_path_access_stats.max_request_table_entries;
+    const unsigned data_path_port_budget_blocked_count =
+        g_rtcore_replay_data_path_port_budget_gate_stats.blocked_count;
+    const unsigned data_path_port_budget_blocked_cycle_total =
+        g_rtcore_replay_data_path_port_budget_gate_stats.blocked_cycle_total;
+    const unsigned data_path_port_budget_max_over_budget_accesses =
+        g_rtcore_replay_data_path_port_budget_gate_stats
+            .max_over_budget_accesses;
+    const unsigned data_path_port_budget_max_over_budget_resource_mask =
+        g_rtcore_replay_data_path_port_budget_gate_stats
+            .max_over_budget_resource_mask;
+    const unsigned queue_header_port_gate_blocked_count =
+        g_rtcore_replay_queue_header_port_gate_stats.blocked_count;
+    const unsigned queue_header_port_gate_max_over_budget_accesses =
+        g_rtcore_replay_queue_header_port_gate_stats.max_over_budget_accesses;
+    const unsigned request_table_port_gate_blocked_count =
+        g_rtcore_replay_request_table_port_gate_stats.blocked_count;
+    const unsigned request_table_port_gate_max_over_budget_accesses =
+        g_rtcore_replay_request_table_port_gate_stats.max_over_budget_accesses;
+    const unsigned request_state_port_gate_blocked_count =
+        g_rtcore_replay_request_state_port_gate_stats.blocked_count;
+    const unsigned request_state_port_gate_max_over_budget_accesses =
+        g_rtcore_replay_request_state_port_gate_stats.max_over_budget_accesses;
     rtcore_replay_model_summary_progress_snapshot progress_snapshot = {};
     progress_snapshot.valid = true;
     progress_snapshot.service_ticks_progressed =
@@ -4169,6 +4246,37 @@ static void rtcore_maybe_log_replay_model_summary_stats(
     progress_snapshot
         .v01_independent_service_cross_resource_progress_after_block_count =
         v01_independent_service_cross_resource_progress_after_block_count;
+    progress_snapshot.data_path_queue_header_accesses =
+        data_path_access.queue_header_accesses;
+    progress_snapshot.data_path_queue_entry_accesses =
+        data_path_access.queue_entry_accesses;
+    progress_snapshot.data_path_request_table_accesses =
+        data_path_access.request_table_accesses;
+    progress_snapshot.data_path_request_state_accesses =
+        data_path_access.request_state_accesses;
+    progress_snapshot.data_path_max_queue_depth = data_path_max_queue_depth;
+    progress_snapshot.data_path_max_request_table_entries =
+        data_path_max_request_table_entries;
+    progress_snapshot.data_path_port_budget_blocked_count =
+        data_path_port_budget_blocked_count;
+    progress_snapshot.data_path_port_budget_blocked_cycle_total =
+        data_path_port_budget_blocked_cycle_total;
+    progress_snapshot.data_path_port_budget_max_over_budget_accesses =
+        data_path_port_budget_max_over_budget_accesses;
+    progress_snapshot.data_path_port_budget_max_over_budget_resource_mask =
+        data_path_port_budget_max_over_budget_resource_mask;
+    progress_snapshot.queue_header_port_gate_blocked_count =
+        queue_header_port_gate_blocked_count;
+    progress_snapshot.queue_header_port_gate_max_over_budget_accesses =
+        queue_header_port_gate_max_over_budget_accesses;
+    progress_snapshot.request_table_port_gate_blocked_count =
+        request_table_port_gate_blocked_count;
+    progress_snapshot.request_table_port_gate_max_over_budget_accesses =
+        request_table_port_gate_max_over_budget_accesses;
+    progress_snapshot.request_state_port_gate_blocked_count =
+        request_state_port_gate_blocked_count;
+    progress_snapshot.request_state_port_gate_max_over_budget_accesses =
+        request_state_port_gate_max_over_budget_accesses;
     progress_snapshot.max_observed_ready_cycle = service_cycle;
     if (!rtcore_should_log_replay_model_summary_stats(owner_hw_sid,
                                                       progress_snapshot)) {
@@ -4247,6 +4355,22 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "v01_independent_service_blocked_continue_count=%u "
            "v01_independent_service_progress_after_block_count=%u "
            "v01_independent_service_cross_resource_progress_after_block_count=%u "
+           "data_path_queue_header_accesses=%u "
+           "data_path_queue_entry_accesses=%u "
+           "data_path_request_table_accesses=%u "
+           "data_path_request_state_accesses=%u "
+           "data_path_max_queue_depth=%u "
+           "data_path_max_request_table_entries=%u "
+           "data_path_port_budget_blocked_count=%u "
+           "data_path_port_budget_blocked_cycle_total=%u "
+           "data_path_port_budget_max_over_budget_accesses=%u "
+           "data_path_port_budget_max_over_budget_resource_mask=0x%x "
+           "queue_header_port_gate_blocked_count=%u "
+           "queue_header_port_gate_max_over_budget_accesses=%u "
+           "request_table_port_gate_blocked_count=%u "
+           "request_table_port_gate_max_over_budget_accesses=%u "
+           "request_state_port_gate_blocked_count=%u "
+           "request_state_port_gate_max_over_budget_accesses=%u "
            "max_observed_ready_cycle=%llu\n",
            owner_hw_sid, RTCORE_TRACE_REPLAY_MODEL_NAME,
            rtcore_compact_trace_events_per_lane_config(),
@@ -4300,6 +4424,21 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            v01_independent_service_blocked_continue_count,
            v01_independent_service_progress_after_block_count,
            v01_independent_service_cross_resource_progress_after_block_count,
+           data_path_access.queue_header_accesses,
+           data_path_access.queue_entry_accesses,
+           data_path_access.request_table_accesses,
+           data_path_access.request_state_accesses, data_path_max_queue_depth,
+           data_path_max_request_table_entries,
+           data_path_port_budget_blocked_count,
+           data_path_port_budget_blocked_cycle_total,
+           data_path_port_budget_max_over_budget_accesses,
+           data_path_port_budget_max_over_budget_resource_mask,
+           queue_header_port_gate_blocked_count,
+           queue_header_port_gate_max_over_budget_accesses,
+           request_table_port_gate_blocked_count,
+           request_table_port_gate_max_over_budget_accesses,
+           request_state_port_gate_blocked_count,
+           request_state_port_gate_max_over_budget_accesses,
            service_cycle);
     fflush(stdout);
 }
