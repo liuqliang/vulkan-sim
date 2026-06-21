@@ -217,6 +217,14 @@ enum rtcore_compact_trace_resource_class {
     RTCORE_TRACE_RESOURCE_SUMMARY,
 };
 
+enum rtcore_replay_v01_resource_route {
+    RTCORE_REPLAY_V01_ROUTE_MEMORY = 0,
+    RTCORE_REPLAY_V01_ROUTE_NODE,
+    RTCORE_REPLAY_V01_ROUTE_PRIMITIVE,
+    RTCORE_REPLAY_V01_ROUTE_STACK,
+    RTCORE_REPLAY_V01_ROUTE_COMPLETION,
+};
+
 enum rtcore_compact_trace_node_kind {
     RTCORE_TRACE_NODE_KIND_BVH_HEADER = 0,
     RTCORE_TRACE_NODE_KIND_INTERNAL,
@@ -573,6 +581,28 @@ struct rtcore_replay_data_path_access_stats {
     unsigned max_request_table_entries;
 };
 
+struct rtcore_replay_resource_route_stats {
+    unsigned lane_requests;
+    unsigned total_trace_events;
+    unsigned memory_routed_events;
+    unsigned node_routed_events;
+    unsigned primitive_routed_events;
+    unsigned stack_routed_events;
+    unsigned completion_routed_events;
+    unsigned node_fetch_events;
+    unsigned primitive_fetch_events;
+    unsigned node_test_events;
+    unsigned primitive_test_events;
+    unsigned hit_update_events;
+    unsigned stack_events;
+    unsigned completion_events;
+    unsigned fetch_events_routed_to_memory;
+    unsigned fetch_events_routed_to_compute;
+    unsigned test_events_routed_to_compute;
+    unsigned test_events_routed_to_memory;
+    unsigned hit_update_events_folded_into_primitive;
+};
+
 struct rtcore_replay_data_path_access_snapshot {
     unsigned queue_header_accesses;
     unsigned queue_entry_accesses;
@@ -731,6 +761,7 @@ static rtcore_replay_unit_queue_capacity_gate_stats
     g_rtcore_replay_unit_queue_capacity_gate_stats;
 static rtcore_replay_data_path_access_stats
     g_rtcore_replay_data_path_access_stats;
+static rtcore_replay_resource_route_stats g_rtcore_replay_resource_route_stats;
 static rtcore_replay_data_path_port_budget_gate_stats
     g_rtcore_replay_data_path_port_budget_gate_stats;
 static rtcore_replay_queue_header_port_gate_stats
@@ -777,6 +808,7 @@ static unsigned g_rtcore_replay_memory_wake_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_memory_contention_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_unit_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_model_summary_stats_logs_emitted = 0;
+static unsigned g_rtcore_replay_resource_route_stats_logs_emitted = 0;
 static std::map<unsigned, rtcore_replay_model_summary_progress_snapshot>
     g_rtcore_replay_model_summary_progress_snapshots;
 static unsigned g_rtcore_next_replay_ready_order = 0;
@@ -1053,6 +1085,16 @@ static bool rtcore_replay_model_summary_stats_log_enabled()
     static int enabled = []() {
         const char *value =
             getenv("VULKAN_SIM_RTCORE_REPLAY_MODEL_SUMMARY_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_resource_route_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_RESOURCE_ROUTE_STATS_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -1381,6 +1423,13 @@ static unsigned rtcore_replay_model_summary_stats_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_MODEL_SUMMARY_STATS_LOG_LIMIT", 16);
+    return limit;
+}
+
+static unsigned rtcore_replay_resource_route_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_RESOURCE_ROUTE_STATS_LOG_LIMIT", 64);
     return limit;
 }
 
@@ -2210,6 +2259,29 @@ static unsigned rtcore_unpack_compact_trace_bytes(
     return (event.packed_count_bytes >> 8) & 0xffu;
 }
 
+static rtcore_replay_v01_resource_route rtcore_replay_v01_route_for_event(
+    rtcore_compact_trace_event_type event_type)
+{
+    switch (event_type) {
+    case RTCORE_TRACE_NODE_FETCH:
+    case RTCORE_TRACE_PRIMITIVE_FETCH:
+    case RTCORE_TRACE_MEMORY_WAIT:
+        return RTCORE_REPLAY_V01_ROUTE_MEMORY;
+    case RTCORE_TRACE_NODE_TEST:
+        return RTCORE_REPLAY_V01_ROUTE_NODE;
+    case RTCORE_TRACE_PRIMITIVE_TEST:
+    case RTCORE_TRACE_HIT_UPDATE:
+        return RTCORE_REPLAY_V01_ROUTE_PRIMITIVE;
+    case RTCORE_TRACE_STACK_PUSH:
+    case RTCORE_TRACE_STACK_POP:
+        return RTCORE_REPLAY_V01_ROUTE_STACK;
+    case RTCORE_TRACE_COMPLETION:
+    case RTCORE_TRACE_OVERFLOW_SUMMARY:
+    default:
+        return RTCORE_REPLAY_V01_ROUTE_COMPLETION;
+    }
+}
+
 static const char *rtcore_trace_timing_precision_class_name(
     rtcore_trace_timing_precision_class precision_class)
 {
@@ -2688,6 +2760,154 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
         request.state = RTCORE_REPLAY_ADMITTED;
     }
     return request;
+}
+
+static void rtcore_maybe_log_replay_resource_route_stats(unsigned owner_hw_sid)
+{
+    if (!rtcore_replay_resource_route_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_resource_route_stats_logs_emitted >=
+        rtcore_replay_resource_route_stats_log_limit()) {
+        return;
+    }
+    g_rtcore_replay_resource_route_stats_logs_emitted++;
+
+    printf("GPGPU-Sim RTCORE_REPLAY_RESOURCE_ROUTE_STATS "
+           "owner_hw_sid=%u lane_requests=%u total_trace_events=%u "
+           "memory_routed_events=%u node_routed_events=%u "
+           "primitive_routed_events=%u stack_routed_events=%u "
+           "completion_routed_events=%u "
+           "node_fetch_events=%u primitive_fetch_events=%u "
+           "node_test_events=%u primitive_test_events=%u "
+           "hit_update_events=%u stack_events=%u completion_events=%u "
+           "fetch_events_routed_to_memory=%u "
+           "fetch_events_routed_to_compute=%u "
+           "test_events_routed_to_compute=%u "
+           "test_events_routed_to_memory=%u "
+           "hit_update_events_folded_into_primitive=%u\n",
+           owner_hw_sid, g_rtcore_replay_resource_route_stats.lane_requests,
+           g_rtcore_replay_resource_route_stats.total_trace_events,
+           g_rtcore_replay_resource_route_stats.memory_routed_events,
+           g_rtcore_replay_resource_route_stats.node_routed_events,
+           g_rtcore_replay_resource_route_stats.primitive_routed_events,
+           g_rtcore_replay_resource_route_stats.stack_routed_events,
+           g_rtcore_replay_resource_route_stats.completion_routed_events,
+           g_rtcore_replay_resource_route_stats.node_fetch_events,
+           g_rtcore_replay_resource_route_stats.primitive_fetch_events,
+           g_rtcore_replay_resource_route_stats.node_test_events,
+           g_rtcore_replay_resource_route_stats.primitive_test_events,
+           g_rtcore_replay_resource_route_stats.hit_update_events,
+           g_rtcore_replay_resource_route_stats.stack_events,
+           g_rtcore_replay_resource_route_stats.completion_events,
+           g_rtcore_replay_resource_route_stats.fetch_events_routed_to_memory,
+           g_rtcore_replay_resource_route_stats.fetch_events_routed_to_compute,
+           g_rtcore_replay_resource_route_stats.test_events_routed_to_compute,
+           g_rtcore_replay_resource_route_stats.test_events_routed_to_memory,
+           g_rtcore_replay_resource_route_stats
+               .hit_update_events_folded_into_primitive);
+    fflush(stdout);
+}
+
+static void rtcore_record_replay_resource_route_stats(
+    const rtcore_replay_lane_request &request)
+{
+    if (!rtcore_replay_resource_route_stats_log_enabled() || !request.valid) {
+        return;
+    }
+
+    g_rtcore_replay_resource_route_stats.lane_requests++;
+    for (unsigned i = 0; i < request.events.size(); ++i) {
+        const rtcore_compact_trace_event_type event_type =
+            rtcore_unpack_compact_trace_event_type(request.events[i]);
+        const rtcore_replay_v01_resource_route route =
+            rtcore_replay_v01_route_for_event(event_type);
+
+        g_rtcore_replay_resource_route_stats.total_trace_events++;
+        switch (route) {
+        case RTCORE_REPLAY_V01_ROUTE_MEMORY:
+            g_rtcore_replay_resource_route_stats.memory_routed_events++;
+            break;
+        case RTCORE_REPLAY_V01_ROUTE_NODE:
+            g_rtcore_replay_resource_route_stats.node_routed_events++;
+            break;
+        case RTCORE_REPLAY_V01_ROUTE_PRIMITIVE:
+            g_rtcore_replay_resource_route_stats.primitive_routed_events++;
+            break;
+        case RTCORE_REPLAY_V01_ROUTE_STACK:
+            g_rtcore_replay_resource_route_stats.stack_routed_events++;
+            break;
+        case RTCORE_REPLAY_V01_ROUTE_COMPLETION:
+        default:
+            g_rtcore_replay_resource_route_stats.completion_routed_events++;
+            break;
+        }
+
+        switch (event_type) {
+        case RTCORE_TRACE_NODE_FETCH:
+            g_rtcore_replay_resource_route_stats.node_fetch_events++;
+            if (route == RTCORE_REPLAY_V01_ROUTE_MEMORY) {
+                g_rtcore_replay_resource_route_stats
+                    .fetch_events_routed_to_memory++;
+            } else if (route == RTCORE_REPLAY_V01_ROUTE_NODE ||
+                       route == RTCORE_REPLAY_V01_ROUTE_PRIMITIVE) {
+                g_rtcore_replay_resource_route_stats
+                    .fetch_events_routed_to_compute++;
+            }
+            break;
+        case RTCORE_TRACE_PRIMITIVE_FETCH:
+            g_rtcore_replay_resource_route_stats.primitive_fetch_events++;
+            if (route == RTCORE_REPLAY_V01_ROUTE_MEMORY) {
+                g_rtcore_replay_resource_route_stats
+                    .fetch_events_routed_to_memory++;
+            } else if (route == RTCORE_REPLAY_V01_ROUTE_NODE ||
+                       route == RTCORE_REPLAY_V01_ROUTE_PRIMITIVE) {
+                g_rtcore_replay_resource_route_stats
+                    .fetch_events_routed_to_compute++;
+            }
+            break;
+        case RTCORE_TRACE_NODE_TEST:
+            g_rtcore_replay_resource_route_stats.node_test_events++;
+            if (route == RTCORE_REPLAY_V01_ROUTE_NODE ||
+                route == RTCORE_REPLAY_V01_ROUTE_PRIMITIVE) {
+                g_rtcore_replay_resource_route_stats
+                    .test_events_routed_to_compute++;
+            } else if (route == RTCORE_REPLAY_V01_ROUTE_MEMORY) {
+                g_rtcore_replay_resource_route_stats
+                    .test_events_routed_to_memory++;
+            }
+            break;
+        case RTCORE_TRACE_PRIMITIVE_TEST:
+            g_rtcore_replay_resource_route_stats.primitive_test_events++;
+            if (route == RTCORE_REPLAY_V01_ROUTE_NODE ||
+                route == RTCORE_REPLAY_V01_ROUTE_PRIMITIVE) {
+                g_rtcore_replay_resource_route_stats
+                    .test_events_routed_to_compute++;
+            } else if (route == RTCORE_REPLAY_V01_ROUTE_MEMORY) {
+                g_rtcore_replay_resource_route_stats
+                    .test_events_routed_to_memory++;
+            }
+            break;
+        case RTCORE_TRACE_HIT_UPDATE:
+            g_rtcore_replay_resource_route_stats.hit_update_events++;
+            if (route == RTCORE_REPLAY_V01_ROUTE_PRIMITIVE) {
+                g_rtcore_replay_resource_route_stats
+                    .hit_update_events_folded_into_primitive++;
+            }
+            break;
+        case RTCORE_TRACE_STACK_PUSH:
+        case RTCORE_TRACE_STACK_POP:
+            g_rtcore_replay_resource_route_stats.stack_events++;
+            break;
+        case RTCORE_TRACE_COMPLETION:
+            g_rtcore_replay_resource_route_stats.completion_events++;
+            break;
+        default:
+            break;
+        }
+    }
+
+    rtcore_maybe_log_replay_resource_route_stats(request.owner_hw_sid);
 }
 
 static bool rtcore_replay_request_table_capacity_consumes_entry(
@@ -5180,6 +5400,7 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 
     rtcore_replay_lane_request request =
         rtcore_build_replay_lane_request(record);
+    rtcore_record_replay_resource_route_stats(request);
     request.ready_order = g_rtcore_next_replay_ready_order++;
     if (rtcore_maybe_block_replay_request_table_capacity_admission(
             request)) {
