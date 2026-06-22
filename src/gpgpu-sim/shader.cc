@@ -239,6 +239,12 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_mshr_response_probe_count;
   unsigned v02_lsu_sideband_mshr_entries_at_response_probe_max;
   unsigned long long v02_lsu_sideband_mshr_response_probe_mem_fetch_count;
+  unsigned long long v02_lsu_sideband_lower_memory_event_observation_count;
+  unsigned long long v02_lsu_sideband_lower_memory_read_request_sent_count;
+  unsigned long long v02_lsu_sideband_lower_memory_write_request_sent_count;
+  unsigned long long v02_lsu_sideband_lower_memory_writeallocate_request_sent_count;
+  unsigned long long v02_lsu_sideband_lower_memory_any_request_sent_count;
+  unsigned long long v02_lsu_sideband_lower_memory_no_request_count;
   unsigned long long v02_lsu_sideband_immediate_completion_count;
   unsigned long long v02_lsu_sideband_response_wakeup_count;
   unsigned long long v02_lsu_sideband_pending_request_count;
@@ -839,6 +845,13 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "mshr_response_probe_count=%llu "
          "mshr_entries_at_response_probe_max=%u "
          "mshr_response_probe_mem_fetch_count=%llu "
+         "lower_memory_event_observation_enabled=1 "
+         "lower_memory_event_observation_count=%llu "
+         "lower_memory_read_request_sent_count=%llu "
+         "lower_memory_write_request_sent_count=%llu "
+         "lower_memory_writeallocate_request_sent_count=%llu "
+         "lower_memory_any_request_sent_count=%llu "
+         "lower_memory_no_request_count=%llu "
          "issue_bandwidth_gate_enabled=%u issue_budget_per_cycle=%u "
          "issue_bandwidth_evaluations=%llu "
          "issue_bandwidth_issued_count=%llu "
@@ -957,6 +970,18 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_sideband_mshr_entries_at_response_probe_max,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_mshr_response_probe_mem_fetch_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_lower_memory_event_observation_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_lower_memory_read_request_sent_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_lower_memory_write_request_sent_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_lower_memory_writeallocate_request_sent_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_lower_memory_any_request_sent_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_lower_memory_no_request_count,
          rtcore_v02_lsu_sideband_issue_bandwidth_gate_enabled() ? 1u : 0u,
          rtcore_v02_lsu_sideband_issue_budget_per_cycle(),
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1284,6 +1309,33 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
   }
   const enum cache_request_status status =
       cache->access(mf->get_addr(), mf, result.cycle, events);
+  const bool lower_memory_read_sent = was_read_sent(events);
+  const bool lower_memory_write_sent = was_write_sent(events);
+  const bool lower_memory_writeallocate_sent = was_writeallocate_sent(events);
+  const bool lower_memory_any_request_sent =
+      lower_memory_read_sent || lower_memory_write_sent ||
+      lower_memory_writeallocate_sent;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_lower_memory_event_observation_count++;
+  if (lower_memory_read_sent) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_lower_memory_read_request_sent_count++;
+  }
+  if (lower_memory_write_sent) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_lower_memory_write_request_sent_count++;
+  }
+  if (lower_memory_writeallocate_sent) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_lower_memory_writeallocate_request_sent_count++;
+  }
+  if (lower_memory_any_request_sent) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_lower_memory_any_request_sent_count++;
+  } else {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_lower_memory_no_request_count++;
+  }
   const unsigned mshr_entries_after_access = cache->num_mshr_entries();
   if (mshr_entries_after_access >
       g_rtcore_replay_cycle_hook_consumer_stats
