@@ -10759,6 +10759,12 @@ bool rtcore_v02_lsu_retire_side_observation_enabled() {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+bool rtcore_v02_lsu_handoff_publication_ack_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_V02_LSU_HANDOFF_PUBLICATION_ACK");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 unsigned rtcore_v02_lsu_handoff_window_lane_slot_chunk_count() {
   return (RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE +
           RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES - 1) /
@@ -29632,6 +29638,71 @@ void rtcore_maybe_enqueue_v02_lsu_handoff_window_sideband(
       chunk_count, is_write, rtcore_v02_lsu_issue_cycle(thread));
 }
 
+bool rtcore_v02_lsu_handoff_publication_acknowledged(
+    const ptx_instruction *pI, const rtcore_traversal_completion_event &event,
+    ptx_thread_info *thread) {
+  if (!rtcore_v02_lsu_handoff_publication_ack_enabled()) {
+    return true;
+  }
+
+  const rtcore_synthetic_handoff_header *window =
+      rtcore_acquire_synthetic_handoff_window(
+          g_rtcore_synthetic_handoff_windows, event.handoff_key);
+  const bool tracked_window = window != NULL;
+  const bool matching_context =
+      tracked_window && window->context_ptr == event.context_ptr;
+  const bool owner_tuple_matches =
+      tracked_window &&
+      rtcore_synthetic_owner_tuple_matches(*window, event.handoff_key,
+                                           event.context_ptr, pI, thread);
+  const bool window_result_match =
+      tracked_window && window->w0 == event.result_word;
+  const unsigned long long lane_slot_base =
+      rtcore_handoff_lane_slot_base(event.handoff_window_base,
+                                    event.lane_slot_index);
+  const unsigned window_generation =
+      tracked_window ? window->window_generation : event.window_generation;
+  const unsigned completion_seq =
+      tracked_window ? window->completion_seq : event.completion_seq_low;
+  const unsigned resume_seq =
+      tracked_window ? window->resume_seq : event.resume_seq_low;
+  const unsigned window_tag =
+      tracked_window ? window->window_tag : event.window_tag;
+  const bool acquire_sideband_enabled =
+      rtcore_v02_lsu_handoff_window_sideband_enabled();
+  const bool result_store_sideband_enabled =
+      rtcore_v02_lsu_handoff_window_sideband_enabled();
+  const bool publication_visible_before_acquire =
+      tracked_window && matching_context && owner_tuple_matches;
+  const bool accepted =
+      publication_visible_before_acquire && window_result_match &&
+      acquire_sideband_enabled && result_store_sideband_enabled;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT v02-lsu-handoff-publication-ack "
+         "(%s:%u), publication_ack_enabled=1, "
+         "publication_path=normal_lsu_global_store_shadow, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, lane_slot_base=0x%llx, tracked_window=%u, "
+         "matching_context=%u, owner_tuple_match=%u, result_word=0x%08x, "
+         "window_result_match=%u, window_generation=%u, completion_seq=%u, "
+         "resume_seq=%u, window_tag=%u, "
+         "publication_visible_before_acquire=%u, "
+         "acquire_sideband_enabled=%u, result_store_sideband_enabled=%u, "
+         "accepted=%u\n",
+         pI->source_file(), pI->source_line(), event.context_ptr,
+         event.handoff_window_base, event.lane_slot_index, lane_slot_base,
+         tracked_window ? 1 : 0, matching_context ? 1 : 0,
+         owner_tuple_matches ? 1 : 0, event.result_word,
+         window_result_match ? 1 : 0, window_generation, completion_seq,
+         resume_seq, window_tag,
+         publication_visible_before_acquire ? 1 : 0,
+         acquire_sideband_enabled ? 1 : 0,
+         result_store_sideband_enabled ? 1 : 0, accepted ? 1 : 0);
+  fflush(stdout);
+
+  return accepted;
+}
+
 static void
 rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
     rtcore_traversal_completion_event *event,
@@ -30497,6 +30568,11 @@ bool rtcore_materialize_traversal_completion_lane_transaction(
   }
   rtcore_publish_synthetic_handoff_window(
       pI, event.handoff_key, event.header);
+  if (!rtcore_v02_lsu_handoff_publication_acknowledged(pI, event, thread)) {
+    rtcore_rollback_symbolic_submit_after_handoff_publish(
+        pI, event.token_key, event.reservation_key, event.handoff_key);
+    return false;
+  }
   rtcore_maybe_enqueue_v02_lsu_handoff_window_sideband(
       event, thread, RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE, false);
   if (rtcore_test_fail_after_handoff_publish_enabled()) {
