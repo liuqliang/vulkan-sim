@@ -8765,6 +8765,12 @@ extern "C" bool rtcore_claim_adapter_completion(
   return accepted;
 }
 
+extern "C" void rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
+    unsigned owner_hw_sid, unsigned rt_request_id, unsigned lane_id,
+    unsigned memory_op_seq, unsigned access_kind,
+    unsigned long long byte_address, unsigned chunk_count, bool is_write,
+    unsigned long long issue_cycle);
+
 namespace {
 
 const unsigned long long RTCORE_CONTEXT_ALIGNMENT = 64;
@@ -8786,6 +8792,9 @@ const unsigned RTCORE_HANDOFF_WINDOW_WORDS_PER_LANE = 32;
 const unsigned RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE = 128;
 const unsigned RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP =
     RTCORE_MAX_LANES_PER_WARP * RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE;
+const unsigned RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES = 32;
+const unsigned RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE = 0;
+const unsigned RTCORE_V02_LSU_ACCESS_RESULT_STORE = 5;
 const unsigned RTCORE_SHARED_MEMORY_BYTES_PER_EXECUTION_PARTITION = 49152;
 const unsigned RTCORE_MAX_RESIDENT_WARPS_PER_EXECUTION_PARTITION = 16;
 const unsigned RTCORE_RT_TOKENS_PER_EXECUTION_PARTITION = 128;
@@ -10736,6 +10745,31 @@ bool rtcore_test_stale_allocator_generation_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_TEST_STALE_ALLOCATOR_GENERATION");
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+bool rtcore_v02_lsu_handoff_window_sideband_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_V02_LSU_HANDOFF_WINDOW_SIDEBAND");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+unsigned rtcore_v02_lsu_handoff_window_lane_slot_chunk_count() {
+  return (RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE +
+          RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES - 1) /
+         RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+}
+
+unsigned rtcore_v02_lsu_handoff_memory_op_seq(unsigned window_generation,
+                                              unsigned access_kind) {
+  const unsigned op_slot =
+      access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE ? 1u : 0u;
+  return window_generation * 2u + op_slot;
+}
+
+unsigned long long rtcore_v02_lsu_issue_cycle(ptx_thread_info *thread) {
+  return thread != NULL && thread->get_gpu() != NULL
+             ? thread->get_gpu()->gpu_tot_sim_cycle
+             : 0;
 }
 
 bool rtcore_address_in_range(unsigned long long address,
@@ -29498,6 +29532,29 @@ struct rtcore_traversal_completion_event {
   bool hit_geometry;
 };
 
+void rtcore_maybe_enqueue_v02_lsu_handoff_window_sideband(
+    const rtcore_traversal_completion_event &event, ptx_thread_info *thread,
+    unsigned access_kind, bool is_write) {
+  if (!rtcore_v02_lsu_handoff_window_sideband_enabled()) {
+    return;
+  }
+  if (access_kind != RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE &&
+      access_kind != RTCORE_V02_LSU_ACCESS_RESULT_STORE) {
+    return;
+  }
+  const unsigned chunk_count =
+      rtcore_v02_lsu_handoff_window_lane_slot_chunk_count();
+  rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
+      event.warp_metadata.owner_hw_sid, thread != NULL ? thread->get_uid() : 0,
+      event.lane_slot_index,
+      rtcore_v02_lsu_handoff_memory_op_seq(event.window_generation,
+                                           access_kind),
+      access_kind,
+      rtcore_handoff_lane_slot_base(event.handoff_window_base,
+                                    event.lane_slot_index),
+      chunk_count, is_write, rtcore_v02_lsu_issue_cycle(thread));
+}
+
 static void
 rtcore_copy_source_snapshot_backend_input_annotation_to_completion_event(
     rtcore_traversal_completion_event *event,
@@ -30363,6 +30420,8 @@ bool rtcore_materialize_traversal_completion_lane_transaction(
   }
   rtcore_publish_synthetic_handoff_window(
       pI, event.handoff_key, event.header);
+  rtcore_maybe_enqueue_v02_lsu_handoff_window_sideband(
+      event, thread, RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE, false);
   if (rtcore_test_fail_after_handoff_publish_enabled()) {
     rtcore_rollback_symbolic_submit_after_handoff_publish(
         pI, event.token_key, event.reservation_key, event.handoff_key);
@@ -30372,6 +30431,8 @@ bool rtcore_materialize_traversal_completion_lane_transaction(
   ptx_reg_t result_data;
   result_data.u32 = event.result_word;
   thread->set_operand_value(result, result_data, U32_TYPE, thread, pI);
+  rtcore_maybe_enqueue_v02_lsu_handoff_window_sideband(
+      event, thread, RTCORE_V02_LSU_ACCESS_RESULT_STORE, true);
   if (rtcore_test_fail_after_result_write_enabled()) {
     rtcore_rollback_symbolic_submit_after_result_write(
         pI, event.token_key, event.reservation_key, event.handoff_key);

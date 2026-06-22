@@ -9661,6 +9661,38 @@ extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
     return true;
 }
 
+extern "C" void rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
+    unsigned owner_hw_sid, unsigned rt_request_id, unsigned lane_id,
+    unsigned memory_op_seq, unsigned access_kind,
+    unsigned long long byte_address, unsigned chunk_count, bool is_write,
+    unsigned long long issue_cycle)
+{
+    if (chunk_count == 0) {
+        chunk_count = 1;
+    }
+    for (unsigned chunk_id = 0; chunk_id < chunk_count; ++chunk_id) {
+        const unsigned long long chunk_address =
+            byte_address +
+            static_cast<unsigned long long>(
+                chunk_id * RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES);
+        rtcore_v02_lsu_sideband_request_snapshot snapshot = {};
+        snapshot.valid = true;
+        snapshot.response_target = RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE;
+        snapshot.owner_hw_sid = owner_hw_sid;
+        snapshot.rt_request_id = rt_request_id;
+        snapshot.lane_id = lane_id;
+        snapshot.memory_op_seq = memory_op_seq;
+        snapshot.chunk_id = chunk_id;
+        snapshot.chunk_count = chunk_count;
+        snapshot.access_kind = access_kind;
+        snapshot.aligned_32b_addr = rtcore_v02_lsu_align_32b(chunk_address);
+        snapshot.is_write = is_write;
+        snapshot.issue_cycle = issue_cycle;
+        g_rtcore_v02_lsu_sideband_request_snapshots_by_owner[owner_hw_sid]
+            .push_back(snapshot);
+    }
+}
+
 extern "C" bool rtcore_record_v02_lsu_sideband_memory_response(
     unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
     unsigned chunk_id, unsigned chunk_count, unsigned response_target,

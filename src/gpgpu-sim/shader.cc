@@ -212,6 +212,10 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_real_mem_fetch_count;
   unsigned long long v02_lsu_sideband_node_offer_count;
   unsigned long long v02_lsu_sideband_primitive_offer_count;
+  unsigned long long v02_lsu_sideband_handoff_acquire_offer_count;
+  unsigned long long v02_lsu_sideband_result_store_offer_count;
+  unsigned long long v02_lsu_sideband_read_offer_count;
+  unsigned long long v02_lsu_sideband_write_offer_count;
   unsigned long long v02_lsu_sideband_response_target_rtcore_count;
   unsigned long long v02_lsu_sideband_cache_request_count;
   unsigned long long v02_lsu_sideband_cache_hit_count;
@@ -231,8 +235,10 @@ static std::map<unsigned, rtcore_v02_lsu_sideband_request_snapshot>
 static unsigned g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted = 0;
 
 static const unsigned RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE = 1;
+static const unsigned RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE = 0;
 static const unsigned RTCORE_V02_LSU_ACCESS_NODE_FETCH = 1;
 static const unsigned RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH = 2;
+static const unsigned RTCORE_V02_LSU_ACCESS_RESULT_STORE = 5;
 static const unsigned RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES = 32;
 static const unsigned RTCORE_V02_LSU_TRANSACTION_IDENTITY_FIELD_COUNT = 10;
 
@@ -688,7 +694,9 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "cache_request_count=%llu cache_hit_count=%llu "
          "cache_miss_count=%llu cache_reservation_fail_count=%llu "
          "immediate_completion_count=%llu response_wakeup_count=%llu "
-         "pending_request_count=%llu max_pending_request_count=%llu\n",
+         "pending_request_count=%llu max_pending_request_count=%llu "
+         "handoff_acquire_offer_count=%llu result_store_offer_count=%llu "
+         "read_offer_count=%llu write_offer_count=%llu\n",
          owner_hw_sid, rtcore_v02_lsu_memory_client_enabled() ? 1 : 0,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_offered_count,
@@ -724,7 +732,15 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_pending_request_count,
          g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_max_pending_request_count);
+             .v02_lsu_sideband_max_pending_request_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_handoff_acquire_offer_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_result_store_offer_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_read_offer_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_write_offer_count);
   fflush(stdout);
 }
 
@@ -805,9 +821,15 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
   if (!result.lsu_sideband_valid || !rtcore_v02_lsu_memory_client_enabled()) {
     return;
   }
+  const bool supported_access_kind =
+      result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE ||
+      result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_NODE_FETCH ||
+      result.lsu_sideband_access_kind ==
+          RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH ||
+      result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE;
   if (result.lsu_sideband_response_target !=
           RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE ||
-      result.lsu_sideband_is_write) {
+      !supported_access_kind) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_rejected_count++;
     return;
@@ -822,9 +844,10 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
 
   const new_addr_type addr =
       static_cast<new_addr_type>(result.lsu_sideband_aligned_32b_addr);
+  const bool is_write = result.lsu_sideband_is_write;
   mem_fetch *mf = mf_allocator->alloc(
-      addr, GLOBAL_ACC_R, RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, false,
-      result.cycle);
+      addr, is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R,
+      RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write, result.cycle);
   mf->set_raytrace();
   mf->set_uncoalesced_addr(addr);
   mf->set_uncoalesced_base_addr(addr);
@@ -848,7 +871,7 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
       .v02_lsu_sideband_accepted_count++;
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_real_mem_fetch_count++;
-  if (status == HIT) {
+  if (status == HIT && !is_write) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_cache_hit_count++;
     g_rtcore_replay_cycle_hook_consumer_stats
@@ -857,6 +880,14 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
     rtcore_record_v02_lsu_sideband_response_completion(
         rtcore_v02_lsu_sideband_snapshot_from_result(result), result.cycle);
     delete mf;
+    return;
+  }
+  if (status == HIT && is_write) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_cache_hit_count++;
+    g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()] =
+        rtcore_v02_lsu_sideband_snapshot_from_result(result);
+    rtcore_v02_lsu_update_sideband_pending_count();
     return;
   }
   if (status != MISS && status != SECTOR_MISS) {
@@ -910,13 +941,29 @@ static void rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
   }
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_offered_count++;
-  if (result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_NODE_FETCH) {
+  if (result.lsu_sideband_is_write) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_write_offer_count++;
+  } else {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_read_offer_count++;
+  }
+  if (result.lsu_sideband_access_kind ==
+      RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_handoff_acquire_offer_count++;
+  } else if (result.lsu_sideband_access_kind ==
+             RTCORE_V02_LSU_ACCESS_NODE_FETCH) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_node_offer_count++;
   } else if (result.lsu_sideband_access_kind ==
              RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_primitive_offer_count++;
+  } else if (result.lsu_sideband_access_kind ==
+             RTCORE_V02_LSU_ACCESS_RESULT_STORE) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_result_store_offer_count++;
   }
   if (result.lsu_sideband_response_target ==
       RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE) {
@@ -954,6 +1001,17 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
   mf->set_status(IN_SHADER_FETCHED, current_cycle);
   baseline_cache *cache = config->m_rt_use_l1d ? l1d_cache : l0_cache;
   std::list<mem_fetch *> ready_sideband_responses;
+  if (it->second.is_write) {
+    unsigned completed_count =
+        rtcore_complete_v02_lsu_sideband_pending_response(
+            mf, current_cycle, &owner_hw_sid);
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_response_wakeup_count += completed_count;
+    rtcore_v02_lsu_update_sideband_pending_count();
+    rtcore_maybe_log_v02_lsu_sideband_offer_stats(owner_hw_sid);
+    delete mf;
+    return true;
+  }
   if (cache != NULL) {
     cache->fill(mf, current_cycle);
     ready_sideband_responses = cache->probe_mshr(response_addr);
