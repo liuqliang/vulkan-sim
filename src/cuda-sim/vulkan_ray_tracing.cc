@@ -299,6 +299,10 @@ struct rtcore_v02_lsu_response_wait_stats {
     unsigned gate_armed_count;
     unsigned gate_blocked_count;
     unsigned gate_woken_count;
+    unsigned stack_load_armed_count;
+    unsigned stack_store_armed_count;
+    unsigned stack_load_woken_count;
+    unsigned stack_store_woken_count;
     unsigned completed_event_count;
     unsigned response_chunk_count;
     unsigned duplicate_response_count;
@@ -473,6 +477,7 @@ struct rtcore_replay_lane_request {
     unsigned v02_lsu_response_wait_event_index;
     unsigned v02_lsu_response_wait_chunk_count;
     unsigned v02_lsu_response_wait_completed_chunk_count;
+    unsigned v02_lsu_response_wait_access_kind;
     unsigned long long v02_lsu_response_wait_armed_cycle;
     std::set<unsigned> v02_lsu_response_wait_completed_chunks;
     bool v01_issue_state_gate_pending;
@@ -4838,6 +4843,8 @@ static void rtcore_maybe_log_v02_lsu_response_wait_stats(
     printf("GPGPU-Sim RTCORE_V02_LSU_RESPONSE_WAIT_STATS "
            "owner_hw_sid=%u path_active=1 gate_enabled=%u "
            "armed_count=%u blocked_count=%u woken_count=%u "
+           "stack_load_armed_count=%u stack_store_armed_count=%u "
+           "stack_load_woken_count=%u stack_store_woken_count=%u "
            "completed_event_count=%u response_chunk_count=%u "
            "duplicate_response_count=%u stale_response_count=%u "
            "pending_request_count=%u max_pending_request_count=%u "
@@ -4846,7 +4853,9 @@ static void rtcore_maybe_log_v02_lsu_response_wait_stats(
            owner_hw_sid,
            rtcore_v02_lsu_response_wait_gate_enabled() ? 1u : 0u,
            stats.gate_armed_count, stats.gate_blocked_count,
-           stats.gate_woken_count, stats.completed_event_count,
+           stats.gate_woken_count, stats.stack_load_armed_count,
+           stats.stack_store_armed_count, stats.stack_load_woken_count,
+           stats.stack_store_woken_count, stats.completed_event_count,
            stats.response_chunk_count, stats.duplicate_response_count,
            stats.stale_response_count, stats.pending_request_count,
            stats.max_pending_request_count, stats.max_chunk_count,
@@ -4984,6 +4993,46 @@ static unsigned long long rtcore_v02_lsu_stack_sideband_base_address(
                RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
 }
 
+static bool rtcore_v02_lsu_stack_sideband_access_for_event(
+    const rtcore_compact_trace_event &event, unsigned *access_kind,
+    bool *is_write)
+{
+    const rtcore_compact_trace_event_type event_type =
+        rtcore_unpack_compact_trace_event_type(event);
+    if (event_type == RTCORE_TRACE_STACK_PUSH) {
+        if (access_kind) {
+            *access_kind = RTCORE_V02_LSU_ACCESS_STACK_STORE;
+        }
+        if (is_write) {
+            *is_write = true;
+        }
+        return true;
+    }
+    if (event_type == RTCORE_TRACE_STACK_POP) {
+        if (access_kind) {
+            *access_kind = RTCORE_V02_LSU_ACCESS_STACK_LOAD;
+        }
+        if (is_write) {
+            *is_write = false;
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool rtcore_v02_lsu_response_wait_manages_stack_load_event(
+    const rtcore_compact_trace_event &event)
+{
+    unsigned access_kind = RTCORE_V02_LSU_ACCESS_KIND_COUNT;
+    return rtcore_v02_lsu_response_wait_gate_enabled() &&
+           rtcore_v02_lsu_sideband_offer_enabled() &&
+           rtcore_v02_lsu_memory_client_enabled() &&
+           rtcore_v02_lsu_stack_sideband_enabled() &&
+           rtcore_v02_lsu_stack_sideband_access_for_event(event, &access_kind,
+                                                          NULL) &&
+           access_kind == RTCORE_V02_LSU_ACCESS_STACK_LOAD;
+}
+
 static bool rtcore_maybe_enqueue_v02_lsu_stack_sideband(
     const rtcore_replay_lane_request &request, unsigned long long service_cycle)
 {
@@ -4997,16 +5046,10 @@ static bool rtcore_maybe_enqueue_v02_lsu_stack_sideband(
 
     const rtcore_compact_trace_event &event =
         request.events[request.next_event_index];
-    const rtcore_compact_trace_event_type event_type =
-        rtcore_unpack_compact_trace_event_type(event);
     unsigned access_kind = RTCORE_V02_LSU_ACCESS_KIND_COUNT;
     bool is_write = false;
-    if (event_type == RTCORE_TRACE_STACK_PUSH) {
-        access_kind = RTCORE_V02_LSU_ACCESS_STACK_STORE;
-        is_write = true;
-    } else if (event_type == RTCORE_TRACE_STACK_POP) {
-        access_kind = RTCORE_V02_LSU_ACCESS_STACK_LOAD;
-    } else {
+    if (!rtcore_v02_lsu_stack_sideband_access_for_event(event, &access_kind,
+                                                        &is_write)) {
         return false;
     }
 
@@ -6469,21 +6512,37 @@ static bool rtcore_maybe_arm_v02_lsu_response_wait_gate(
         return false;
     }
 
-    const unsigned chunk_count =
-        rtcore_replay_v01_memory_queue_chunks_for_event(
-            request->events[request->next_event_index]);
+    const rtcore_compact_trace_event &event =
+        request->events[request->next_event_index];
+    unsigned access_kind = RTCORE_V02_LSU_ACCESS_KIND_COUNT;
+    bool stack_response_wait = false;
+    unsigned chunk_count = rtcore_replay_v01_memory_queue_chunks_for_event(event);
+    if (chunk_count == 0 &&
+        rtcore_v02_lsu_response_wait_manages_stack_load_event(event)) {
+        access_kind = RTCORE_V02_LSU_ACCESS_STACK_LOAD;
+        chunk_count = rtcore_v02_lsu_stack_sideband_chunk_count(event);
+        stack_response_wait = true;
+    }
     if (chunk_count == 0) {
         return false;
     }
 
-    rtcore_record_v02_lsu_fetch_descriptor_shadow(
-        *request, request->events[request->next_event_index], service_cycle,
-        chunk_count);
+    if (stack_response_wait) {
+        if (!rtcore_maybe_enqueue_v02_lsu_stack_sideband(*request,
+                                                         service_cycle)) {
+            return false;
+        }
+    } else {
+        rtcore_record_v02_lsu_fetch_descriptor_shadow(*request, event,
+                                                      service_cycle,
+                                                      chunk_count);
+    }
 
     request->v02_lsu_response_wait_gate_pending = true;
     request->v02_lsu_response_wait_event_index = request->next_event_index;
     request->v02_lsu_response_wait_chunk_count = chunk_count;
     request->v02_lsu_response_wait_completed_chunk_count = 0;
+    request->v02_lsu_response_wait_access_kind = access_kind;
     request->v02_lsu_response_wait_armed_cycle = service_cycle;
     request->v02_lsu_response_wait_completed_chunks.clear();
     request->state = RTCORE_REPLAY_ISSUED_MEMORY;
@@ -6491,6 +6550,11 @@ static bool rtcore_maybe_arm_v02_lsu_response_wait_gate(
 
     g_rtcore_v02_lsu_response_wait_stats.gate_evaluations++;
     g_rtcore_v02_lsu_response_wait_stats.gate_armed_count++;
+    if (access_kind == RTCORE_V02_LSU_ACCESS_STACK_LOAD) {
+        g_rtcore_v02_lsu_response_wait_stats.stack_load_armed_count++;
+    } else if (access_kind == RTCORE_V02_LSU_ACCESS_STACK_STORE) {
+        g_rtcore_v02_lsu_response_wait_stats.stack_store_armed_count++;
+    }
     g_rtcore_v02_lsu_response_wait_stats.pending_request_count++;
     if (g_rtcore_v02_lsu_response_wait_stats.pending_request_count >
         g_rtcore_v02_lsu_response_wait_stats.max_pending_request_count) {
@@ -6521,6 +6585,13 @@ static bool rtcore_v02_lsu_response_wait_gate_ready(
     }
 
     g_rtcore_v02_lsu_response_wait_stats.gate_woken_count++;
+    if (request->v02_lsu_response_wait_access_kind ==
+        RTCORE_V02_LSU_ACCESS_STACK_LOAD) {
+        g_rtcore_v02_lsu_response_wait_stats.stack_load_woken_count++;
+    } else if (request->v02_lsu_response_wait_access_kind ==
+               RTCORE_V02_LSU_ACCESS_STACK_STORE) {
+        g_rtcore_v02_lsu_response_wait_stats.stack_store_woken_count++;
+    }
     g_rtcore_v02_lsu_response_wait_stats.completed_event_count++;
     if (g_rtcore_v02_lsu_response_wait_stats.pending_request_count > 0) {
         g_rtcore_v02_lsu_response_wait_stats.pending_request_count--;
@@ -6965,6 +7036,10 @@ static bool rtcore_maybe_arm_replay_v01_issue_state_gate(
     const rtcore_compact_trace_event_type event_type =
         rtcore_unpack_compact_trace_event_type(
             request->events[request->next_event_index]);
+    if (rtcore_v02_lsu_response_wait_manages_stack_load_event(
+            request->events[request->next_event_index])) {
+        return false;
+    }
     const rtcore_replay_v01_resource_route route =
         rtcore_replay_v01_route_for_event(event_type);
     const rtcore_replay_lane_request_state target_state =
@@ -8189,7 +8264,14 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
                                                          service_cycle)) {
             return true;
         }
-        rtcore_maybe_enqueue_v02_lsu_stack_sideband(it->second, service_cycle);
+        const bool suppress_generic_stack_load =
+            it->second.next_event_index < it->second.events.size() &&
+            rtcore_v02_lsu_response_wait_manages_stack_load_event(
+                it->second.events[it->second.next_event_index]);
+        if (!suppress_generic_stack_load) {
+            rtcore_maybe_enqueue_v02_lsu_stack_sideband(it->second,
+                                                        service_cycle);
+        }
         if (rtcore_maybe_arm_replay_unit_latency_gate(&it->second,
                                                       service_cycle)) {
             return true;

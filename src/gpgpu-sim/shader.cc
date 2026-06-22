@@ -929,6 +929,12 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
   if (!snapshot.valid) {
     return;
   }
+  if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_STACK_STORE ||
+      snapshot.access_kind ==
+          RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
+      snapshot.access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE) {
+    return;
+  }
   rtcore_record_v02_lsu_sideband_memory_response(
       snapshot.owner_hw_sid, snapshot.rt_request_id, snapshot.memory_op_seq,
       snapshot.chunk_id, snapshot.chunk_count, snapshot.response_target,
