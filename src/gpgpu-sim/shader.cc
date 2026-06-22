@@ -34,6 +34,7 @@
 #include <set>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
 #include "../../libcuda/gpgpu_context.h"
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
@@ -232,13 +233,41 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_issue_bandwidth_deferred_count;
   unsigned long long v02_lsu_sideband_issue_bandwidth_budget_exhausted_count;
   unsigned long long v02_lsu_sideband_issue_bandwidth_max_deferred_count;
+  unsigned long long v02_lsu_sideband_same_cycle_merge_count;
+  unsigned long long v02_lsu_sideband_same_cycle_merged_waiter_count;
+  unsigned long long v02_lsu_sideband_same_cycle_real_mem_fetch_saved_count;
+  unsigned long long v02_lsu_sideband_same_cycle_fanout_wake_count;
   unsigned v02_lsu_sideband_max_chunk_count;
 };
 
 static rtcore_replay_cycle_hook_consumer_stats
     g_rtcore_replay_cycle_hook_consumer_stats = {};
-static std::map<unsigned, rtcore_v02_lsu_sideband_request_snapshot>
+static std::map<unsigned, std::vector<rtcore_v02_lsu_sideband_request_snapshot> >
     g_rtcore_v02_lsu_pending_memory_requests;
+struct rtcore_v02_lsu_sideband_same_cycle_merge_key {
+  unsigned owner_hw_sid;
+  unsigned long long cycle;
+  unsigned long long aligned_32b_addr;
+  bool is_write;
+
+  bool operator<(
+      const rtcore_v02_lsu_sideband_same_cycle_merge_key &other) const {
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    if (cycle != other.cycle) {
+      return cycle < other.cycle;
+    }
+    if (aligned_32b_addr != other.aligned_32b_addr) {
+      return aligned_32b_addr < other.aligned_32b_addr;
+    }
+    return is_write < other.is_write;
+  }
+};
+static std::map<rtcore_v02_lsu_sideband_same_cycle_merge_key, unsigned>
+    g_rtcore_v02_lsu_same_cycle_merge_uid_by_key;
+static bool g_rtcore_v02_lsu_same_cycle_merge_map_initialized = false;
+static unsigned long long g_rtcore_v02_lsu_same_cycle_merge_map_cycle = 0;
 static unsigned g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted = 0;
 
 static const unsigned RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE = 1;
@@ -304,6 +333,24 @@ static unsigned rtcore_v02_lsu_sideband_issue_budget_per_cycle() {
     return static_cast<unsigned>(parsed);
   }();
   return budget;
+}
+
+static bool rtcore_v02_lsu_same_cycle_merge_gate_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V02_LSU_SAME_CYCLE_MERGE_GATE");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static bool rtcore_v02_lsu_same_cycle_merge_stress_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V02_LSU_FORCE_SAME_CYCLE_MERGE_STRESS");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
 }
 
 static bool rtcore_v02_lsu_memory_client_enabled() {
@@ -748,7 +795,13 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "attribution_cache_reservation_stall_count=%llu "
          "attribution_response_wakeup_count=%llu "
          "attribution_response_pending_count=%llu "
-         "attribution_max_response_pending_count=%llu\n",
+         "attribution_max_response_pending_count=%llu "
+         "same_cycle_merge_gate_enabled=%u "
+         "same_cycle_merge_stress_enabled=%u "
+         "same_cycle_merge_count=%llu "
+         "same_cycle_merged_waiter_count=%llu "
+         "same_cycle_real_mem_fetch_saved_count=%llu "
+         "same_cycle_fanout_wake_count=%llu\n",
          owner_hw_sid, rtcore_v02_lsu_memory_client_enabled() ? 1 : 0,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_offered_count,
@@ -822,7 +875,17 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_pending_request_count,
          g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_max_pending_request_count);
+             .v02_lsu_sideband_max_pending_request_count,
+         rtcore_v02_lsu_same_cycle_merge_gate_enabled() ? 1u : 0u,
+         rtcore_v02_lsu_same_cycle_merge_stress_enabled() ? 1u : 0u,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_same_cycle_merge_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_same_cycle_merged_waiter_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_same_cycle_real_mem_fetch_saved_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_same_cycle_fanout_wake_count);
   fflush(stdout);
 }
 
@@ -858,9 +921,17 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
 }
 
 static void rtcore_v02_lsu_update_sideband_pending_count() {
+  unsigned long long pending_waiter_count = 0;
+  for (std::map<
+           unsigned,
+           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator it =
+           g_rtcore_v02_lsu_pending_memory_requests.begin();
+       it != g_rtcore_v02_lsu_pending_memory_requests.end(); ++it) {
+    pending_waiter_count += it->second.size();
+  }
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_pending_request_count =
-      g_rtcore_v02_lsu_pending_memory_requests.size();
+      pending_waiter_count;
   if (g_rtcore_replay_cycle_hook_consumer_stats
           .v02_lsu_sideband_pending_request_count >
       g_rtcore_replay_cycle_hook_consumer_stats
@@ -879,19 +950,107 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
     return 0;
   }
 
-  std::map<unsigned, rtcore_v02_lsu_sideband_request_snapshot>::iterator it =
+  std::map<unsigned,
+           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator it =
       g_rtcore_v02_lsu_pending_memory_requests.find(mf->get_request_uid());
   if (it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
     return 0;
   }
+  if (it->second.empty()) {
+    g_rtcore_v02_lsu_pending_memory_requests.erase(it);
+    return 0;
+  }
 
   if (last_owner_hw_sid != NULL) {
-    *last_owner_hw_sid = it->second.owner_hw_sid;
+    *last_owner_hw_sid = it->second.front().owner_hw_sid;
   }
-  rtcore_record_v02_lsu_sideband_response_completion(it->second,
-                                                     response_cycle);
+  for (std::vector<rtcore_v02_lsu_sideband_request_snapshot>::const_iterator
+           waiter_it = it->second.begin();
+       waiter_it != it->second.end(); ++waiter_it) {
+    rtcore_record_v02_lsu_sideband_response_completion(*waiter_it,
+                                                       response_cycle);
+  }
+  const unsigned completed_count = it->second.size();
+  if (completed_count > 1) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_same_cycle_fanout_wake_count += completed_count;
+  }
   g_rtcore_v02_lsu_pending_memory_requests.erase(it);
-  return 1;
+  return completed_count;
+}
+
+static new_addr_type rtcore_v02_lsu_effective_sideband_addr(
+    const rtcore_replay_cycle_hook_result &result) {
+  if (!rtcore_v02_lsu_same_cycle_merge_stress_enabled()) {
+    return static_cast<new_addr_type>(result.lsu_sideband_aligned_32b_addr);
+  }
+  return static_cast<new_addr_type>(
+      0x70000000ull +
+      static_cast<unsigned long long>(result.lsu_sideband_owner_hw_sid) *
+          0x1000ull);
+}
+
+static void rtcore_v02_lsu_refresh_same_cycle_merge_map(
+    unsigned long long cycle) {
+  if (!g_rtcore_v02_lsu_same_cycle_merge_map_initialized ||
+      g_rtcore_v02_lsu_same_cycle_merge_map_cycle != cycle) {
+    g_rtcore_v02_lsu_same_cycle_merge_uid_by_key.clear();
+    g_rtcore_v02_lsu_same_cycle_merge_map_cycle = cycle;
+    g_rtcore_v02_lsu_same_cycle_merge_map_initialized = true;
+  }
+}
+
+static bool rtcore_try_merge_v02_lsu_sideband_same_cycle(
+    const rtcore_replay_cycle_hook_result &result, new_addr_type addr) {
+  if (!rtcore_v02_lsu_same_cycle_merge_gate_enabled()) {
+    return false;
+  }
+  rtcore_v02_lsu_refresh_same_cycle_merge_map(result.cycle);
+  rtcore_v02_lsu_sideband_same_cycle_merge_key key = {};
+  key.owner_hw_sid = result.lsu_sideband_owner_hw_sid;
+  key.cycle = result.cycle;
+  key.aligned_32b_addr = static_cast<unsigned long long>(addr);
+  key.is_write = result.lsu_sideband_is_write;
+  std::map<rtcore_v02_lsu_sideband_same_cycle_merge_key, unsigned>::iterator
+      key_it = g_rtcore_v02_lsu_same_cycle_merge_uid_by_key.find(key);
+  if (key_it == g_rtcore_v02_lsu_same_cycle_merge_uid_by_key.end()) {
+    return false;
+  }
+  std::map<unsigned,
+           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator
+      pending_it =
+          g_rtcore_v02_lsu_pending_memory_requests.find(key_it->second);
+  if (pending_it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
+    g_rtcore_v02_lsu_same_cycle_merge_uid_by_key.erase(key_it);
+    return false;
+  }
+  pending_it->second.push_back(
+      rtcore_v02_lsu_sideband_snapshot_from_result(result));
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_accepted_count++;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_same_cycle_merge_count++;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_same_cycle_merged_waiter_count++;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_same_cycle_real_mem_fetch_saved_count++;
+  rtcore_v02_lsu_update_sideband_pending_count();
+  return true;
+}
+
+static void rtcore_register_v02_lsu_sideband_same_cycle_merge_source(
+    const rtcore_replay_cycle_hook_result &result, new_addr_type addr,
+    mem_fetch *mf) {
+  if (!rtcore_v02_lsu_same_cycle_merge_gate_enabled() || mf == NULL) {
+    return;
+  }
+  rtcore_v02_lsu_refresh_same_cycle_merge_map(result.cycle);
+  rtcore_v02_lsu_sideband_same_cycle_merge_key key = {};
+  key.owner_hw_sid = result.lsu_sideband_owner_hw_sid;
+  key.cycle = result.cycle;
+  key.aligned_32b_addr = static_cast<unsigned long long>(addr);
+  key.is_write = result.lsu_sideband_is_write;
+  g_rtcore_v02_lsu_same_cycle_merge_uid_by_key[key] = mf->get_request_uid();
 }
 
 static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
@@ -924,9 +1083,12 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
     return;
   }
 
-  const new_addr_type addr =
-      static_cast<new_addr_type>(result.lsu_sideband_aligned_32b_addr);
+  const new_addr_type addr = rtcore_v02_lsu_effective_sideband_addr(result);
   const bool is_write = result.lsu_sideband_is_write;
+  if (rtcore_try_merge_v02_lsu_sideband_same_cycle(result, addr)) {
+    return;
+  }
+
   mem_fetch *mf = mf_allocator->alloc(
       addr, is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R,
       RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write, result.cycle);
@@ -967,8 +1129,9 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
   if (status == HIT && is_write) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_cache_hit_count++;
-    g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()] =
-        rtcore_v02_lsu_sideband_snapshot_from_result(result);
+    g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()].push_back(
+        rtcore_v02_lsu_sideband_snapshot_from_result(result));
+    rtcore_register_v02_lsu_sideband_same_cycle_merge_source(result, addr, mf);
     rtcore_v02_lsu_update_sideband_pending_count();
     return;
   }
@@ -987,8 +1150,9 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
 
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_cache_miss_count++;
-  g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()] =
-      rtcore_v02_lsu_sideband_snapshot_from_result(result);
+  g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()].push_back(
+      rtcore_v02_lsu_sideband_snapshot_from_result(result));
+  rtcore_register_v02_lsu_sideband_same_cycle_merge_source(result, addr, mf);
   rtcore_v02_lsu_update_sideband_pending_count();
 }
 
@@ -1070,20 +1234,26 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
   if (!rtcore_v02_lsu_memory_client_enabled() || mf == NULL) {
     return false;
   }
-  std::map<unsigned, rtcore_v02_lsu_sideband_request_snapshot>::iterator it =
+  std::map<unsigned,
+           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator it =
       g_rtcore_v02_lsu_pending_memory_requests.find(mf->get_request_uid());
   if (it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
     return false;
   }
+  if (it->second.empty()) {
+    g_rtcore_v02_lsu_pending_memory_requests.erase(it);
+    rtcore_v02_lsu_update_sideband_pending_count();
+    return true;
+  }
 
   const unsigned long long current_cycle =
       core->get_gpu()->gpu_sim_cycle + core->get_gpu()->gpu_tot_sim_cycle;
-  unsigned owner_hw_sid = it->second.owner_hw_sid;
+  unsigned owner_hw_sid = it->second.front().owner_hw_sid;
   const new_addr_type response_addr = mf->get_addr();
   mf->set_status(IN_SHADER_FETCHED, current_cycle);
   baseline_cache *cache = config->m_rt_use_l1d ? l1d_cache : l0_cache;
   std::list<mem_fetch *> ready_sideband_responses;
-  if (it->second.is_write) {
+  if (it->second.front().is_write) {
     unsigned completed_count =
         rtcore_complete_v02_lsu_sideband_pending_response(
             mf, current_cycle, &owner_hw_sid);
