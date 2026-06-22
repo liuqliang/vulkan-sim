@@ -479,6 +479,7 @@ struct rtcore_replay_service_tick_result {
     bool ready_progressed;
     bool unit_wake_progressed;
     bool ready_issue_progressed;
+    bool completion_tail_progressed;
     rtcore_replay_service_cycle_identity_snapshot last_progress_identity;
 };
 
@@ -494,6 +495,7 @@ struct rtcore_replay_service_tick_stats {
     unsigned service_stage_memory_and_ready_issue_progressed_count;
     unsigned service_stage_unit_and_ready_issue_progressed_count;
     unsigned service_stage_all_progressed_count;
+    unsigned service_stage_completion_tail_progressed_count;
 };
 
 struct rtcore_replay_v01_stage_data_path_gate_stats {
@@ -864,6 +866,7 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned v01_service_stage_memory_and_ready_issue_progressed_count;
     unsigned v01_service_stage_unit_and_ready_issue_progressed_count;
     unsigned v01_service_stage_all_progressed_count;
+    unsigned v01_service_stage_completion_tail_progressed_count;
     unsigned v01_stage_memory_wake_resource_mask;
     unsigned v01_stage_unit_wake_resource_mask;
     unsigned v01_stage_ready_issue_resource_mask;
@@ -4298,7 +4301,9 @@ static bool rtcore_should_log_replay_model_summary_stats(
         last_snapshot.v01_service_stage_unit_and_ready_issue_progressed_count !=
             snapshot.v01_service_stage_unit_and_ready_issue_progressed_count ||
         last_snapshot.v01_service_stage_all_progressed_count !=
-            snapshot.v01_service_stage_all_progressed_count;
+            snapshot.v01_service_stage_all_progressed_count ||
+        last_snapshot.v01_service_stage_completion_tail_progressed_count !=
+            snapshot.v01_service_stage_completion_tail_progressed_count;
     const bool v01_stage_resource_demand_changed =
         last_snapshot.v01_stage_memory_wake_resource_mask !=
             snapshot.v01_stage_memory_wake_resource_mask ||
@@ -4555,6 +4560,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
             .service_stage_unit_and_ready_issue_progressed_count;
     const unsigned v01_service_stage_all_progressed_count =
         g_rtcore_replay_service_tick_stats.service_stage_all_progressed_count;
+    const unsigned v01_service_stage_completion_tail_progressed_count =
+        g_rtcore_replay_service_tick_stats
+            .service_stage_completion_tail_progressed_count;
     const unsigned v01_stage_memory_wake_resource_mask =
         rtcore_replay_v01_stage_memory_wake_resource_mask();
     const unsigned v01_stage_unit_wake_resource_mask =
@@ -4697,6 +4705,8 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         v01_service_stage_unit_and_ready_issue_progressed_count;
     progress_snapshot.v01_service_stage_all_progressed_count =
         v01_service_stage_all_progressed_count;
+    progress_snapshot.v01_service_stage_completion_tail_progressed_count =
+        v01_service_stage_completion_tail_progressed_count;
     progress_snapshot.v01_stage_memory_wake_resource_mask =
         v01_stage_memory_wake_resource_mask;
     progress_snapshot.v01_stage_unit_wake_resource_mask =
@@ -4866,6 +4876,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "v01_service_stage_memory_and_ready_issue_progressed_count=%u "
            "v01_service_stage_unit_and_ready_issue_progressed_count=%u "
            "v01_service_stage_all_progressed_count=%u "
+           "v01_service_stage_completion_tail_progressed_count=%u "
            "v01_stage_memory_wake_resource_mask=0x%x "
            "v01_stage_unit_wake_resource_mask=0x%x "
            "v01_stage_ready_issue_resource_mask=0x%x "
@@ -4986,6 +4997,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            v01_service_stage_memory_and_ready_issue_progressed_count,
            v01_service_stage_unit_and_ready_issue_progressed_count,
            v01_service_stage_all_progressed_count,
+           v01_service_stage_completion_tail_progressed_count,
            v01_stage_memory_wake_resource_mask,
            v01_stage_unit_wake_resource_mask,
            v01_stage_ready_issue_resource_mask,
@@ -7497,6 +7509,81 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
     return progressed;
 }
 
+static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
+    unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
+    unsigned long long service_cycle = 0)
+{
+    bool progressed = false;
+    const bool collect_unit_stats = rtcore_replay_unit_arbitration_enabled();
+    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+        g_rtcore_replay_ready_queues.ready_node_queue, owner_hw_sid,
+        &budget.node_issue_budget,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats.node_unit_issue_attempts
+            : NULL,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats.node_unit_issued
+            : NULL,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted
+            : NULL,
+        last_identity, service_cycle);
+    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+        g_rtcore_replay_ready_queues.ready_primitive_queue, owner_hw_sid,
+        &budget.primitive_issue_budget,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats
+                   .primitive_unit_issue_attempts
+            : NULL,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued
+            : NULL,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats
+                   .primitive_unit_budget_exhausted
+            : NULL,
+        last_identity, service_cycle);
+    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+        g_rtcore_replay_ready_queues.ready_stack_queue, owner_hw_sid,
+        &budget.stack_issue_budget,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats.stack_unit_issue_attempts
+            : NULL,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats.stack_unit_issued
+            : NULL,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats
+                   .stack_unit_budget_exhausted
+            : NULL,
+        last_identity, service_cycle);
+    return progressed;
+}
+
+static bool rtcore_service_replay_completion_tail_requests_for_owner(
+    unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
+    unsigned long long service_cycle = 0)
+{
+    const bool collect_unit_stats = rtcore_replay_unit_arbitration_enabled();
+    return rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+        g_rtcore_replay_ready_queues.ready_completion_queue, owner_hw_sid,
+        &budget.completion_issue_budget,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats
+                   .completion_unit_issue_attempts
+            : NULL,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats.completion_unit_issued
+            : NULL,
+        collect_unit_stats
+            ? &g_rtcore_replay_unit_arbitration_stats
+                   .completion_unit_budget_exhausted
+            : NULL,
+        last_identity, service_cycle);
+}
+
 static bool rtcore_dequeue_waiting_memory_request(unsigned *thread_uid)
 {
     rtcore_record_replay_queue_header_read(
@@ -7947,6 +8034,7 @@ rtcore_service_replay_tick_for_owner_stage_gated(
     rtcore_replay_service_cycle_identity_snapshot memory_identity = {};
     rtcore_replay_service_cycle_identity_snapshot unit_identity = {};
     rtcore_replay_service_cycle_identity_snapshot ready_identity = {};
+    rtcore_replay_service_cycle_identity_snapshot completion_identity = {};
 
     const bool memory_wake_allowed =
         rtcore_replay_v01_stage_data_path_gate_can_service(
@@ -7994,13 +8082,9 @@ rtcore_service_replay_tick_for_owner_stage_gated(
              .ready_issue_blocked_count);
     const bool ready_issue_progressed =
         ready_issue_allowed
-            ? (rtcore_replay_unit_arbitration_enabled()
-                   ? rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
-                         owner_hw_sid, rtcore_replay_issue_budget_config(),
-                         &ready_identity, service_cycle)
-                   : rtcore_service_replay_ready_requests_with_budget_for_owner(
-                         owner_hw_sid, rtcore_replay_issue_budget_config(),
-                         &ready_identity, service_cycle))
+            ? rtcore_service_replay_non_completion_ready_requests_for_owner(
+                  owner_hw_sid, rtcore_replay_issue_budget_config(),
+                  &ready_identity, service_cycle)
             : false;
 
     const bool completion_tail_allowed =
@@ -8013,12 +8097,22 @@ rtcore_service_replay_tick_for_owner_stage_gated(
              .completion_tail_allowed_count,
         &g_rtcore_replay_v01_stage_data_path_gate_stats
              .completion_tail_blocked_count);
+    const bool completion_tail_progressed =
+        completion_tail_allowed
+            ? rtcore_service_replay_completion_tail_requests_for_owner(
+                  owner_hw_sid, rtcore_replay_issue_budget_config(),
+                  &completion_identity, service_cycle)
+            : false;
 
     result.unit_wake_progressed = unit_progressed;
     result.ready_issue_progressed = ready_issue_progressed;
-    result.ready_progressed = unit_progressed || ready_issue_progressed;
+    result.completion_tail_progressed = completion_tail_progressed;
+    result.ready_progressed =
+        unit_progressed || ready_issue_progressed || completion_tail_progressed;
     result.progressed = result.memory_progressed || result.ready_progressed;
-    if (ready_issue_progressed) {
+    if (completion_tail_progressed) {
+        result.last_progress_identity = completion_identity;
+    } else if (ready_issue_progressed) {
         result.last_progress_identity = ready_identity;
     } else if (unit_progressed) {
         result.last_progress_identity = unit_identity;
@@ -8075,6 +8169,10 @@ static void rtcore_record_replay_service_tick_result(
     if (result.ready_issue_progressed) {
         g_rtcore_replay_service_tick_stats
             .service_stage_ready_issue_progressed_count++;
+    }
+    if (result.completion_tail_progressed) {
+        g_rtcore_replay_service_tick_stats
+            .service_stage_completion_tail_progressed_count++;
     }
     if (result.memory_progressed && result.unit_wake_progressed) {
         g_rtcore_replay_service_tick_stats
