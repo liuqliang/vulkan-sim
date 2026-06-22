@@ -1246,9 +1246,10 @@ static bool rtcore_replay_v01_independent_service_enabled()
 static bool rtcore_replay_v01_stage_data_path_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_V01_STAGE_DATA_PATH_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_V01_STAGE_DATA_PATH_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -1475,9 +1476,10 @@ static bool rtcore_replay_data_path_port_budget_gate_stats_log_enabled()
 static bool rtcore_replay_queue_header_port_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_QUEUE_HEADER_PORT_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_QUEUE_HEADER_PORT_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -1495,9 +1497,10 @@ static bool rtcore_replay_queue_header_port_gate_stats_log_enabled()
 static bool rtcore_replay_queue_entry_port_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_QUEUE_ENTRY_PORT_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_QUEUE_ENTRY_PORT_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -1515,9 +1518,10 @@ static bool rtcore_replay_queue_entry_port_gate_stats_log_enabled()
 static bool rtcore_replay_request_table_port_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORT_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORT_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -1555,9 +1559,10 @@ static bool rtcore_replay_request_table_capacity_gate_stats_log_enabled()
 static bool rtcore_replay_request_state_port_gate_enabled()
 {
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_REQUEST_STATE_PORT_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
+        return rtcore_replay_env_enabled_or_model_preset(
+                   "VULKAN_SIM_RTCORE_REPLAY_REQUEST_STATE_PORT_GATE", true)
+                   ? 1
+                   : 0;
     }();
     return enabled != 0;
 }
@@ -1804,24 +1809,24 @@ static unsigned rtcore_replay_data_path_queue_header_budget_config()
 static unsigned rtcore_replay_queue_header_ports_per_cycle_config()
 {
     static unsigned ports = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_QUEUE_HEADER_PORTS_PER_CYCLE", 0, 0, 1048576,
-        false);
+        "VULKAN_SIM_RTCORE_REPLAY_QUEUE_HEADER_PORTS_PER_CYCLE", 0, 4, 1048576,
+        true);
     return ports;
 }
 
 static unsigned rtcore_replay_queue_entry_ports_per_cycle_config()
 {
     static unsigned ports = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_QUEUE_ENTRY_PORTS_PER_CYCLE", 0, 0, 1048576,
-        false);
+        "VULKAN_SIM_RTCORE_REPLAY_QUEUE_ENTRY_PORTS_PER_CYCLE", 0, 4, 1048576,
+        true);
     return ports;
 }
 
 static unsigned rtcore_replay_request_table_ports_per_cycle_config()
 {
     static unsigned ports = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORTS_PER_CYCLE", 0, 0,
-        1048576, false);
+        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORTS_PER_CYCLE", 0, 1,
+        1048576, true);
     return ports;
 }
 
@@ -1836,8 +1841,8 @@ static unsigned rtcore_replay_request_table_capacity_config()
 static unsigned rtcore_replay_request_state_ports_per_cycle_config()
 {
     static unsigned ports = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_STATE_PORTS_PER_CYCLE", 0, 0,
-        1048576, false);
+        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_STATE_PORTS_PER_CYCLE", 0, 1,
+        1048576, true);
     return ports;
 }
 
@@ -8673,6 +8678,12 @@ static void rtcore_maybe_log_replay_queue_header_port_gate_stats(
     if (g_rtcore_replay_queue_header_port_gate_stats.evaluations == 0) {
         return;
     }
+    if (g_rtcore_replay_queue_header_port_gate_stats_logs_emitted > 0 &&
+        g_rtcore_replay_queue_header_port_gate_stats
+                .last_over_budget_accesses == 0 &&
+        g_rtcore_replay_queue_header_port_gate_stats.last_blocked == 0) {
+        return;
+    }
 
     g_rtcore_replay_queue_header_port_gate_stats_logs_emitted++;
     printf("GPGPU-Sim RTCORE_REPLAY_QUEUE_HEADER_PORT_GATE "
@@ -8714,8 +8725,6 @@ static void rtcore_maybe_log_replay_queue_entry_port_gate_stats(
         return;
     }
     if (g_rtcore_replay_queue_entry_port_gate_stats_logs_emitted > 0 &&
-        g_rtcore_replay_queue_entry_port_gate_stats.last_queue_entry_delta ==
-            0 &&
         g_rtcore_replay_queue_entry_port_gate_stats
                 .last_over_budget_accesses == 0 &&
         g_rtcore_replay_queue_entry_port_gate_stats.last_blocked == 0) {
@@ -8761,8 +8770,6 @@ static void rtcore_maybe_log_replay_request_table_port_gate_stats(
         return;
     }
     if (g_rtcore_replay_request_table_port_gate_stats_logs_emitted > 0 &&
-        g_rtcore_replay_request_table_port_gate_stats
-                .last_request_table_delta == 0 &&
         g_rtcore_replay_request_table_port_gate_stats
                 .last_over_budget_accesses == 0 &&
         g_rtcore_replay_request_table_port_gate_stats.last_blocked == 0) {
@@ -8810,8 +8817,6 @@ static void rtcore_maybe_log_replay_request_state_port_gate_stats(
         return;
     }
     if (g_rtcore_replay_request_state_port_gate_stats_logs_emitted > 0 &&
-        g_rtcore_replay_request_state_port_gate_stats
-                .last_request_state_delta == 0 &&
         g_rtcore_replay_request_state_port_gate_stats
                 .last_over_budget_accesses == 0 &&
         g_rtcore_replay_request_state_port_gate_stats.last_blocked == 0) {
