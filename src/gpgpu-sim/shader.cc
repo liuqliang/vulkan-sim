@@ -118,6 +118,10 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
 extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
     unsigned owner_hw_sid,
     rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
+extern "C" bool rtcore_record_v02_lsu_sideband_memory_response(
+    unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
+    unsigned chunk_id, unsigned chunk_count, unsigned response_target,
+    unsigned long long response_cycle);
 extern "C" bool rtcore_query_replay_warp_completion_shadow(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask,
@@ -263,6 +267,14 @@ static unsigned rtcore_v02_lsu_sideband_offer_stats_log_limit() {
 static bool rtcore_v02_lsu_memory_client_enabled() {
   static int enabled = []() {
     const char *value = getenv("VULKAN_SIM_RTCORE_V02_LSU_MEMORY_CLIENT");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static bool rtcore_v02_lsu_response_wait_gate_enabled() {
+  static int enabled = []() {
+    const char *value = getenv("VULKAN_SIM_RTCORE_V02_LSU_RESPONSE_WAIT_GATE");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
@@ -735,6 +747,18 @@ rtcore_v02_lsu_sideband_snapshot_from_result(
   return snapshot;
 }
 
+static void rtcore_record_v02_lsu_sideband_response_completion(
+    const rtcore_v02_lsu_sideband_request_snapshot &snapshot,
+    unsigned long long response_cycle) {
+  if (!snapshot.valid) {
+    return;
+  }
+  rtcore_record_v02_lsu_sideband_memory_response(
+      snapshot.owner_hw_sid, snapshot.rt_request_id, snapshot.memory_op_seq,
+      snapshot.chunk_id, snapshot.chunk_count, snapshot.response_target,
+      response_cycle);
+}
+
 static void rtcore_v02_lsu_update_sideband_pending_count() {
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_pending_request_count =
@@ -748,6 +772,28 @@ static void rtcore_v02_lsu_update_sideband_pending_count() {
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_sideband_pending_request_count;
   }
+}
+
+static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
+    mem_fetch *mf, unsigned long long response_cycle,
+    unsigned *last_owner_hw_sid) {
+  if (mf == NULL) {
+    return 0;
+  }
+
+  std::map<unsigned, rtcore_v02_lsu_sideband_request_snapshot>::iterator it =
+      g_rtcore_v02_lsu_pending_memory_requests.find(mf->get_request_uid());
+  if (it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
+    return 0;
+  }
+
+  if (last_owner_hw_sid != NULL) {
+    *last_owner_hw_sid = it->second.owner_hw_sid;
+  }
+  rtcore_record_v02_lsu_sideband_response_completion(it->second,
+                                                     response_cycle);
+  g_rtcore_v02_lsu_pending_memory_requests.erase(it);
+  return 1;
 }
 
 static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
@@ -808,6 +854,8 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_immediate_completion_count++;
     stats->rt_total_cacheline_fetched[sid]++;
+    rtcore_record_v02_lsu_sideband_response_completion(
+        rtcore_v02_lsu_sideband_snapshot_from_result(result), result.cycle);
     delete mf;
     return;
   }
@@ -901,15 +949,29 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
 
   const unsigned long long current_cycle =
       core->get_gpu()->gpu_sim_cycle + core->get_gpu()->gpu_tot_sim_cycle;
+  unsigned owner_hw_sid = it->second.owner_hw_sid;
+  const new_addr_type response_addr = mf->get_addr();
   mf->set_status(IN_SHADER_FETCHED, current_cycle);
   baseline_cache *cache = config->m_rt_use_l1d ? l1d_cache : l0_cache;
+  std::list<mem_fetch *> ready_sideband_responses;
   if (cache != NULL) {
     cache->fill(mf, current_cycle);
+    ready_sideband_responses = cache->probe_mshr(response_addr);
+  }
+
+  unsigned completed_count = 0;
+  for (std::list<mem_fetch *>::iterator response_it =
+           ready_sideband_responses.begin();
+       response_it != ready_sideband_responses.end(); ++response_it) {
+    completed_count += rtcore_complete_v02_lsu_sideband_pending_response(
+        *response_it, current_cycle, &owner_hw_sid);
+  }
+  if (completed_count == 0) {
+    completed_count += rtcore_complete_v02_lsu_sideband_pending_response(
+        mf, current_cycle, &owner_hw_sid);
   }
   g_rtcore_replay_cycle_hook_consumer_stats
-      .v02_lsu_sideband_response_wakeup_count++;
-  const unsigned owner_hw_sid = it->second.owner_hw_sid;
-  g_rtcore_v02_lsu_pending_memory_requests.erase(it);
+      .v02_lsu_sideband_response_wakeup_count += completed_count;
   rtcore_v02_lsu_update_sideband_pending_count();
   rtcore_maybe_log_v02_lsu_sideband_offer_stats(owner_hw_sid);
   return true;
@@ -999,7 +1061,8 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
       result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
 
-  const unsigned max_sideband_drain_per_cycle = 4096;
+  const unsigned max_sideband_drain_per_cycle =
+      rtcore_v02_lsu_response_wait_gate_enabled() ? 0 : 4096;
   unsigned drained_sideband_count = 0;
   rtcore_v02_lsu_sideband_request_snapshot sideband_snapshot = {};
   while (drained_sideband_count < max_sideband_drain_per_cycle &&

@@ -39,6 +39,7 @@
 #include <cstring>
 #include <map>
 #include <deque>
+#include <set>
 #define BOOST_FILESYSTEM_VERSION 3
 #define BOOST_FILESYSTEM_NO_DEPRECATED 
 #include <boost/filesystem.hpp>
@@ -291,6 +292,21 @@ struct rtcore_v02_lsu_fetch_descriptor_shadow_stats {
     unsigned same_cycle_merge_candidate_count;
 };
 
+struct rtcore_v02_lsu_response_wait_stats {
+    unsigned gate_evaluations;
+    unsigned gate_armed_count;
+    unsigned gate_blocked_count;
+    unsigned gate_woken_count;
+    unsigned completed_event_count;
+    unsigned response_chunk_count;
+    unsigned duplicate_response_count;
+    unsigned stale_response_count;
+    unsigned pending_request_count;
+    unsigned max_pending_request_count;
+    unsigned max_chunk_count;
+    unsigned response_target_rtcore_count;
+};
+
 struct rtcore_v02_lsu_sideband_request_snapshot {
     bool valid;
     unsigned response_target;
@@ -451,6 +467,12 @@ struct rtcore_replay_lane_request {
     unsigned v01_memory_queue_ready_latency_cycles;
     unsigned long long v01_memory_queue_armed_cycle;
     unsigned long long v01_memory_queue_ready_cycle;
+    bool v02_lsu_response_wait_gate_pending;
+    unsigned v02_lsu_response_wait_event_index;
+    unsigned v02_lsu_response_wait_chunk_count;
+    unsigned v02_lsu_response_wait_completed_chunk_count;
+    unsigned long long v02_lsu_response_wait_armed_cycle;
+    std::set<unsigned> v02_lsu_response_wait_completed_chunks;
     bool v01_issue_state_gate_pending;
     bool v01_issue_state_capacity_gate_pending;
     unsigned v01_issue_state_event_index;
@@ -1041,6 +1063,8 @@ static rtcore_v02_lsu_fetch_descriptor_shadow_stats
     g_rtcore_v02_lsu_fetch_descriptor_shadow_stats;
 static std::map<rtcore_v02_lsu_merge_key, unsigned>
     g_rtcore_v02_lsu_fetch_descriptor_shadow_merge_counts;
+static rtcore_v02_lsu_response_wait_stats
+    g_rtcore_v02_lsu_response_wait_stats;
 static std::map<unsigned,
                 std::deque<rtcore_v02_lsu_sideband_request_snapshot> >
     g_rtcore_v02_lsu_sideband_request_snapshots_by_owner;
@@ -1089,6 +1113,7 @@ static unsigned g_rtcore_replay_unit_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_model_summary_stats_logs_emitted = 0;
 static unsigned g_rtcore_v02_lsu_merge_fanout_probe_logs_emitted = 0;
 static unsigned g_rtcore_v02_lsu_fetch_descriptor_shadow_stats_logs_emitted = 0;
+static unsigned g_rtcore_v02_lsu_response_wait_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_resource_route_stats_logs_emitted = 0;
 static std::map<unsigned, rtcore_replay_model_summary_progress_snapshot>
     g_rtcore_replay_model_summary_progress_snapshots;
@@ -1475,6 +1500,57 @@ static bool rtcore_v02_lsu_sideband_offer_enabled()
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
+}
+
+static bool rtcore_v02_lsu_memory_client_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_V02_LSU_MEMORY_CLIENT");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v02_lsu_response_wait_gate_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_V02_LSU_RESPONSE_WAIT_GATE");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v02_lsu_response_wait_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_V02_LSU_RESPONSE_WAIT_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static unsigned rtcore_v02_lsu_response_wait_stats_log_limit()
+{
+    static unsigned limit = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_V02_LSU_RESPONSE_WAIT_STATS_LOG_LIMIT");
+        if (!value || !value[0]) {
+            return 256u;
+        }
+        char *end = NULL;
+        unsigned long parsed = strtoul(value, &end, 10);
+        if (end == value) {
+            return 256u;
+        }
+        if (parsed > 4096) {
+            return 4096u;
+        }
+        return static_cast<unsigned>(parsed);
+    }();
+    return limit;
 }
 
 static bool rtcore_replay_resource_route_stats_log_enabled()
@@ -4733,6 +4809,39 @@ static void rtcore_maybe_log_v02_lsu_fetch_descriptor_shadow_stats(
     fflush(stdout);
 }
 
+static void rtcore_maybe_log_v02_lsu_response_wait_stats(
+    unsigned owner_hw_sid)
+{
+    if (!rtcore_v02_lsu_response_wait_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_v02_lsu_response_wait_stats_logs_emitted >=
+        rtcore_v02_lsu_response_wait_stats_log_limit()) {
+        return;
+    }
+    g_rtcore_v02_lsu_response_wait_stats_logs_emitted++;
+
+    const rtcore_v02_lsu_response_wait_stats &stats =
+        g_rtcore_v02_lsu_response_wait_stats;
+    printf("GPGPU-Sim RTCORE_V02_LSU_RESPONSE_WAIT_STATS "
+           "owner_hw_sid=%u path_active=1 gate_enabled=%u "
+           "armed_count=%u blocked_count=%u woken_count=%u "
+           "completed_event_count=%u response_chunk_count=%u "
+           "duplicate_response_count=%u stale_response_count=%u "
+           "pending_request_count=%u max_pending_request_count=%u "
+           "max_chunk_count=%u synthetic_memory_latency_added=0 "
+           "response_target_rtcore_count=%u\n",
+           owner_hw_sid,
+           rtcore_v02_lsu_response_wait_gate_enabled() ? 1u : 0u,
+           stats.gate_armed_count, stats.gate_blocked_count,
+           stats.gate_woken_count, stats.completed_event_count,
+           stats.response_chunk_count, stats.duplicate_response_count,
+           stats.stale_response_count, stats.pending_request_count,
+           stats.max_pending_request_count, stats.max_chunk_count,
+           stats.response_target_rtcore_count);
+    fflush(stdout);
+}
+
 static void rtcore_record_v02_lsu_fetch_descriptor_shadow(
     const rtcore_replay_lane_request &request,
     const rtcore_compact_trace_event &event, unsigned long long service_cycle,
@@ -6256,6 +6365,124 @@ static unsigned rtcore_replay_v01_memory_queue_chunks_for_event(
            RTCORE_REPLAY_V01_MEMORY_REQUEST_GRANULE_BYTES;
 }
 
+static bool rtcore_maybe_arm_v02_lsu_response_wait_gate(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    if (!request || !request->valid ||
+        !rtcore_v02_lsu_response_wait_gate_enabled() ||
+        !rtcore_v02_lsu_sideband_offer_enabled() ||
+        !rtcore_v02_lsu_memory_client_enabled()) {
+        return false;
+    }
+    if (request->next_event_index >= request->events.size()) {
+        return false;
+    }
+    if (request->v02_lsu_response_wait_gate_pending) {
+        return false;
+    }
+
+    const unsigned chunk_count =
+        rtcore_replay_v01_memory_queue_chunks_for_event(
+            request->events[request->next_event_index]);
+    if (chunk_count == 0) {
+        return false;
+    }
+
+    rtcore_record_v02_lsu_fetch_descriptor_shadow(
+        *request, request->events[request->next_event_index], service_cycle,
+        chunk_count);
+
+    request->v02_lsu_response_wait_gate_pending = true;
+    request->v02_lsu_response_wait_event_index = request->next_event_index;
+    request->v02_lsu_response_wait_chunk_count = chunk_count;
+    request->v02_lsu_response_wait_completed_chunk_count = 0;
+    request->v02_lsu_response_wait_armed_cycle = service_cycle;
+    request->v02_lsu_response_wait_completed_chunks.clear();
+    request->state = RTCORE_REPLAY_ISSUED_MEMORY;
+    rtcore_record_replay_request_state_write();
+
+    g_rtcore_v02_lsu_response_wait_stats.gate_evaluations++;
+    g_rtcore_v02_lsu_response_wait_stats.gate_armed_count++;
+    g_rtcore_v02_lsu_response_wait_stats.pending_request_count++;
+    if (g_rtcore_v02_lsu_response_wait_stats.pending_request_count >
+        g_rtcore_v02_lsu_response_wait_stats.max_pending_request_count) {
+        g_rtcore_v02_lsu_response_wait_stats.max_pending_request_count =
+            g_rtcore_v02_lsu_response_wait_stats.pending_request_count;
+    }
+    if (chunk_count >
+        g_rtcore_v02_lsu_response_wait_stats.max_chunk_count) {
+        g_rtcore_v02_lsu_response_wait_stats.max_chunk_count = chunk_count;
+    }
+    rtcore_maybe_log_v02_lsu_response_wait_stats(request->owner_hw_sid);
+    return true;
+}
+
+static bool rtcore_v02_lsu_response_wait_gate_ready(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    (void)service_cycle;
+    if (!request || !request->v02_lsu_response_wait_gate_pending) {
+        return true;
+    }
+    g_rtcore_v02_lsu_response_wait_stats.gate_evaluations++;
+    if (request->v02_lsu_response_wait_completed_chunk_count <
+        request->v02_lsu_response_wait_chunk_count) {
+        g_rtcore_v02_lsu_response_wait_stats.gate_blocked_count++;
+        rtcore_maybe_log_v02_lsu_response_wait_stats(request->owner_hw_sid);
+        return false;
+    }
+
+    g_rtcore_v02_lsu_response_wait_stats.gate_woken_count++;
+    g_rtcore_v02_lsu_response_wait_stats.completed_event_count++;
+    if (g_rtcore_v02_lsu_response_wait_stats.pending_request_count > 0) {
+        g_rtcore_v02_lsu_response_wait_stats.pending_request_count--;
+    }
+    request->v02_lsu_response_wait_gate_pending = false;
+    request->v02_lsu_response_wait_completed_chunks.clear();
+    rtcore_maybe_log_v02_lsu_response_wait_stats(request->owner_hw_sid);
+    return true;
+}
+
+static bool rtcore_record_v02_lsu_response_wait_chunk(
+    unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
+    unsigned chunk_id, unsigned chunk_count, unsigned response_target,
+    unsigned long long response_cycle)
+{
+    (void)response_cycle;
+    if (!rtcore_v02_lsu_response_wait_gate_enabled()) {
+        return false;
+    }
+
+    std::map<unsigned, rtcore_replay_lane_request>::iterator it =
+        g_rtcore_replay_lane_requests.find(rt_request_id);
+    if (it == g_rtcore_replay_lane_requests.end() || !it->second.valid ||
+        it->second.owner_hw_sid != owner_hw_sid ||
+        !it->second.v02_lsu_response_wait_gate_pending ||
+        it->second.v02_lsu_response_wait_event_index != memory_op_seq ||
+        chunk_id >= it->second.v02_lsu_response_wait_chunk_count ||
+        (chunk_count != 0 &&
+         chunk_count != it->second.v02_lsu_response_wait_chunk_count)) {
+        g_rtcore_v02_lsu_response_wait_stats.stale_response_count++;
+        rtcore_maybe_log_v02_lsu_response_wait_stats(owner_hw_sid);
+        return false;
+    }
+
+    if (!it->second.v02_lsu_response_wait_completed_chunks.insert(chunk_id)
+             .second) {
+        g_rtcore_v02_lsu_response_wait_stats.duplicate_response_count++;
+        rtcore_maybe_log_v02_lsu_response_wait_stats(owner_hw_sid);
+        return false;
+    }
+
+    it->second.v02_lsu_response_wait_completed_chunk_count++;
+    g_rtcore_v02_lsu_response_wait_stats.response_chunk_count++;
+    if (response_target == RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE) {
+        g_rtcore_v02_lsu_response_wait_stats.response_target_rtcore_count++;
+    }
+    rtcore_maybe_log_v02_lsu_response_wait_stats(owner_hw_sid);
+    return true;
+}
+
 static void rtcore_maybe_log_replay_v01_memory_queue_gate_stats(
     const rtcore_replay_lane_request &request, bool armed, bool blocked,
     bool woken, bool capacity_blocked, unsigned released_chunks,
@@ -7772,6 +7999,7 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
     bool v01_memory_queue_resolved_this_step = false;
     bool v01_issue_state_resolved_this_step = false;
     bool memory_contention_resolved_this_step = false;
+    bool v02_lsu_response_wait_resolved_this_step = false;
     if (it->second.unit_queue_capacity_gate_pending) {
         if (!rtcore_replay_unit_queue_capacity_gate_ready(&it->second)) {
             return false;
@@ -7806,6 +8034,13 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
         }
         v01_memory_queue_resolved_this_step = true;
     }
+    if (it->second.v02_lsu_response_wait_gate_pending) {
+        if (!rtcore_v02_lsu_response_wait_gate_ready(&it->second,
+                                                     service_cycle)) {
+            return false;
+        }
+        v02_lsu_response_wait_resolved_this_step = true;
+    }
     if (it->second.memory_contention_capacity_gate_pending) {
         if (!rtcore_replay_memory_contention_capacity_gate_ready(
                 &it->second, service_cycle)) {
@@ -7838,18 +8073,26 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
                 RTCORE_TRACE_OVERFLOW_SUMMARY) {
             rtcore_record_replay_overflow_summary_estimate(it->second);
         }
-        if (!v01_memory_queue_resolved_this_step &&
+        if (!v02_lsu_response_wait_resolved_this_step &&
+            rtcore_maybe_arm_v02_lsu_response_wait_gate(&it->second,
+                                                        service_cycle)) {
+            return true;
+        }
+        if (!v02_lsu_response_wait_resolved_this_step &&
+            !v01_memory_queue_resolved_this_step &&
             rtcore_maybe_arm_replay_v01_memory_queue_gate(&it->second,
                                                           service_cycle)) {
             return true;
         }
-        if (!rtcore_replay_v01_memory_queue_gate_enabled() &&
+        if (!v02_lsu_response_wait_resolved_this_step &&
+            !rtcore_replay_v01_memory_queue_gate_enabled() &&
             !memory_contention_resolved_this_step &&
             rtcore_maybe_arm_replay_memory_contention_gate(&it->second,
                                                            service_cycle)) {
             return true;
         }
-        if (rtcore_maybe_arm_replay_memory_wake_latency_gate(&it->second,
+        if (!v02_lsu_response_wait_resolved_this_step &&
+            rtcore_maybe_arm_replay_memory_wake_latency_gate(&it->second,
                                                              service_cycle)) {
             return true;
         }
@@ -9416,6 +9659,16 @@ extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
     }
     queue_it->second.pop_front();
     return true;
+}
+
+extern "C" bool rtcore_record_v02_lsu_sideband_memory_response(
+    unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
+    unsigned chunk_id, unsigned chunk_count, unsigned response_target,
+    unsigned long long response_cycle)
+{
+    return rtcore_record_v02_lsu_response_wait_chunk(
+        owner_hw_sid, rt_request_id, memory_op_seq, chunk_id, chunk_count,
+        response_target, response_cycle);
 }
 
 extern "C" bool rtcore_service_replay_cycle_for_sm(
