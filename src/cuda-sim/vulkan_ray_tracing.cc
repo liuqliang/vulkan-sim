@@ -194,6 +194,8 @@ static const unsigned RTCORE_REPLAY_V01_NODE_LATENCY_CYCLES = 1;
 static const unsigned RTCORE_REPLAY_V01_PRIMITIVE_LATENCY_CYCLES = 4;
 static const unsigned RTCORE_REPLAY_V01_STACK_LATENCY_CYCLES = 1;
 static const unsigned RTCORE_REPLAY_V01_COMPLETION_LATENCY_CYCLES = 1;
+static const unsigned RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES = 32;
+static const unsigned RTCORE_V02_LSU_TRANSACTION_IDENTITY_FIELD_COUNT = 10;
 
 enum rtcore_compact_trace_event_type {
     RTCORE_TRACE_NODE_FETCH = 0,
@@ -224,6 +226,55 @@ enum rtcore_replay_v01_resource_route {
     RTCORE_REPLAY_V01_ROUTE_STACK,
     RTCORE_REPLAY_V01_ROUTE_COMPLETION,
     RTCORE_REPLAY_V01_ROUTE_INVALID = 255,
+};
+
+enum rtcore_v02_lsu_access_kind {
+    RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE = 0,
+    RTCORE_V02_LSU_ACCESS_NODE_FETCH,
+    RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH,
+    RTCORE_V02_LSU_ACCESS_STACK_LOAD,
+    RTCORE_V02_LSU_ACCESS_STACK_STORE,
+    RTCORE_V02_LSU_ACCESS_RESULT_STORE,
+    RTCORE_V02_LSU_ACCESS_KIND_COUNT,
+};
+
+enum rtcore_v02_lsu_response_target {
+    RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE = 1,
+};
+
+struct rtcore_v02_lsu_memory_transaction_identity {
+    unsigned response_target;
+    unsigned owner_hw_sid;
+    unsigned rt_request_id;
+    unsigned lane_id;
+    unsigned memory_op_seq;
+    unsigned chunk_id;
+    unsigned chunk_count;
+    unsigned access_kind;
+    unsigned long long aligned_32b_addr;
+    bool is_write;
+    unsigned long long issue_cycle;
+};
+
+struct rtcore_v02_lsu_merge_key {
+    unsigned owner_hw_sid;
+    unsigned long long issue_cycle;
+    unsigned long long aligned_32b_addr;
+    bool is_write;
+
+    bool operator<(const rtcore_v02_lsu_merge_key &other) const
+    {
+        if (owner_hw_sid != other.owner_hw_sid) {
+            return owner_hw_sid < other.owner_hw_sid;
+        }
+        if (issue_cycle != other.issue_cycle) {
+            return issue_cycle < other.issue_cycle;
+        }
+        if (aligned_32b_addr != other.aligned_32b_addr) {
+            return aligned_32b_addr < other.aligned_32b_addr;
+        }
+        return is_write < other.is_write;
+    }
 };
 
 enum rtcore_compact_trace_node_kind {
@@ -1000,6 +1051,7 @@ static unsigned
     g_rtcore_replay_v01_independent_service_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_unit_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_model_summary_stats_logs_emitted = 0;
+static unsigned g_rtcore_v02_lsu_merge_fanout_probe_logs_emitted = 0;
 static unsigned g_rtcore_replay_resource_route_stats_logs_emitted = 0;
 static std::map<unsigned, rtcore_replay_model_summary_progress_snapshot>
     g_rtcore_replay_model_summary_progress_snapshots;
@@ -1353,6 +1405,16 @@ static bool rtcore_replay_model_summary_stats_log_enabled()
     static int enabled = []() {
         const char *value =
             getenv("VULKAN_SIM_RTCORE_REPLAY_MODEL_SUMMARY_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v02_lsu_merge_fanout_probe_log_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_V02_LSU_MERGE_FANOUT_PROBE_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -4518,6 +4580,112 @@ static bool rtcore_should_log_replay_model_summary_stats(
     return true;
 }
 
+static unsigned long long rtcore_v02_lsu_align_32b(unsigned long long address)
+{
+    const unsigned long long mask =
+        static_cast<unsigned long long>(RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES) -
+        1ULL;
+    return address & ~mask;
+}
+
+static rtcore_v02_lsu_memory_transaction_identity
+rtcore_v02_lsu_make_probe_identity(unsigned owner_hw_sid,
+                                   unsigned rt_request_id, unsigned lane_id,
+                                   unsigned memory_op_seq, unsigned access_kind,
+                                   unsigned long long byte_address,
+                                   bool is_write,
+                                   unsigned long long issue_cycle)
+{
+    rtcore_v02_lsu_memory_transaction_identity identity;
+    identity.response_target = RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE;
+    identity.owner_hw_sid = owner_hw_sid;
+    identity.rt_request_id = rt_request_id;
+    identity.lane_id = lane_id;
+    identity.memory_op_seq = memory_op_seq;
+    identity.chunk_id = 0;
+    identity.chunk_count = 1;
+    identity.access_kind = access_kind;
+    identity.aligned_32b_addr = rtcore_v02_lsu_align_32b(byte_address);
+    identity.is_write = is_write;
+    identity.issue_cycle = issue_cycle;
+    return identity;
+}
+
+static rtcore_v02_lsu_merge_key rtcore_v02_lsu_merge_key_for_identity(
+    const rtcore_v02_lsu_memory_transaction_identity &identity)
+{
+    rtcore_v02_lsu_merge_key key;
+    key.owner_hw_sid = identity.owner_hw_sid;
+    key.issue_cycle = identity.issue_cycle;
+    key.aligned_32b_addr = identity.aligned_32b_addr;
+    key.is_write = identity.is_write;
+    return key;
+}
+
+static void rtcore_maybe_log_v02_lsu_merge_fanout_probe(
+    unsigned owner_hw_sid)
+{
+    if (!rtcore_v02_lsu_merge_fanout_probe_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_v02_lsu_merge_fanout_probe_logs_emitted > 0) {
+        return;
+    }
+
+    std::vector<rtcore_v02_lsu_memory_transaction_identity> descriptors;
+    descriptors.push_back(rtcore_v02_lsu_make_probe_identity(
+        owner_hw_sid, 100, 0, 1, RTCORE_V02_LSU_ACCESS_NODE_FETCH, 0x1004,
+        false, 12));
+    descriptors.push_back(rtcore_v02_lsu_make_probe_identity(
+        owner_hw_sid, 101, 1, 1, RTCORE_V02_LSU_ACCESS_NODE_FETCH, 0x1018,
+        false, 12));
+    descriptors.push_back(rtcore_v02_lsu_make_probe_identity(
+        owner_hw_sid, 102, 2, 1, RTCORE_V02_LSU_ACCESS_NODE_FETCH, 0x1008,
+        false, 13));
+
+    std::map<rtcore_v02_lsu_merge_key,
+             std::vector<rtcore_v02_lsu_memory_transaction_identity> >
+        merge_table;
+    unsigned response_target_rtcore_count = 0;
+    for (std::vector<rtcore_v02_lsu_memory_transaction_identity>::const_iterator
+             it = descriptors.begin();
+         it != descriptors.end(); ++it) {
+        if (it->response_target == RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE) {
+            response_target_rtcore_count++;
+        }
+        merge_table[rtcore_v02_lsu_merge_key_for_identity(*it)].push_back(*it);
+    }
+
+    unsigned same_cycle_merge_count = 0;
+    unsigned same_cycle_merged_waiter_count = 0;
+    for (std::map<rtcore_v02_lsu_merge_key,
+                  std::vector<rtcore_v02_lsu_memory_transaction_identity> >::
+             const_iterator it = merge_table.begin();
+         it != merge_table.end(); ++it) {
+        if (it->second.size() > 1) {
+            same_cycle_merge_count++;
+            same_cycle_merged_waiter_count +=
+                static_cast<unsigned>(it->second.size());
+        }
+    }
+
+    g_rtcore_v02_lsu_merge_fanout_probe_logs_emitted++;
+    printf("GPGPU-Sim RTCORE_V02_LSU_MERGE_FANOUT_PROBE "
+           "owner_hw_sid=%u path_active=0 request_granule_bytes=%u "
+           "descriptor_identity_fields=%u input_request_count=%u "
+           "unique_transaction_count=%u same_cycle_merge_count=%u "
+           "same_cycle_merged_waiter_count=%u fanout_wake_count=%u "
+           "cross_cycle_merge_count=0 response_target_rtcore_count=%u "
+           "synthetic_memory_latency_added=0 access_kind_count=%u\n",
+           owner_hw_sid, RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES,
+           RTCORE_V02_LSU_TRANSACTION_IDENTITY_FIELD_COUNT,
+           static_cast<unsigned>(descriptors.size()),
+           static_cast<unsigned>(merge_table.size()), same_cycle_merge_count,
+           same_cycle_merged_waiter_count, same_cycle_merged_waiter_count,
+           response_target_rtcore_count, RTCORE_V02_LSU_ACCESS_KIND_COUNT);
+    fflush(stdout);
+}
+
 static void rtcore_maybe_log_replay_model_summary_stats(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -5177,6 +5345,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            RTCORE_REPLAY_V01_MEMORY_REQUEST_GRANULE_BYTES,
            service_cycle);
     fflush(stdout);
+    rtcore_maybe_log_v02_lsu_merge_fanout_probe(owner_hw_sid);
 }
 
 static bool rtcore_consider_oldest_ready_queue_front(
