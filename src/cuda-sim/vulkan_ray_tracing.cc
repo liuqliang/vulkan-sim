@@ -1041,8 +1041,9 @@ static rtcore_v02_lsu_fetch_descriptor_shadow_stats
     g_rtcore_v02_lsu_fetch_descriptor_shadow_stats;
 static std::map<rtcore_v02_lsu_merge_key, unsigned>
     g_rtcore_v02_lsu_fetch_descriptor_shadow_merge_counts;
-static rtcore_v02_lsu_sideband_request_snapshot
-    g_rtcore_v02_lsu_sideband_request_snapshot;
+static std::map<unsigned,
+                std::deque<rtcore_v02_lsu_sideband_request_snapshot> >
+    g_rtcore_v02_lsu_sideband_request_snapshots_by_owner;
 static rtcore_service_tick_stats_snapshot
     g_rtcore_replay_service_tick_stats_snapshot;
 static unsigned g_rtcore_replay_service_tick_stats_logs_emitted = 0;
@@ -4797,29 +4798,22 @@ static void rtcore_record_v02_lsu_fetch_descriptor_shadow(
                 request, request.next_event_index, chunk_id, chunk_count,
                 access_kind, chunk_address, service_cycle);
         if (sideband_offer_enabled) {
-            g_rtcore_v02_lsu_sideband_request_snapshot.valid = true;
-            g_rtcore_v02_lsu_sideband_request_snapshot.response_target =
-                identity.response_target;
-            g_rtcore_v02_lsu_sideband_request_snapshot.owner_hw_sid =
-                identity.owner_hw_sid;
-            g_rtcore_v02_lsu_sideband_request_snapshot.rt_request_id =
-                identity.rt_request_id;
-            g_rtcore_v02_lsu_sideband_request_snapshot.lane_id =
-                identity.lane_id;
-            g_rtcore_v02_lsu_sideband_request_snapshot.memory_op_seq =
-                identity.memory_op_seq;
-            g_rtcore_v02_lsu_sideband_request_snapshot.chunk_id =
-                identity.chunk_id;
-            g_rtcore_v02_lsu_sideband_request_snapshot.chunk_count =
-                identity.chunk_count;
-            g_rtcore_v02_lsu_sideband_request_snapshot.access_kind =
-                identity.access_kind;
-            g_rtcore_v02_lsu_sideband_request_snapshot.aligned_32b_addr =
-                identity.aligned_32b_addr;
-            g_rtcore_v02_lsu_sideband_request_snapshot.is_write =
-                identity.is_write;
-            g_rtcore_v02_lsu_sideband_request_snapshot.issue_cycle =
-                identity.issue_cycle;
+            rtcore_v02_lsu_sideband_request_snapshot snapshot = {};
+            snapshot.valid = true;
+            snapshot.response_target = identity.response_target;
+            snapshot.owner_hw_sid = identity.owner_hw_sid;
+            snapshot.rt_request_id = identity.rt_request_id;
+            snapshot.lane_id = identity.lane_id;
+            snapshot.memory_op_seq = identity.memory_op_seq;
+            snapshot.chunk_id = identity.chunk_id;
+            snapshot.chunk_count = identity.chunk_count;
+            snapshot.access_kind = identity.access_kind;
+            snapshot.aligned_32b_addr = identity.aligned_32b_addr;
+            snapshot.is_write = identity.is_write;
+            snapshot.issue_cycle = identity.issue_cycle;
+            g_rtcore_v02_lsu_sideband_request_snapshots_by_owner
+                [identity.owner_hw_sid]
+                    .push_back(snapshot);
         }
         if (descriptor_shadow_log_enabled) {
             if (identity.response_target ==
@@ -9278,8 +9272,6 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
     if (!result.service_enabled) {
         return result;
     }
-    g_rtcore_v02_lsu_sideband_request_snapshot =
-        rtcore_v02_lsu_sideband_request_snapshot();
 
     const rtcore_replay_data_path_access_snapshot data_path_before =
         rtcore_get_replay_data_path_access_snapshot();
@@ -9386,9 +9378,44 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
         *identity_snapshot = result.tick_result.last_progress_identity;
     }
     if (sideband_snapshot) {
-        *sideband_snapshot = g_rtcore_v02_lsu_sideband_request_snapshot;
+        *sideband_snapshot = rtcore_v02_lsu_sideband_request_snapshot();
+        std::map<unsigned,
+                 std::deque<rtcore_v02_lsu_sideband_request_snapshot> >::
+            iterator queue_it =
+                g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.find(
+                    owner_hw_sid);
+        if (queue_it !=
+                g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.end() &&
+            !queue_it->second.empty()) {
+            *sideband_snapshot = queue_it->second.front();
+            queue_it->second.pop_front();
+        }
     }
     return result.tick_result.progressed;
+}
+
+extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
+    unsigned owner_hw_sid,
+    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+{
+    if (sideband_snapshot) {
+        *sideband_snapshot = rtcore_v02_lsu_sideband_request_snapshot();
+    }
+    std::map<unsigned,
+             std::deque<rtcore_v02_lsu_sideband_request_snapshot> >::
+        iterator queue_it =
+            g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.find(
+                owner_hw_sid);
+    if (queue_it ==
+            g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.end() ||
+        queue_it->second.empty()) {
+        return false;
+    }
+    if (sideband_snapshot) {
+        *sideband_snapshot = queue_it->second.front();
+    }
+    queue_it->second.pop_front();
+    return true;
 }
 
 extern "C" bool rtcore_service_replay_cycle_for_sm(

@@ -115,6 +115,9 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot,
     rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
+extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
+    unsigned owner_hw_sid,
+    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
 extern "C" bool rtcore_query_replay_warp_completion_shadow(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask,
@@ -235,6 +238,26 @@ static bool rtcore_v02_lsu_sideband_offer_log_enabled() {
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
+}
+
+static unsigned rtcore_v02_lsu_sideband_offer_stats_log_limit() {
+  static unsigned cached_limit = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_OFFER_LOG_LIMIT");
+    if (value == NULL || *value == '\0') {
+      return 256u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value) {
+      return 256u;
+    }
+    if (parsed > 4096) {
+      return 4096u;
+    }
+    return static_cast<unsigned>(parsed);
+  }();
+  return cached_limit;
 }
 
 static bool rtcore_v02_lsu_memory_client_enabled() {
@@ -637,7 +660,8 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
   if (!rtcore_v02_lsu_sideband_offer_log_enabled()) {
     return;
   }
-  if (g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted >= 256) {
+  if (g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted >=
+      rtcore_v02_lsu_sideband_offer_stats_log_limit()) {
     return;
   }
   g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted++;
@@ -807,6 +831,62 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
   rtcore_v02_lsu_update_sideband_pending_count();
 }
 
+static rtcore_replay_cycle_hook_result
+rtcore_make_result_with_v02_lsu_sideband_snapshot(
+    const rtcore_replay_cycle_hook_result &base,
+    const rtcore_v02_lsu_sideband_request_snapshot &snapshot) {
+  rtcore_replay_cycle_hook_result result = base;
+  result.lsu_sideband_valid = snapshot.valid;
+  result.lsu_sideband_response_target = snapshot.response_target;
+  result.lsu_sideband_owner_hw_sid = snapshot.owner_hw_sid;
+  result.lsu_sideband_rt_request_id = snapshot.rt_request_id;
+  result.lsu_sideband_lane_id = snapshot.lane_id;
+  result.lsu_sideband_memory_op_seq = snapshot.memory_op_seq;
+  result.lsu_sideband_chunk_id = snapshot.chunk_id;
+  result.lsu_sideband_chunk_count = snapshot.chunk_count;
+  result.lsu_sideband_access_kind = snapshot.access_kind;
+  result.lsu_sideband_aligned_32b_addr = snapshot.aligned_32b_addr;
+  result.lsu_sideband_is_write = snapshot.is_write;
+  result.lsu_sideband_issue_cycle = snapshot.issue_cycle;
+  return result;
+}
+
+static void rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
+    const rtcore_replay_cycle_hook_result &result,
+    shader_core_mem_fetch_allocator *mf_allocator,
+    const shader_core_config *config, shader_core_ctx *core,
+    baseline_cache *l1d_cache, baseline_cache *l0_cache,
+    shader_core_stats *stats, unsigned sid) {
+  if (!result.lsu_sideband_valid) {
+    return;
+  }
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_offered_count++;
+  if (result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_NODE_FETCH) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_node_offer_count++;
+  } else if (result.lsu_sideband_access_kind ==
+             RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_primitive_offer_count++;
+  }
+  if (result.lsu_sideband_response_target ==
+      RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_response_target_rtcore_count++;
+  }
+  if (result.lsu_sideband_chunk_count >
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_max_chunk_count) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_max_chunk_count =
+        result.lsu_sideband_chunk_count;
+  }
+  rtcore_maybe_accept_v02_lsu_sideband_memory_client(
+      result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
+  rtcore_maybe_log_v02_lsu_sideband_offer_stats(result.owner_hw_sid);
+}
+
 static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
     mem_fetch *mf, const shader_core_config *config, shader_core_ctx *core,
     baseline_cache *l1d_cache, baseline_cache *l0_cache) {
@@ -916,32 +996,22 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   if (result.ready_progressed) {
     g_rtcore_replay_cycle_hook_consumer_stats.ready_progressed_results++;
   }
-  if (result.lsu_sideband_valid) {
-    g_rtcore_replay_cycle_hook_consumer_stats
-        .v02_lsu_sideband_offered_count++;
-    if (result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_NODE_FETCH) {
-      g_rtcore_replay_cycle_hook_consumer_stats
-          .v02_lsu_sideband_node_offer_count++;
-    } else if (result.lsu_sideband_access_kind ==
-               RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH) {
-      g_rtcore_replay_cycle_hook_consumer_stats
-          .v02_lsu_sideband_primitive_offer_count++;
-    }
-    if (result.lsu_sideband_response_target ==
-        RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE) {
-      g_rtcore_replay_cycle_hook_consumer_stats
-          .v02_lsu_sideband_response_target_rtcore_count++;
-    }
-    if (result.lsu_sideband_chunk_count >
-        g_rtcore_replay_cycle_hook_consumer_stats
-            .v02_lsu_sideband_max_chunk_count) {
-      g_rtcore_replay_cycle_hook_consumer_stats
-          .v02_lsu_sideband_max_chunk_count =
-          result.lsu_sideband_chunk_count;
-    }
-    rtcore_maybe_accept_v02_lsu_sideband_memory_client(
-        result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
-    rtcore_maybe_log_v02_lsu_sideband_offer_stats(result.owner_hw_sid);
+  rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
+      result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
+
+  const unsigned max_sideband_drain_per_cycle = 4096;
+  unsigned drained_sideband_count = 0;
+  rtcore_v02_lsu_sideband_request_snapshot sideband_snapshot = {};
+  while (drained_sideband_count < max_sideband_drain_per_cycle &&
+         rtcore_pop_v02_lsu_sideband_request_for_sm(result.owner_hw_sid,
+                                                    &sideband_snapshot)) {
+    const rtcore_replay_cycle_hook_result drained_result =
+        rtcore_make_result_with_v02_lsu_sideband_snapshot(result,
+                                                          sideband_snapshot);
+    rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
+        drained_result, mf_allocator, config, core, l1d_cache, l0_cache, stats,
+        sid);
+    drained_sideband_count++;
   }
 }
 
