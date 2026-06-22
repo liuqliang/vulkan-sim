@@ -206,11 +206,21 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_node_offer_count;
   unsigned long long v02_lsu_sideband_primitive_offer_count;
   unsigned long long v02_lsu_sideband_response_target_rtcore_count;
+  unsigned long long v02_lsu_sideband_cache_request_count;
+  unsigned long long v02_lsu_sideband_cache_hit_count;
+  unsigned long long v02_lsu_sideband_cache_miss_count;
+  unsigned long long v02_lsu_sideband_cache_reservation_fail_count;
+  unsigned long long v02_lsu_sideband_immediate_completion_count;
+  unsigned long long v02_lsu_sideband_response_wakeup_count;
+  unsigned long long v02_lsu_sideband_pending_request_count;
+  unsigned long long v02_lsu_sideband_max_pending_request_count;
   unsigned v02_lsu_sideband_max_chunk_count;
 };
 
 static rtcore_replay_cycle_hook_consumer_stats
     g_rtcore_replay_cycle_hook_consumer_stats = {};
+static std::map<unsigned, rtcore_v02_lsu_sideband_request_snapshot>
+    g_rtcore_v02_lsu_pending_memory_requests;
 static unsigned g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted = 0;
 
 static const unsigned RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE = 1;
@@ -222,6 +232,14 @@ static const unsigned RTCORE_V02_LSU_TRANSACTION_IDENTITY_FIELD_COUNT = 10;
 static bool rtcore_v02_lsu_sideband_offer_log_enabled() {
   static int enabled = []() {
     const char *value = getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_OFFER_LOG");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static bool rtcore_v02_lsu_memory_client_enabled() {
+  static int enabled = []() {
+    const char *value = getenv("VULKAN_SIM_RTCORE_V02_LSU_MEMORY_CLIENT");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
@@ -625,13 +643,17 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
   g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted++;
 
   printf("GPGPU-Sim RTCORE_V02_LSU_SIDEBAND_OFFER_STATS "
-         "owner_hw_sid=%u path_active=0 rt_unit_consumer_visible=1 "
+         "owner_hw_sid=%u path_active=%u rt_unit_consumer_visible=1 "
          "offered_count=%llu accepted_count=%llu rejected_count=%llu "
          "real_mem_fetch_count=%llu request_granule_bytes=%u "
          "descriptor_identity_fields=%u node_offer_count=%llu "
          "primitive_offer_count=%llu response_target_rtcore_count=%llu "
-         "max_chunk_count=%u\n",
-         owner_hw_sid,
+         "max_chunk_count=%u memory_client_enabled=%u "
+         "cache_request_count=%llu cache_hit_count=%llu "
+         "cache_miss_count=%llu cache_reservation_fail_count=%llu "
+         "immediate_completion_count=%llu response_wakeup_count=%llu "
+         "pending_request_count=%llu max_pending_request_count=%llu\n",
+         owner_hw_sid, rtcore_v02_lsu_memory_client_enabled() ? 1 : 0,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_offered_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -649,8 +671,168 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_response_target_rtcore_count,
          g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_max_chunk_count);
+             .v02_lsu_sideband_max_chunk_count,
+         rtcore_v02_lsu_memory_client_enabled() ? 1 : 0,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_cache_request_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_cache_hit_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_cache_miss_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_cache_reservation_fail_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_immediate_completion_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_response_wakeup_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_pending_request_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_max_pending_request_count);
   fflush(stdout);
+}
+
+static rtcore_v02_lsu_sideband_request_snapshot
+rtcore_v02_lsu_sideband_snapshot_from_result(
+    const rtcore_replay_cycle_hook_result &result) {
+  rtcore_v02_lsu_sideband_request_snapshot snapshot = {};
+  snapshot.valid = result.lsu_sideband_valid;
+  snapshot.response_target = result.lsu_sideband_response_target;
+  snapshot.owner_hw_sid = result.lsu_sideband_owner_hw_sid;
+  snapshot.rt_request_id = result.lsu_sideband_rt_request_id;
+  snapshot.lane_id = result.lsu_sideband_lane_id;
+  snapshot.memory_op_seq = result.lsu_sideband_memory_op_seq;
+  snapshot.chunk_id = result.lsu_sideband_chunk_id;
+  snapshot.chunk_count = result.lsu_sideband_chunk_count;
+  snapshot.access_kind = result.lsu_sideband_access_kind;
+  snapshot.aligned_32b_addr = result.lsu_sideband_aligned_32b_addr;
+  snapshot.is_write = result.lsu_sideband_is_write;
+  snapshot.issue_cycle = result.lsu_sideband_issue_cycle;
+  return snapshot;
+}
+
+static void rtcore_v02_lsu_update_sideband_pending_count() {
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_pending_request_count =
+      g_rtcore_v02_lsu_pending_memory_requests.size();
+  if (g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_pending_request_count >
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_max_pending_request_count) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_max_pending_request_count =
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_sideband_pending_request_count;
+  }
+}
+
+static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
+    const rtcore_replay_cycle_hook_result &result,
+    shader_core_mem_fetch_allocator *mf_allocator,
+    const shader_core_config *config, shader_core_ctx *core,
+    baseline_cache *l1d_cache, baseline_cache *l0_cache,
+    shader_core_stats *stats, unsigned sid) {
+  if (!result.lsu_sideband_valid || !rtcore_v02_lsu_memory_client_enabled()) {
+    return;
+  }
+  if (result.lsu_sideband_response_target !=
+          RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE ||
+      result.lsu_sideband_is_write) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_rejected_count++;
+    return;
+  }
+
+  baseline_cache *cache = config->m_rt_use_l1d ? l1d_cache : l0_cache;
+  if (cache == NULL || mf_allocator == NULL || core == NULL || stats == NULL) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_rejected_count++;
+    return;
+  }
+
+  const new_addr_type addr =
+      static_cast<new_addr_type>(result.lsu_sideband_aligned_32b_addr);
+  mem_fetch *mf = mf_allocator->alloc(
+      addr, GLOBAL_ACC_R, RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, false,
+      result.cycle);
+  mf->set_raytrace();
+  mf->set_uncoalesced_addr(addr);
+  mf->set_uncoalesced_base_addr(addr);
+
+  std::list<cache_event> events;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_cache_request_count++;
+  stats->rt_mem_requests++;
+  const enum cache_request_status status =
+      cache->access(mf->get_addr(), mf, result.cycle, events);
+  if (status == RESERVATION_FAIL) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_rejected_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_cache_reservation_fail_count++;
+    delete mf;
+    return;
+  }
+
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_accepted_count++;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_real_mem_fetch_count++;
+  if (status == HIT) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_cache_hit_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_immediate_completion_count++;
+    stats->rt_total_cacheline_fetched[sid]++;
+    delete mf;
+    return;
+  }
+  if (status != MISS && status != SECTOR_MISS) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_rejected_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_cache_reservation_fail_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_accepted_count--;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_real_mem_fetch_count--;
+    delete mf;
+    return;
+  }
+
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_cache_miss_count++;
+  g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()] =
+      rtcore_v02_lsu_sideband_snapshot_from_result(result);
+  rtcore_v02_lsu_update_sideband_pending_count();
+}
+
+static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
+    mem_fetch *mf, const shader_core_config *config, shader_core_ctx *core,
+    baseline_cache *l1d_cache, baseline_cache *l0_cache) {
+  if (!rtcore_v02_lsu_memory_client_enabled() || mf == NULL) {
+    return false;
+  }
+  std::map<unsigned, rtcore_v02_lsu_sideband_request_snapshot>::iterator it =
+      g_rtcore_v02_lsu_pending_memory_requests.find(mf->get_request_uid());
+  if (it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
+    return false;
+  }
+
+  const unsigned long long current_cycle =
+      core->get_gpu()->gpu_sim_cycle + core->get_gpu()->gpu_tot_sim_cycle;
+  mf->set_status(IN_SHADER_FETCHED, current_cycle);
+  baseline_cache *cache = config->m_rt_use_l1d ? l1d_cache : l0_cache;
+  if (cache != NULL) {
+    cache->fill(mf, current_cycle);
+  }
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_response_wakeup_count++;
+  const unsigned owner_hw_sid = it->second.owner_hw_sid;
+  g_rtcore_v02_lsu_pending_memory_requests.erase(it);
+  rtcore_v02_lsu_update_sideband_pending_count();
+  rtcore_maybe_log_v02_lsu_sideband_offer_stats(owner_hw_sid);
+  return true;
 }
 
 static rtcore_replay_cycle_hook_result
@@ -709,7 +891,11 @@ rtcore_maybe_service_replay_cycle_from_rt_unit(
 }
 
 static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
-    const rtcore_replay_cycle_hook_result &result) {
+    const rtcore_replay_cycle_hook_result &result,
+    shader_core_mem_fetch_allocator *mf_allocator,
+    const shader_core_config *config, shader_core_ctx *core,
+    baseline_cache *l1d_cache, baseline_cache *l0_cache,
+    shader_core_stats *stats, unsigned sid) {
   if (!result.hook_enabled) {
     return;
   }
@@ -753,6 +939,8 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
           .v02_lsu_sideband_max_chunk_count =
           result.lsu_sideband_chunk_count;
     }
+    rtcore_maybe_accept_v02_lsu_sideband_memory_client(
+        result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
     rtcore_maybe_log_v02_lsu_sideband_offer_stats(result.owner_hw_sid);
   }
 }
@@ -7740,7 +7928,9 @@ void rt_unit::cycle() {
 
   rtcore_replay_cycle_hook_result replay_cycle_result =
       rtcore_maybe_service_replay_cycle_from_rt_unit(m_sid, current_cycle);
-  rtcore_consume_replay_cycle_hook_result_from_rt_unit(replay_cycle_result);
+  rtcore_consume_replay_cycle_hook_result_from_rt_unit(
+      replay_cycle_result, m_mf_allocator, m_config, m_core,
+      (baseline_cache *)L1D, (baseline_cache *)m_L0_complet, m_stats, m_sid);
 
   // RT unit stats
   if (!pipe_reg.empty()) {
@@ -8536,6 +8726,11 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
 }
 
 void rt_unit::fill(mem_fetch *mf) {
+  if (rtcore_maybe_consume_v02_lsu_sideband_memory_response(
+          mf, m_config, m_core, (baseline_cache *)L1D,
+          (baseline_cache *)m_L0_complet)) {
+    return;
+  }
   // RT-CORE NOTE: Add a new status (IN_SHADER_RT_RESPONSE_FIFO)
   mf->set_status(
       IN_SHADER_LDST_RESPONSE_FIFO,
