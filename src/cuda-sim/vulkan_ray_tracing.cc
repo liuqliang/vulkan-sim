@@ -2154,6 +2154,15 @@ static const unsigned RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK =
     RTCORE_REPLAY_DATA_PATH_RESOURCE_QUEUE_ENTRY_MASK |
     RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_TABLE_MASK |
     RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_STATE_MASK;
+static const unsigned RTCORE_REPLAY_V01_STAGE_MEMORY_WAKE_RESOURCE_MASK =
+    RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
+static const unsigned RTCORE_REPLAY_V01_STAGE_UNIT_WAKE_RESOURCE_MASK =
+    RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
+static const unsigned RTCORE_REPLAY_V01_STAGE_READY_ISSUE_RESOURCE_MASK =
+    RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
+static const unsigned RTCORE_REPLAY_V01_STAGE_COMPLETION_TAIL_RESOURCE_MASK =
+    RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_TABLE_MASK |
+    RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_STATE_MASK;
 
 static unsigned rtcore_replay_data_path_port_budget_resource_mask(
     unsigned queue_header_over_budget, unsigned queue_entry_over_budget,
@@ -2177,22 +2186,22 @@ static unsigned rtcore_replay_data_path_port_budget_resource_mask(
 
 static unsigned rtcore_replay_v01_stage_memory_wake_resource_mask()
 {
-    return RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
+    return RTCORE_REPLAY_V01_STAGE_MEMORY_WAKE_RESOURCE_MASK;
 }
 
 static unsigned rtcore_replay_v01_stage_unit_wake_resource_mask()
 {
-    return RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
+    return RTCORE_REPLAY_V01_STAGE_UNIT_WAKE_RESOURCE_MASK;
 }
 
 static unsigned rtcore_replay_v01_stage_ready_issue_resource_mask()
 {
-    return RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
+    return RTCORE_REPLAY_V01_STAGE_READY_ISSUE_RESOURCE_MASK;
 }
 
 static unsigned rtcore_replay_v01_stage_completion_tail_resource_mask()
 {
-    return RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
+    return RTCORE_REPLAY_V01_STAGE_COMPLETION_TAIL_RESOURCE_MASK;
 }
 
 static void rtcore_update_replay_data_path_port_budget_max(unsigned value,
