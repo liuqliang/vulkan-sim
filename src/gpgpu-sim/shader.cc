@@ -738,7 +738,17 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "issue_bandwidth_issued_count=%llu "
          "issue_bandwidth_deferred_count=%llu "
          "issue_bandwidth_budget_exhausted_count=%llu "
-         "issue_bandwidth_max_deferred_count=%llu\n",
+         "issue_bandwidth_max_deferred_count=%llu "
+         "attribution_summary_enabled=1 "
+         "attribution_issue_backpressure_deferred_count=%llu "
+         "attribution_issue_budget_exhausted_count=%llu "
+         "attribution_cache_request_count=%llu "
+         "attribution_cache_hit_immediate_count=%llu "
+         "attribution_cache_miss_wait_count=%llu "
+         "attribution_cache_reservation_stall_count=%llu "
+         "attribution_response_wakeup_count=%llu "
+         "attribution_response_pending_count=%llu "
+         "attribution_max_response_pending_count=%llu\n",
          owner_hw_sid, rtcore_v02_lsu_memory_client_enabled() ? 1 : 0,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_offered_count,
@@ -794,7 +804,25 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_issue_bandwidth_budget_exhausted_count,
          g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_issue_bandwidth_max_deferred_count);
+             .v02_lsu_sideband_issue_bandwidth_max_deferred_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_issue_bandwidth_deferred_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_issue_bandwidth_budget_exhausted_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_cache_request_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_immediate_completion_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_cache_miss_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_cache_reservation_fail_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_response_wakeup_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_pending_request_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_max_pending_request_count);
   fflush(stdout);
 }
 
