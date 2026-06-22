@@ -10753,6 +10753,12 @@ bool rtcore_v02_lsu_handoff_window_sideband_enabled() {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+bool rtcore_v02_lsu_retire_side_observation_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_V02_LSU_RETIRE_SIDE_OBSERVATION");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 unsigned rtcore_v02_lsu_handoff_window_lane_slot_chunk_count() {
   return (RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE +
           RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES - 1) /
@@ -12105,6 +12111,77 @@ unsigned rtcore_compact_result(unsigned reason, unsigned flags,
          ((completion_seq_low & 0xff) << 12) |
          ((resume_seq_low & 0xff) << 20) |
          ((window_tag_low & 0x7) << 28);
+}
+
+void rtcore_log_v02_lsu_retire_side_observation(
+    const ptx_instruction *pI, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned lane_slot_index,
+    const rtcore_synthetic_handoff_header *window, bool tracked_window,
+    bool matching_context, bool owner_tuple_matches,
+    const rtcore_symbolic_rt_token_key &token_key, bool token_can_retire) {
+  if (!rtcore_v02_lsu_retire_side_observation_enabled()) {
+    return;
+  }
+
+  std::map<rtcore_symbolic_rt_token_key,
+           rtcore_symbolic_rt_token_record>::const_iterator token =
+      g_rtcore_symbolic_rt_tokens.find(token_key);
+  const bool token_live = token != g_rtcore_symbolic_rt_tokens.end();
+  const bool token_completed = token_live && token->second.completed;
+  const unsigned window_result_word =
+      tracked_window && window != NULL ? window->w0 : 0;
+  const bool token_result_match =
+      token_live && tracked_window &&
+      token->second.result_word == window_result_word;
+  const bool completion_seq_match =
+      token_live && tracked_window &&
+      token->second.completion_seq == window->completion_seq;
+  const bool resume_seq_match =
+      token_live && tracked_window &&
+      token->second.resume_seq == window->resume_seq;
+  const bool window_tag_match =
+      token_live && tracked_window &&
+      token->second.window_tag == window->window_tag;
+  const unsigned window_reason =
+      tracked_window && window != NULL ? ((window->w1 >> 8) & 0xff) : 0;
+  const unsigned window_flags =
+      tracked_window && window != NULL ? ((window->w1 >> 16) & 0xff) : 0;
+  const unsigned expected_window_result =
+      tracked_window && window != NULL
+          ? rtcore_compact_result(window_reason, window_flags,
+                                  window->completion_seq, window->resume_seq,
+                                  window->window_tag)
+          : 0;
+  const bool window_result_match =
+      tracked_window && window != NULL &&
+      window->w0 == expected_window_result;
+  const bool result_store_sideband_enabled =
+      rtcore_v02_lsu_handoff_window_sideband_enabled();
+  const bool accepted =
+      tracked_window && matching_context && owner_tuple_matches &&
+      token_can_retire && token_live && token_completed &&
+      token_result_match && window_result_match && completion_seq_match &&
+      resume_seq_match && window_tag_match && result_store_sideband_enabled;
+
+  printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT "
+         "v02-lsu-retire-side-observation (%s:%u), "
+         "observation_enabled=1, observation_path=retire_owned_read, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, tracked_window=%u, matching_context=%u, "
+         "owner_tuple_match=%u, token_live=%u, token_completed=%u, "
+         "token_result_match=%u, window_result_match=%u, "
+         "completion_seq_match=%u, resume_seq_match=%u, "
+         "window_tag_match=%u, result_store_sideband_enabled=%u, "
+         "observation_before_release=1, accepted=%u\n",
+         pI->source_file(), pI->source_line(), context_ptr,
+         handoff_window_base, lane_slot_index, tracked_window ? 1 : 0,
+         matching_context ? 1 : 0, owner_tuple_matches ? 1 : 0,
+         token_live ? 1 : 0, token_completed ? 1 : 0,
+         token_result_match ? 1 : 0, window_result_match ? 1 : 0,
+         completion_seq_match ? 1 : 0, resume_seq_match ? 1 : 0,
+         window_tag_match ? 1 : 0,
+         result_store_sideband_enabled ? 1 : 0, accepted ? 1 : 0);
+  fflush(stdout);
 }
 
 unsigned rtcore_float_to_u32(float value) {
@@ -30728,6 +30805,11 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
     inst_not_implemented(pI);
     return;
   }
+
+  rtcore_log_v02_lsu_retire_side_observation(
+      pI, context_ptr_data.u64, handoff_window_base_data.u64, lane_slot_index,
+      window, tracked_window, matching_context, owner_tuple_matches, token_key,
+      token_can_retire);
 
   // Functional execution reaches here once per active lane; real window release
   // is deferred until a warp-level allocator exists.
