@@ -5034,6 +5034,15 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "v01_stage_data_path_gate_ready_issue_blocked_count=%u "
            "v01_stage_data_path_gate_completion_tail_allowed_count=%u "
            "v01_stage_data_path_gate_completion_tail_blocked_count=%u "
+           "v02_lsu_managed_memory_contract_enabled=1 "
+           "v02_lsu_managed_memory_path_active=0 "
+           "v02_lsu_memory_request_granule_bytes=%u "
+           "v02_lsu_handoff_window_global_memory_contract=1 "
+           "v02_lsu_same_cycle_32b_merge_policy=1 "
+           "v02_lsu_cross_cycle_mshr_merge_required=0 "
+           "v02_lsu_response_fanout_contract=1 "
+           "v02_lsu_synthetic_memory_latency_disabled_when_active=1 "
+           "v02_lsu_response_target_rtcore=1 "
            "max_observed_ready_cycle=%llu\n",
            owner_hw_sid, RTCORE_TRACE_REPLAY_MODEL_NAME,
            rtcore_compact_trace_events_per_lane_config(),
@@ -5165,6 +5174,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
                .completion_tail_allowed_count,
            g_rtcore_replay_v01_stage_data_path_gate_stats
                .completion_tail_blocked_count,
+           RTCORE_REPLAY_V01_MEMORY_REQUEST_GRANULE_BYTES,
            service_cycle);
     fflush(stdout);
 }
