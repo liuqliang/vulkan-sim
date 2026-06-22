@@ -82,6 +82,21 @@ struct rtcore_replay_warp_completion_shadow_snapshot {
   unsigned completed_lane_count;
 };
 
+struct rtcore_v02_lsu_sideband_request_snapshot {
+  bool valid;
+  unsigned response_target;
+  unsigned owner_hw_sid;
+  unsigned rt_request_id;
+  unsigned lane_id;
+  unsigned memory_op_seq;
+  unsigned chunk_id;
+  unsigned chunk_count;
+  unsigned access_kind;
+  unsigned long long aligned_32b_addr;
+  bool is_write;
+  unsigned long long issue_cycle;
+};
+
 extern "C" bool rtcore_symbolic_submit_issue_resources_available(
     unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
     unsigned long long static_inst_pc);
@@ -94,6 +109,12 @@ extern "C" bool rtcore_service_replay_cycle_for_sm_with_identity(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot);
+extern "C" bool
+rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
+    rtcore_replay_service_cycle_identity_snapshot *identity_snapshot,
+    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
 extern "C" bool rtcore_query_replay_warp_completion_shadow(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask,
@@ -155,6 +176,18 @@ struct rtcore_replay_cycle_hook_result {
   unsigned identity_warp_id;
   unsigned identity_active_mask;
   unsigned identity_static_inst_uid;
+  bool lsu_sideband_valid;
+  unsigned lsu_sideband_response_target;
+  unsigned lsu_sideband_owner_hw_sid;
+  unsigned lsu_sideband_rt_request_id;
+  unsigned lsu_sideband_lane_id;
+  unsigned lsu_sideband_memory_op_seq;
+  unsigned lsu_sideband_chunk_id;
+  unsigned lsu_sideband_chunk_count;
+  unsigned lsu_sideband_access_kind;
+  unsigned long long lsu_sideband_aligned_32b_addr;
+  bool lsu_sideband_is_write;
+  unsigned long long lsu_sideband_issue_cycle;
 };
 
 struct rtcore_replay_cycle_hook_consumer_stats {
@@ -166,10 +199,33 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long ready_progressed_results;
   unsigned last_owner_hw_sid;
   unsigned long long last_cycle;
+  unsigned long long v02_lsu_sideband_offered_count;
+  unsigned long long v02_lsu_sideband_accepted_count;
+  unsigned long long v02_lsu_sideband_rejected_count;
+  unsigned long long v02_lsu_sideband_real_mem_fetch_count;
+  unsigned long long v02_lsu_sideband_node_offer_count;
+  unsigned long long v02_lsu_sideband_primitive_offer_count;
+  unsigned long long v02_lsu_sideband_response_target_rtcore_count;
+  unsigned v02_lsu_sideband_max_chunk_count;
 };
 
 static rtcore_replay_cycle_hook_consumer_stats
     g_rtcore_replay_cycle_hook_consumer_stats = {};
+static unsigned g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted = 0;
+
+static const unsigned RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE = 1;
+static const unsigned RTCORE_V02_LSU_ACCESS_NODE_FETCH = 1;
+static const unsigned RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH = 2;
+static const unsigned RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES = 32;
+static const unsigned RTCORE_V02_LSU_TRANSACTION_IDENTITY_FIELD_COUNT = 10;
+
+static bool rtcore_v02_lsu_sideband_offer_log_enabled() {
+  static int enabled = []() {
+    const char *value = getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_OFFER_LOG");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
 
 static bool rtcore_replay_cycle_release_gate_shadow_enabled() {
   static int cached_enabled = -1;
@@ -558,6 +614,45 @@ static void rtcore_record_replay_cycle_hook_smoke(
       ready_progressed, progressed, identity_snapshot);
 }
 
+static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
+    unsigned owner_hw_sid) {
+  if (!rtcore_v02_lsu_sideband_offer_log_enabled()) {
+    return;
+  }
+  if (g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted >= 256) {
+    return;
+  }
+  g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted++;
+
+  printf("GPGPU-Sim RTCORE_V02_LSU_SIDEBAND_OFFER_STATS "
+         "owner_hw_sid=%u path_active=0 rt_unit_consumer_visible=1 "
+         "offered_count=%llu accepted_count=%llu rejected_count=%llu "
+         "real_mem_fetch_count=%llu request_granule_bytes=%u "
+         "descriptor_identity_fields=%u node_offer_count=%llu "
+         "primitive_offer_count=%llu response_target_rtcore_count=%llu "
+         "max_chunk_count=%u\n",
+         owner_hw_sid,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_offered_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_accepted_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_rejected_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_real_mem_fetch_count,
+         RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES,
+         RTCORE_V02_LSU_TRANSACTION_IDENTITY_FIELD_COUNT,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_node_offer_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_primitive_offer_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_response_target_rtcore_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_max_chunk_count);
+  fflush(stdout);
+}
+
 static rtcore_replay_cycle_hook_result
 rtcore_maybe_service_replay_cycle_from_rt_unit(
     unsigned owner_hw_sid, unsigned long long current_cycle) {
@@ -572,9 +667,11 @@ rtcore_maybe_service_replay_cycle_from_rt_unit(
   bool memory_progressed = false;
   bool ready_progressed = false;
   rtcore_replay_service_cycle_identity_snapshot identity_snapshot = {};
-  bool progressed = rtcore_service_replay_cycle_for_sm_with_identity(
-      owner_hw_sid, current_cycle, &service_enabled, &memory_progressed,
-      &ready_progressed, &identity_snapshot);
+  rtcore_v02_lsu_sideband_request_snapshot sideband_snapshot = {};
+  bool progressed =
+      rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
+          owner_hw_sid, current_cycle, &service_enabled, &memory_progressed,
+          &ready_progressed, &identity_snapshot, &sideband_snapshot);
   result.hook_enabled = true;
   result.service_enabled = service_enabled;
   result.memory_progressed = memory_progressed;
@@ -591,6 +688,19 @@ rtcore_maybe_service_replay_cycle_from_rt_unit(
   result.identity_warp_id = identity_snapshot.warp_id;
   result.identity_active_mask = identity_snapshot.active_mask;
   result.identity_static_inst_uid = identity_snapshot.static_inst_uid;
+  result.lsu_sideband_valid = sideband_snapshot.valid;
+  result.lsu_sideband_response_target = sideband_snapshot.response_target;
+  result.lsu_sideband_owner_hw_sid = sideband_snapshot.owner_hw_sid;
+  result.lsu_sideband_rt_request_id = sideband_snapshot.rt_request_id;
+  result.lsu_sideband_lane_id = sideband_snapshot.lane_id;
+  result.lsu_sideband_memory_op_seq = sideband_snapshot.memory_op_seq;
+  result.lsu_sideband_chunk_id = sideband_snapshot.chunk_id;
+  result.lsu_sideband_chunk_count = sideband_snapshot.chunk_count;
+  result.lsu_sideband_access_kind = sideband_snapshot.access_kind;
+  result.lsu_sideband_aligned_32b_addr =
+      sideband_snapshot.aligned_32b_addr;
+  result.lsu_sideband_is_write = sideband_snapshot.is_write;
+  result.lsu_sideband_issue_cycle = sideband_snapshot.issue_cycle;
   rtcore_record_replay_cycle_hook_smoke(owner_hw_sid, current_cycle,
                                         service_enabled, memory_progressed,
                                         ready_progressed, progressed,
@@ -619,6 +729,31 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   }
   if (result.ready_progressed) {
     g_rtcore_replay_cycle_hook_consumer_stats.ready_progressed_results++;
+  }
+  if (result.lsu_sideband_valid) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_offered_count++;
+    if (result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_NODE_FETCH) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_node_offer_count++;
+    } else if (result.lsu_sideband_access_kind ==
+               RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_primitive_offer_count++;
+    }
+    if (result.lsu_sideband_response_target ==
+        RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_response_target_rtcore_count++;
+    }
+    if (result.lsu_sideband_chunk_count >
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_sideband_max_chunk_count) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_max_chunk_count =
+          result.lsu_sideband_chunk_count;
+    }
+    rtcore_maybe_log_v02_lsu_sideband_offer_stats(result.owner_hw_sid);
   }
 }
 
