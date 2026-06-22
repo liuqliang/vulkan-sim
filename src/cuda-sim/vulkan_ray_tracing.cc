@@ -9661,6 +9661,21 @@ extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
     return true;
 }
 
+extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
+    unsigned owner_hw_sid)
+{
+    std::map<unsigned,
+             std::deque<rtcore_v02_lsu_sideband_request_snapshot> >::
+        const_iterator queue_it =
+            g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.find(
+                owner_hw_sid);
+    if (queue_it ==
+        g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.end()) {
+        return 0;
+    }
+    return static_cast<unsigned>(queue_it->second.size());
+}
+
 extern "C" void rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
     unsigned owner_hw_sid, unsigned rt_request_id, unsigned lane_id,
     unsigned memory_op_seq, unsigned access_kind,

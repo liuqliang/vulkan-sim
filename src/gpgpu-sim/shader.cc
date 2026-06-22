@@ -118,6 +118,8 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
 extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
     unsigned owner_hw_sid,
     rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
+extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
+    unsigned owner_hw_sid);
 extern "C" bool rtcore_record_v02_lsu_sideband_memory_response(
     unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
     unsigned chunk_id, unsigned chunk_count, unsigned response_target,
@@ -225,6 +227,11 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_response_wakeup_count;
   unsigned long long v02_lsu_sideband_pending_request_count;
   unsigned long long v02_lsu_sideband_max_pending_request_count;
+  unsigned long long v02_lsu_sideband_issue_bandwidth_evaluations;
+  unsigned long long v02_lsu_sideband_issue_bandwidth_issued_count;
+  unsigned long long v02_lsu_sideband_issue_bandwidth_deferred_count;
+  unsigned long long v02_lsu_sideband_issue_bandwidth_budget_exhausted_count;
+  unsigned long long v02_lsu_sideband_issue_bandwidth_max_deferred_count;
   unsigned v02_lsu_sideband_max_chunk_count;
 };
 
@@ -268,6 +275,35 @@ static unsigned rtcore_v02_lsu_sideband_offer_stats_log_limit() {
     return static_cast<unsigned>(parsed);
   }();
   return cached_limit;
+}
+
+static bool rtcore_v02_lsu_sideband_issue_bandwidth_gate_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_ISSUE_BANDWIDTH_GATE");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static unsigned rtcore_v02_lsu_sideband_issue_budget_per_cycle() {
+  static unsigned budget = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_ISSUE_BUDGET_PER_CYCLE");
+    if (value == NULL || *value == '\0') {
+      return 1u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || parsed == 0) {
+      return 1u;
+    }
+    if (parsed > 4096) {
+      return 4096u;
+    }
+    return static_cast<unsigned>(parsed);
+  }();
+  return budget;
 }
 
 static bool rtcore_v02_lsu_memory_client_enabled() {
@@ -696,7 +732,13 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "immediate_completion_count=%llu response_wakeup_count=%llu "
          "pending_request_count=%llu max_pending_request_count=%llu "
          "handoff_acquire_offer_count=%llu result_store_offer_count=%llu "
-         "read_offer_count=%llu write_offer_count=%llu\n",
+         "read_offer_count=%llu write_offer_count=%llu "
+         "issue_bandwidth_gate_enabled=%u issue_budget_per_cycle=%u "
+         "issue_bandwidth_evaluations=%llu "
+         "issue_bandwidth_issued_count=%llu "
+         "issue_bandwidth_deferred_count=%llu "
+         "issue_bandwidth_budget_exhausted_count=%llu "
+         "issue_bandwidth_max_deferred_count=%llu\n",
          owner_hw_sid, rtcore_v02_lsu_memory_client_enabled() ? 1 : 0,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_offered_count,
@@ -740,7 +782,19 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_read_offer_count,
          g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_write_offer_count);
+             .v02_lsu_sideband_write_offer_count,
+         rtcore_v02_lsu_sideband_issue_bandwidth_gate_enabled() ? 1u : 0u,
+         rtcore_v02_lsu_sideband_issue_budget_per_cycle(),
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_issue_bandwidth_evaluations,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_issue_bandwidth_issued_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_issue_bandwidth_deferred_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_issue_bandwidth_budget_exhausted_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_issue_bandwidth_max_deferred_count);
   fflush(stdout);
 }
 
@@ -1116,11 +1170,31 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   if (result.ready_progressed) {
     g_rtcore_replay_cycle_hook_consumer_stats.ready_progressed_results++;
   }
+  const bool issue_bandwidth_gate_enabled =
+      rtcore_v02_lsu_sideband_issue_bandwidth_gate_enabled();
+  const unsigned issue_budget_per_cycle =
+      rtcore_v02_lsu_sideband_issue_budget_per_cycle();
+  unsigned sideband_issued_this_cycle = 0;
+  if (issue_bandwidth_gate_enabled) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_issue_bandwidth_evaluations++;
+  }
   rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
       result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
+  if (result.lsu_sideband_valid) {
+    sideband_issued_this_cycle++;
+  }
 
-  const unsigned max_sideband_drain_per_cycle =
-      rtcore_v02_lsu_response_wait_gate_enabled() ? 0 : 4096;
+  unsigned max_sideband_drain_per_cycle =
+      rtcore_v02_lsu_response_wait_gate_enabled() ? 0u : 4096u;
+  if (issue_bandwidth_gate_enabled) {
+    if (sideband_issued_this_cycle >= issue_budget_per_cycle) {
+      max_sideband_drain_per_cycle = 0;
+    } else if (!rtcore_v02_lsu_response_wait_gate_enabled()) {
+      max_sideband_drain_per_cycle =
+          issue_budget_per_cycle - sideband_issued_this_cycle;
+    }
+  }
   unsigned drained_sideband_count = 0;
   rtcore_v02_lsu_sideband_request_snapshot sideband_snapshot = {};
   while (drained_sideband_count < max_sideband_drain_per_cycle &&
@@ -1133,6 +1207,33 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
         drained_result, mf_allocator, config, core, l1d_cache, l0_cache, stats,
         sid);
     drained_sideband_count++;
+    sideband_issued_this_cycle++;
+  }
+  if (issue_bandwidth_gate_enabled) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_issue_bandwidth_issued_count +=
+        sideband_issued_this_cycle;
+    const unsigned deferred_count =
+        rtcore_count_v02_lsu_sideband_requests_for_sm(result.owner_hw_sid);
+    if (deferred_count > 0) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_issue_bandwidth_deferred_count += deferred_count;
+      if (deferred_count >
+          g_rtcore_replay_cycle_hook_consumer_stats
+              .v02_lsu_sideband_issue_bandwidth_max_deferred_count) {
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_sideband_issue_bandwidth_max_deferred_count =
+            deferred_count;
+      }
+      if (sideband_issued_this_cycle >= issue_budget_per_cycle ||
+          max_sideband_drain_per_cycle == drained_sideband_count) {
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_sideband_issue_bandwidth_budget_exhausted_count++;
+      }
+    }
+    if (deferred_count > 0) {
+      rtcore_maybe_log_v02_lsu_sideband_offer_stats(result.owner_hw_sid);
+    }
   }
 }
 
