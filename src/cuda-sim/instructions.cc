@@ -8795,6 +8795,9 @@ const unsigned RTCORE_HANDOFF_WINDOW_BYTES_PER_FULL_WARP =
 const unsigned RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES = 32;
 const unsigned RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE = 0;
 const unsigned RTCORE_V02_LSU_ACCESS_RESULT_STORE = 5;
+const unsigned RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE = 6;
+const unsigned RTCORE_V02_LSU_HANDOFF_PUBLICATION_MEMORY_OP_SEQ_BASE =
+    0x20000000u;
 const unsigned RTCORE_SHARED_MEMORY_BYTES_PER_EXECUTION_PARTITION = 49152;
 const unsigned RTCORE_MAX_RESIDENT_WARPS_PER_EXECUTION_PARTITION = 16;
 const unsigned RTCORE_RT_TOKENS_PER_EXECUTION_PARTITION = 128;
@@ -10765,6 +10768,12 @@ bool rtcore_v02_lsu_handoff_publication_ack_enabled() {
   return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+bool rtcore_v02_lsu_handoff_publication_store_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_V02_LSU_HANDOFF_PUBLICATION_STORE");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 unsigned rtcore_v02_lsu_handoff_window_lane_slot_chunk_count() {
   return (RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE +
           RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES - 1) /
@@ -10776,6 +10785,12 @@ unsigned rtcore_v02_lsu_handoff_memory_op_seq(unsigned window_generation,
   const unsigned op_slot =
       access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE ? 1u : 0u;
   return window_generation * 2u + op_slot;
+}
+
+unsigned rtcore_v02_lsu_handoff_publication_memory_op_seq(
+    unsigned window_generation) {
+  return RTCORE_V02_LSU_HANDOFF_PUBLICATION_MEMORY_OP_SEQ_BASE +
+         window_generation;
 }
 
 unsigned long long rtcore_v02_lsu_issue_cycle(ptx_thread_info *thread) {
@@ -29638,6 +29653,25 @@ void rtcore_maybe_enqueue_v02_lsu_handoff_window_sideband(
       chunk_count, is_write, rtcore_v02_lsu_issue_cycle(thread));
 }
 
+void rtcore_maybe_enqueue_v02_lsu_handoff_publication_store(
+    const rtcore_traversal_completion_event &event, ptx_thread_info *thread) {
+  if (!rtcore_v02_lsu_handoff_publication_store_enabled() ||
+      !rtcore_v02_lsu_handoff_window_sideband_enabled()) {
+    return;
+  }
+  const unsigned chunk_count =
+      rtcore_v02_lsu_handoff_window_lane_slot_chunk_count();
+  rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
+      event.warp_metadata.owner_hw_sid, thread != NULL ? thread->get_uid() : 0,
+      event.lane_slot_index,
+      rtcore_v02_lsu_handoff_publication_memory_op_seq(
+          event.window_generation),
+      RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE,
+      rtcore_handoff_lane_slot_base(event.handoff_window_base,
+                                    event.lane_slot_index),
+      chunk_count, true, rtcore_v02_lsu_issue_cycle(thread));
+}
+
 bool rtcore_v02_lsu_handoff_publication_acknowledged(
     const ptx_instruction *pI, const rtcore_traversal_completion_event &event,
     ptx_thread_info *thread) {
@@ -30568,6 +30602,7 @@ bool rtcore_materialize_traversal_completion_lane_transaction(
   }
   rtcore_publish_synthetic_handoff_window(
       pI, event.handoff_key, event.header);
+  rtcore_maybe_enqueue_v02_lsu_handoff_publication_store(event, thread);
   if (!rtcore_v02_lsu_handoff_publication_acknowledged(pI, event, thread)) {
     rtcore_rollback_symbolic_submit_after_handoff_publish(
         pI, event.token_key, event.reservation_key, event.handoff_key);

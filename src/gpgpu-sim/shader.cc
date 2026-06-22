@@ -216,6 +216,7 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_node_offer_count;
   unsigned long long v02_lsu_sideband_primitive_offer_count;
   unsigned long long v02_lsu_sideband_handoff_acquire_offer_count;
+  unsigned long long v02_lsu_sideband_handoff_publication_store_offer_count;
   unsigned long long v02_lsu_sideband_result_store_offer_count;
   unsigned long long v02_lsu_sideband_read_offer_count;
   unsigned long long v02_lsu_sideband_write_offer_count;
@@ -275,6 +276,7 @@ static const unsigned RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE = 0;
 static const unsigned RTCORE_V02_LSU_ACCESS_NODE_FETCH = 1;
 static const unsigned RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH = 2;
 static const unsigned RTCORE_V02_LSU_ACCESS_RESULT_STORE = 5;
+static const unsigned RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE = 6;
 static const unsigned RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES = 32;
 static const unsigned RTCORE_V02_LSU_TRANSACTION_IDENTITY_FIELD_COUNT = 10;
 
@@ -778,8 +780,10 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "cache_miss_count=%llu cache_reservation_fail_count=%llu "
          "immediate_completion_count=%llu response_wakeup_count=%llu "
          "pending_request_count=%llu max_pending_request_count=%llu "
-         "handoff_acquire_offer_count=%llu result_store_offer_count=%llu "
-         "read_offer_count=%llu write_offer_count=%llu "
+         "handoff_acquire_offer_count=%llu "
+         "handoff_publication_store_offer_count=%llu "
+         "result_store_offer_count=%llu read_offer_count=%llu "
+         "write_offer_count=%llu "
          "issue_bandwidth_gate_enabled=%u issue_budget_per_cycle=%u "
          "issue_bandwidth_evaluations=%llu "
          "issue_bandwidth_issued_count=%llu "
@@ -840,6 +844,8 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_sideband_max_pending_request_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_handoff_acquire_offer_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_handoff_publication_store_offer_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_result_store_offer_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1067,6 +1073,8 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
       result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_NODE_FETCH ||
       result.lsu_sideband_access_kind ==
           RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH ||
+      result.lsu_sideband_access_kind ==
+          RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
       result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE;
   if (result.lsu_sideband_response_target !=
           RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE ||
@@ -1198,6 +1206,10 @@ static void rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
       RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_handoff_acquire_offer_count++;
+  } else if (result.lsu_sideband_access_kind ==
+             RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_handoff_publication_store_offer_count++;
   } else if (result.lsu_sideband_access_kind ==
              RTCORE_V02_LSU_ACCESS_NODE_FETCH) {
     g_rtcore_replay_cycle_hook_consumer_stats
