@@ -245,6 +245,11 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_lower_memory_writeallocate_request_sent_count;
   unsigned long long v02_lsu_sideband_lower_memory_any_request_sent_count;
   unsigned long long v02_lsu_sideband_lower_memory_no_request_count;
+  unsigned long long v02_lsu_sideband_icnt_injection_count;
+  unsigned long long v02_lsu_sideband_icnt_injection_read_count;
+  unsigned long long v02_lsu_sideband_icnt_injection_write_count;
+  unsigned long long v02_lsu_sideband_icnt_injection_flit_count;
+  unsigned long long v02_lsu_sideband_icnt_injection_max_waiter_count;
   unsigned long long v02_lsu_sideband_immediate_completion_count;
   unsigned long long v02_lsu_sideband_response_wakeup_count;
   unsigned long long v02_lsu_sideband_pending_request_count;
@@ -852,6 +857,12 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "lower_memory_writeallocate_request_sent_count=%llu "
          "lower_memory_any_request_sent_count=%llu "
          "lower_memory_no_request_count=%llu "
+         "icnt_injection_attribution_enabled=1 "
+         "icnt_injection_count=%llu "
+         "icnt_injection_read_count=%llu "
+         "icnt_injection_write_count=%llu "
+         "icnt_injection_flit_count=%llu "
+         "icnt_injection_max_waiter_count=%llu "
          "issue_bandwidth_gate_enabled=%u issue_budget_per_cycle=%u "
          "issue_bandwidth_evaluations=%llu "
          "issue_bandwidth_issued_count=%llu "
@@ -982,6 +993,16 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_sideband_lower_memory_any_request_sent_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_lower_memory_no_request_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_icnt_injection_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_icnt_injection_read_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_icnt_injection_write_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_icnt_injection_flit_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_icnt_injection_max_waiter_count,
          rtcore_v02_lsu_sideband_issue_bandwidth_gate_enabled() ? 1u : 0u,
          rtcore_v02_lsu_sideband_issue_budget_per_cycle(),
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1133,6 +1154,40 @@ static void rtcore_v02_lsu_update_sideband_pending_count() {
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_sideband_pending_request_count;
   }
+}
+
+static bool rtcore_record_v02_lsu_sideband_icnt_injection(mem_fetch *mf) {
+  if (!rtcore_v02_lsu_memory_client_enabled() || mf == NULL) {
+    return false;
+  }
+  std::map<unsigned,
+           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator it =
+      g_rtcore_v02_lsu_pending_memory_requests.find(mf->get_request_uid());
+  if (it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
+    return false;
+  }
+
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_icnt_injection_count++;
+  if (mf->get_is_write()) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_icnt_injection_write_count++;
+  } else {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_icnt_injection_read_count++;
+  }
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_icnt_injection_flit_count +=
+      mf->get_num_flits(true);
+  const unsigned long long waiter_count = it->second.size();
+  if (waiter_count >
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_icnt_injection_max_waiter_count) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_icnt_injection_max_waiter_count =
+        waiter_count;
+  }
+  return true;
 }
 
 static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
@@ -11706,6 +11761,7 @@ void simt_core_cluster::icnt_inject_request_packet(class mem_fetch *mf) {
     m_stats->made_write_mfs++;
   else
     m_stats->made_read_mfs++;
+  rtcore_record_v02_lsu_sideband_icnt_injection(mf);
   switch (mf->get_access_type()) {
     case CONST_ACC_R:
       m_stats->gpgpu_n_mem_const++;
