@@ -259,6 +259,12 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_issue_bandwidth_deferred_count;
   unsigned long long v02_lsu_sideband_issue_bandwidth_budget_exhausted_count;
   unsigned long long v02_lsu_sideband_issue_bandwidth_max_deferred_count;
+  unsigned long long v02_lsu_shared_frontend_evaluations;
+  unsigned long long v02_lsu_shared_frontend_normal_lsu_used_count;
+  unsigned long long v02_lsu_shared_frontend_rt_used_count;
+  unsigned long long v02_lsu_shared_frontend_rt_blocked_count;
+  unsigned long long v02_lsu_shared_frontend_rt_blocked_then_progressed_count;
+  unsigned long long v02_lsu_shared_frontend_max_rt_queue_occupancy;
   unsigned long long v02_lsu_sideband_same_cycle_merge_count;
   unsigned long long v02_lsu_sideband_same_cycle_merged_waiter_count;
   unsigned long long v02_lsu_sideband_same_cycle_real_mem_fetch_saved_count;
@@ -304,6 +310,8 @@ struct rtcore_v02_lsu_sideband_same_cycle_merge_key {
 };
 static std::map<rtcore_v02_lsu_sideband_same_cycle_merge_key, unsigned>
     g_rtcore_v02_lsu_same_cycle_merge_uid_by_key;
+static std::map<unsigned, bool>
+    g_rtcore_v02_lsu_shared_frontend_blocked_by_owner;
 static bool g_rtcore_v02_lsu_same_cycle_merge_map_initialized = false;
 static unsigned long long g_rtcore_v02_lsu_same_cycle_merge_map_cycle = 0;
 static unsigned g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted = 0;
@@ -374,6 +382,55 @@ static unsigned rtcore_v02_lsu_sideband_issue_budget_per_cycle() {
     return static_cast<unsigned>(parsed);
   }();
   return budget;
+}
+
+static bool rtcore_v02_lsu_shared_frontend_arbiter_gate_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_ARBITER_GATE");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static unsigned rtcore_v02_lsu_shared_frontend_budget_per_cycle() {
+  static unsigned budget = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_BUDGET_PER_CYCLE");
+    if (value == NULL || *value == '\0') {
+      return 1u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || parsed == 0) {
+      return 1u;
+    }
+    if (parsed > 4096) {
+      return 4096u;
+    }
+    return static_cast<unsigned>(parsed);
+  }();
+  return budget;
+}
+
+static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle() {
+  static unsigned proxy = []() {
+    const char *value = getenv(
+        "VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_NORMAL_LSU_PROXY_PER_CYCLE");
+    if (value == NULL || *value == '\0') {
+      return 0u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value) {
+      return 0u;
+    }
+    if (parsed > 4096) {
+      return 4096u;
+    }
+    return static_cast<unsigned>(parsed);
+  }();
+  return proxy;
 }
 
 static bool rtcore_v02_lsu_same_cycle_merge_gate_enabled() {
@@ -869,6 +926,14 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "issue_bandwidth_deferred_count=%llu "
          "issue_bandwidth_budget_exhausted_count=%llu "
          "issue_bandwidth_max_deferred_count=%llu "
+         "shared_lsu_frontend_arbiter_enabled=%u "
+         "shared_lsu_frontend_budget_per_cycle=%u "
+         "shared_lsu_frontend_evaluations=%llu "
+         "shared_lsu_frontend_normal_lsu_used_count=%llu "
+         "shared_lsu_frontend_rt_used_count=%llu "
+         "shared_lsu_frontend_rt_blocked_count=%llu "
+         "shared_lsu_frontend_rt_blocked_then_progressed_count=%llu "
+         "shared_lsu_frontend_max_rt_queue_occupancy=%llu "
          "attribution_summary_enabled=1 "
          "attribution_issue_backpressure_deferred_count=%llu "
          "attribution_issue_budget_exhausted_count=%llu "
@@ -1011,10 +1076,24 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_sideband_issue_bandwidth_issued_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_issue_bandwidth_deferred_count,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_sideband_issue_bandwidth_budget_exhausted_count,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_sideband_issue_bandwidth_max_deferred_count,
+         rtcore_v02_lsu_shared_frontend_arbiter_gate_enabled() ? 1u : 0u,
+         rtcore_v02_lsu_shared_frontend_budget_per_cycle(),
          g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_issue_bandwidth_budget_exhausted_count,
+             .v02_lsu_shared_frontend_evaluations,
          g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_issue_bandwidth_max_deferred_count,
+             .v02_lsu_shared_frontend_normal_lsu_used_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_shared_frontend_rt_used_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_shared_frontend_rt_blocked_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_shared_frontend_rt_blocked_then_progressed_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_shared_frontend_max_rt_queue_occupancy,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_issue_bandwidth_deferred_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1711,17 +1790,45 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   }
   const bool issue_bandwidth_gate_enabled =
       rtcore_v02_lsu_sideband_issue_bandwidth_gate_enabled();
+  const bool shared_frontend_gate_enabled =
+      rtcore_v02_lsu_shared_frontend_arbiter_gate_enabled();
   const unsigned issue_budget_per_cycle =
       rtcore_v02_lsu_sideband_issue_budget_per_cycle();
+  const unsigned shared_frontend_budget_per_cycle =
+      rtcore_v02_lsu_shared_frontend_budget_per_cycle();
   unsigned sideband_issued_this_cycle = 0;
   if (issue_bandwidth_gate_enabled) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_issue_bandwidth_evaluations++;
   }
+  unsigned shared_frontend_normal_lsu_used = 0;
+  if (shared_frontend_gate_enabled) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_shared_frontend_evaluations++;
+    shared_frontend_normal_lsu_used =
+        rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle();
+    if (shared_frontend_normal_lsu_used > shared_frontend_budget_per_cycle) {
+      shared_frontend_normal_lsu_used = shared_frontend_budget_per_cycle;
+    }
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_shared_frontend_normal_lsu_used_count +=
+        shared_frontend_normal_lsu_used;
+  }
   rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
       result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
   if (result.lsu_sideband_valid) {
     sideband_issued_this_cycle++;
+    if (shared_frontend_gate_enabled) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_rt_used_count++;
+      if (g_rtcore_v02_lsu_shared_frontend_blocked_by_owner
+              [result.owner_hw_sid]) {
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_frontend_rt_blocked_then_progressed_count++;
+        g_rtcore_v02_lsu_shared_frontend_blocked_by_owner
+            [result.owner_hw_sid] = false;
+      }
+    }
   }
 
   unsigned max_sideband_drain_per_cycle =
@@ -1732,6 +1839,35 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     } else if (!rtcore_v02_lsu_response_wait_gate_enabled()) {
       max_sideband_drain_per_cycle =
           issue_budget_per_cycle - sideband_issued_this_cycle;
+    }
+  }
+  unsigned queued_sideband_count_before_drain = 0;
+  if (shared_frontend_gate_enabled) {
+    queued_sideband_count_before_drain =
+        rtcore_count_v02_lsu_sideband_requests_for_sm(result.owner_hw_sid);
+    if (queued_sideband_count_before_drain >
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_frontend_max_rt_queue_occupancy) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_max_rt_queue_occupancy =
+          queued_sideband_count_before_drain;
+    }
+    unsigned shared_frontend_rt_budget = 0;
+    const unsigned shared_frontend_used_before_queue =
+        shared_frontend_normal_lsu_used + sideband_issued_this_cycle;
+    if (shared_frontend_used_before_queue < shared_frontend_budget_per_cycle) {
+      shared_frontend_rt_budget =
+          shared_frontend_budget_per_cycle - shared_frontend_used_before_queue;
+    }
+    if (shared_frontend_rt_budget < max_sideband_drain_per_cycle) {
+      max_sideband_drain_per_cycle = shared_frontend_rt_budget;
+    }
+    if (queued_sideband_count_before_drain > max_sideband_drain_per_cycle) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_rt_blocked_count +=
+          queued_sideband_count_before_drain - max_sideband_drain_per_cycle;
+      g_rtcore_v02_lsu_shared_frontend_blocked_by_owner[result.owner_hw_sid] =
+          true;
     }
   }
   unsigned drained_sideband_count = 0;
@@ -1747,6 +1883,18 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
         sid);
     drained_sideband_count++;
     sideband_issued_this_cycle++;
+    if (shared_frontend_gate_enabled) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_rt_used_count++;
+    }
+  }
+  if (shared_frontend_gate_enabled && drained_sideband_count > 0 &&
+      g_rtcore_v02_lsu_shared_frontend_blocked_by_owner[result.owner_hw_sid]) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_shared_frontend_rt_blocked_then_progressed_count +=
+        drained_sideband_count;
+    g_rtcore_v02_lsu_shared_frontend_blocked_by_owner[result.owner_hw_sid] =
+        false;
   }
   if (issue_bandwidth_gate_enabled) {
     g_rtcore_replay_cycle_hook_consumer_stats
