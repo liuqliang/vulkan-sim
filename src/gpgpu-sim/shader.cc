@@ -255,6 +255,9 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_icnt_injection_max_waiter_count;
   unsigned long long v02_lsu_sideband_immediate_completion_count;
   unsigned long long v02_lsu_sideband_response_wakeup_count;
+  unsigned long long v02_lsu_sideband_response_latency_observation_count;
+  unsigned long long v02_lsu_sideband_response_latency_total_cycles;
+  unsigned long long v02_lsu_sideband_response_latency_max_cycles;
   unsigned long long v02_lsu_sideband_pending_request_count;
   unsigned long long v02_lsu_sideband_max_pending_request_count;
   unsigned long long v02_lsu_sideband_issue_bandwidth_evaluations;
@@ -1016,6 +1019,10 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "cache_request_count=%llu cache_hit_count=%llu "
          "cache_miss_count=%llu cache_reservation_fail_count=%llu "
          "immediate_completion_count=%llu response_wakeup_count=%llu "
+         "response_latency_attribution_enabled=1 "
+         "response_latency_observation_count=%llu "
+         "response_latency_total_cycles=%llu "
+         "response_latency_max_cycles=%llu "
          "pending_request_count=%llu max_pending_request_count=%llu "
          "handoff_acquire_offer_count=%llu "
          "handoff_publication_store_offer_count=%llu "
@@ -1147,6 +1154,12 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_sideband_immediate_completion_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_response_wakeup_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_response_latency_observation_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_response_latency_total_cycles,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_response_latency_max_cycles,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_pending_request_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1395,6 +1408,25 @@ static void rtcore_record_v02_lsu_sideband_response_wakeup_kind(
   }
 }
 
+static void rtcore_record_v02_lsu_sideband_response_latency(
+    const rtcore_v02_lsu_sideband_request_snapshot &snapshot,
+    unsigned long long response_cycle) {
+  if (response_cycle < snapshot.issue_cycle) {
+    return;
+  }
+  const unsigned long long latency = response_cycle - snapshot.issue_cycle;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_response_latency_observation_count++;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_response_latency_total_cycles += latency;
+  if (latency >
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_response_latency_max_cycles) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_response_latency_max_cycles = latency;
+  }
+}
+
 static void rtcore_record_v02_lsu_sideband_response_completion(
     const rtcore_v02_lsu_sideband_request_snapshot &snapshot,
     unsigned long long response_cycle) {
@@ -1494,6 +1526,8 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
   for (std::vector<rtcore_v02_lsu_sideband_request_snapshot>::const_iterator
            waiter_it = it->second.begin();
        waiter_it != it->second.end(); ++waiter_it) {
+    rtcore_record_v02_lsu_sideband_response_latency(*waiter_it,
+                                                    response_cycle);
     rtcore_record_v02_lsu_sideband_response_wakeup_kind(*waiter_it);
     rtcore_record_v02_lsu_sideband_response_completion(*waiter_it,
                                                        response_cycle);
