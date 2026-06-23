@@ -269,6 +269,10 @@ struct rtcore_replay_cycle_hook_consumer_stats {
       v02_lsu_shared_frontend_normal_lsu_observed_dispatch_busy_count;
   unsigned long long
       v02_lsu_shared_frontend_normal_lsu_observed_response_fifo_occupancy_max;
+  unsigned long long
+      v02_lsu_shared_frontend_normal_lsu_dispatch_pressure_count;
+  unsigned long long
+      v02_lsu_shared_frontend_normal_lsu_response_fifo_pressure_count;
   unsigned long long v02_lsu_shared_frontend_rt_used_count;
   unsigned long long v02_lsu_shared_frontend_rt_blocked_count;
   unsigned long long v02_lsu_shared_frontend_rt_blocked_then_progressed_count;
@@ -329,6 +333,8 @@ struct rtcore_v02_lsu_shared_frontend_normal_lsu_observation {
   unsigned pressure;
   unsigned dispatch_busy;
   unsigned response_fifo_occupancy;
+  unsigned dispatch_pressure;
+  unsigned response_fifo_pressure;
 };
 static std::map<unsigned, rtcore_v02_lsu_shared_frontend_normal_lsu_observation>
     g_rtcore_v02_lsu_shared_frontend_normal_lsu_observation_by_sm;
@@ -526,11 +532,14 @@ static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_response_fifo_weight()
 
 static void rtcore_record_v02_lsu_shared_frontend_normal_lsu_observation(
     unsigned owner_hw_sid, unsigned pressure, unsigned dispatch_busy,
-    unsigned response_fifo_occupancy) {
+    unsigned response_fifo_occupancy, unsigned dispatch_pressure,
+    unsigned response_fifo_pressure) {
   rtcore_v02_lsu_shared_frontend_normal_lsu_observation observation = {};
   observation.pressure = pressure;
   observation.dispatch_busy = dispatch_busy;
   observation.response_fifo_occupancy = response_fifo_occupancy;
+  observation.dispatch_pressure = dispatch_pressure;
+  observation.response_fifo_pressure = response_fifo_pressure;
   g_rtcore_v02_lsu_shared_frontend_normal_lsu_observation_by_sm[owner_hw_sid] =
       observation;
 }
@@ -1053,6 +1062,8 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "shared_lsu_frontend_normal_lsu_observed_count=%llu "
          "shared_lsu_frontend_normal_lsu_observed_dispatch_busy_count=%llu "
          "shared_lsu_frontend_normal_lsu_observed_response_fifo_occupancy_max=%llu "
+         "shared_lsu_frontend_normal_lsu_dispatch_pressure_count=%llu "
+         "shared_lsu_frontend_normal_lsu_response_fifo_pressure_count=%llu "
          "shared_lsu_frontend_rt_used_count=%llu "
          "shared_lsu_frontend_rt_blocked_count=%llu "
          "shared_lsu_frontend_rt_blocked_then_progressed_count=%llu "
@@ -1224,6 +1235,10 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_shared_frontend_normal_lsu_observed_dispatch_busy_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_shared_frontend_normal_lsu_observed_response_fifo_occupancy_max,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_shared_frontend_normal_lsu_dispatch_pressure_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_shared_frontend_normal_lsu_response_fifo_pressure_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_shared_frontend_rt_used_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1950,6 +1965,8 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
       rtcore_v02_lsu_shared_frontend_normal_lsu_observation_gate_enabled();
   unsigned shared_frontend_normal_lsu_observed_dispatch_busy = 0;
   unsigned shared_frontend_normal_lsu_observed_response_fifo_occupancy = 0;
+  unsigned shared_frontend_normal_lsu_observed_dispatch_pressure = 0;
+  unsigned shared_frontend_normal_lsu_observed_response_fifo_pressure = 0;
   if (shared_frontend_gate_enabled) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_shared_frontend_evaluations++;
@@ -1962,6 +1979,10 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
           observation.dispatch_busy;
       shared_frontend_normal_lsu_observed_response_fifo_occupancy =
           observation.response_fifo_occupancy;
+      shared_frontend_normal_lsu_observed_dispatch_pressure =
+          observation.dispatch_pressure;
+      shared_frontend_normal_lsu_observed_response_fifo_pressure =
+          observation.response_fifo_pressure;
     } else {
       shared_frontend_normal_lsu_used =
           rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle();
@@ -1976,6 +1997,12 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
       g_rtcore_replay_cycle_hook_consumer_stats
           .v02_lsu_shared_frontend_normal_lsu_observed_dispatch_busy_count +=
           shared_frontend_normal_lsu_observed_dispatch_busy;
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_normal_lsu_dispatch_pressure_count +=
+          shared_frontend_normal_lsu_observed_dispatch_pressure;
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_normal_lsu_response_fifo_pressure_count +=
+          shared_frontend_normal_lsu_observed_response_fifo_pressure;
       if (shared_frontend_normal_lsu_observed_response_fifo_occupancy >
           g_rtcore_replay_cycle_hook_consumer_stats
               .v02_lsu_shared_frontend_normal_lsu_observed_response_fifo_occupancy_max) {
@@ -10349,17 +10376,23 @@ void ldst_unit::cycle() {
   done &= constant_cycle(pipe_reg, rc_fail, type);
   done &= texture_cycle(pipe_reg, rc_fail, type);
   done &= memory_cycle(pipe_reg, rc_fail, type);
+  const unsigned normal_lsu_dispatch_pressure_for_rtcore =
+      normal_lsu_dispatch_busy_for_rtcore
+          ? rtcore_v02_lsu_shared_frontend_normal_lsu_dispatch_weight()
+          : 0u;
+  const unsigned normal_lsu_response_fifo_pressure_for_rtcore =
+      response_fifo_occupancy_for_rtcore > 0
+          ? rtcore_v02_lsu_shared_frontend_normal_lsu_response_fifo_weight()
+          : 0u;
   const unsigned normal_lsu_pressure_for_rtcore =
-      (normal_lsu_dispatch_busy_for_rtcore
-           ? rtcore_v02_lsu_shared_frontend_normal_lsu_dispatch_weight()
-           : 0u) +
-      (response_fifo_occupancy_for_rtcore > 0
-           ? rtcore_v02_lsu_shared_frontend_normal_lsu_response_fifo_weight()
-           : 0u);
+      normal_lsu_dispatch_pressure_for_rtcore +
+      normal_lsu_response_fifo_pressure_for_rtcore;
   rtcore_record_v02_lsu_shared_frontend_normal_lsu_observation(
       m_sid, normal_lsu_pressure_for_rtcore,
       normal_lsu_dispatch_busy_for_rtcore ? 1u : 0u,
-      response_fifo_occupancy_for_rtcore);
+      response_fifo_occupancy_for_rtcore,
+      normal_lsu_dispatch_pressure_for_rtcore,
+      normal_lsu_response_fifo_pressure_for_rtcore);
   m_mem_rc = rc_fail;
 
   if (!done) {  // log stall types and return
