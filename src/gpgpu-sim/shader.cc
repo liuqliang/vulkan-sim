@@ -264,6 +264,11 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_issue_bandwidth_max_deferred_count;
   unsigned long long v02_lsu_shared_frontend_evaluations;
   unsigned long long v02_lsu_shared_frontend_normal_lsu_used_count;
+  unsigned long long v02_lsu_shared_frontend_normal_lsu_observed_count;
+  unsigned long long
+      v02_lsu_shared_frontend_normal_lsu_observed_dispatch_busy_count;
+  unsigned long long
+      v02_lsu_shared_frontend_normal_lsu_observed_response_fifo_occupancy_max;
   unsigned long long v02_lsu_shared_frontend_rt_used_count;
   unsigned long long v02_lsu_shared_frontend_rt_blocked_count;
   unsigned long long v02_lsu_shared_frontend_rt_blocked_then_progressed_count;
@@ -316,6 +321,13 @@ static std::map<rtcore_v02_lsu_sideband_same_cycle_merge_key, unsigned>
     g_rtcore_v02_lsu_same_cycle_merge_uid_by_key;
 static std::map<unsigned, bool>
     g_rtcore_v02_lsu_shared_frontend_blocked_by_owner;
+struct rtcore_v02_lsu_shared_frontend_normal_lsu_observation {
+  unsigned pressure;
+  unsigned dispatch_busy;
+  unsigned response_fifo_occupancy;
+};
+static std::map<unsigned, rtcore_v02_lsu_shared_frontend_normal_lsu_observation>
+    g_rtcore_v02_lsu_shared_frontend_normal_lsu_observation_by_sm;
 static bool g_rtcore_v02_lsu_same_cycle_merge_map_initialized = false;
 static unsigned long long g_rtcore_v02_lsu_same_cycle_merge_map_cycle = 0;
 static unsigned g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted = 0;
@@ -417,6 +429,16 @@ static unsigned rtcore_v02_lsu_shared_frontend_budget_per_cycle() {
   return budget;
 }
 
+static bool
+rtcore_v02_lsu_shared_frontend_normal_lsu_observation_gate_enabled() {
+  static int enabled = []() {
+    const char *value = getenv(
+        "VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_NORMAL_LSU_OBSERVATION_GATE");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
 static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle() {
   static unsigned proxy = []() {
     const char *value = getenv(
@@ -435,6 +457,31 @@ static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle() {
     return static_cast<unsigned>(parsed);
   }();
   return proxy;
+}
+
+static void rtcore_record_v02_lsu_shared_frontend_normal_lsu_observation(
+    unsigned owner_hw_sid, unsigned pressure, unsigned dispatch_busy,
+    unsigned response_fifo_occupancy) {
+  rtcore_v02_lsu_shared_frontend_normal_lsu_observation observation = {};
+  observation.pressure = pressure;
+  observation.dispatch_busy = dispatch_busy;
+  observation.response_fifo_occupancy = response_fifo_occupancy;
+  g_rtcore_v02_lsu_shared_frontend_normal_lsu_observation_by_sm[owner_hw_sid] =
+      observation;
+}
+
+static rtcore_v02_lsu_shared_frontend_normal_lsu_observation
+rtcore_get_v02_lsu_shared_frontend_normal_lsu_observation(
+    unsigned owner_hw_sid) {
+  std::map<unsigned,
+           rtcore_v02_lsu_shared_frontend_normal_lsu_observation>::const_iterator
+      it = g_rtcore_v02_lsu_shared_frontend_normal_lsu_observation_by_sm.find(
+          owner_hw_sid);
+  if (it ==
+      g_rtcore_v02_lsu_shared_frontend_normal_lsu_observation_by_sm.end()) {
+    return rtcore_v02_lsu_shared_frontend_normal_lsu_observation();
+  }
+  return it->second;
 }
 
 static bool rtcore_v02_lsu_same_cycle_merge_gate_enabled() {
@@ -934,6 +981,10 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "shared_lsu_frontend_budget_per_cycle=%u "
          "shared_lsu_frontend_evaluations=%llu "
          "shared_lsu_frontend_normal_lsu_used_count=%llu "
+         "shared_lsu_frontend_normal_lsu_observation_enabled=%u "
+         "shared_lsu_frontend_normal_lsu_observed_count=%llu "
+         "shared_lsu_frontend_normal_lsu_observed_dispatch_busy_count=%llu "
+         "shared_lsu_frontend_normal_lsu_observed_response_fifo_occupancy_max=%llu "
          "shared_lsu_frontend_rt_used_count=%llu "
          "shared_lsu_frontend_rt_blocked_count=%llu "
          "shared_lsu_frontend_rt_blocked_then_progressed_count=%llu "
@@ -1091,6 +1142,15 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_shared_frontend_evaluations,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_shared_frontend_normal_lsu_used_count,
+         rtcore_v02_lsu_shared_frontend_normal_lsu_observation_gate_enabled()
+             ? 1u
+             : 0u,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_shared_frontend_normal_lsu_observed_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_shared_frontend_normal_lsu_observed_dispatch_busy_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_shared_frontend_normal_lsu_observed_response_fifo_occupancy_max,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_shared_frontend_rt_used_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1809,13 +1869,43 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
         .v02_lsu_sideband_issue_bandwidth_evaluations++;
   }
   unsigned shared_frontend_normal_lsu_used = 0;
+  const bool shared_frontend_normal_lsu_observation_enabled =
+      rtcore_v02_lsu_shared_frontend_normal_lsu_observation_gate_enabled();
+  unsigned shared_frontend_normal_lsu_observed_dispatch_busy = 0;
+  unsigned shared_frontend_normal_lsu_observed_response_fifo_occupancy = 0;
   if (shared_frontend_gate_enabled) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_shared_frontend_evaluations++;
-    shared_frontend_normal_lsu_used =
-        rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle();
+    if (shared_frontend_normal_lsu_observation_enabled) {
+      const rtcore_v02_lsu_shared_frontend_normal_lsu_observation observation =
+          rtcore_get_v02_lsu_shared_frontend_normal_lsu_observation(
+              result.owner_hw_sid);
+      shared_frontend_normal_lsu_used = observation.pressure;
+      shared_frontend_normal_lsu_observed_dispatch_busy =
+          observation.dispatch_busy;
+      shared_frontend_normal_lsu_observed_response_fifo_occupancy =
+          observation.response_fifo_occupancy;
+    } else {
+      shared_frontend_normal_lsu_used =
+          rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle();
+    }
     if (shared_frontend_normal_lsu_used > shared_frontend_budget_per_cycle) {
       shared_frontend_normal_lsu_used = shared_frontend_budget_per_cycle;
+    }
+    if (shared_frontend_normal_lsu_observation_enabled) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_normal_lsu_observed_count +=
+          shared_frontend_normal_lsu_used;
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_normal_lsu_observed_dispatch_busy_count +=
+          shared_frontend_normal_lsu_observed_dispatch_busy;
+      if (shared_frontend_normal_lsu_observed_response_fifo_occupancy >
+          g_rtcore_replay_cycle_hook_consumer_stats
+              .v02_lsu_shared_frontend_normal_lsu_observed_response_fifo_occupancy_max) {
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_frontend_normal_lsu_observed_response_fifo_occupancy_max =
+            shared_frontend_normal_lsu_observed_response_fifo_occupancy;
+      }
     }
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_shared_frontend_normal_lsu_used_count +=
@@ -10021,6 +10111,8 @@ void ldst_unit::cycle() {
     if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty())
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
 
+  const unsigned response_fifo_occupancy_for_rtcore =
+      static_cast<unsigned>(m_response_fifo.size());
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     if (mf->get_access_type() == TEXTURE_ACC_R) {
@@ -10087,11 +10179,22 @@ void ldst_unit::cycle() {
   warp_inst_t &pipe_reg = *m_dispatch_reg;
   enum mem_stage_stall_type rc_fail = NO_RC_FAIL;
   mem_stage_access_type type;
+  const bool normal_lsu_dispatch_busy_for_rtcore =
+      !pipe_reg.empty() &&
+      (pipe_reg.op == LOAD_OP || pipe_reg.op == TENSOR_CORE_LOAD_OP ||
+       pipe_reg.op == STORE_OP || pipe_reg.op == TENSOR_CORE_STORE_OP);
   bool done = true;
   done &= shared_cycle(pipe_reg, rc_fail, type);
   done &= constant_cycle(pipe_reg, rc_fail, type);
   done &= texture_cycle(pipe_reg, rc_fail, type);
   done &= memory_cycle(pipe_reg, rc_fail, type);
+  const unsigned normal_lsu_pressure_for_rtcore =
+      (normal_lsu_dispatch_busy_for_rtcore ? 1u : 0u) +
+      (response_fifo_occupancy_for_rtcore > 0 ? 1u : 0u);
+  rtcore_record_v02_lsu_shared_frontend_normal_lsu_observation(
+      m_sid, normal_lsu_pressure_for_rtcore,
+      normal_lsu_dispatch_busy_for_rtcore ? 1u : 0u,
+      response_fifo_occupancy_for_rtcore);
   m_mem_rc = rc_fail;
 
   if (!done) {  // log stall types and return
