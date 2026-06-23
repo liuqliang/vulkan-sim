@@ -1008,6 +1008,17 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
   }
   g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted++;
 
+  const unsigned long long response_latency_observation_count =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_response_latency_observation_count;
+  const unsigned long long response_latency_total_cycles =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_response_latency_total_cycles;
+  const unsigned long long response_latency_average_cycles =
+      response_latency_observation_count == 0
+          ? 0
+          : response_latency_total_cycles / response_latency_observation_count;
+
   printf("GPGPU-Sim RTCORE_V02_LSU_SIDEBAND_OFFER_STATS "
          "owner_hw_sid=%u path_active=%u rt_unit_consumer_visible=1 "
          "offered_count=%llu accepted_count=%llu rejected_count=%llu "
@@ -1023,6 +1034,7 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "response_latency_observation_count=%llu "
          "response_latency_total_cycles=%llu "
          "response_latency_max_cycles=%llu "
+         "response_latency_average_cycles=%llu "
          "pending_request_count=%llu max_pending_request_count=%llu "
          "handoff_acquire_offer_count=%llu "
          "handoff_publication_store_offer_count=%llu "
@@ -1154,12 +1166,10 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_sideband_immediate_completion_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_response_wakeup_count,
-         g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_response_latency_observation_count,
-         g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_response_latency_total_cycles,
+         response_latency_observation_count, response_latency_total_cycles,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_response_latency_max_cycles,
+         response_latency_average_cycles,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_pending_request_count,
          g_rtcore_replay_cycle_hook_consumer_stats
