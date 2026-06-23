@@ -429,6 +429,27 @@ static unsigned rtcore_v02_lsu_shared_frontend_budget_per_cycle() {
   return budget;
 }
 
+static unsigned rtcore_v02_lsu_shared_frontend_policy() {
+  static unsigned policy = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_POLICY");
+    if (value != NULL && strcmp(value, "rt_first") == 0) {
+      return 1u;
+    }
+    return 0u;
+  }();
+  return policy;
+}
+
+static bool rtcore_v02_lsu_shared_frontend_policy_rt_first() {
+  return rtcore_v02_lsu_shared_frontend_policy() == 1u;
+}
+
+static const char *rtcore_v02_lsu_shared_frontend_policy_name() {
+  return rtcore_v02_lsu_shared_frontend_policy_rt_first() ? "rt_first"
+                                                          : "normal_first";
+}
+
 static bool
 rtcore_v02_lsu_shared_frontend_normal_lsu_observation_gate_enabled() {
   static int enabled = []() {
@@ -1018,6 +1039,7 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "issue_bandwidth_budget_exhausted_count=%llu "
          "issue_bandwidth_max_deferred_count=%llu "
          "shared_lsu_frontend_arbiter_enabled=%u "
+         "shared_lsu_frontend_policy=%s "
          "shared_lsu_frontend_budget_per_cycle=%u "
          "shared_lsu_frontend_evaluations=%llu "
          "shared_lsu_frontend_normal_lsu_used_count=%llu "
@@ -1179,6 +1201,7 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_sideband_issue_bandwidth_max_deferred_count,
          rtcore_v02_lsu_shared_frontend_arbiter_gate_enabled() ? 1u : 0u,
+         rtcore_v02_lsu_shared_frontend_policy_name(),
          rtcore_v02_lsu_shared_frontend_budget_per_cycle(),
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_shared_frontend_evaluations,
@@ -2009,7 +2032,10 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     }
     unsigned shared_frontend_rt_budget = 0;
     const unsigned shared_frontend_used_before_queue =
-        shared_frontend_normal_lsu_used + sideband_issued_this_cycle;
+        sideband_issued_this_cycle +
+        (rtcore_v02_lsu_shared_frontend_policy_rt_first()
+             ? 0u
+             : shared_frontend_normal_lsu_used);
     if (shared_frontend_used_before_queue < shared_frontend_budget_per_cycle) {
       shared_frontend_rt_budget =
           shared_frontend_budget_per_cycle - shared_frontend_used_before_queue;
