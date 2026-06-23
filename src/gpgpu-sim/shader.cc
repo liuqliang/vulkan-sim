@@ -306,6 +306,18 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_primitive_response_wakeup_count;
   unsigned long long v02_lsu_sideband_stack_load_response_wakeup_count;
   unsigned long long v02_lsu_sideband_handoff_acquire_response_wakeup_count;
+  unsigned long long v02_lsu_sideband_node_response_latency_observation_count;
+  unsigned long long v02_lsu_sideband_node_response_latency_total_cycles;
+  unsigned long long
+      v02_lsu_sideband_primitive_response_latency_observation_count;
+  unsigned long long v02_lsu_sideband_primitive_response_latency_total_cycles;
+  unsigned long long
+      v02_lsu_sideband_stack_load_response_latency_observation_count;
+  unsigned long long v02_lsu_sideband_stack_load_response_latency_total_cycles;
+  unsigned long long
+      v02_lsu_sideband_handoff_acquire_response_latency_observation_count;
+  unsigned long long
+      v02_lsu_sideband_handoff_acquire_response_latency_total_cycles;
   unsigned long long v02_lsu_sideband_stack_store_nonblocking_completion_count;
   unsigned long long
       v02_lsu_sideband_handoff_publication_store_nonblocking_completion_count;
@@ -1018,6 +1030,50 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
       response_latency_observation_count == 0
           ? 0
           : response_latency_total_cycles / response_latency_observation_count;
+  const unsigned long long node_response_latency_observation_count =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_node_response_latency_observation_count;
+  const unsigned long long primitive_response_latency_observation_count =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_primitive_response_latency_observation_count;
+  const unsigned long long stack_load_response_latency_observation_count =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_stack_load_response_latency_observation_count;
+  const unsigned long long handoff_acquire_response_latency_observation_count =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_handoff_acquire_response_latency_observation_count;
+  const unsigned long long node_response_latency_total_cycles =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_node_response_latency_total_cycles;
+  const unsigned long long primitive_response_latency_total_cycles =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_primitive_response_latency_total_cycles;
+  const unsigned long long stack_load_response_latency_total_cycles =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_stack_load_response_latency_total_cycles;
+  const unsigned long long handoff_acquire_response_latency_total_cycles =
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_handoff_acquire_response_latency_total_cycles;
+  const unsigned long long node_response_latency_average_cycles =
+      node_response_latency_observation_count == 0
+          ? 0
+          : node_response_latency_total_cycles /
+                node_response_latency_observation_count;
+  const unsigned long long primitive_response_latency_average_cycles =
+      primitive_response_latency_observation_count == 0
+          ? 0
+          : primitive_response_latency_total_cycles /
+                primitive_response_latency_observation_count;
+  const unsigned long long stack_load_response_latency_average_cycles =
+      stack_load_response_latency_observation_count == 0
+          ? 0
+          : stack_load_response_latency_total_cycles /
+                stack_load_response_latency_observation_count;
+  const unsigned long long handoff_acquire_response_latency_average_cycles =
+      handoff_acquire_response_latency_observation_count == 0
+          ? 0
+          : handoff_acquire_response_latency_total_cycles /
+                handoff_acquire_response_latency_observation_count;
 
   printf("GPGPU-Sim RTCORE_V02_LSU_SIDEBAND_OFFER_STATS "
          "owner_hw_sid=%u path_active=%u rt_unit_consumer_visible=1 "
@@ -1049,6 +1105,19 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "primitive_response_wakeup_count=%llu "
          "stack_load_response_wakeup_count=%llu "
          "handoff_acquire_response_wakeup_count=%llu "
+         "access_kind_response_latency_attribution_enabled=1 "
+         "node_response_latency_observation_count=%llu "
+         "node_response_latency_total_cycles=%llu "
+         "node_response_latency_average_cycles=%llu "
+         "primitive_response_latency_observation_count=%llu "
+         "primitive_response_latency_total_cycles=%llu "
+         "primitive_response_latency_average_cycles=%llu "
+         "stack_load_response_latency_observation_count=%llu "
+         "stack_load_response_latency_total_cycles=%llu "
+         "stack_load_response_latency_average_cycles=%llu "
+         "handoff_acquire_response_latency_observation_count=%llu "
+         "handoff_acquire_response_latency_total_cycles=%llu "
+         "handoff_acquire_response_latency_average_cycles=%llu "
          "stack_store_nonblocking_completion_count=%llu "
          "handoff_publication_store_nonblocking_completion_count=%llu "
          "result_store_nonblocking_completion_count=%llu "
@@ -1200,6 +1269,18 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_sideband_stack_load_response_wakeup_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_handoff_acquire_response_wakeup_count,
+         node_response_latency_observation_count,
+         node_response_latency_total_cycles,
+         node_response_latency_average_cycles,
+         primitive_response_latency_observation_count,
+         primitive_response_latency_total_cycles,
+         primitive_response_latency_average_cycles,
+         stack_load_response_latency_observation_count,
+         stack_load_response_latency_total_cycles,
+         stack_load_response_latency_average_cycles,
+         handoff_acquire_response_latency_observation_count,
+         handoff_acquire_response_latency_total_cycles,
+         handoff_acquire_response_latency_average_cycles,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_stack_store_nonblocking_completion_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1434,6 +1515,31 @@ static void rtcore_record_v02_lsu_sideband_response_latency(
           .v02_lsu_sideband_response_latency_max_cycles) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_response_latency_max_cycles = latency;
+  }
+  if (snapshot.is_write) {
+    return;
+  }
+  if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_NODE_FETCH) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_node_response_latency_observation_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_node_response_latency_total_cycles += latency;
+  } else if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_primitive_response_latency_observation_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_primitive_response_latency_total_cycles += latency;
+  } else if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_STACK_LOAD) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_stack_load_response_latency_observation_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_stack_load_response_latency_total_cycles += latency;
+  } else if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_handoff_acquire_response_latency_observation_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_handoff_acquire_response_latency_total_cycles +=
+        latency;
   }
 }
 
