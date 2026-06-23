@@ -274,6 +274,8 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_shared_frontend_rt_blocked_then_progressed_count;
   unsigned long long v02_lsu_shared_frontend_direct_requeued_count;
   unsigned long long v02_lsu_shared_frontend_max_rt_queue_occupancy;
+  unsigned long long v02_lsu_shared_frontend_normal_first_rt_preempted_count;
+  unsigned long long v02_lsu_shared_frontend_rt_first_priority_count;
   unsigned long long v02_lsu_sideband_same_cycle_merge_count;
   unsigned long long v02_lsu_sideband_same_cycle_merged_waiter_count;
   unsigned long long v02_lsu_sideband_same_cycle_real_mem_fetch_saved_count;
@@ -321,6 +323,8 @@ static std::map<rtcore_v02_lsu_sideband_same_cycle_merge_key, unsigned>
     g_rtcore_v02_lsu_same_cycle_merge_uid_by_key;
 static std::map<unsigned, bool>
     g_rtcore_v02_lsu_shared_frontend_blocked_by_owner;
+static std::map<unsigned, unsigned long long>
+    g_rtcore_v02_lsu_shared_frontend_normal_first_pending_pressure_by_owner;
 struct rtcore_v02_lsu_shared_frontend_normal_lsu_observation {
   unsigned pressure;
   unsigned dispatch_busy;
@@ -1054,6 +1058,8 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "shared_lsu_frontend_rt_blocked_then_progressed_count=%llu "
          "shared_lsu_frontend_direct_requeued_count=%llu "
          "shared_lsu_frontend_max_rt_queue_occupancy=%llu "
+         "shared_lsu_frontend_normal_first_rt_preempted_count=%llu "
+         "shared_lsu_frontend_rt_first_priority_count=%llu "
          "attribution_summary_enabled=1 "
          "attribution_issue_backpressure_deferred_count=%llu "
          "attribution_issue_budget_exhausted_count=%llu "
@@ -1228,6 +1234,10 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
             .v02_lsu_shared_frontend_direct_requeued_count,
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_shared_frontend_max_rt_queue_occupancy,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_frontend_normal_first_rt_preempted_count,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_frontend_rt_first_priority_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_issue_bandwidth_deferred_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -2036,6 +2046,87 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
         (rtcore_v02_lsu_shared_frontend_policy_rt_first()
              ? 0u
              : shared_frontend_normal_lsu_used);
+    unsigned shared_frontend_rt_first_budget = 0;
+    if (sideband_issued_this_cycle < shared_frontend_budget_per_cycle) {
+      shared_frontend_rt_first_budget =
+          shared_frontend_budget_per_cycle - sideband_issued_this_cycle;
+    }
+    unsigned shared_frontend_normal_first_budget = 0;
+    const unsigned shared_frontend_normal_first_used_before_queue =
+        sideband_issued_this_cycle + shared_frontend_normal_lsu_used;
+    if (shared_frontend_normal_first_used_before_queue <
+        shared_frontend_budget_per_cycle) {
+      shared_frontend_normal_first_budget =
+          shared_frontend_budget_per_cycle -
+          shared_frontend_normal_first_used_before_queue;
+    }
+    if (shared_frontend_rt_first_budget > max_sideband_drain_per_cycle) {
+      shared_frontend_rt_first_budget = max_sideband_drain_per_cycle;
+    }
+    if (shared_frontend_normal_first_budget > max_sideband_drain_per_cycle) {
+      shared_frontend_normal_first_budget = max_sideband_drain_per_cycle;
+    }
+    unsigned shared_frontend_normal_lsu_budget_pressure = 0;
+    if (sideband_issued_this_cycle < shared_frontend_budget_per_cycle) {
+      shared_frontend_normal_lsu_budget_pressure =
+          shared_frontend_budget_per_cycle - sideband_issued_this_cycle;
+    }
+    if (shared_frontend_normal_lsu_budget_pressure >
+        shared_frontend_normal_lsu_used) {
+      shared_frontend_normal_lsu_budget_pressure =
+          shared_frontend_normal_lsu_used;
+    }
+    if (rtcore_v02_lsu_shared_frontend_policy_rt_first()) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_rt_first_priority_count +=
+          shared_frontend_normal_lsu_budget_pressure;
+    } else {
+      g_rtcore_v02_lsu_shared_frontend_normal_first_pending_pressure_by_owner
+          [result.owner_hw_sid] += shared_frontend_normal_lsu_budget_pressure;
+    }
+    const unsigned shared_frontend_rt_first_queue_budget =
+        std::min(queued_sideband_count_before_drain,
+                 shared_frontend_rt_first_budget);
+    const unsigned shared_frontend_normal_first_queue_budget =
+        std::min(queued_sideband_count_before_drain,
+                 shared_frontend_normal_first_budget);
+    if (!rtcore_v02_lsu_shared_frontend_policy_rt_first()) {
+      unsigned long long shared_frontend_policy_opportunity = 0;
+      if (shared_frontend_rt_first_queue_budget >
+          shared_frontend_normal_first_queue_budget) {
+        shared_frontend_policy_opportunity =
+            shared_frontend_rt_first_queue_budget -
+            shared_frontend_normal_first_queue_budget;
+      }
+      // Normal-LSU pressure can be observed on cycles before queued RT work is
+      // drained, so keep a small per-SM credit and consume it only when RT work
+      // is actually blocked by the shared front-end.
+      if (queued_sideband_count_before_drain > max_sideband_drain_per_cycle) {
+        unsigned long long &pending_normal_pressure =
+            g_rtcore_v02_lsu_shared_frontend_normal_first_pending_pressure_by_owner
+                [result.owner_hw_sid];
+        const unsigned long long blocked_sideband =
+            queued_sideband_count_before_drain - max_sideband_drain_per_cycle;
+        if (blocked_sideband > shared_frontend_policy_opportunity &&
+            pending_normal_pressure > shared_frontend_policy_opportunity) {
+          const unsigned long long deferred_policy_opportunity = std::min(
+              blocked_sideband - shared_frontend_policy_opportunity,
+              pending_normal_pressure - shared_frontend_policy_opportunity);
+          shared_frontend_policy_opportunity += deferred_policy_opportunity;
+        }
+        if (shared_frontend_policy_opportunity > 0) {
+          const unsigned long long consumed_normal_pressure =
+              std::min(pending_normal_pressure,
+                       shared_frontend_policy_opportunity);
+          pending_normal_pressure -= consumed_normal_pressure;
+        }
+      }
+      if (shared_frontend_policy_opportunity > 0) {
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_frontend_normal_first_rt_preempted_count +=
+            shared_frontend_policy_opportunity;
+      }
+    }
     if (shared_frontend_used_before_queue < shared_frontend_budget_per_cycle) {
       shared_frontend_rt_budget =
           shared_frontend_budget_per_cycle - shared_frontend_used_before_queue;
