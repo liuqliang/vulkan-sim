@@ -119,6 +119,9 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
 extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
     unsigned owner_hw_sid,
     rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
+extern "C" bool rtcore_push_front_v02_lsu_sideband_request_for_sm(
+    unsigned owner_hw_sid,
+    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
 extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
     unsigned owner_hw_sid);
 extern "C" bool rtcore_record_v02_lsu_sideband_memory_response(
@@ -264,6 +267,7 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_shared_frontend_rt_used_count;
   unsigned long long v02_lsu_shared_frontend_rt_blocked_count;
   unsigned long long v02_lsu_shared_frontend_rt_blocked_then_progressed_count;
+  unsigned long long v02_lsu_shared_frontend_direct_requeued_count;
   unsigned long long v02_lsu_shared_frontend_max_rt_queue_occupancy;
   unsigned long long v02_lsu_sideband_same_cycle_merge_count;
   unsigned long long v02_lsu_sideband_same_cycle_merged_waiter_count;
@@ -933,6 +937,7 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "shared_lsu_frontend_rt_used_count=%llu "
          "shared_lsu_frontend_rt_blocked_count=%llu "
          "shared_lsu_frontend_rt_blocked_then_progressed_count=%llu "
+         "shared_lsu_frontend_direct_requeued_count=%llu "
          "shared_lsu_frontend_max_rt_queue_occupancy=%llu "
          "attribution_summary_enabled=1 "
          "attribution_issue_backpressure_deferred_count=%llu "
@@ -1091,9 +1096,11 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_shared_frontend_rt_blocked_count,
          g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_shared_frontend_rt_blocked_then_progressed_count,
-         g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_shared_frontend_max_rt_queue_occupancy,
+            .v02_lsu_shared_frontend_rt_blocked_then_progressed_count,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_frontend_direct_requeued_count,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_frontend_max_rt_queue_occupancy,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_issue_bandwidth_deferred_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1814,9 +1821,23 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
         .v02_lsu_shared_frontend_normal_lsu_used_count +=
         shared_frontend_normal_lsu_used;
   }
-  rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
-      result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
-  if (result.lsu_sideband_valid) {
+  bool direct_sideband_requeued = false;
+  if (shared_frontend_gate_enabled && result.lsu_sideband_valid) {
+    const rtcore_v02_lsu_sideband_request_snapshot direct_snapshot =
+        rtcore_v02_lsu_sideband_snapshot_from_result(result);
+    direct_sideband_requeued =
+        rtcore_push_front_v02_lsu_sideband_request_for_sm(
+            result.owner_hw_sid, &direct_snapshot);
+    if (direct_sideband_requeued) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_shared_frontend_direct_requeued_count++;
+    }
+  }
+  if (!direct_sideband_requeued) {
+    rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
+        result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
+  }
+  if (result.lsu_sideband_valid && !direct_sideband_requeued) {
     sideband_issued_this_cycle++;
     if (shared_frontend_gate_enabled) {
       g_rtcore_replay_cycle_hook_consumer_stats
