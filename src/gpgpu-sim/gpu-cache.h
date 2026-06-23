@@ -709,6 +709,14 @@ class cache_config {
     return addr & ~(new_addr_type)(m_atom_sz - 1);
   }
   enum mshr_config_t get_mshr_type() const { return m_mshr_type; }
+  unsigned get_mshr_entries() const {
+    assert(m_valid);
+    return m_mshr_entries;
+  }
+  unsigned get_mshr_max_merge() const {
+    assert(m_valid);
+    return m_mshr_max_merge;
+  }
   void set_assoc(unsigned n) {
     // set new assoc. L1 cache dynamically resized in Volta
     m_assoc = n;
@@ -1205,6 +1213,12 @@ class baseline_cache : public cache_t {
   
   unsigned num_mshr_entries() {
     return m_mshrs.num_entries();
+  }
+  unsigned get_mshr_entries() const {
+    return m_config.get_mshr_entries();
+  }
+  unsigned get_mshr_max_merge() const {
+    return m_config.get_mshr_max_merge();
   }
 
   // Stat collection

@@ -322,6 +322,11 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long
       v02_lsu_sideband_handoff_publication_store_nonblocking_completion_count;
   unsigned long long v02_lsu_sideband_result_store_nonblocking_completion_count;
+  unsigned long long v02_lsu_sideband_cache_config_identity_observation_count;
+  unsigned v02_lsu_sideband_selected_cache_kind;
+  unsigned v02_lsu_sideband_selected_cache_config_mshr_entries;
+  unsigned v02_lsu_sideband_selected_cache_config_mshr_max_merge;
+  unsigned v02_lsu_sideband_selected_cache_current_mshr_entries_max;
   unsigned v02_lsu_sideband_max_chunk_count;
 };
 
@@ -613,6 +618,18 @@ static bool rtcore_v02_lsu_memory_client_enabled() {
   }();
   return enabled != 0;
 }
+
+static bool rtcore_v02_lsu_cache_config_identity_log_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V02_LSU_CACHE_CONFIG_IDENTITY_LOG");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static void rtcore_maybe_log_v02_lsu_cache_config_identity_stats(
+    unsigned owner_hw_sid);
 
 static bool rtcore_v02_lsu_response_wait_gate_enabled() {
   static int enabled = []() {
@@ -1427,6 +1444,7 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
              .v02_lsu_sideband_same_cycle_real_mem_fetch_saved_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_same_cycle_fanout_wake_count);
+  rtcore_maybe_log_v02_lsu_cache_config_identity_stats(owner_hw_sid);
   fflush(stdout);
 }
 
@@ -1582,6 +1600,68 @@ static void rtcore_v02_lsu_update_sideband_pending_count() {
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_sideband_pending_request_count;
   }
+}
+
+static const char *rtcore_v02_lsu_selected_cache_kind_name(unsigned kind) {
+  if (kind == 1u) {
+    return "L1D";
+  }
+  if (kind == 2u) {
+    return "L0";
+  }
+  return "none";
+}
+
+static void rtcore_record_v02_lsu_cache_config_identity(
+    bool selected_l1d, baseline_cache *cache, unsigned current_mshr_entries) {
+  if (!rtcore_v02_lsu_cache_config_identity_log_enabled() || cache == NULL) {
+    return;
+  }
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_cache_config_identity_observation_count++;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_selected_cache_kind = selected_l1d ? 1u : 2u;
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_selected_cache_config_mshr_entries =
+      cache->get_mshr_entries();
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_sideband_selected_cache_config_mshr_max_merge =
+      cache->get_mshr_max_merge();
+  if (current_mshr_entries >
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_selected_cache_current_mshr_entries_max) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_selected_cache_current_mshr_entries_max =
+        current_mshr_entries;
+  }
+}
+
+static void rtcore_maybe_log_v02_lsu_cache_config_identity_stats(
+    unsigned owner_hw_sid) {
+  if (!rtcore_v02_lsu_cache_config_identity_log_enabled()) {
+    return;
+  }
+  if (g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_cache_config_identity_observation_count == 0) {
+    return;
+  }
+  printf("GPGPU-Sim RTCORE_V02_LSU_CACHE_CONFIG_IDENTITY_STATS "
+         "owner_hw_sid=%u cache_config_identity_enabled=1 "
+         "selected_cache_kind=%s selected_cache_config_mshr_entries=%u "
+         "selected_cache_config_mshr_max_merge=%u "
+         "selected_cache_current_mshr_entries_max=%u observations=%llu\n",
+         owner_hw_sid,
+         rtcore_v02_lsu_selected_cache_kind_name(
+             g_rtcore_replay_cycle_hook_consumer_stats
+                 .v02_lsu_sideband_selected_cache_kind),
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_selected_cache_config_mshr_entries,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_selected_cache_config_mshr_max_merge,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_selected_cache_current_mshr_entries_max,
+         g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_cache_config_identity_observation_count);
 }
 
 static bool rtcore_record_v02_lsu_sideband_icnt_injection(mem_fetch *mf) {
@@ -1829,6 +1909,8 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
         .v02_lsu_sideband_mshr_entries_after_access_max =
         mshr_entries_after_access;
   }
+  rtcore_record_v02_lsu_cache_config_identity(
+      config->m_rt_use_l1d, cache, mshr_entries_after_access);
   if (status == RESERVATION_FAIL) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_rejected_count++;
@@ -2034,6 +2116,8 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
           .v02_lsu_sideband_mshr_entries_at_response_probe_max =
           response_probe_mshr_entries;
     }
+    rtcore_record_v02_lsu_cache_config_identity(
+        config->m_rt_use_l1d, cache, response_probe_mshr_entries);
     ready_sideband_responses = cache->probe_mshr(response_addr);
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_mshr_response_probe_mem_fetch_count +=
