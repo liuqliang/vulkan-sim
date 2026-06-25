@@ -1817,6 +1817,8 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
     const shader_core_config *config, shader_core_ctx *core,
     baseline_cache *l1d_cache, baseline_cache *l0_cache,
     shader_core_stats *stats, unsigned sid) {
+  (void)config;
+  (void)l0_cache;
   if (!result.lsu_sideband_valid || !rtcore_v02_lsu_memory_client_enabled()) {
     return;
   }
@@ -1838,7 +1840,7 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
     return;
   }
 
-  baseline_cache *cache = config->m_rt_use_l1d ? l1d_cache : l0_cache;
+  baseline_cache *cache = l1d_cache;
   if (cache == NULL || mf_allocator == NULL || core == NULL || stats == NULL) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_rejected_count++;
@@ -1909,8 +1911,8 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
         .v02_lsu_sideband_mshr_entries_after_access_max =
         mshr_entries_after_access;
   }
-  rtcore_record_v02_lsu_cache_config_identity(
-      config->m_rt_use_l1d, cache, mshr_entries_after_access);
+  rtcore_record_v02_lsu_cache_config_identity(true, cache,
+                                              mshr_entries_after_access);
   if (status == RESERVATION_FAIL) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_rejected_count++;
@@ -2071,6 +2073,8 @@ static void rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
 static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
     mem_fetch *mf, const shader_core_config *config, shader_core_ctx *core,
     baseline_cache *l1d_cache, baseline_cache *l0_cache) {
+  (void)config;
+  (void)l0_cache;
   if (!rtcore_v02_lsu_memory_client_enabled() || mf == NULL) {
     return false;
   }
@@ -2091,7 +2095,7 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
   unsigned owner_hw_sid = it->second.front().owner_hw_sid;
   const new_addr_type response_addr = mf->get_addr();
   mf->set_status(IN_SHADER_FETCHED, current_cycle);
-  baseline_cache *cache = config->m_rt_use_l1d ? l1d_cache : l0_cache;
+  baseline_cache *cache = l1d_cache;
   std::list<mem_fetch *> ready_sideband_responses;
   if (it->second.front().is_write) {
     unsigned completed_count =
@@ -2116,8 +2120,8 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
           .v02_lsu_sideband_mshr_entries_at_response_probe_max =
           response_probe_mshr_entries;
     }
-    rtcore_record_v02_lsu_cache_config_identity(
-        config->m_rt_use_l1d, cache, response_probe_mshr_entries);
+    rtcore_record_v02_lsu_cache_config_identity(true, cache,
+                                                response_probe_mshr_entries);
     ready_sideband_responses = cache->probe_mshr(response_addr);
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_mshr_response_probe_mem_fetch_count +=
