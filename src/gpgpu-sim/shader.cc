@@ -297,6 +297,10 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_shared_frontend_max_rt_queue_occupancy;
   unsigned long long v02_lsu_shared_frontend_normal_first_rt_preempted_count;
   unsigned long long v02_lsu_shared_frontend_rt_first_priority_count;
+  unsigned long long v02_lsu_shared_l1d_response_rt_serviced_count;
+  unsigned long long v02_lsu_shared_l1d_response_normal_serviced_count;
+  unsigned long long v02_lsu_shared_l1d_response_rt_blocked_by_normal_count;
+  unsigned long long v02_lsu_shared_l1d_response_normal_blocked_by_rt_count;
   unsigned long long v02_lsu_sideband_same_cycle_merge_count;
   unsigned long long v02_lsu_sideband_same_cycle_merged_waiter_count;
   unsigned long long v02_lsu_sideband_same_cycle_real_mem_fetch_saved_count;
@@ -594,6 +598,26 @@ rtcore_get_v02_lsu_shared_frontend_normal_lsu_observation(
     return rtcore_v02_lsu_shared_frontend_normal_lsu_observation();
   }
   return it->second;
+}
+
+static void rtcore_record_v02_lsu_shared_l1d_response_rt_serviced() {
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_shared_l1d_response_rt_serviced_count++;
+}
+
+static void rtcore_record_v02_lsu_shared_l1d_response_normal_serviced() {
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_shared_l1d_response_normal_serviced_count++;
+}
+
+static void rtcore_record_v02_lsu_shared_l1d_response_rt_blocked_by_normal() {
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_shared_l1d_response_rt_blocked_by_normal_count++;
+}
+
+static void rtcore_record_v02_lsu_shared_l1d_response_normal_blocked_by_rt() {
+  g_rtcore_replay_cycle_hook_consumer_stats
+      .v02_lsu_shared_l1d_response_normal_blocked_by_rt_count++;
 }
 
 static bool rtcore_v02_lsu_same_cycle_merge_gate_enabled() {
@@ -1203,6 +1227,11 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "shared_lsu_frontend_max_rt_queue_occupancy=%llu "
          "shared_lsu_frontend_normal_first_rt_preempted_count=%llu "
          "shared_lsu_frontend_rt_first_priority_count=%llu "
+         "shared_l1d_response_arbitration_observation_enabled=1 "
+         "shared_l1d_response_rt_serviced_count=%llu "
+         "shared_l1d_response_normal_serviced_count=%llu "
+         "shared_l1d_response_rt_blocked_by_normal_count=%llu "
+         "shared_l1d_response_normal_blocked_by_rt_count=%llu "
          "attribution_summary_enabled=1 "
          "attribution_issue_backpressure_deferred_count=%llu "
          "attribution_issue_budget_exhausted_count=%llu "
@@ -1419,6 +1448,14 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
             .v02_lsu_shared_frontend_normal_first_rt_preempted_count,
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_shared_frontend_rt_first_priority_count,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_l1d_response_rt_serviced_count,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_l1d_response_normal_serviced_count,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_l1d_response_rt_blocked_by_normal_count,
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_shared_l1d_response_normal_blocked_by_rt_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_issue_bandwidth_deferred_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -10070,9 +10107,16 @@ void rt_unit::writeback() {
     // serviced_client = next_client;
   }
   // Check if it's for the RT unit or the LDST unit
-  while (L1D->access_ready() && L1D->next_access_rt()) {
+  while (L1D->access_ready()) {
+    if (!L1D->next_access_rt()) {
+      rtcore_record_v02_lsu_shared_l1d_response_rt_blocked_by_normal();
+      rtcore_maybe_log_v02_lsu_sideband_offer_stats(m_sid);
+      break;
+    }
     mem_fetch *mf = L1D->next_access();
     // m_next_wb = mf->get_inst();
+    rtcore_record_v02_lsu_shared_l1d_response_rt_serviced();
+    rtcore_maybe_log_v02_lsu_sideband_offer_stats(m_sid);
     delete mf;
     // serviced_client = next_client;
   }
@@ -10605,10 +10649,15 @@ void ldst_unit::writeback() {
       case 4:
         if (m_L1D && m_L1D->access_ready()) {
           // Check if it's for RT unit or for LDST unit
-          if (!m_L1D->next_access_rt()) {
+          if (m_L1D->next_access_rt()) {
+            rtcore_record_v02_lsu_shared_l1d_response_normal_blocked_by_rt();
+            rtcore_maybe_log_v02_lsu_sideband_offer_stats(m_sid);
+          } else {
             mem_fetch *mf = m_L1D->next_access();
             if (!mf->israytrace()) {
               m_next_wb = mf->get_inst();
+              rtcore_record_v02_lsu_shared_l1d_response_normal_serviced();
+              rtcore_maybe_log_v02_lsu_sideband_offer_stats(m_sid);
               delete mf;
               serviced_client = next_client;
             }
