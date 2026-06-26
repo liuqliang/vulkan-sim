@@ -9844,6 +9844,18 @@ extern "C" bool rtcore_push_front_v02_lsu_sideband_request_for_sm(
     return true;
 }
 
+extern "C" bool rtcore_push_back_v02_lsu_sideband_request_for_sm(
+    unsigned owner_hw_sid,
+    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+{
+    if (!sideband_snapshot || !sideband_snapshot->valid) {
+        return false;
+    }
+    g_rtcore_v02_lsu_sideband_request_snapshots_by_owner[owner_hw_sid]
+        .push_back(*sideband_snapshot);
+    return true;
+}
+
 extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
     unsigned owner_hw_sid)
 {

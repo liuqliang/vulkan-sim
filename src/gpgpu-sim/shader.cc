@@ -122,6 +122,9 @@ extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
 extern "C" bool rtcore_push_front_v02_lsu_sideband_request_for_sm(
     unsigned owner_hw_sid,
     const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
+extern "C" bool rtcore_push_back_v02_lsu_sideband_request_for_sm(
+    unsigned owner_hw_sid,
+    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
 extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
     unsigned owner_hw_sid);
 extern "C" bool rtcore_record_v02_lsu_sideband_memory_response(
@@ -1467,6 +1470,14 @@ rtcore_v02_lsu_sideband_snapshot_from_result(
   return snapshot;
 }
 
+static bool rtcore_requeue_v02_lsu_sideband_request_for_retry(
+    const rtcore_replay_cycle_hook_result &result) {
+  const rtcore_v02_lsu_sideband_request_snapshot snapshot =
+      rtcore_v02_lsu_sideband_snapshot_from_result(result);
+  return rtcore_push_back_v02_lsu_sideband_request_for_sm(
+      result.lsu_sideband_owner_hw_sid, &snapshot);
+}
+
 static void rtcore_record_v02_lsu_sideband_immediate_completion_kind(
     unsigned access_kind) {
   if (access_kind == RTCORE_V02_LSU_ACCESS_NODE_FETCH) {
@@ -1918,6 +1929,7 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
         .v02_lsu_sideband_rejected_count++;
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_cache_reservation_fail_count++;
+    rtcore_requeue_v02_lsu_sideband_request_for_retry(result);
     delete mf;
     return;
   }
@@ -1962,6 +1974,7 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
     if (status == HIT_RESERVED) {
       g_rtcore_replay_cycle_hook_consumer_stats
           .v02_lsu_sideband_cache_hit_reserved_reject_count++;
+      rtcore_requeue_v02_lsu_sideband_request_for_retry(result);
     }
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_accepted_count--;
@@ -2396,11 +2409,15 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   }
 
   unsigned max_sideband_drain_per_cycle =
-      rtcore_v02_lsu_response_wait_gate_enabled() ? 0u : 4096u;
+      (rtcore_v02_lsu_response_wait_gate_enabled() &&
+       !shared_frontend_gate_enabled)
+          ? 0u
+          : 4096u;
   if (issue_bandwidth_gate_enabled) {
     if (sideband_issued_this_cycle >= issue_budget_per_cycle) {
       max_sideband_drain_per_cycle = 0;
-    } else if (!rtcore_v02_lsu_response_wait_gate_enabled()) {
+    } else if (!rtcore_v02_lsu_response_wait_gate_enabled() ||
+               shared_frontend_gate_enabled) {
       max_sideband_drain_per_cycle =
           issue_budget_per_cycle - sideband_issued_this_cycle;
     }
