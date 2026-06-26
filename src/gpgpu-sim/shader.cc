@@ -3807,10 +3807,18 @@ void shader_core_stats::print_roofline(FILE *fout) const {
   std::string op_int_str, perf_str, cacheline_str, int_str, cycle_str;
   float op_int_sum = 0, perf_sum = 0;
   for (unsigned i=0; i<m_config->num_shader(); i++) {
-    float o = (float)rt_total_intersection_stages[i] / (float)rt_total_cacheline_fetched[i];
-    float p = (float)rt_total_intersection_stages[i] / (float)rt_total_cycles[i];
-
-    assert(rt_total_cacheline_fetched[i] <= rt_total_cycles[i]);
+    unsigned long long roofline_cycle_denominator = rt_total_cycles[i];
+    if (rt_total_cacheline_fetched[i] > rt_total_cycles[i]) {
+      roofline_cycle_denominator = rt_total_cacheline_fetched[i];
+    }
+    float o = rt_total_cacheline_fetched[i]
+                  ? (float)rt_total_intersection_stages[i] /
+                        (float)rt_total_cacheline_fetched[i]
+                  : 0.0f;
+    float p = roofline_cycle_denominator
+                  ? (float)rt_total_intersection_stages[i] /
+                        (float)roofline_cycle_denominator
+                  : 0.0f;
 
     op_int.push_back(o);
     perf.push_back(p);
