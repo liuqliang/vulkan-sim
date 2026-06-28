@@ -381,6 +381,7 @@ static std::map<unsigned, rtcore_v02_lsu_shared_frontend_normal_lsu_observation>
 static bool g_rtcore_v02_lsu_same_cycle_merge_map_initialized = false;
 static unsigned long long g_rtcore_v02_lsu_same_cycle_merge_map_cycle = 0;
 static unsigned g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted = 0;
+static unsigned g_rtcore_v03_shader_only_ldst_observation_logs_emitted = 0;
 
 static const unsigned RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE = 1;
 static const unsigned RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE = 0;
@@ -568,6 +569,68 @@ static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_response_fifo_weight()
     return static_cast<unsigned>(parsed);
   }();
   return weight;
+}
+
+static bool rtcore_v03_shader_only_ldst_observation_log_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V03_SHADER_ONLY_LDST_OBSERVATION_LOG");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static unsigned rtcore_v03_shader_only_ldst_observation_log_limit() {
+  static unsigned limit = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V03_SHADER_ONLY_LDST_OBSERVATION_LOG_LIMIT");
+    if (value == NULL || *value == '\0') {
+      return 4096u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value) {
+      return 4096u;
+    }
+    if (parsed > 65536) {
+      return 65536u;
+    }
+    return static_cast<unsigned>(parsed);
+  }();
+  return limit;
+}
+
+static void rtcore_maybe_log_v03_shader_only_ldst_observation(
+    unsigned owner_hw_sid, unsigned long long cycle,
+    unsigned normal_lsu_pressure_for_rtcore,
+    bool normal_lsu_dispatch_busy_for_rtcore,
+    unsigned response_fifo_occupancy_for_rtcore,
+    unsigned normal_lsu_dispatch_pressure_for_rtcore,
+    unsigned normal_lsu_response_fifo_pressure_for_rtcore,
+    enum mem_stage_stall_type rc_fail) {
+  if (!rtcore_v03_shader_only_ldst_observation_log_enabled()) {
+    return;
+  }
+  if (g_rtcore_v03_shader_only_ldst_observation_logs_emitted >=
+      rtcore_v03_shader_only_ldst_observation_log_limit()) {
+    return;
+  }
+  if (normal_lsu_pressure_for_rtcore == 0 &&
+      !normal_lsu_dispatch_busy_for_rtcore &&
+      response_fifo_occupancy_for_rtcore == 0 && rc_fail == NO_RC_FAIL) {
+    return;
+  }
+  g_rtcore_v03_shader_only_ldst_observation_logs_emitted++;
+  printf("GPGPU-Sim RTCORE_V03_SHADER_ONLY_LDST_OBSERVATION "
+         "owner_hw_sid=%u cycle=%llu pressure=%u dispatch_busy=%u "
+         "response_fifo_occupancy=%u dispatch_pressure=%u "
+         "response_fifo_pressure=%u stall_active=%u stall_reason=%u\n",
+         owner_hw_sid, cycle, normal_lsu_pressure_for_rtcore,
+         normal_lsu_dispatch_busy_for_rtcore ? 1u : 0u,
+         response_fifo_occupancy_for_rtcore,
+         normal_lsu_dispatch_pressure_for_rtcore,
+         normal_lsu_response_fifo_pressure_for_rtcore,
+         rc_fail != NO_RC_FAIL ? 1u : 0u, static_cast<unsigned>(rc_fail));
 }
 
 static void rtcore_record_v02_lsu_shared_frontend_normal_lsu_observation(
@@ -10813,6 +10876,13 @@ void ldst_unit::cycle() {
   rtcore_record_v02_lsu_shared_frontend_normal_lsu_observation(
       m_sid, normal_lsu_pressure_for_rtcore,
       normal_lsu_dispatch_busy_for_rtcore ? 1u : 0u,
+      response_fifo_occupancy_for_rtcore,
+      normal_lsu_dispatch_pressure_for_rtcore,
+      normal_lsu_response_fifo_pressure_for_rtcore, rc_fail);
+  rtcore_maybe_log_v03_shader_only_ldst_observation(
+      m_sid, m_core->get_gpu()->gpu_sim_cycle +
+                 m_core->get_gpu()->gpu_tot_sim_cycle,
+      normal_lsu_pressure_for_rtcore, normal_lsu_dispatch_busy_for_rtcore,
       response_fifo_occupancy_for_rtcore,
       normal_lsu_dispatch_pressure_for_rtcore,
       normal_lsu_response_fifo_pressure_for_rtcore, rc_fail);
