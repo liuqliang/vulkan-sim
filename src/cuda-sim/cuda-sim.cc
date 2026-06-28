@@ -2250,9 +2250,10 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       StatAddSample(m_gpu->gpgpu_ctx->func_sim->g_inst_classification_stat
                         [m_gpu->gpgpu_ctx->func_sim->g_ptx_kernel_count],
                     op_classification);
-      unsigned shader;
+      unsigned shader = 0;
       m_gpu->gpgpu_ctx->translate_pc_to_ptxlineno(inst.pc, shader);
-      m_gpu->gpgpu_ctx->func_sim->g_inst_class_stat[shader][op_classification]++;
+      if (shader < 16 && op_classification < 20)
+        m_gpu->gpgpu_ctx->func_sim->g_inst_class_stat[shader][op_classification]++;
       if (space_type)
         StatAddSample(m_gpu->gpgpu_ctx->func_sim->g_inst_classification_stat
                           [m_gpu->gpgpu_ctx->func_sim->g_ptx_kernel_count],
@@ -3005,6 +3006,7 @@ unsigned gpgpu_context::translate_pc_to_ptxlineno(unsigned pc) {
 }
 
 unsigned gpgpu_context::translate_pc_to_ptxlineno(unsigned pc, unsigned &shader) {
+  shader = 0;
   // this function assumes that the kernel fits inside a single PTX file
   // function_info *pFunc = g_func_info; // assume that the current kernel is
   // the one in query

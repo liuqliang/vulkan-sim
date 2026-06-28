@@ -54,6 +54,14 @@ static bool rt_progress_logging_enabled() {
     return enabled;
 }
 
+static bool rtcore_standalone_cuda_memory_enabled() {
+    static int enabled = []() {
+        const char *value = getenv("VULKAN_SIM_STANDALONE_CUDA_MEMORY");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 struct rtcore_pixel_trace_filter {
     bool enabled = false;
     unsigned x = 0;
@@ -168,7 +176,7 @@ void* VulkanRayTracing::tlas_addr;
 
 bool VulkanRayTracing::dumped = false;
 
-bool use_external_launcher = false;
+bool use_external_launcher = rtcore_standalone_cuda_memory_enabled();
 const bool dump_trace = false;
 
 bool VulkanRayTracing::_init_ = false;

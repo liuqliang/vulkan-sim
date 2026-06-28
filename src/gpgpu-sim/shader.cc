@@ -631,6 +631,7 @@ static void rtcore_maybe_log_v03_shader_only_ldst_observation(
          normal_lsu_dispatch_pressure_for_rtcore,
          normal_lsu_response_fifo_pressure_for_rtcore,
          rc_fail != NO_RC_FAIL ? 1u : 0u, static_cast<unsigned>(rc_fail));
+  fflush(stdout);
 }
 
 static void rtcore_record_v02_lsu_shared_frontend_normal_lsu_observation(

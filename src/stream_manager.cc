@@ -279,8 +279,12 @@ bool stream_manager::check_finished_kernel() {
 bool stream_manager::special_check_finished_kernel() {
   unsigned grid_uid = m_gpu->finished_kernel();
   if (grid_uid > 0) {
-    CUstream_st *stream = m_grid_id_to_stream[grid_uid];
+    std::map<unsigned, CUstream_st *>::iterator stream_iter =
+        m_grid_id_to_stream.find(grid_uid);
+    if (stream_iter == m_grid_id_to_stream.end()) return false;
+    CUstream_st *stream = stream_iter->second;
     kernel_info_t *kernel = stream->front().get_kernel();
+    if (!kernel) return false;
     assert(grid_uid == kernel->get_uid());
     if (kernel->is_finished()) {
       m_grid_uid = grid_uid;
@@ -297,8 +301,12 @@ bool stream_manager::register_finished_kernel() {
 bool stream_manager::register_finished_kernel(unsigned grid_uid) {
   // called by gpu simulation thread
   if (grid_uid > 0) {
-    CUstream_st *stream = m_grid_id_to_stream[grid_uid];
+    std::map<unsigned, CUstream_st *>::iterator stream_iter =
+        m_grid_id_to_stream.find(grid_uid);
+    if (stream_iter == m_grid_id_to_stream.end()) return false;
+    CUstream_st *stream = stream_iter->second;
     kernel_info_t *kernel = stream->front().get_kernel();
+    if (!kernel) return false;
     assert(grid_uid == kernel->get_uid());
 
     // Jin: should check children kernels for CDP
