@@ -915,6 +915,8 @@ struct rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot {
 
 struct rtcore_replay_v03_hw_queue_stage_budget_stats {
     unsigned evaluations;
+    unsigned last_memory_issue_issue_delta;
+    unsigned last_memory_issue_push_delta;
     unsigned last_memory_wake_issue_delta;
     unsigned last_memory_wake_push_delta;
     unsigned last_unit_wake_issue_delta;
@@ -923,6 +925,8 @@ struct rtcore_replay_v03_hw_queue_stage_budget_stats {
     unsigned last_ready_issue_push_delta;
     unsigned last_completion_tail_issue_delta;
     unsigned last_completion_tail_push_delta;
+    unsigned max_memory_issue_issue_delta;
+    unsigned max_memory_issue_push_delta;
     unsigned max_memory_wake_issue_delta;
     unsigned max_memory_wake_push_delta;
     unsigned max_unit_wake_issue_delta;
@@ -2988,6 +2992,7 @@ static const unsigned RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_WAKE = 0;
 static const unsigned RTCORE_REPLAY_V03_HW_QUEUE_STAGE_UNIT_WAKE = 1;
 static const unsigned RTCORE_REPLAY_V03_HW_QUEUE_STAGE_READY_ISSUE = 2;
 static const unsigned RTCORE_REPLAY_V03_HW_QUEUE_STAGE_COMPLETION_TAIL = 3;
+static const unsigned RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_ISSUE = 4;
 
 static unsigned rtcore_replay_data_path_port_budget_resource_mask(
     unsigned queue_header_over_budget, unsigned queue_entry_over_budget,
@@ -3560,8 +3565,10 @@ static void rtcore_record_replay_v03_hw_queue_budget_gate_result(
 
 static void rtcore_record_replay_v03_hw_queue_stage_budget_stats(
     unsigned owner_hw_sid, unsigned long long service_cycle,
-    const rtcore_replay_data_path_access_snapshot &memory_before,
-    const rtcore_replay_data_path_access_snapshot &memory_after,
+    const rtcore_replay_data_path_access_snapshot &memory_issue_before,
+    const rtcore_replay_data_path_access_snapshot &memory_issue_after,
+    const rtcore_replay_data_path_access_snapshot &memory_wake_before,
+    const rtcore_replay_data_path_access_snapshot &memory_wake_after,
     const rtcore_replay_data_path_access_snapshot &unit_before,
     const rtcore_replay_data_path_access_snapshot &unit_after,
     const rtcore_replay_data_path_access_snapshot &ready_before,
@@ -3575,12 +3582,22 @@ static void rtcore_record_replay_v03_hw_queue_stage_budget_stats(
         return;
     }
 
+    const unsigned memory_issue_issue_delta =
+        rtcore_replay_data_path_access_delta(
+            memory_issue_after.queue_entry_removes,
+            memory_issue_before.queue_entry_removes);
+    const unsigned memory_issue_push_delta =
+        rtcore_replay_data_path_access_delta(
+            memory_issue_after.queue_entry_writes,
+            memory_issue_before.queue_entry_writes);
     const unsigned memory_wake_issue_delta =
-        rtcore_replay_data_path_access_delta(memory_after.queue_entry_removes,
-                                             memory_before.queue_entry_removes);
+        rtcore_replay_data_path_access_delta(
+            memory_wake_after.queue_entry_removes,
+            memory_wake_before.queue_entry_removes);
     const unsigned memory_wake_push_delta =
-        rtcore_replay_data_path_access_delta(memory_after.queue_entry_writes,
-                                             memory_before.queue_entry_writes);
+        rtcore_replay_data_path_access_delta(
+            memory_wake_after.queue_entry_writes,
+            memory_wake_before.queue_entry_writes);
     const unsigned unit_wake_issue_delta =
         rtcore_replay_data_path_access_delta(unit_after.queue_entry_removes,
                                              unit_before.queue_entry_removes);
@@ -3604,6 +3621,10 @@ static void rtcore_record_replay_v03_hw_queue_stage_budget_stats(
 
     g_rtcore_replay_v03_hw_queue_stage_budget_stats.evaluations++;
     g_rtcore_replay_v03_hw_queue_stage_budget_stats
+        .last_memory_issue_issue_delta = memory_issue_issue_delta;
+    g_rtcore_replay_v03_hw_queue_stage_budget_stats
+        .last_memory_issue_push_delta = memory_issue_push_delta;
+    g_rtcore_replay_v03_hw_queue_stage_budget_stats
         .last_memory_wake_issue_delta = memory_wake_issue_delta;
     g_rtcore_replay_v03_hw_queue_stage_budget_stats
         .last_memory_wake_push_delta = memory_wake_push_delta;
@@ -3620,6 +3641,14 @@ static void rtcore_record_replay_v03_hw_queue_stage_budget_stats(
     g_rtcore_replay_v03_hw_queue_stage_budget_stats
         .last_completion_tail_push_delta = completion_tail_push_delta;
 
+    rtcore_update_replay_data_path_port_budget_max(
+        memory_issue_issue_delta,
+        &g_rtcore_replay_v03_hw_queue_stage_budget_stats
+             .max_memory_issue_issue_delta);
+    rtcore_update_replay_data_path_port_budget_max(
+        memory_issue_push_delta,
+        &g_rtcore_replay_v03_hw_queue_stage_budget_stats
+             .max_memory_issue_push_delta);
     rtcore_update_replay_data_path_port_budget_max(
         memory_wake_issue_delta,
         &g_rtcore_replay_v03_hw_queue_stage_budget_stats
@@ -10445,6 +10474,31 @@ rtcore_service_replay_tick_for_owner_stage_gated(
     rtcore_replay_service_cycle_identity_snapshot ready_identity = {};
     rtcore_replay_service_cycle_identity_snapshot completion_identity = {};
 
+    const bool memory_issue_data_path_allowed =
+        rtcore_replay_v01_stage_data_path_gate_can_service(
+            owner_hw_sid, service_cycle,
+            rtcore_replay_v01_stage_memory_wake_resource_mask());
+    const bool memory_issue_stage_gate_allowed =
+        rtcore_replay_v03_hw_queue_stage_budget_gate_can_service(
+            owner_hw_sid, RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_ISSUE,
+            service_cycle);
+    const bool memory_issue_allowed =
+        memory_issue_data_path_allowed && memory_issue_stage_gate_allowed;
+    const rtcore_replay_data_path_access_snapshot memory_issue_stage_before =
+        rtcore_get_replay_data_path_access_snapshot();
+    const bool memory_issue_progressed =
+        memory_issue_allowed
+            ? rtcore_service_ready_memory_replay_requests_for_owner(
+                  owner_hw_sid, rtcore_replay_memory_issue_budget_config(),
+                  &memory_identity, service_cycle)
+            : false;
+    const rtcore_replay_data_path_access_snapshot memory_issue_stage_after =
+        rtcore_get_replay_data_path_access_snapshot();
+    rtcore_record_replay_v03_hw_queue_stage_budget_gate_result(
+        owner_hw_sid, RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_ISSUE,
+        memory_issue_stage_before, memory_issue_stage_after,
+        memory_issue_stage_gate_allowed, service_cycle);
+
     const bool memory_wake_data_path_allowed =
         rtcore_replay_v01_stage_data_path_gate_can_service(
             owner_hw_sid, service_cycle,
@@ -10461,26 +10515,22 @@ rtcore_service_replay_tick_for_owner_stage_gated(
             service_cycle);
     const bool memory_wake_allowed =
         memory_wake_data_path_allowed && memory_wake_stage_gate_allowed;
-    const rtcore_replay_data_path_access_snapshot memory_stage_before =
+    const rtcore_replay_data_path_access_snapshot memory_wake_stage_before =
         rtcore_get_replay_data_path_access_snapshot();
-    if (memory_wake_allowed) {
-        const bool memory_issue_progressed =
-            rtcore_service_ready_memory_replay_requests_for_owner(
-                owner_hw_sid, rtcore_replay_memory_issue_budget_config(),
-                &memory_identity, service_cycle);
-        const bool memory_wake_progressed =
-            rtcore_service_waiting_memory_replay_requests_for_owner(
-                owner_hw_sid, rtcore_replay_memory_wake_budget_config(),
-                &memory_identity, service_cycle);
-        result.memory_progressed =
-            memory_issue_progressed || memory_wake_progressed;
-    }
-    const rtcore_replay_data_path_access_snapshot memory_stage_after =
+    const bool memory_wake_progressed =
+        memory_wake_allowed
+            ? rtcore_service_waiting_memory_replay_requests_for_owner(
+                  owner_hw_sid, rtcore_replay_memory_wake_budget_config(),
+                  &memory_identity, service_cycle)
+            : false;
+    result.memory_progressed =
+        memory_issue_progressed || memory_wake_progressed;
+    const rtcore_replay_data_path_access_snapshot memory_wake_stage_after =
         rtcore_get_replay_data_path_access_snapshot();
     rtcore_record_replay_v03_hw_queue_stage_budget_gate_result(
         owner_hw_sid, RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_WAKE,
-        memory_stage_before, memory_stage_after, memory_wake_stage_gate_allowed,
-        service_cycle);
+        memory_wake_stage_before, memory_wake_stage_after,
+        memory_wake_stage_gate_allowed, service_cycle);
 
     const bool unit_wake_data_path_allowed =
         rtcore_replay_v01_stage_data_path_gate_can_service(
@@ -10575,13 +10625,15 @@ rtcore_service_replay_tick_for_owner_stage_gated(
         completion_stage_before, completion_stage_after,
         completion_tail_stage_gate_allowed, service_cycle);
     rtcore_record_replay_v03_hw_same_cycle_bypass_candidate(
-        owner_hw_sid, service_cycle, memory_stage_before, memory_stage_after,
-        unit_stage_before, unit_stage_after, ready_stage_before,
-        ready_stage_after);
+        owner_hw_sid, service_cycle, memory_issue_stage_before,
+        memory_wake_stage_after, unit_stage_before, unit_stage_after,
+        ready_stage_before, ready_stage_after);
     rtcore_record_replay_v03_hw_queue_stage_budget_stats(
-        owner_hw_sid, service_cycle, memory_stage_before, memory_stage_after,
-        unit_stage_before, unit_stage_after, ready_stage_before,
-        ready_stage_after, completion_stage_before, completion_stage_after);
+        owner_hw_sid, service_cycle, memory_issue_stage_before,
+        memory_issue_stage_after, memory_wake_stage_before,
+        memory_wake_stage_after, unit_stage_before, unit_stage_after,
+        ready_stage_before, ready_stage_after, completion_stage_before,
+        completion_stage_after);
 
     result.unit_wake_progressed = unit_progressed;
     result.ready_issue_progressed = ready_issue_progressed;
@@ -11815,6 +11867,10 @@ static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
     }
     const bool has_stage_delta =
         g_rtcore_replay_v03_hw_queue_stage_budget_stats
+                .last_memory_issue_issue_delta > 0 ||
+        g_rtcore_replay_v03_hw_queue_stage_budget_stats
+                .last_memory_issue_push_delta > 0 ||
+        g_rtcore_replay_v03_hw_queue_stage_budget_stats
                 .last_memory_wake_issue_delta > 0 ||
         g_rtcore_replay_v03_hw_queue_stage_budget_stats
                 .last_memory_wake_push_delta > 0 ||
@@ -11837,17 +11893,23 @@ static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
     g_rtcore_replay_v03_hw_queue_stage_budget_stats_logs_emitted++;
     printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_QUEUE_STAGE_BUDGET_STATS "
            "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
+           "memory_issue_issue_delta=%u memory_issue_push_delta=%u "
            "memory_wake_issue_delta=%u memory_wake_push_delta=%u "
            "unit_wake_issue_delta=%u unit_wake_push_delta=%u "
            "ready_issue_issue_delta=%u ready_issue_push_delta=%u "
            "completion_tail_issue_delta=%u completion_tail_push_delta=%u "
-           "evaluations=%u max_memory_wake_issue_delta=%u "
+           "evaluations=%u max_memory_issue_issue_delta=%u "
+           "max_memory_issue_push_delta=%u max_memory_wake_issue_delta=%u "
            "max_memory_wake_push_delta=%u max_unit_wake_issue_delta=%u "
            "max_unit_wake_push_delta=%u max_ready_issue_issue_delta=%u "
            "max_ready_issue_push_delta=%u "
            "max_completion_tail_issue_delta=%u "
            "max_completion_tail_push_delta=%u\n",
            owner_hw_sid, service_cycle,
+           g_rtcore_replay_v03_hw_queue_stage_budget_stats
+               .last_memory_issue_issue_delta,
+           g_rtcore_replay_v03_hw_queue_stage_budget_stats
+               .last_memory_issue_push_delta,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
                .last_memory_wake_issue_delta,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
@@ -11865,6 +11927,10 @@ static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
                .last_completion_tail_push_delta,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats.evaluations,
+           g_rtcore_replay_v03_hw_queue_stage_budget_stats
+               .max_memory_issue_issue_delta,
+           g_rtcore_replay_v03_hw_queue_stage_budget_stats
+               .max_memory_issue_push_delta,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
                .max_memory_wake_issue_delta,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
