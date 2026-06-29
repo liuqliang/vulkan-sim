@@ -1002,6 +1002,14 @@ struct rtcore_replay_v03_hw_memory_outstanding_stats {
     unsigned max_memory_wake_progress_count;
 };
 
+struct rtcore_replay_v03_hw_queue_ownership_stats {
+    unsigned evaluations;
+    unsigned max_owner_local_total_queue_depth;
+    unsigned max_global_total_queue_depth;
+    unsigned max_owner_scan_entry_visit_count;
+    unsigned max_owner_scan_skipped_entry_count;
+};
+
 struct rtcore_replay_queue_header_port_gate_stats {
     unsigned evaluations;
     unsigned allowed_count;
@@ -1233,6 +1241,8 @@ static rtcore_replay_v03_hw_waiting_unit_retirement_stats
     g_rtcore_replay_v03_hw_waiting_unit_retirement_stats;
 static rtcore_replay_v03_hw_memory_outstanding_stats
     g_rtcore_replay_v03_hw_memory_outstanding_stats;
+static rtcore_replay_v03_hw_queue_ownership_stats
+    g_rtcore_replay_v03_hw_queue_ownership_stats;
 static rtcore_replay_queue_header_port_gate_stats
     g_rtcore_replay_queue_header_port_gate_stats;
 static rtcore_replay_queue_entry_port_gate_stats
@@ -1285,6 +1295,7 @@ static unsigned
     g_rtcore_replay_v03_hw_waiting_unit_retirement_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_v03_hw_memory_outstanding_stats_logs_emitted =
     0;
+static unsigned g_rtcore_replay_v03_hw_queue_ownership_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_queue_header_port_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_queue_entry_port_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_request_table_port_gate_stats_logs_emitted = 0;
@@ -1981,6 +1992,16 @@ static bool rtcore_replay_v03_hw_memory_outstanding_stats_log_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_replay_v03_hw_queue_ownership_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv(
+            "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_OWNERSHIP_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_replay_queue_header_port_gate_enabled()
 {
     static int enabled = []() {
@@ -2331,6 +2352,14 @@ static unsigned rtcore_replay_v03_hw_memory_outstanding_stats_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_V03_HW_MEMORY_OUTSTANDING_STATS_LOG_LIMIT",
+        64);
+    return limit;
+}
+
+static unsigned rtcore_replay_v03_hw_queue_ownership_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_OWNERSHIP_STATS_LOG_LIMIT",
         64);
     return limit;
 }
@@ -11268,6 +11297,151 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
     fflush(stdout);
 }
 
+static unsigned rtcore_count_replay_queue_depth_for_owner(
+    const std::deque<unsigned> &queue, unsigned owner_hw_sid)
+{
+    unsigned count = 0;
+    for (std::deque<unsigned>::const_iterator it = queue.begin();
+         it != queue.end(); ++it) {
+        std::map<unsigned, rtcore_replay_lane_request>::const_iterator request =
+            g_rtcore_replay_lane_requests.find(*it);
+        if (request == g_rtcore_replay_lane_requests.end()) {
+            continue;
+        }
+        if (request->second.owner_hw_sid == owner_hw_sid) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static unsigned rtcore_replay_ready_queue_depth_for_owner(unsigned owner_hw_sid)
+{
+    return rtcore_count_replay_queue_depth_for_owner(
+               g_rtcore_replay_ready_queues.ready_node_queue, owner_hw_sid) +
+           rtcore_count_replay_queue_depth_for_owner(
+               g_rtcore_replay_ready_queues.ready_primitive_queue,
+               owner_hw_sid) +
+           rtcore_count_replay_queue_depth_for_owner(
+               g_rtcore_replay_ready_queues.ready_stack_queue, owner_hw_sid);
+}
+
+static unsigned
+rtcore_replay_completion_queue_depth_for_owner(unsigned owner_hw_sid)
+{
+    return rtcore_count_replay_queue_depth_for_owner(
+        g_rtcore_replay_ready_queues.ready_completion_queue, owner_hw_sid);
+}
+
+static unsigned rtcore_replay_global_total_queue_depth()
+{
+    return static_cast<unsigned>(
+        g_rtcore_replay_ready_queues.ready_node_queue.size() +
+        g_rtcore_replay_ready_queues.ready_primitive_queue.size() +
+        g_rtcore_replay_ready_queues.ready_stack_queue.size() +
+        g_rtcore_replay_ready_queues.waiting_unit_queue.size() +
+        g_rtcore_replay_ready_queues.waiting_memory_queue.size() +
+        g_rtcore_replay_ready_queues.ready_completion_queue.size());
+}
+
+static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    if (!rtcore_replay_v03_hw_queue_ownership_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_v03_hw_queue_ownership_stats_logs_emitted >=
+        rtcore_replay_v03_hw_queue_ownership_stats_log_limit()) {
+        return;
+    }
+
+    const unsigned owner_local_ready_queue_depth =
+        rtcore_replay_ready_queue_depth_for_owner(owner_hw_sid);
+    const unsigned owner_local_waiting_unit_queue_depth =
+        rtcore_count_replay_waiting_unit_queue_depth_for_owner(owner_hw_sid);
+    const unsigned owner_local_waiting_memory_queue_depth =
+        rtcore_count_replay_waiting_memory_queue_depth_for_owner(owner_hw_sid);
+    const unsigned owner_local_completion_queue_depth =
+        rtcore_replay_completion_queue_depth_for_owner(owner_hw_sid);
+    const unsigned owner_local_total_queue_depth =
+        owner_local_ready_queue_depth + owner_local_waiting_unit_queue_depth +
+        owner_local_waiting_memory_queue_depth +
+        owner_local_completion_queue_depth;
+    const unsigned global_total_queue_depth = rtcore_replay_global_total_queue_depth();
+    if (owner_local_total_queue_depth == 0 && global_total_queue_depth == 0) {
+        return;
+    }
+
+    const unsigned owner_scan_entry_visit_count = global_total_queue_depth;
+    const unsigned owner_scan_skipped_entry_count =
+        global_total_queue_depth > owner_local_total_queue_depth
+            ? global_total_queue_depth - owner_local_total_queue_depth
+            : 0;
+    const unsigned local_queue_pressure_count = owner_local_total_queue_depth;
+
+    if (owner_local_total_queue_depth >
+        g_rtcore_replay_v03_hw_queue_ownership_stats
+            .max_owner_local_total_queue_depth) {
+        g_rtcore_replay_v03_hw_queue_ownership_stats
+            .max_owner_local_total_queue_depth = owner_local_total_queue_depth;
+    }
+    if (global_total_queue_depth >
+        g_rtcore_replay_v03_hw_queue_ownership_stats
+            .max_global_total_queue_depth) {
+        g_rtcore_replay_v03_hw_queue_ownership_stats
+            .max_global_total_queue_depth = global_total_queue_depth;
+    }
+    if (owner_scan_entry_visit_count >
+        g_rtcore_replay_v03_hw_queue_ownership_stats
+            .max_owner_scan_entry_visit_count) {
+        g_rtcore_replay_v03_hw_queue_ownership_stats
+            .max_owner_scan_entry_visit_count = owner_scan_entry_visit_count;
+    }
+    if (owner_scan_skipped_entry_count >
+        g_rtcore_replay_v03_hw_queue_ownership_stats
+            .max_owner_scan_skipped_entry_count) {
+        g_rtcore_replay_v03_hw_queue_ownership_stats
+            .max_owner_scan_skipped_entry_count =
+            owner_scan_skipped_entry_count;
+    }
+
+    g_rtcore_replay_v03_hw_queue_ownership_stats.evaluations++;
+    g_rtcore_replay_v03_hw_queue_ownership_stats_logs_emitted++;
+    printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_QUEUE_OWNERSHIP_STATS "
+           "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
+           "one_rtcore_per_sm_model=1 owner_local_service_model=1 "
+           "queue_storage_owner_local_model=0 "
+           "global_queue_owner_scan_legacy=1 "
+           "owner_local_ready_queue_depth=%u "
+           "owner_local_waiting_unit_queue_depth=%u "
+           "owner_local_waiting_memory_queue_depth=%u "
+           "owner_local_completion_queue_depth=%u "
+           "owner_local_total_queue_depth=%u global_total_queue_depth=%u "
+           "owner_scan_entry_visit_count=%u "
+           "owner_scan_skipped_entry_count=%u "
+           "local_queue_pressure_count=%u evaluations=%u "
+           "max_owner_local_total_queue_depth=%u "
+           "max_global_total_queue_depth=%u "
+           "max_owner_scan_entry_visit_count=%u "
+           "max_owner_scan_skipped_entry_count=%u\n",
+           owner_hw_sid, service_cycle, owner_local_ready_queue_depth,
+           owner_local_waiting_unit_queue_depth,
+           owner_local_waiting_memory_queue_depth,
+           owner_local_completion_queue_depth, owner_local_total_queue_depth,
+           global_total_queue_depth, owner_scan_entry_visit_count,
+           owner_scan_skipped_entry_count, local_queue_pressure_count,
+           g_rtcore_replay_v03_hw_queue_ownership_stats.evaluations,
+           g_rtcore_replay_v03_hw_queue_ownership_stats
+               .max_owner_local_total_queue_depth,
+           g_rtcore_replay_v03_hw_queue_ownership_stats
+               .max_global_total_queue_depth,
+           g_rtcore_replay_v03_hw_queue_ownership_stats
+               .max_owner_scan_entry_visit_count,
+           g_rtcore_replay_v03_hw_queue_ownership_stats
+               .max_owner_scan_skipped_entry_count);
+    fflush(stdout);
+}
+
 static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -11718,6 +11892,8 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
         owner_hw_sid, service_cycle);
     rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(owner_hw_sid,
                                                             service_cycle);
+    rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(owner_hw_sid,
+                                                          service_cycle);
     rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(owner_hw_sid,
                                                             service_cycle);
     rtcore_maybe_log_replay_v03_hw_queue_stage_budget_gate_stats(
