@@ -561,16 +561,25 @@ static std::map<rtcore_replay_warp_completion_shadow_key,
                 rtcore_replay_warp_completion_shadow_state>
     g_rtcore_replay_warp_completion_shadow;
 
+struct rtcore_replay_queue_packet {
+    unsigned thread_uid;
+    rtcore_replay_lane_request_state stage_payload_state;
+    unsigned stage_payload_event_index;
+    bool stage_payload_valid;
+};
+
+typedef std::deque<rtcore_replay_queue_packet> rtcore_replay_queue;
+
 struct rtcore_replay_ready_queues {
-    std::deque<unsigned> queued_queue;
-    std::deque<unsigned> ready_node_queue;
-    std::deque<unsigned> ready_primitive_queue;
-    std::deque<unsigned> ready_stack_queue;
-    std::deque<unsigned> ready_memory_queue;
-    std::deque<unsigned> waiting_unit_queue;
-    std::deque<unsigned> waiting_memory_queue;
-    std::deque<unsigned> ready_completion_queue;
-    std::deque<unsigned> done_queue;
+    rtcore_replay_queue queued_queue;
+    rtcore_replay_queue ready_node_queue;
+    rtcore_replay_queue ready_primitive_queue;
+    rtcore_replay_queue ready_stack_queue;
+    rtcore_replay_queue ready_memory_queue;
+    rtcore_replay_queue waiting_unit_queue;
+    rtcore_replay_queue waiting_memory_queue;
+    rtcore_replay_queue ready_completion_queue;
+    rtcore_replay_queue done_queue;
 };
 
 struct rtcore_replay_issue_budget {
@@ -2882,6 +2891,38 @@ enum rtcore_replay_queue_access_class {
     RTCORE_REPLAY_QUEUE_ACCESS_DONE,
 };
 
+static unsigned rtcore_replay_stage_payload_event_index_for_request(
+    const rtcore_replay_lane_request &request)
+{
+    unsigned stage_payload_event_index = request.next_event_index;
+    if (stage_payload_event_index == 0 && request.event_count > 0) {
+        stage_payload_event_index = request.event_count;
+    }
+    return stage_payload_event_index;
+}
+
+static rtcore_replay_queue_packet rtcore_make_replay_queue_packet(
+    const rtcore_replay_lane_request &request)
+{
+    rtcore_replay_queue_packet packet = {};
+    packet.thread_uid = request.thread_uid;
+    packet.stage_payload_state = request.state;
+    packet.stage_payload_event_index =
+        rtcore_replay_stage_payload_event_index_for_request(request);
+    packet.stage_payload_valid = request.valid;
+    return packet;
+}
+
+static void rtcore_push_replay_queue_packet_pair(
+    rtcore_replay_queue &global_queue, rtcore_replay_queue &owner_queue,
+    const rtcore_replay_lane_request &request)
+{
+    const rtcore_replay_queue_packet packet =
+        rtcore_make_replay_queue_packet(request);
+    global_queue.push_back(packet);
+    owner_queue.push_back(packet);
+}
+
 static void rtcore_update_replay_v03_hw_typed_queue_packet_maxima()
 {
     if (g_rtcore_replay_v03_hw_typed_queue_packet_stats.packet_enqueue_count >
@@ -2917,6 +2958,8 @@ static void rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
     g_rtcore_replay_v03_hw_typed_queue_packet_stats.packet_enqueue_count++;
     g_rtcore_replay_v03_hw_typed_queue_packet_stats
         .payload_from_request_state_count++;
+    g_rtcore_replay_v03_hw_typed_queue_packet_stats
+        .payload_from_queue_storage_count++;
 
     switch (queue_class) {
     case RTCORE_REPLAY_QUEUE_ACCESS_WAIT:
@@ -2956,10 +2999,8 @@ static void rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
         break;
     }
 
-    unsigned stage_payload_event_index = request.next_event_index;
-    if (stage_payload_event_index == 0 && request.event_count > 0) {
-        stage_payload_event_index = request.event_count;
-    }
+    unsigned stage_payload_event_index =
+        rtcore_replay_stage_payload_event_index_for_request(request);
     if (stage_payload_event_index >
         g_rtcore_replay_v03_hw_typed_queue_packet_stats
             .max_stage_payload_event_index) {
@@ -2998,7 +3039,7 @@ static void rtcore_update_replay_data_path_max_request_table_entries()
 }
 
 static void rtcore_record_replay_queue_header_read(
-    const std::deque<unsigned> &queue)
+    const rtcore_replay_queue &queue)
 {
     g_rtcore_replay_data_path_access_stats.queue_header_reads++;
     rtcore_update_replay_data_path_max_queue_depth(
@@ -3006,7 +3047,7 @@ static void rtcore_record_replay_queue_header_read(
 }
 
 static void rtcore_record_replay_queue_header_write(
-    const std::deque<unsigned> &queue)
+    const rtcore_replay_queue &queue)
 {
     g_rtcore_replay_data_path_access_stats.queue_header_writes++;
     rtcore_update_replay_data_path_max_queue_depth(
@@ -3020,7 +3061,7 @@ static void rtcore_record_replay_queue_entry_read()
 
 static void rtcore_record_replay_queue_entry_write(
     rtcore_replay_queue_access_class queue_class,
-    const std::deque<unsigned> &queue)
+    const rtcore_replay_queue &queue)
 {
     g_rtcore_replay_data_path_access_stats.queue_entry_writes++;
     switch (queue_class) {
@@ -3042,7 +3083,7 @@ static void rtcore_record_replay_queue_entry_write(
 
 static void rtcore_record_replay_queue_entry_remove(
     rtcore_replay_queue_access_class queue_class,
-    const std::deque<unsigned> &queue)
+    const rtcore_replay_queue &queue)
 {
     g_rtcore_replay_data_path_access_stats.queue_entry_removes++;
     rtcore_record_replay_v03_hw_typed_queue_packet_remove(queue_class);
@@ -5607,7 +5648,7 @@ static bool rtcore_replay_unit_queue_capacity_state(
            state == RTCORE_REPLAY_ISSUED_PRIMITIVE;
 }
 
-static const std::deque<unsigned> *rtcore_replay_ready_unit_queue_for_state(
+static const rtcore_replay_queue *rtcore_replay_ready_unit_queue_for_state(
     rtcore_replay_lane_request_state state)
 {
     switch (state) {
@@ -5623,7 +5664,7 @@ static const std::deque<unsigned> *rtcore_replay_ready_unit_queue_for_state(
 static unsigned rtcore_count_replay_ready_unit_queue_for_owner(
     rtcore_replay_lane_request_state state, unsigned owner_hw_sid)
 {
-    const std::deque<unsigned> *queue =
+    const rtcore_replay_queue *queue =
         rtcore_replay_ready_unit_queue_for_state(state);
     if (!queue) {
         return 0;
@@ -5631,11 +5672,11 @@ static unsigned rtcore_count_replay_ready_unit_queue_for_owner(
 
     rtcore_record_replay_queue_header_read(*queue);
     unsigned count = 0;
-    for (std::deque<unsigned>::const_iterator it = queue->begin();
+    for (rtcore_replay_queue::const_iterator it = queue->begin();
          it != queue->end(); ++it) {
         rtcore_record_replay_queue_entry_read();
         std::map<unsigned, rtcore_replay_lane_request>::const_iterator request =
-            g_rtcore_replay_lane_requests.find(*it);
+            g_rtcore_replay_lane_requests.find(it->thread_uid);
         if (request == g_rtcore_replay_lane_requests.end()) {
             continue;
         }
@@ -5754,9 +5795,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                 service_cycle)) {
             return false;
         }
-        g_rtcore_replay_ready_queues.waiting_unit_queue.push_back(
-            request.thread_uid);
-        owner_queues->waiting_unit_queue.push_back(request.thread_uid);
+        rtcore_push_replay_queue_packet_pair(
+            g_rtcore_replay_ready_queues.waiting_unit_queue,
+            owner_queues->waiting_unit_queue, request);
         rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
             RTCORE_REPLAY_QUEUE_ACCESS_WAIT, request);
         rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -5777,8 +5818,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                 service_cycle)) {
             return false;
         }
-        g_rtcore_replay_ready_queues.queued_queue.push_back(request.thread_uid);
-        owner_queues->queued_queue.push_back(request.thread_uid);
+        rtcore_push_replay_queue_packet_pair(
+            g_rtcore_replay_ready_queues.queued_queue,
+            owner_queues->queued_queue, request);
         rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
             RTCORE_REPLAY_QUEUE_ACCESS_READY, request);
         rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -5793,8 +5835,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                 service_cycle)) {
             return false;
         }
-        g_rtcore_replay_ready_queues.queued_queue.push_back(request.thread_uid);
-        owner_queues->queued_queue.push_back(request.thread_uid);
+        rtcore_push_replay_queue_packet_pair(
+            g_rtcore_replay_ready_queues.queued_queue,
+            owner_queues->queued_queue, request);
         rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
             RTCORE_REPLAY_QUEUE_ACCESS_READY, request);
         rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -5809,9 +5852,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                 service_cycle)) {
             return false;
         }
-        g_rtcore_replay_ready_queues.ready_node_queue.push_back(
-            request.thread_uid);
-        owner_queues->ready_node_queue.push_back(request.thread_uid);
+        rtcore_push_replay_queue_packet_pair(
+            g_rtcore_replay_ready_queues.ready_node_queue,
+            owner_queues->ready_node_queue, request);
         rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
             RTCORE_REPLAY_QUEUE_ACCESS_READY, request);
         rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -5826,9 +5869,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                 service_cycle)) {
             return false;
         }
-        g_rtcore_replay_ready_queues.ready_primitive_queue.push_back(
-            request.thread_uid);
-        owner_queues->ready_primitive_queue.push_back(request.thread_uid);
+        rtcore_push_replay_queue_packet_pair(
+            g_rtcore_replay_ready_queues.ready_primitive_queue,
+            owner_queues->ready_primitive_queue, request);
         rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
             RTCORE_REPLAY_QUEUE_ACCESS_READY, request);
         rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -5844,9 +5887,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                 service_cycle)) {
             return false;
         }
-        g_rtcore_replay_ready_queues.ready_stack_queue.push_back(
-            request.thread_uid);
-        owner_queues->ready_stack_queue.push_back(request.thread_uid);
+        rtcore_push_replay_queue_packet_pair(
+            g_rtcore_replay_ready_queues.ready_stack_queue,
+            owner_queues->ready_stack_queue, request);
         rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
             RTCORE_REPLAY_QUEUE_ACCESS_READY, request);
         rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -5862,9 +5905,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                     service_cycle)) {
                 return false;
             }
-            g_rtcore_replay_ready_queues.waiting_memory_queue.push_back(
-                request.thread_uid);
-            owner_queues->waiting_memory_queue.push_back(request.thread_uid);
+            rtcore_push_replay_queue_packet_pair(
+                g_rtcore_replay_ready_queues.waiting_memory_queue,
+                owner_queues->waiting_memory_queue, request);
             rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
                 RTCORE_REPLAY_QUEUE_ACCESS_WAIT, request);
             rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -5879,9 +5922,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                     service_cycle)) {
                 return false;
             }
-            g_rtcore_replay_ready_queues.ready_memory_queue.push_back(
-                request.thread_uid);
-            owner_queues->ready_memory_queue.push_back(request.thread_uid);
+            rtcore_push_replay_queue_packet_pair(
+                g_rtcore_replay_ready_queues.ready_memory_queue,
+                owner_queues->ready_memory_queue, request);
             rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
                 RTCORE_REPLAY_QUEUE_ACCESS_READY, request);
             rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -5898,9 +5941,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                 service_cycle)) {
             return false;
         }
-        g_rtcore_replay_ready_queues.ready_completion_queue.push_back(
-            request.thread_uid);
-        owner_queues->ready_completion_queue.push_back(request.thread_uid);
+        rtcore_push_replay_queue_packet_pair(
+            g_rtcore_replay_ready_queues.ready_completion_queue,
+            owner_queues->ready_completion_queue, request);
         rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
             RTCORE_REPLAY_QUEUE_ACCESS_COMPLETION, request);
         rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -5916,8 +5959,9 @@ static bool rtcore_enqueue_replay_request_by_state(
                 service_cycle)) {
             return false;
         }
-        g_rtcore_replay_ready_queues.done_queue.push_back(request.thread_uid);
-        owner_queues->done_queue.push_back(request.thread_uid);
+        rtcore_push_replay_queue_packet_pair(
+            g_rtcore_replay_ready_queues.done_queue, owner_queues->done_queue,
+            request);
         rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
             RTCORE_REPLAY_QUEUE_ACCESS_DONE, request);
         rtcore_record_replay_v03_hw_queue_ingress_target(
@@ -7605,7 +7649,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
 }
 
 static bool rtcore_consider_oldest_ready_queue_front(
-    const std::deque<unsigned> &queue, bool *has_selection,
+    const rtcore_replay_queue &queue, bool *has_selection,
     unsigned *selected_thread_uid, unsigned *selected_order)
 {
     rtcore_record_replay_queue_header_read(queue);
@@ -7615,7 +7659,7 @@ static bool rtcore_consider_oldest_ready_queue_front(
 
     unsigned candidate_order = 0;
     rtcore_record_replay_queue_entry_read();
-    if (!rtcore_get_replay_request_ready_order(queue.front(),
+    if (!rtcore_get_replay_request_ready_order(queue.front().thread_uid,
                                                &candidate_order)) {
         return false;
     }
@@ -7625,7 +7669,7 @@ static bool rtcore_consider_oldest_ready_queue_front(
             *has_selection = true;
         }
         if (selected_thread_uid) {
-            *selected_thread_uid = queue.front();
+            *selected_thread_uid = queue.front().thread_uid;
         }
         if (selected_order) {
             *selected_order = candidate_order;
@@ -7636,7 +7680,7 @@ static bool rtcore_consider_oldest_ready_queue_front(
 }
 
 static bool rtcore_consider_oldest_ready_queue_for_owner(
-    const std::deque<unsigned> &queue, unsigned owner_hw_sid,
+    const rtcore_replay_queue &queue, unsigned owner_hw_sid,
     bool *has_selection, unsigned *selected_thread_uid,
     unsigned *selected_order)
 {
@@ -7646,10 +7690,10 @@ static bool rtcore_consider_oldest_ready_queue_for_owner(
     }
 
     bool considered = false;
-    for (std::deque<unsigned>::const_iterator it = queue.begin();
+    for (rtcore_replay_queue::const_iterator it = queue.begin();
          it != queue.end(); ++it) {
         rtcore_record_replay_queue_entry_read();
-        unsigned candidate_thread_uid = *it;
+        unsigned candidate_thread_uid = it->thread_uid;
         if (!rtcore_replay_request_owned_by_sm(candidate_thread_uid,
                                                owner_hw_sid)) {
             continue;
@@ -7739,7 +7783,7 @@ static bool rtcore_select_oldest_ready_request_for_owner(
 static bool rtcore_ready_queue_front_by_round_robin_slot(unsigned slot,
                                                         unsigned *thread_uid)
 {
-    const std::deque<unsigned> *queue = NULL;
+    const rtcore_replay_queue *queue = NULL;
     switch (slot) {
     case 0:
         queue = &g_rtcore_replay_ready_queues.ready_node_queue;
@@ -7766,7 +7810,7 @@ static bool rtcore_ready_queue_front_by_round_robin_slot(unsigned slot,
     }
     if (thread_uid) {
         rtcore_record_replay_queue_entry_read();
-        *thread_uid = queue->front();
+        *thread_uid = queue->front().thread_uid;
     }
     return true;
 }
@@ -7776,7 +7820,7 @@ static bool rtcore_ready_queue_request_by_round_robin_slot_for_owner(
 {
     rtcore_replay_ready_queues *owner_queues =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid);
-    const std::deque<unsigned> *queue = NULL;
+    const rtcore_replay_queue *queue = NULL;
     switch (slot) {
     case 0:
         queue = &owner_queues->ready_node_queue;
@@ -7802,14 +7846,14 @@ static bool rtcore_ready_queue_request_by_round_robin_slot_for_owner(
         return false;
     }
 
-    for (std::deque<unsigned>::const_iterator it = queue->begin();
+    for (rtcore_replay_queue::const_iterator it = queue->begin();
          it != queue->end(); ++it) {
         rtcore_record_replay_queue_entry_read();
-        if (!rtcore_replay_request_owned_by_sm(*it, owner_hw_sid)) {
+        if (!rtcore_replay_request_owned_by_sm(it->thread_uid, owner_hw_sid)) {
             continue;
         }
         if (thread_uid) {
-            *thread_uid = *it;
+            *thread_uid = it->thread_uid;
         }
         return true;
     }
@@ -7868,7 +7912,7 @@ static bool rtcore_select_ready_replay_request_for_owner(
 }
 
 static bool rtcore_remove_replay_request_from_queue(
-    std::deque<unsigned> &queue, unsigned thread_uid)
+    rtcore_replay_queue &queue, unsigned thread_uid)
 {
     rtcore_record_replay_queue_header_read(queue);
     if (queue.empty()) {
@@ -7876,17 +7920,17 @@ static bool rtcore_remove_replay_request_from_queue(
     }
 
     rtcore_record_replay_queue_entry_read();
-    if (queue.front() == thread_uid) {
+    if (queue.front().thread_uid == thread_uid) {
         queue.pop_front();
         rtcore_record_replay_queue_entry_remove(
             RTCORE_REPLAY_QUEUE_ACCESS_READY, queue);
         return true;
     }
 
-    for (std::deque<unsigned>::iterator it = queue.begin(); it != queue.end();
+    for (rtcore_replay_queue::iterator it = queue.begin(); it != queue.end();
          ++it) {
         rtcore_record_replay_queue_entry_read();
-        if (*it == thread_uid) {
+        if (it->thread_uid == thread_uid) {
             queue.erase(it);
             rtcore_record_replay_queue_entry_remove(
                 RTCORE_REPLAY_QUEUE_ACCESS_READY, queue);
@@ -9765,7 +9809,7 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
                                                 unsigned long long service_cycle = 0);
 
 static bool rtcore_select_ready_request_from_queue_for_owner(
-    const std::deque<unsigned> &queue, unsigned owner_hw_sid,
+    const rtcore_replay_queue &queue, unsigned owner_hw_sid,
     unsigned *thread_uid)
 {
     rtcore_record_replay_queue_header_read(queue);
@@ -9773,14 +9817,14 @@ static bool rtcore_select_ready_request_from_queue_for_owner(
         return false;
     }
 
-    for (std::deque<unsigned>::const_iterator it = queue.begin();
+    for (rtcore_replay_queue::const_iterator it = queue.begin();
          it != queue.end(); ++it) {
         rtcore_record_replay_queue_entry_read();
-        if (!rtcore_replay_request_owned_by_sm(*it, owner_hw_sid)) {
+        if (!rtcore_replay_request_owned_by_sm(it->thread_uid, owner_hw_sid)) {
             continue;
         }
         if (thread_uid) {
-            *thread_uid = *it;
+            *thread_uid = it->thread_uid;
         }
         return true;
     }
@@ -9788,10 +9832,10 @@ static bool rtcore_select_ready_request_from_queue_for_owner(
 }
 
 static bool rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-    std::deque<unsigned> &queue, unsigned owner_hw_sid, unsigned *issue_budget,
+    rtcore_replay_queue &queue, unsigned owner_hw_sid, unsigned *issue_budget,
     unsigned *issue_attempts, unsigned *issued, unsigned *budget_exhausted,
     rtcore_replay_service_cycle_identity_snapshot *last_identity,
-    unsigned long long service_cycle, std::deque<unsigned> *global_mirror_queue = NULL)
+    unsigned long long service_cycle, rtcore_replay_queue *global_mirror_queue = NULL)
 {
     bool progressed = false;
     while (true) {
@@ -10398,10 +10442,12 @@ static bool rtcore_dequeue_waiting_memory_request(unsigned *thread_uid)
 
     if (thread_uid) {
         rtcore_record_replay_queue_entry_read();
-        *thread_uid = g_rtcore_replay_ready_queues.waiting_memory_queue.front();
+        *thread_uid =
+            g_rtcore_replay_ready_queues.waiting_memory_queue.front()
+                .thread_uid;
     }
     const unsigned removed_thread_uid =
-        g_rtcore_replay_ready_queues.waiting_memory_queue.front();
+        g_rtcore_replay_ready_queues.waiting_memory_queue.front().thread_uid;
     g_rtcore_replay_ready_queues.waiting_memory_queue.pop_front();
     rtcore_record_replay_queue_entry_remove(
         RTCORE_REPLAY_QUEUE_ACCESS_WAIT,
@@ -10428,10 +10474,11 @@ static bool rtcore_dequeue_ready_memory_request(unsigned *thread_uid)
 
     if (thread_uid) {
         rtcore_record_replay_queue_entry_read();
-        *thread_uid = g_rtcore_replay_ready_queues.ready_memory_queue.front();
+        *thread_uid =
+            g_rtcore_replay_ready_queues.ready_memory_queue.front().thread_uid;
     }
     const unsigned removed_thread_uid =
-        g_rtcore_replay_ready_queues.ready_memory_queue.front();
+        g_rtcore_replay_ready_queues.ready_memory_queue.front().thread_uid;
     g_rtcore_replay_ready_queues.ready_memory_queue.pop_front();
     rtcore_record_replay_queue_entry_remove(
         RTCORE_REPLAY_QUEUE_ACCESS_READY,
@@ -10458,10 +10505,11 @@ static bool rtcore_dequeue_waiting_unit_request(unsigned *thread_uid)
 
     if (thread_uid) {
         rtcore_record_replay_queue_entry_read();
-        *thread_uid = g_rtcore_replay_ready_queues.waiting_unit_queue.front();
+        *thread_uid =
+            g_rtcore_replay_ready_queues.waiting_unit_queue.front().thread_uid;
     }
     const unsigned removed_thread_uid =
-        g_rtcore_replay_ready_queues.waiting_unit_queue.front();
+        g_rtcore_replay_ready_queues.waiting_unit_queue.front().thread_uid;
     g_rtcore_replay_ready_queues.waiting_unit_queue.pop_front();
     rtcore_record_replay_queue_entry_remove(
         RTCORE_REPLAY_QUEUE_ACCESS_WAIT,
@@ -10481,7 +10529,7 @@ static bool rtcore_dequeue_waiting_unit_request(unsigned *thread_uid)
 static bool rtcore_dequeue_ready_memory_request_for_owner(
     unsigned owner_hw_sid, unsigned *thread_uid)
 {
-    std::deque<unsigned> &queue =
+    rtcore_replay_queue &queue =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
             ->ready_memory_queue;
     rtcore_record_replay_queue_header_read(queue);
@@ -10489,13 +10537,13 @@ static bool rtcore_dequeue_ready_memory_request_for_owner(
         return false;
     }
 
-    for (std::deque<unsigned>::iterator it = queue.begin();
+    for (rtcore_replay_queue::iterator it = queue.begin();
          it != queue.end(); ++it) {
         rtcore_record_replay_queue_entry_read();
-        if (!rtcore_replay_request_owned_by_sm(*it, owner_hw_sid)) {
+        if (!rtcore_replay_request_owned_by_sm(it->thread_uid, owner_hw_sid)) {
             continue;
         }
-        const unsigned selected_thread_uid = *it;
+        const unsigned selected_thread_uid = it->thread_uid;
         if (thread_uid) {
             *thread_uid = selected_thread_uid;
         }
@@ -10513,7 +10561,7 @@ static bool rtcore_dequeue_ready_memory_request_for_owner(
 static bool rtcore_dequeue_waiting_memory_request_for_owner(
     unsigned owner_hw_sid, unsigned *thread_uid)
 {
-    std::deque<unsigned> &queue =
+    rtcore_replay_queue &queue =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
             ->waiting_memory_queue;
     rtcore_record_replay_queue_header_read(queue);
@@ -10521,13 +10569,13 @@ static bool rtcore_dequeue_waiting_memory_request_for_owner(
         return false;
     }
 
-    for (std::deque<unsigned>::iterator it = queue.begin();
+    for (rtcore_replay_queue::iterator it = queue.begin();
          it != queue.end(); ++it) {
         rtcore_record_replay_queue_entry_read();
-        if (!rtcore_replay_request_owned_by_sm(*it, owner_hw_sid)) {
+        if (!rtcore_replay_request_owned_by_sm(it->thread_uid, owner_hw_sid)) {
             continue;
         }
-        const unsigned selected_thread_uid = *it;
+        const unsigned selected_thread_uid = it->thread_uid;
         if (thread_uid) {
             *thread_uid = selected_thread_uid;
         }
@@ -10545,17 +10593,17 @@ static bool rtcore_dequeue_waiting_memory_request_for_owner(
 static bool rtcore_dequeue_waiting_unit_request_for_owner(
     unsigned owner_hw_sid, unsigned *thread_uid)
 {
-    std::deque<unsigned> &queue =
+    rtcore_replay_queue &queue =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
             ->waiting_unit_queue;
     rtcore_record_replay_queue_header_read(queue);
-    for (std::deque<unsigned>::iterator it = queue.begin();
+    for (rtcore_replay_queue::iterator it = queue.begin();
          it != queue.end(); ++it) {
         rtcore_record_replay_queue_entry_read();
-        if (!rtcore_replay_request_owned_by_sm(*it, owner_hw_sid)) {
+        if (!rtcore_replay_request_owned_by_sm(it->thread_uid, owner_hw_sid)) {
             continue;
         }
-        const unsigned selected_thread_uid = *it;
+        const unsigned selected_thread_uid = it->thread_uid;
         if (thread_uid) {
             *thread_uid = selected_thread_uid;
         }
@@ -11979,7 +12027,7 @@ static void rtcore_maybe_log_replay_v03_hw_typed_queue_packet_stats(
     g_rtcore_replay_v03_hw_typed_queue_packet_stats_logs_emitted++;
     printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_TYPED_QUEUE_PACKET_STATS "
            "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
-           "typed_queue_packet_model=1 request_id_only_storage_compat=1 "
+           "typed_queue_packet_model=1 request_id_only_storage_compat=0 "
            "packet_enqueue_count=%u packet_remove_count=%u "
            "node_packet_count=%u primitive_packet_count=%u "
            "stack_packet_count=%u memory_packet_count=%u "
@@ -12456,13 +12504,13 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
 }
 
 static unsigned rtcore_count_replay_queue_depth_for_owner(
-    const std::deque<unsigned> &queue, unsigned owner_hw_sid)
+    const rtcore_replay_queue &queue, unsigned owner_hw_sid)
 {
     unsigned count = 0;
-    for (std::deque<unsigned>::const_iterator it = queue.begin();
+    for (rtcore_replay_queue::const_iterator it = queue.begin();
          it != queue.end(); ++it) {
         std::map<unsigned, rtcore_replay_lane_request>::const_iterator request =
-            g_rtcore_replay_lane_requests.find(*it);
+            g_rtcore_replay_lane_requests.find(it->thread_uid);
         if (request == g_rtcore_replay_lane_requests.end()) {
             continue;
         }
