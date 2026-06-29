@@ -1045,6 +1045,48 @@ struct rtcore_replay_v03_hw_queue_ingress_stats {
     unsigned max_same_cycle_bypass_candidate_delta;
 };
 
+struct rtcore_replay_v03_hw_queue_ingress_budget_stats {
+    unsigned evaluations;
+    unsigned last_ready_queue_push_count;
+    unsigned last_node_queue_push_count;
+    unsigned last_primitive_queue_push_count;
+    unsigned last_stack_queue_push_count;
+    unsigned last_memory_ready_queue_push_count;
+    unsigned last_memory_wait_queue_push_count;
+    unsigned last_completion_queue_push_count;
+    unsigned last_done_queue_push_count;
+    unsigned last_waiting_unit_legacy_push_count;
+    unsigned ready_push_delta;
+    unsigned node_push_delta;
+    unsigned primitive_push_delta;
+    unsigned stack_push_delta;
+    unsigned memory_ready_push_delta;
+    unsigned memory_wait_push_delta;
+    unsigned completion_push_delta;
+    unsigned done_push_delta;
+    unsigned waiting_unit_legacy_push_delta;
+    unsigned ready_over_budget;
+    unsigned node_over_budget;
+    unsigned primitive_over_budget;
+    unsigned stack_over_budget;
+    unsigned memory_ready_over_budget;
+    unsigned memory_wait_over_budget;
+    unsigned completion_over_budget;
+    unsigned done_over_budget;
+    unsigned waiting_unit_legacy_over_budget;
+    unsigned total_over_budget;
+    unsigned max_ready_over_budget;
+    unsigned max_node_over_budget;
+    unsigned max_primitive_over_budget;
+    unsigned max_stack_over_budget;
+    unsigned max_memory_ready_over_budget;
+    unsigned max_memory_wait_over_budget;
+    unsigned max_completion_over_budget;
+    unsigned max_done_over_budget;
+    unsigned max_waiting_unit_legacy_over_budget;
+    unsigned max_total_over_budget;
+};
+
 struct rtcore_replay_queue_header_port_gate_stats {
     unsigned evaluations;
     unsigned allowed_count;
@@ -1282,6 +1324,8 @@ static rtcore_replay_v03_hw_queue_ownership_stats
     g_rtcore_replay_v03_hw_queue_ownership_stats;
 static std::map<unsigned, rtcore_replay_v03_hw_queue_ingress_stats>
     g_rtcore_replay_v03_hw_queue_ingress_stats_by_owner;
+static std::map<unsigned, rtcore_replay_v03_hw_queue_ingress_budget_stats>
+    g_rtcore_replay_v03_hw_queue_ingress_budget_stats_by_owner;
 static rtcore_replay_queue_header_port_gate_stats
     g_rtcore_replay_queue_header_port_gate_stats;
 static rtcore_replay_queue_entry_port_gate_stats
@@ -1336,6 +1380,8 @@ static unsigned g_rtcore_replay_v03_hw_memory_outstanding_stats_logs_emitted =
     0;
 static unsigned g_rtcore_replay_v03_hw_queue_ownership_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_v03_hw_queue_ingress_stats_logs_emitted = 0;
+static unsigned
+    g_rtcore_replay_v03_hw_queue_ingress_budget_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_queue_header_port_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_queue_entry_port_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_request_table_port_gate_stats_logs_emitted = 0;
@@ -1982,6 +2028,16 @@ static bool rtcore_replay_v03_hw_queue_ingress_stats_log_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_replay_v03_hw_queue_ingress_budget_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv(
+            "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_BUDGET_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_replay_v03_hw_queue_stage_budget_gate_enabled()
 {
     static int enabled = []() {
@@ -2371,6 +2427,13 @@ static unsigned rtcore_replay_v03_hw_queue_ingress_stats_log_limit()
     return limit;
 }
 
+static unsigned rtcore_replay_v03_hw_queue_ingress_budget_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_BUDGET_LOG_LIMIT", 64);
+    return limit;
+}
+
 static unsigned rtcore_replay_v03_hw_queue_stage_budget_gate_stats_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
@@ -2542,6 +2605,15 @@ static unsigned rtcore_replay_v03_hw_queue_push_budget_config()
     static unsigned budget = rtcore_replay_uint_config_or_model_preset(
         "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_PUSH_BUDGET", 0, 0,
         1048576, true);
+    return budget;
+}
+
+static unsigned rtcore_replay_v03_hw_queue_ingress_push_budget_config()
+{
+    static unsigned budget = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_PUSH_BUDGET",
+        rtcore_replay_v03_hw_queue_push_budget_config(),
+        rtcore_replay_v03_hw_queue_push_budget_config(), 1048576, true);
     return budget;
 }
 
@@ -3211,6 +3283,165 @@ static void rtcore_record_replay_v03_hw_queue_ingress_target(
     }
     stats->total_target_queue_push_count++;
     rtcore_update_replay_v03_hw_queue_ingress_maxima(stats);
+}
+
+static rtcore_replay_v03_hw_queue_ingress_budget_stats *
+rtcore_replay_v03_hw_queue_ingress_budget_stats_for_owner(unsigned owner_hw_sid)
+{
+    return &g_rtcore_replay_v03_hw_queue_ingress_budget_stats_by_owner
+        [owner_hw_sid];
+}
+
+static void rtcore_update_replay_v03_hw_queue_ingress_budget_maxima(
+    rtcore_replay_v03_hw_queue_ingress_budget_stats *budget_stats)
+{
+    if (!budget_stats) {
+        return;
+    }
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->ready_over_budget, &budget_stats->max_ready_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->node_over_budget, &budget_stats->max_node_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->primitive_over_budget,
+        &budget_stats->max_primitive_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->stack_over_budget, &budget_stats->max_stack_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->memory_ready_over_budget,
+        &budget_stats->max_memory_ready_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->memory_wait_over_budget,
+        &budget_stats->max_memory_wait_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->completion_over_budget,
+        &budget_stats->max_completion_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->done_over_budget, &budget_stats->max_done_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->waiting_unit_legacy_over_budget,
+        &budget_stats->max_waiting_unit_legacy_over_budget);
+    rtcore_update_replay_data_path_port_budget_max(
+        budget_stats->total_over_budget,
+        &budget_stats->max_total_over_budget);
+}
+
+static bool rtcore_record_replay_v03_hw_queue_ingress_budget_stats(
+    unsigned owner_hw_sid)
+{
+    const auto stats_it =
+        g_rtcore_replay_v03_hw_queue_ingress_stats_by_owner.find(owner_hw_sid);
+    if (stats_it == g_rtcore_replay_v03_hw_queue_ingress_stats_by_owner.end()) {
+        return false;
+    }
+    const rtcore_replay_v03_hw_queue_ingress_stats &stats = stats_it->second;
+    if (stats.total_target_queue_push_count == 0) {
+        return false;
+    }
+
+    rtcore_replay_v03_hw_queue_ingress_budget_stats *budget_stats =
+        rtcore_replay_v03_hw_queue_ingress_budget_stats_for_owner(
+            owner_hw_sid);
+    budget_stats->ready_push_delta = rtcore_replay_data_path_access_delta(
+        stats.target_ready_queue_push_count,
+        budget_stats->last_ready_queue_push_count);
+    budget_stats->node_push_delta = rtcore_replay_data_path_access_delta(
+        stats.target_node_queue_push_count,
+        budget_stats->last_node_queue_push_count);
+    budget_stats->primitive_push_delta = rtcore_replay_data_path_access_delta(
+        stats.target_primitive_queue_push_count,
+        budget_stats->last_primitive_queue_push_count);
+    budget_stats->stack_push_delta = rtcore_replay_data_path_access_delta(
+        stats.target_stack_queue_push_count,
+        budget_stats->last_stack_queue_push_count);
+    budget_stats->memory_ready_push_delta =
+        rtcore_replay_data_path_access_delta(
+            stats.target_memory_ready_queue_push_count,
+            budget_stats->last_memory_ready_queue_push_count);
+    budget_stats->memory_wait_push_delta =
+        rtcore_replay_data_path_access_delta(
+            stats.target_memory_wait_queue_push_count,
+            budget_stats->last_memory_wait_queue_push_count);
+    budget_stats->completion_push_delta = rtcore_replay_data_path_access_delta(
+        stats.target_completion_queue_push_count,
+        budget_stats->last_completion_queue_push_count);
+    budget_stats->done_push_delta = rtcore_replay_data_path_access_delta(
+        stats.target_done_queue_push_count,
+        budget_stats->last_done_queue_push_count);
+    budget_stats->waiting_unit_legacy_push_delta =
+        rtcore_replay_data_path_access_delta(
+            stats.target_waiting_unit_legacy_push_count,
+            budget_stats->last_waiting_unit_legacy_push_count);
+
+    budget_stats->last_ready_queue_push_count =
+        stats.target_ready_queue_push_count;
+    budget_stats->last_node_queue_push_count =
+        stats.target_node_queue_push_count;
+    budget_stats->last_primitive_queue_push_count =
+        stats.target_primitive_queue_push_count;
+    budget_stats->last_stack_queue_push_count =
+        stats.target_stack_queue_push_count;
+    budget_stats->last_memory_ready_queue_push_count =
+        stats.target_memory_ready_queue_push_count;
+    budget_stats->last_memory_wait_queue_push_count =
+        stats.target_memory_wait_queue_push_count;
+    budget_stats->last_completion_queue_push_count =
+        stats.target_completion_queue_push_count;
+    budget_stats->last_done_queue_push_count =
+        stats.target_done_queue_push_count;
+    budget_stats->last_waiting_unit_legacy_push_count =
+        stats.target_waiting_unit_legacy_push_count;
+
+    const unsigned total_push_delta =
+        budget_stats->ready_push_delta + budget_stats->node_push_delta +
+        budget_stats->primitive_push_delta + budget_stats->stack_push_delta +
+        budget_stats->memory_ready_push_delta +
+        budget_stats->memory_wait_push_delta +
+        budget_stats->completion_push_delta + budget_stats->done_push_delta +
+        budget_stats->waiting_unit_legacy_push_delta;
+    if (total_push_delta == 0) {
+        return false;
+    }
+
+    const unsigned budget =
+        rtcore_replay_v03_hw_queue_ingress_push_budget_config();
+    budget_stats->ready_over_budget =
+        rtcore_replay_over_budget_accesses(budget_stats->ready_push_delta,
+                                           budget);
+    budget_stats->node_over_budget =
+        rtcore_replay_over_budget_accesses(budget_stats->node_push_delta,
+                                           budget);
+    budget_stats->primitive_over_budget =
+        rtcore_replay_over_budget_accesses(
+            budget_stats->primitive_push_delta, budget);
+    budget_stats->stack_over_budget =
+        rtcore_replay_over_budget_accesses(budget_stats->stack_push_delta,
+                                           budget);
+    budget_stats->memory_ready_over_budget =
+        rtcore_replay_over_budget_accesses(
+            budget_stats->memory_ready_push_delta, budget);
+    budget_stats->memory_wait_over_budget =
+        rtcore_replay_over_budget_accesses(
+            budget_stats->memory_wait_push_delta, budget);
+    budget_stats->completion_over_budget =
+        rtcore_replay_over_budget_accesses(
+            budget_stats->completion_push_delta, budget);
+    budget_stats->done_over_budget =
+        rtcore_replay_over_budget_accesses(budget_stats->done_push_delta,
+                                           budget);
+    budget_stats->waiting_unit_legacy_over_budget =
+        rtcore_replay_over_budget_accesses(
+            budget_stats->waiting_unit_legacy_push_delta, budget);
+    budget_stats->total_over_budget =
+        budget_stats->ready_over_budget + budget_stats->node_over_budget +
+        budget_stats->primitive_over_budget + budget_stats->stack_over_budget +
+        budget_stats->memory_ready_over_budget +
+        budget_stats->memory_wait_over_budget +
+        budget_stats->completion_over_budget + budget_stats->done_over_budget +
+        budget_stats->waiting_unit_legacy_over_budget;
+    budget_stats->evaluations++;
+    rtcore_update_replay_v03_hw_queue_ingress_budget_maxima(budget_stats);
+    return true;
 }
 
 static bool rtcore_replay_queue_header_port_gate_can_service(
@@ -12097,6 +12328,66 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
     fflush(stdout);
 }
 
+static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_stats(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    if (!rtcore_replay_v03_hw_queue_ingress_budget_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_v03_hw_queue_ingress_budget_stats_logs_emitted >=
+        rtcore_replay_v03_hw_queue_ingress_budget_stats_log_limit()) {
+        return;
+    }
+    if (!rtcore_record_replay_v03_hw_queue_ingress_budget_stats(owner_hw_sid)) {
+        return;
+    }
+    rtcore_replay_v03_hw_queue_ingress_budget_stats &stats =
+        g_rtcore_replay_v03_hw_queue_ingress_budget_stats_by_owner
+            [owner_hw_sid];
+
+    g_rtcore_replay_v03_hw_queue_ingress_budget_stats_logs_emitted++;
+    printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_BUDGET "
+           "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
+           "queue_push_ingress_model=1 target_queue_push_budget=%u "
+           "ready_push_delta=%u node_push_delta=%u "
+           "primitive_push_delta=%u stack_push_delta=%u "
+           "memory_ready_push_delta=%u memory_wait_push_delta=%u "
+           "completion_push_delta=%u done_push_delta=%u "
+           "waiting_unit_legacy_push_delta=%u ready_over_budget=%u "
+           "node_over_budget=%u primitive_over_budget=%u "
+           "stack_over_budget=%u memory_ready_over_budget=%u "
+           "memory_wait_over_budget=%u completion_over_budget=%u "
+           "done_over_budget=%u waiting_unit_legacy_over_budget=%u "
+           "total_over_budget=%u evaluations=%u "
+           "max_ready_over_budget=%u max_node_over_budget=%u "
+           "max_primitive_over_budget=%u max_stack_over_budget=%u "
+           "max_memory_ready_over_budget=%u "
+           "max_memory_wait_over_budget=%u "
+           "max_completion_over_budget=%u max_done_over_budget=%u "
+           "max_waiting_unit_legacy_over_budget=%u "
+           "max_total_over_budget=%u\n",
+           owner_hw_sid, service_cycle,
+           rtcore_replay_v03_hw_queue_ingress_push_budget_config(),
+           stats.ready_push_delta, stats.node_push_delta,
+           stats.primitive_push_delta, stats.stack_push_delta,
+           stats.memory_ready_push_delta, stats.memory_wait_push_delta,
+           stats.completion_push_delta, stats.done_push_delta,
+           stats.waiting_unit_legacy_push_delta, stats.ready_over_budget,
+           stats.node_over_budget, stats.primitive_over_budget,
+           stats.stack_over_budget, stats.memory_ready_over_budget,
+           stats.memory_wait_over_budget, stats.completion_over_budget,
+           stats.done_over_budget, stats.waiting_unit_legacy_over_budget,
+           stats.total_over_budget, stats.evaluations,
+           stats.max_ready_over_budget, stats.max_node_over_budget,
+           stats.max_primitive_over_budget, stats.max_stack_over_budget,
+           stats.max_memory_ready_over_budget,
+           stats.max_memory_wait_over_budget,
+           stats.max_completion_over_budget, stats.max_done_over_budget,
+           stats.max_waiting_unit_legacy_over_budget,
+           stats.max_total_over_budget);
+    fflush(stdout);
+}
+
 static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -12565,6 +12856,8 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
                                                           service_cycle);
     rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(owner_hw_sid,
                                                         service_cycle);
+    rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_stats(owner_hw_sid,
+                                                              service_cycle);
     rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(owner_hw_sid,
                                                             service_cycle);
     rtcore_maybe_log_replay_v03_hw_queue_stage_budget_gate_stats(
