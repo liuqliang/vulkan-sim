@@ -975,6 +975,12 @@ struct rtcore_replay_v03_hw_typed_queue_packet_stats {
     unsigned max_stage_payload_event_index;
 };
 
+struct rtcore_replay_v03_hw_request_state_scoreboard_stats {
+    unsigned evaluations;
+    unsigned max_request_state_hot_delta;
+    unsigned max_scoreboard_update_count;
+};
+
 struct rtcore_replay_queue_header_port_gate_stats {
     unsigned evaluations;
     unsigned allowed_count;
@@ -1200,6 +1206,8 @@ static rtcore_replay_v03_hw_queue_stage_budget_gate_stats
     g_rtcore_replay_v03_hw_queue_stage_budget_gate_stats;
 static rtcore_replay_v03_hw_typed_queue_packet_stats
     g_rtcore_replay_v03_hw_typed_queue_packet_stats;
+static rtcore_replay_v03_hw_request_state_scoreboard_stats
+    g_rtcore_replay_v03_hw_request_state_scoreboard_stats;
 static rtcore_replay_queue_header_port_gate_stats
     g_rtcore_replay_queue_header_port_gate_stats;
 static rtcore_replay_queue_entry_port_gate_stats
@@ -1246,6 +1254,8 @@ static unsigned
     g_rtcore_replay_v03_hw_queue_stage_budget_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_v03_hw_typed_queue_packet_stats_logs_emitted =
     0;
+static unsigned
+    g_rtcore_replay_v03_hw_request_state_scoreboard_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_queue_header_port_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_queue_entry_port_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_request_table_port_gate_stats_logs_emitted = 0;
@@ -1912,6 +1922,16 @@ static bool rtcore_replay_v03_hw_typed_queue_packet_stats_log_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_replay_v03_hw_request_state_scoreboard_stats_log_enabled()
+{
+    static int enabled = []() {
+        const char *value = getenv(
+            "VULKAN_SIM_RTCORE_REPLAY_V03_HW_REQUEST_STATE_SCOREBOARD_STATS_LOG");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_replay_queue_header_port_gate_enabled()
 {
     static int enabled = []() {
@@ -2236,6 +2256,15 @@ static unsigned rtcore_replay_v03_hw_typed_queue_packet_stats_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_V03_HW_TYPED_QUEUE_PACKET_STATS_LOG_LIMIT",
+        64);
+    return limit;
+}
+
+static unsigned
+rtcore_replay_v03_hw_request_state_scoreboard_stats_log_limit()
+{
+    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_V03_HW_REQUEST_STATE_SCOREBOARD_STATS_LOG_LIMIT",
         64);
     return limit;
 }
@@ -10752,6 +10781,81 @@ static void rtcore_maybe_log_replay_v03_hw_typed_queue_packet_stats(
     fflush(stdout);
 }
 
+static void rtcore_maybe_log_replay_v03_hw_request_state_scoreboard_stats(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    const rtcore_replay_data_path_access_snapshot &before,
+    const rtcore_replay_data_path_access_snapshot &after)
+{
+    if (!rtcore_replay_v03_hw_request_state_scoreboard_stats_log_enabled()) {
+        return;
+    }
+    if (g_rtcore_replay_v03_hw_request_state_scoreboard_stats_logs_emitted >=
+        rtcore_replay_v03_hw_request_state_scoreboard_stats_log_limit()) {
+        return;
+    }
+
+    const unsigned request_state_hot_delta =
+        rtcore_replay_data_path_access_delta(after.request_state_reads,
+                                             before.request_state_reads) +
+        rtcore_replay_data_path_access_delta(after.request_state_writes,
+                                             before.request_state_writes);
+    const unsigned request_table_cold_delta =
+        rtcore_replay_data_path_access_delta(after.request_table_reads,
+                                             before.request_table_reads) +
+        rtcore_replay_data_path_access_delta(after.request_table_writes,
+                                             before.request_table_writes);
+    if (request_state_hot_delta == 0) {
+        return;
+    }
+
+    const unsigned scoreboard_update_count =
+        g_rtcore_replay_data_path_access_stats.request_state_writes;
+    const unsigned payload_cache_update_count =
+        g_rtcore_replay_v03_hw_typed_queue_packet_stats
+            .payload_from_request_state_count;
+    if (request_state_hot_delta >
+        g_rtcore_replay_v03_hw_request_state_scoreboard_stats
+            .max_request_state_hot_delta) {
+        g_rtcore_replay_v03_hw_request_state_scoreboard_stats
+            .max_request_state_hot_delta = request_state_hot_delta;
+    }
+    if (scoreboard_update_count >
+        g_rtcore_replay_v03_hw_request_state_scoreboard_stats
+            .max_scoreboard_update_count) {
+        g_rtcore_replay_v03_hw_request_state_scoreboard_stats
+            .max_scoreboard_update_count = scoreboard_update_count;
+    }
+
+    g_rtcore_replay_v03_hw_request_state_scoreboard_stats.evaluations++;
+    g_rtcore_replay_v03_hw_request_state_scoreboard_stats_logs_emitted++;
+    printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_REQUEST_STATE_SCOREBOARD_STATS "
+           "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
+           "per_entry_update_model=1 global_port_gate_legacy=1 "
+           "request_state_port_gate_enabled=%u "
+           "request_table_port_gate_enabled=%u "
+           "request_state_read_count=%u request_state_write_count=%u "
+           "request_table_read_count=%u request_table_write_count=%u "
+           "request_state_hot_delta=%u request_table_cold_delta=%u "
+           "scoreboard_update_count=%u payload_cache_update_count=%u "
+           "evaluations=%u max_request_state_hot_delta=%u "
+           "max_scoreboard_update_count=%u\n",
+           owner_hw_sid, service_cycle,
+           rtcore_replay_request_state_port_gate_enabled() ? 1u : 0u,
+           rtcore_replay_request_table_port_gate_enabled() ? 1u : 0u,
+           g_rtcore_replay_data_path_access_stats.request_state_reads,
+           g_rtcore_replay_data_path_access_stats.request_state_writes,
+           g_rtcore_replay_data_path_access_stats.request_table_reads,
+           g_rtcore_replay_data_path_access_stats.request_table_writes,
+           request_state_hot_delta, request_table_cold_delta,
+           scoreboard_update_count, payload_cache_update_count,
+           g_rtcore_replay_v03_hw_request_state_scoreboard_stats.evaluations,
+           g_rtcore_replay_v03_hw_request_state_scoreboard_stats
+               .max_request_state_hot_delta,
+           g_rtcore_replay_v03_hw_request_state_scoreboard_stats
+               .max_scoreboard_update_count);
+    fflush(stdout);
+}
+
 static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -11196,6 +11300,8 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
                                                            service_cycle);
     rtcore_maybe_log_replay_v03_hw_typed_queue_packet_stats(owner_hw_sid,
                                                             service_cycle);
+    rtcore_maybe_log_replay_v03_hw_request_state_scoreboard_stats(
+        owner_hw_sid, service_cycle, data_path_before, data_path_after);
     rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(owner_hw_sid,
                                                             service_cycle);
     rtcore_maybe_log_replay_v03_hw_queue_stage_budget_gate_stats(
