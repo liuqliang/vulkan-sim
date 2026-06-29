@@ -905,6 +905,13 @@ struct rtcore_replay_v03_hw_queue_budget_gate_stats {
     unsigned max_blocked_resource_mask;
 };
 
+struct rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot {
+    bool valid;
+    unsigned owner_hw_sid;
+    unsigned long long service_cycle;
+    unsigned candidate_delta;
+};
+
 struct rtcore_replay_v03_hw_queue_stage_budget_stats {
     unsigned evaluations;
     unsigned last_memory_wake_issue_delta;
@@ -1163,6 +1170,8 @@ static rtcore_replay_v03_hw_queue_budget_stats
     g_rtcore_replay_v03_hw_queue_budget_stats;
 static rtcore_replay_v03_hw_queue_budget_gate_stats
     g_rtcore_replay_v03_hw_queue_budget_gate_stats;
+static rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
+    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot;
 static rtcore_replay_v03_hw_queue_stage_budget_stats
     g_rtcore_replay_v03_hw_queue_stage_budget_stats;
 static rtcore_replay_v03_hw_queue_stage_budget_gate_stats
@@ -3110,6 +3119,65 @@ static unsigned rtcore_replay_v03_hw_queue_budget_blocked_resource_mask(
     return blocked_until->second.resource_mask;
 }
 
+static void rtcore_clear_replay_v03_hw_same_cycle_bypass_candidate(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.valid = false;
+    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.owner_hw_sid =
+        owner_hw_sid;
+    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.service_cycle =
+        service_cycle;
+    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
+        .candidate_delta = 0;
+}
+
+static unsigned rtcore_replay_v03_hw_same_cycle_bypass_candidate_delta(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    if (!g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.valid) {
+        return 0;
+    }
+    if (g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
+            .owner_hw_sid != owner_hw_sid ||
+        g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
+            .service_cycle != service_cycle) {
+        return 0;
+    }
+    return g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
+        .candidate_delta;
+}
+
+static void rtcore_record_replay_v03_hw_same_cycle_bypass_candidate(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    const rtcore_replay_data_path_access_snapshot &memory_before,
+    const rtcore_replay_data_path_access_snapshot &memory_after,
+    const rtcore_replay_data_path_access_snapshot &unit_before,
+    const rtcore_replay_data_path_access_snapshot &unit_after,
+    const rtcore_replay_data_path_access_snapshot &ready_before,
+    const rtcore_replay_data_path_access_snapshot &ready_after)
+{
+    const unsigned memory_wake_push_delta =
+        rtcore_replay_data_path_access_delta(memory_after.queue_entry_writes,
+                                             memory_before.queue_entry_writes);
+    const unsigned unit_wake_push_delta =
+        rtcore_replay_data_path_access_delta(unit_after.queue_entry_writes,
+                                             unit_before.queue_entry_writes);
+    const unsigned ready_issue_delta =
+        rtcore_replay_data_path_access_delta(ready_after.queue_entry_removes,
+                                             ready_before.queue_entry_removes);
+    const unsigned wake_push_delta = memory_wake_push_delta + unit_wake_push_delta;
+    const unsigned candidate_delta =
+        wake_push_delta < ready_issue_delta ? wake_push_delta : ready_issue_delta;
+
+    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.valid = true;
+    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.owner_hw_sid =
+        owner_hw_sid;
+    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.service_cycle =
+        service_cycle;
+    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
+        .candidate_delta = candidate_delta;
+}
+
 static void rtcore_record_replay_v03_hw_queue_budget_gate_result(
     unsigned owner_hw_sid,
     const rtcore_replay_data_path_access_snapshot &before,
@@ -3124,7 +3192,9 @@ static void rtcore_record_replay_v03_hw_queue_budget_gate_result(
         after.queue_entry_removes, before.queue_entry_removes);
     const unsigned queue_push_delta = rtcore_replay_data_path_access_delta(
         after.queue_entry_writes, before.queue_entry_writes);
-    const unsigned bypass_candidate_delta = 0;
+    const unsigned bypass_candidate_delta =
+        rtcore_replay_v03_hw_same_cycle_bypass_candidate_delta(owner_hw_sid,
+                                                               service_cycle);
     const unsigned queue_issue_over_budget =
         rtcore_replay_over_budget_accesses(
             queue_issue_delta,
@@ -3633,6 +3703,7 @@ static void rtcore_record_replay_data_path_port_budget_gate_result(
 }
 
 static void rtcore_record_replay_v03_hw_queue_budget_stats(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
     const rtcore_replay_data_path_access_snapshot &before,
     const rtcore_replay_data_path_access_snapshot &after)
 {
@@ -3655,7 +3726,9 @@ static void rtcore_record_replay_v03_hw_queue_budget_stats(
                                              before.queue_header_reads) +
         rtcore_replay_data_path_access_delta(after.queue_header_writes,
                                              before.queue_header_writes);
-    const unsigned bypass_candidate_delta = 0;
+    const unsigned bypass_candidate_delta =
+        rtcore_replay_v03_hw_same_cycle_bypass_candidate_delta(owner_hw_sid,
+                                                               service_cycle);
     const unsigned queue_issue_over_budget =
         rtcore_replay_over_budget_accesses(
             queue_issue_delta,
@@ -9864,6 +9937,10 @@ rtcore_service_replay_tick_for_owner_stage_gated(
         owner_hw_sid, RTCORE_REPLAY_V03_HW_QUEUE_STAGE_COMPLETION_TAIL,
         completion_stage_before, completion_stage_after,
         completion_tail_stage_gate_allowed, service_cycle);
+    rtcore_record_replay_v03_hw_same_cycle_bypass_candidate(
+        owner_hw_sid, service_cycle, memory_stage_before, memory_stage_after,
+        unit_stage_before, unit_stage_after, ready_stage_before,
+        ready_stage_after);
     rtcore_record_replay_v03_hw_queue_stage_budget_stats(
         owner_hw_sid, service_cycle, memory_stage_before, memory_stage_after,
         unit_stage_before, unit_stage_after, ready_stage_before,
@@ -10331,7 +10408,7 @@ static void rtcore_maybe_log_replay_v03_hw_queue_budget_stats(
            "max_bypass_candidate_delta=%u "
            "max_queue_issue_over_budget=%u "
            "max_queue_push_over_budget=%u "
-           "max_bypass_over_budget=%u explicit_bypass_accounting=0\n",
+           "max_bypass_over_budget=%u explicit_bypass_accounting=1\n",
            owner_hw_sid, service_cycle,
            rtcore_replay_v03_hw_queue_issue_budget_config(),
            rtcore_replay_v03_hw_queue_push_budget_config(),
@@ -10408,7 +10485,7 @@ static void rtcore_maybe_log_replay_v03_hw_queue_budget_gate_stats(
            "max_queue_push_delta=%u max_bypass_candidate_delta=%u "
            "max_queue_issue_over_budget=%u "
            "max_queue_push_over_budget=%u max_bypass_over_budget=%u "
-           "max_blocked_resource_mask=%u explicit_bypass_accounting=0\n",
+           "max_blocked_resource_mask=%u explicit_bypass_accounting=1\n",
            owner_hw_sid, service_cycle,
            rtcore_replay_v03_hw_queue_budget_gate_enabled() ? 1 : 0,
            rtcore_replay_v03_hw_queue_issue_budget_config(),
@@ -10819,6 +10896,8 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
     if (!result.service_enabled) {
         return result;
     }
+    rtcore_clear_replay_v03_hw_same_cycle_bypass_candidate(owner_hw_sid,
+                                                           service_cycle);
 
     const rtcore_replay_data_path_access_snapshot data_path_before =
         rtcore_get_replay_data_path_access_snapshot();
@@ -10876,7 +10955,8 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
     rtcore_record_replay_data_path_port_budget_gate_result(
         owner_hw_sid, data_path_before, data_path_after,
         data_path_port_budget_can_service, service_cycle);
-    rtcore_record_replay_v03_hw_queue_budget_stats(data_path_before,
+    rtcore_record_replay_v03_hw_queue_budget_stats(owner_hw_sid, service_cycle,
+                                                   data_path_before,
                                                    data_path_after);
     rtcore_record_replay_v03_hw_queue_budget_gate_result(
         owner_hw_sid, data_path_before, data_path_after,
