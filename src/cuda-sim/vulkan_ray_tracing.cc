@@ -2214,44 +2214,22 @@ static bool rtcore_replay_v03_hw_queue_ownership_stats_log_enabled()
 
 static bool rtcore_replay_queue_header_port_gate_enabled()
 {
-    static int enabled = []() {
-        return rtcore_replay_env_enabled_or_model_preset(
-                   "VULKAN_SIM_RTCORE_REPLAY_QUEUE_HEADER_PORT_GATE", true)
-                   ? 1
-                   : 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_queue_header_port_gate_stats_log_enabled()
 {
-    static int enabled = []() {
-        const char *value = getenv(
-            "VULKAN_SIM_RTCORE_REPLAY_QUEUE_HEADER_PORT_GATE_STATS_LOG");
-        return value && value[0] && strcmp(value, "0") != 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_queue_entry_port_gate_enabled()
 {
-    static int enabled = []() {
-        return rtcore_replay_env_enabled_or_model_preset(
-                   "VULKAN_SIM_RTCORE_REPLAY_QUEUE_ENTRY_PORT_GATE", true)
-                   ? 1
-                   : 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_queue_entry_port_gate_stats_log_enabled()
 {
-    static int enabled = []() {
-        const char *value = getenv(
-            "VULKAN_SIM_RTCORE_REPLAY_QUEUE_ENTRY_PORT_GATE_STATS_LOG");
-        return value && value[0] && strcmp(value, "0") != 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_request_table_port_gate_enabled()
