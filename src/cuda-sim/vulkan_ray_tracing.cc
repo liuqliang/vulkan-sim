@@ -3259,6 +3259,103 @@ static unsigned rtcore_replay_v03_hw_queue_stage_mask(unsigned stage_id)
     return 1u << stage_id;
 }
 
+static unsigned rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+    const char *env_name, unsigned fallback)
+{
+    return rtcore_replay_uint_config_or_model_preset(env_name, fallback,
+                                                     fallback, 1048576, true);
+}
+
+static unsigned
+rtcore_replay_v03_hw_queue_stage_issue_budget_config(unsigned stage_id)
+{
+    const unsigned fallback =
+        rtcore_replay_v03_hw_queue_issue_budget_config();
+    switch (stage_id) {
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_ISSUE: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_ISSUE_ISSUE_BUDGET",
+                fallback);
+        return budget;
+    }
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_WAKE: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_WAKE_ISSUE_BUDGET",
+                fallback);
+        return budget;
+    }
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_UNIT_WAKE: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_UNIT_WAKE_ISSUE_BUDGET",
+                fallback);
+        return budget;
+    }
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_READY_ISSUE: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_READY_ISSUE_ISSUE_BUDGET",
+                fallback);
+        return budget;
+    }
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_COMPLETION_TAIL: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_COMPLETION_TAIL_ISSUE_BUDGET",
+                fallback);
+        return budget;
+    }
+    }
+    return fallback;
+}
+
+static unsigned
+rtcore_replay_v03_hw_queue_stage_push_budget_config(unsigned stage_id)
+{
+    const unsigned fallback =
+        rtcore_replay_v03_hw_queue_push_budget_config();
+    switch (stage_id) {
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_ISSUE: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_ISSUE_PUSH_BUDGET",
+                fallback);
+        return budget;
+    }
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_WAKE: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_MEMORY_WAKE_PUSH_BUDGET",
+                fallback);
+        return budget;
+    }
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_UNIT_WAKE: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_UNIT_WAKE_PUSH_BUDGET",
+                fallback);
+        return budget;
+    }
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_READY_ISSUE: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_READY_ISSUE_PUSH_BUDGET",
+                fallback);
+        return budget;
+    }
+    case RTCORE_REPLAY_V03_HW_QUEUE_STAGE_COMPLETION_TAIL: {
+        static unsigned budget =
+            rtcore_replay_v03_hw_queue_stage_budget_config_from_env(
+                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_COMPLETION_TAIL_PUSH_BUDGET",
+                fallback);
+        return budget;
+    }
+    }
+    return fallback;
+}
+
 static unsigned rtcore_replay_v03_hw_queue_stage_owner_key(
     unsigned owner_hw_sid, unsigned stage_id)
 {
@@ -4439,11 +4536,11 @@ static void rtcore_record_replay_v03_hw_queue_stage_budget_gate_result(
     const unsigned queue_issue_over_budget =
         rtcore_replay_over_budget_accesses(
             queue_issue_delta,
-            rtcore_replay_v03_hw_queue_issue_budget_config());
+            rtcore_replay_v03_hw_queue_stage_issue_budget_config(stage_id));
     const unsigned queue_push_over_budget =
         rtcore_replay_over_budget_accesses(
             queue_push_delta,
-            rtcore_replay_v03_hw_queue_push_budget_config());
+            rtcore_replay_v03_hw_queue_stage_push_budget_config(stage_id));
     const bool service_blocked = !service_allowed;
     const unsigned blocked_stage_mask =
         service_blocked
@@ -13467,8 +13564,12 @@ static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_gate_stats(
            rtcore_replay_v03_hw_queue_stage_budget_gate_enabled() ? 1 : 0,
            g_rtcore_replay_v03_hw_queue_stage_budget_gate_stats.last_stage_id,
            g_rtcore_replay_v03_hw_queue_stage_budget_gate_stats.last_stage_mask,
-           rtcore_replay_v03_hw_queue_issue_budget_config(),
-           rtcore_replay_v03_hw_queue_push_budget_config(),
+           rtcore_replay_v03_hw_queue_stage_issue_budget_config(
+               g_rtcore_replay_v03_hw_queue_stage_budget_gate_stats
+                   .last_stage_id),
+           rtcore_replay_v03_hw_queue_stage_push_budget_config(
+               g_rtcore_replay_v03_hw_queue_stage_budget_gate_stats
+                   .last_stage_id),
            g_rtcore_replay_v03_hw_queue_stage_budget_gate_stats
                .last_queue_issue_delta,
            g_rtcore_replay_v03_hw_queue_stage_budget_gate_stats
