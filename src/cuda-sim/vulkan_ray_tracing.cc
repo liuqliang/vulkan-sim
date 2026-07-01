@@ -4564,6 +4564,13 @@ static void rtcore_record_replay_v03_hw_same_cycle_bypass_candidate(
     rtcore_update_replay_v03_hw_queue_ingress_maxima(ingress_stats);
 }
 
+static unsigned rtcore_replay_v03_hw_queue_budget_effective_delta(
+    unsigned raw_delta, unsigned bypass_candidate_delta)
+{
+    return raw_delta > bypass_candidate_delta ? raw_delta - bypass_candidate_delta
+                                              : 0;
+}
+
 static void rtcore_record_replay_v03_hw_queue_budget_gate_result(
     unsigned owner_hw_sid,
     const rtcore_replay_data_path_access_snapshot &before,
@@ -4581,13 +4588,19 @@ static void rtcore_record_replay_v03_hw_queue_budget_gate_result(
     const unsigned bypass_candidate_delta =
         rtcore_replay_v03_hw_same_cycle_bypass_candidate_delta(owner_hw_sid,
                                                                service_cycle);
+    const unsigned queue_issue_effective_delta =
+        rtcore_replay_v03_hw_queue_budget_effective_delta(
+            queue_issue_delta, bypass_candidate_delta);
+    const unsigned queue_push_effective_delta =
+        rtcore_replay_v03_hw_queue_budget_effective_delta(
+            queue_push_delta, bypass_candidate_delta);
     const unsigned queue_issue_over_budget =
         rtcore_replay_over_budget_accesses(
-            queue_issue_delta,
+            queue_issue_effective_delta,
             rtcore_replay_v03_hw_queue_issue_budget_config());
     const unsigned queue_push_over_budget =
         rtcore_replay_over_budget_accesses(
-            queue_push_delta,
+            queue_push_effective_delta,
             rtcore_replay_v03_hw_queue_push_budget_config());
     const unsigned bypass_over_budget = rtcore_replay_over_budget_accesses(
         bypass_candidate_delta, rtcore_replay_v03_hw_bypass_budget_config());
@@ -4603,9 +4616,9 @@ static void rtcore_record_replay_v03_hw_queue_budget_gate_result(
 
     g_rtcore_replay_v03_hw_queue_budget_gate_stats.evaluations++;
     g_rtcore_replay_v03_hw_queue_budget_gate_stats.last_queue_issue_delta =
-        queue_issue_delta;
+        queue_issue_effective_delta;
     g_rtcore_replay_v03_hw_queue_budget_gate_stats.last_queue_push_delta =
-        queue_push_delta;
+        queue_push_effective_delta;
     g_rtcore_replay_v03_hw_queue_budget_gate_stats.last_bypass_candidate_delta =
         bypass_candidate_delta;
     g_rtcore_replay_v03_hw_queue_budget_gate_stats
@@ -4620,11 +4633,11 @@ static void rtcore_record_replay_v03_hw_queue_budget_gate_result(
         .last_blocked_resource_mask = blocked_resource_mask;
 
     rtcore_update_replay_data_path_port_budget_max(
-        queue_issue_delta,
+        queue_issue_effective_delta,
         &g_rtcore_replay_v03_hw_queue_budget_gate_stats
              .max_queue_issue_delta);
     rtcore_update_replay_data_path_port_budget_max(
-        queue_push_delta,
+        queue_push_effective_delta,
         &g_rtcore_replay_v03_hw_queue_budget_gate_stats.max_queue_push_delta);
     rtcore_update_replay_data_path_port_budget_max(
         bypass_candidate_delta,
@@ -5139,22 +5152,28 @@ static void rtcore_record_replay_v03_hw_queue_budget_stats(
     const unsigned bypass_candidate_delta =
         rtcore_replay_v03_hw_same_cycle_bypass_candidate_delta(owner_hw_sid,
                                                                service_cycle);
+    const unsigned queue_issue_effective_delta =
+        rtcore_replay_v03_hw_queue_budget_effective_delta(
+            queue_issue_delta, bypass_candidate_delta);
+    const unsigned queue_push_effective_delta =
+        rtcore_replay_v03_hw_queue_budget_effective_delta(
+            queue_push_delta, bypass_candidate_delta);
     const unsigned queue_issue_over_budget =
         rtcore_replay_over_budget_accesses(
-            queue_issue_delta,
+            queue_issue_effective_delta,
             rtcore_replay_v03_hw_queue_issue_budget_config());
     const unsigned queue_push_over_budget =
         rtcore_replay_over_budget_accesses(
-            queue_push_delta,
+            queue_push_effective_delta,
             rtcore_replay_v03_hw_queue_push_budget_config());
     const unsigned bypass_over_budget = rtcore_replay_over_budget_accesses(
         bypass_candidate_delta, rtcore_replay_v03_hw_bypass_budget_config());
 
     g_rtcore_replay_v03_hw_queue_budget_stats.evaluations++;
     g_rtcore_replay_v03_hw_queue_budget_stats.last_queue_issue_delta =
-        queue_issue_delta;
+        queue_issue_effective_delta;
     g_rtcore_replay_v03_hw_queue_budget_stats.last_queue_push_delta =
-        queue_push_delta;
+        queue_push_effective_delta;
     g_rtcore_replay_v03_hw_queue_budget_stats.last_request_table_cold_delta =
         request_table_cold_delta;
     g_rtcore_replay_v03_hw_queue_budget_stats.last_request_state_hot_delta =
@@ -5171,10 +5190,10 @@ static void rtcore_record_replay_v03_hw_queue_budget_stats(
         bypass_over_budget;
 
     rtcore_update_replay_data_path_port_budget_max(
-        queue_issue_delta,
+        queue_issue_effective_delta,
         &g_rtcore_replay_v03_hw_queue_budget_stats.max_queue_issue_delta);
     rtcore_update_replay_data_path_port_budget_max(
-        queue_push_delta,
+        queue_push_effective_delta,
         &g_rtcore_replay_v03_hw_queue_budget_stats.max_queue_push_delta);
     rtcore_update_replay_data_path_port_budget_max(
         request_table_cold_delta,
