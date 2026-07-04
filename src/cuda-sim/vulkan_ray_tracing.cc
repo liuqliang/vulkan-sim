@@ -2304,9 +2304,14 @@ static bool rtcore_replay_request_table_port_gate_stats_log_enabled()
 
 static bool rtcore_replay_request_table_capacity_gate_enabled()
 {
+    return false;
+}
+
+static bool rtcore_replay_lane_request_state_capacity_gate_enabled()
+{
     static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_CAPACITY_GATE");
+        const char *value = getenv(
+            "VULKAN_SIM_RTCORE_REPLAY_LANE_REQUEST_STATE_CAPACITY_GATE");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -2314,9 +2319,14 @@ static bool rtcore_replay_request_table_capacity_gate_enabled()
 
 static bool rtcore_replay_request_table_capacity_gate_stats_log_enabled()
 {
+    return false;
+}
+
+static bool rtcore_replay_lane_request_state_capacity_gate_stats_log_enabled()
+{
     static int enabled = []() {
         const char *value = getenv(
-            "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_CAPACITY_GATE_STATS_LOG");
+            "VULKAN_SIM_RTCORE_REPLAY_LANE_REQUEST_STATE_CAPACITY_GATE_STATS_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -2743,9 +2753,14 @@ static unsigned rtcore_replay_request_table_ports_per_cycle_config()
 
 static unsigned rtcore_replay_request_table_capacity_config()
 {
+    return 0;
+}
+
+static unsigned rtcore_replay_lane_request_state_capacity_config()
+{
     static unsigned capacity = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_CAPACITY", 0, 32, 1048576,
-        true);
+        "VULKAN_SIM_RTCORE_REPLAY_LANE_REQUEST_STATE_CAPACITY", 0, 32,
+        1048576, true);
     return capacity;
 }
 
@@ -6043,7 +6058,7 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
     const rtcore_replay_lane_request &request, unsigned occupancy,
     bool capacity_blocked, bool admitted, bool released)
 {
-    if (!rtcore_replay_request_table_capacity_gate_stats_log_enabled()) {
+    if (!rtcore_replay_lane_request_state_capacity_gate_stats_log_enabled()) {
         return;
     }
     if (g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted >=
@@ -6059,7 +6074,7 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
     rtcore_update_replay_request_table_capacity_pending_max(
         pending_admissions);
 
-    printf("GPGPU-Sim RTCORE_REPLAY_REQUEST_TABLE_CAPACITY_GATE "
+    printf("GPGPU-Sim RTCORE_REPLAY_LANE_REQUEST_STATE_CAPACITY_GATE "
            "owner_hw_sid=%u thread_uid=%u lane_id=%u "
            "has_warp_metadata=%u warp_uid=%u warp_id=%u "
            "active_mask=0x%08x static_inst_uid=%u gate_enabled=%u "
@@ -6070,8 +6085,8 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
            request.owner_hw_sid, request.thread_uid, request.lane_id,
            request.has_warp_metadata ? 1u : 0u, request.warp_uid,
            request.warp_id, request.active_mask, request.static_inst_uid,
-           rtcore_replay_request_table_capacity_gate_enabled() ? 1u : 0u,
-           rtcore_replay_request_table_capacity_config(), occupancy,
+           rtcore_replay_lane_request_state_capacity_gate_enabled() ? 1u : 0u,
+           rtcore_replay_lane_request_state_capacity_config(), occupancy,
            capacity_blocked ? 1u : 0u, admitted ? 1u : 0u,
            released ? 1u : 0u,
            g_rtcore_replay_request_table_capacity_gate_stats.evaluations,
@@ -6109,11 +6124,11 @@ static bool rtcore_maybe_block_replay_request_table_capacity_admission(
     const rtcore_replay_lane_request &request)
 {
     if (!request.valid ||
-        !rtcore_replay_request_table_capacity_gate_enabled()) {
+        !rtcore_replay_lane_request_state_capacity_gate_enabled()) {
         return false;
     }
 
-    const unsigned capacity = rtcore_replay_request_table_capacity_config();
+    const unsigned capacity = rtcore_replay_lane_request_state_capacity_config();
     if (capacity == 0) {
         return false;
     }
@@ -6158,11 +6173,11 @@ static void rtcore_record_replay_request_table_capacity_release(
 {
     (void)service_cycle;
     if (!request.valid ||
-        !rtcore_replay_request_table_capacity_gate_enabled()) {
+        !rtcore_replay_lane_request_state_capacity_gate_enabled()) {
         return;
     }
 
-    const unsigned capacity = rtcore_replay_request_table_capacity_config();
+    const unsigned capacity = rtcore_replay_lane_request_state_capacity_config();
     if (capacity == 0) {
         return;
     }
@@ -10875,11 +10890,11 @@ static void rtcore_commit_replay_request_table_admission(
 static bool rtcore_try_drain_replay_request_table_capacity_pending_admissions(
     unsigned owner_hw_sid)
 {
-    if (!rtcore_replay_request_table_capacity_gate_enabled()) {
+    if (!rtcore_replay_lane_request_state_capacity_gate_enabled()) {
         return false;
     }
 
-    const unsigned capacity = rtcore_replay_request_table_capacity_config();
+    const unsigned capacity = rtcore_replay_lane_request_state_capacity_config();
     if (capacity == 0) {
         return false;
     }
