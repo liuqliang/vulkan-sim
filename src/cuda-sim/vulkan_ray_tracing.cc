@@ -521,6 +521,8 @@ static std::map<unsigned, rtcore_replay_lane_request>
     g_rtcore_replay_lane_requests;
 static std::deque<rtcore_replay_lane_request>
     g_rtcore_replay_request_table_capacity_pending_admissions;
+static std::map<unsigned long long, unsigned>
+    g_rtcore_replay_v03_hw_ready_bank_rr_cursor_by_owner_unit;
 
 struct rtcore_replay_warp_completion_shadow_key {
     unsigned owner_hw_sid;
@@ -1818,6 +1820,19 @@ static bool rtcore_replay_unit_arbitration_enabled()
                    "VULKAN_SIM_RTCORE_REPLAY_UNIT_ARBITRATION", true)
                    ? 1
                    : 0;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_replay_v03_hw_banked_ready_selection_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_V03_HW_BANKED_READY_SELECTION");
+        if (value && value[0] != '\0') {
+            return strcmp(value, "0") != 0 ? 1 : 0;
+        }
+        return 1;
     }();
     return enabled != 0;
 }
@@ -6329,6 +6344,104 @@ static void rtcore_refresh_replay_lane_request_ready_bits(
     }
 }
 
+static bool rtcore_replay_request_ready_for_state(
+    const rtcore_replay_lane_request &request,
+    rtcore_replay_lane_request_state unit_state)
+{
+    if (!request.valid || request.state != unit_state ||
+        request.unit_queue_capacity_gate_pending ||
+        request.v01_issue_state_capacity_gate_pending ||
+        request.v01_issue_state_gate_pending ||
+        request.unit_latency_gate_pending ||
+        request.v03_hw_queue_ingress_budget_gate_pending ||
+        request.v03_hw_queue_depth_gate_pending) {
+        return false;
+    }
+
+    switch (unit_state) {
+    case RTCORE_REPLAY_ISSUED_NODE:
+        return request.ready_node_bit;
+    case RTCORE_REPLAY_ISSUED_PRIMITIVE:
+        return request.ready_primitive_bit;
+    case RTCORE_REPLAY_ISSUED_STACK:
+        return request.ready_stack_bit;
+    case RTCORE_REPLAY_ISSUED_MEMORY:
+        return request.ready_memory_bit;
+    case RTCORE_REPLAY_COMPLETION_PENDING:
+        return request.ready_result_bit;
+    default:
+        return false;
+    }
+}
+
+static unsigned long long rtcore_replay_v03_hw_ready_bank_cursor_key(
+    unsigned owner_hw_sid, rtcore_replay_lane_request_state unit_state)
+{
+    return (static_cast<unsigned long long>(owner_hw_sid) << 32) |
+           static_cast<unsigned long long>(unit_state);
+}
+
+struct rtcore_replay_v03_hw_banked_ready_candidate {
+    bool valid;
+    unsigned thread_uid;
+    unsigned ready_order;
+
+    rtcore_replay_v03_hw_banked_ready_candidate()
+        : valid(false), thread_uid(0), ready_order(0)
+    {
+    }
+};
+
+static bool rtcore_select_banked_ready_request_for_owner(
+    rtcore_replay_lane_request_state unit_state, unsigned owner_hw_sid,
+    unsigned *thread_uid)
+{
+    const unsigned bank_count =
+        rtcore_replay_v03_hw_request_state_bank_count_config();
+    if (bank_count == 0) {
+        return false;
+    }
+
+    std::vector<rtcore_replay_v03_hw_banked_ready_candidate> candidates(
+        bank_count);
+    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+             g_rtcore_replay_lane_requests.begin();
+         it != g_rtcore_replay_lane_requests.end(); ++it) {
+        const rtcore_replay_lane_request &request = it->second;
+        if (request.owner_hw_sid != owner_hw_sid ||
+            !rtcore_replay_request_ready_for_state(request, unit_state)) {
+            continue;
+        }
+        const unsigned bank_id = request.request_state_bank_id % bank_count;
+        rtcore_replay_v03_hw_banked_ready_candidate &candidate =
+            candidates[bank_id];
+        if (!candidate.valid || request.ready_order < candidate.ready_order) {
+            candidate.valid = true;
+            candidate.thread_uid = request.thread_uid;
+            candidate.ready_order = request.ready_order;
+        }
+    }
+
+    const unsigned long long cursor_key =
+        rtcore_replay_v03_hw_ready_bank_cursor_key(owner_hw_sid, unit_state);
+    unsigned cursor =
+        g_rtcore_replay_v03_hw_ready_bank_rr_cursor_by_owner_unit[cursor_key] %
+        bank_count;
+    for (unsigned offset = 0; offset < bank_count; ++offset) {
+        const unsigned bank_id = (cursor + offset) % bank_count;
+        if (!candidates[bank_id].valid) {
+            continue;
+        }
+        if (thread_uid) {
+            *thread_uid = candidates[bank_id].thread_uid;
+        }
+        g_rtcore_replay_v03_hw_ready_bank_rr_cursor_by_owner_unit[cursor_key] =
+            (bank_id + 1) % bank_count;
+        return true;
+    }
+    return false;
+}
+
 static rtcore_replay_ready_queues *
 rtcore_replay_owner_ready_queues_for_owner(unsigned owner_hw_sid)
 {
@@ -10510,17 +10623,25 @@ static bool rtcore_select_ready_request_from_queue_for_owner(
 }
 
 static bool rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-    rtcore_replay_queue &queue, unsigned owner_hw_sid, unsigned *issue_budget,
-    unsigned *issue_attempts, unsigned *issued, unsigned *budget_exhausted,
+    rtcore_replay_queue &queue, rtcore_replay_lane_request_state unit_state,
+    unsigned owner_hw_sid, unsigned *issue_budget, unsigned *issue_attempts,
+    unsigned *issued, unsigned *budget_exhausted,
     rtcore_replay_service_cycle_identity_snapshot *last_identity,
     unsigned long long service_cycle, rtcore_replay_queue *global_mirror_queue = NULL)
 {
     bool progressed = false;
     while (true) {
         unsigned thread_uid = 0;
-        if (!rtcore_select_ready_request_from_queue_for_owner(
-                queue, owner_hw_sid, &thread_uid)) {
-            break;
+        if (rtcore_replay_v03_hw_banked_ready_selection_enabled()) {
+            if (!rtcore_select_banked_ready_request_for_owner(
+                    unit_state, owner_hw_sid, &thread_uid)) {
+                break;
+            }
+        } else {
+            if (!rtcore_select_ready_request_from_queue_for_owner(
+                    queue, owner_hw_sid, &thread_uid)) {
+                break;
+            }
         }
         if (issue_attempts) {
             (*issue_attempts)++;
@@ -10994,7 +11115,8 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
     rtcore_replay_ready_queues *owner_queues =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_node_queue, owner_hw_sid,
+        owner_queues->ready_node_queue, RTCORE_REPLAY_ISSUED_NODE,
+        owner_hw_sid,
         &budget.node_issue_budget,
         &g_rtcore_replay_unit_arbitration_stats.node_unit_issue_attempts,
         &g_rtcore_replay_unit_arbitration_stats.node_unit_issued,
@@ -11002,7 +11124,8 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
         last_identity, service_cycle,
         &g_rtcore_replay_ready_queues.ready_node_queue);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_primitive_queue, owner_hw_sid,
+        owner_queues->ready_primitive_queue, RTCORE_REPLAY_ISSUED_PRIMITIVE,
+        owner_hw_sid,
         &budget.primitive_issue_budget,
         &g_rtcore_replay_unit_arbitration_stats.primitive_unit_issue_attempts,
         &g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued,
@@ -11011,7 +11134,8 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
         last_identity, service_cycle,
         &g_rtcore_replay_ready_queues.ready_primitive_queue);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_stack_queue, owner_hw_sid,
+        owner_queues->ready_stack_queue, RTCORE_REPLAY_ISSUED_STACK,
+        owner_hw_sid,
         &budget.stack_issue_budget,
         &g_rtcore_replay_unit_arbitration_stats.stack_unit_issue_attempts,
         &g_rtcore_replay_unit_arbitration_stats.stack_unit_issued,
@@ -11019,7 +11143,8 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
         last_identity, service_cycle,
         &g_rtcore_replay_ready_queues.ready_stack_queue);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_completion_queue, owner_hw_sid,
+        owner_queues->ready_completion_queue,
+        RTCORE_REPLAY_COMPLETION_PENDING, owner_hw_sid,
         &budget.completion_issue_budget,
         &g_rtcore_replay_unit_arbitration_stats
              .completion_unit_issue_attempts,
@@ -11041,7 +11166,8 @@ static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
     rtcore_replay_ready_queues *owner_queues =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_node_queue, owner_hw_sid,
+        owner_queues->ready_node_queue, RTCORE_REPLAY_ISSUED_NODE,
+        owner_hw_sid,
         &budget.node_issue_budget,
         collect_unit_stats
             ? &g_rtcore_replay_unit_arbitration_stats.node_unit_issue_attempts
@@ -11055,7 +11181,8 @@ static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
         last_identity, service_cycle,
         &g_rtcore_replay_ready_queues.ready_node_queue);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_primitive_queue, owner_hw_sid,
+        owner_queues->ready_primitive_queue, RTCORE_REPLAY_ISSUED_PRIMITIVE,
+        owner_hw_sid,
         &budget.primitive_issue_budget,
         collect_unit_stats
             ? &g_rtcore_replay_unit_arbitration_stats
@@ -11071,7 +11198,8 @@ static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
         last_identity, service_cycle,
         &g_rtcore_replay_ready_queues.ready_primitive_queue);
     progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_stack_queue, owner_hw_sid,
+        owner_queues->ready_stack_queue, RTCORE_REPLAY_ISSUED_STACK,
+        owner_hw_sid,
         &budget.stack_issue_budget,
         collect_unit_stats
             ? &g_rtcore_replay_unit_arbitration_stats.stack_unit_issue_attempts
@@ -11097,7 +11225,8 @@ static bool rtcore_service_replay_completion_tail_requests_for_owner(
     rtcore_replay_ready_queues *owner_queues =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid);
     return rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_completion_queue, owner_hw_sid,
+        owner_queues->ready_completion_queue,
+        RTCORE_REPLAY_COMPLETION_PENDING, owner_hw_sid,
         &budget.completion_issue_budget,
         collect_unit_stats
             ? &g_rtcore_replay_unit_arbitration_stats
