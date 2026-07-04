@@ -2066,22 +2066,12 @@ static bool rtcore_replay_data_path_access_stats_log_enabled()
 
 static bool rtcore_replay_data_path_port_budget_gate_enabled()
 {
-    static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_DATA_PATH_PORT_BUDGET_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_data_path_port_budget_gate_stats_log_enabled()
 {
-    static int enabled = []() {
-        const char *value = getenv(
-            "VULKAN_SIM_RTCORE_REPLAY_DATA_PATH_PORT_BUDGET_GATE_STATS_LOG");
-        return value && value[0] && strcmp(value, "0") != 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_v03_hw_queue_budget_stats_log_enabled()
@@ -2276,23 +2266,12 @@ static bool rtcore_replay_queue_entry_port_gate_stats_log_enabled()
 
 static bool rtcore_replay_request_table_port_gate_enabled()
 {
-    static int enabled = []() {
-        return rtcore_replay_env_enabled_or_model_preset(
-                   "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORT_GATE", true)
-                   ? 1
-                   : 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_request_table_port_gate_stats_log_enabled()
 {
-    static int enabled = []() {
-        const char *value = getenv(
-            "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORT_GATE_STATS_LOG");
-        return value && value[0] && strcmp(value, "0") != 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_request_table_capacity_gate_enabled()
@@ -2317,23 +2296,12 @@ static bool rtcore_replay_request_table_capacity_gate_stats_log_enabled()
 
 static bool rtcore_replay_request_state_port_gate_enabled()
 {
-    static int enabled = []() {
-        return rtcore_replay_env_enabled_or_model_preset(
-                   "VULKAN_SIM_RTCORE_REPLAY_REQUEST_STATE_PORT_GATE", true)
-                   ? 1
-                   : 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_request_state_port_gate_stats_log_enabled()
 {
-    static int enabled = []() {
-        const char *value = getenv(
-            "VULKAN_SIM_RTCORE_REPLAY_REQUEST_STATE_PORT_GATE_STATS_LOG");
-        return value && value[0] && strcmp(value, "0") != 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_warp_completion_aggregation_shadow_enabled()
@@ -2800,10 +2768,7 @@ static unsigned rtcore_replay_v03_hw_queue_ingress_push_budget_config()
 
 static unsigned rtcore_replay_v03_hw_bypass_budget_config()
 {
-    static unsigned budget = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_V03_HW_BYPASS_BUDGET", 0, 0, 1048576,
-        true);
-    return budget;
+    return 0;
 }
 
 static unsigned rtcore_replay_memory_contention_cache_lines_per_cycle_config()
@@ -4538,37 +4503,24 @@ static void rtcore_record_replay_v03_hw_same_cycle_bypass_candidate(
     const rtcore_replay_data_path_access_snapshot &ready_before,
     const rtcore_replay_data_path_access_snapshot &ready_after)
 {
-    const unsigned memory_wake_push_delta =
-        rtcore_replay_data_path_access_delta(memory_after.queue_entry_writes,
-                                             memory_before.queue_entry_writes);
-    const unsigned unit_wake_push_delta =
-        rtcore_replay_data_path_access_delta(unit_after.queue_entry_writes,
-                                             unit_before.queue_entry_writes);
-    const unsigned ready_issue_delta =
-        rtcore_replay_data_path_access_delta(ready_after.queue_entry_removes,
-                                             ready_before.queue_entry_removes);
-    const unsigned wake_push_delta = memory_wake_push_delta + unit_wake_push_delta;
-    const unsigned candidate_delta =
-        wake_push_delta < ready_issue_delta ? wake_push_delta : ready_issue_delta;
-
-    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.valid = true;
-    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.owner_hw_sid =
-        owner_hw_sid;
-    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.service_cycle =
-        service_cycle;
-    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
-        .candidate_delta = candidate_delta;
+    (void)memory_before;
+    (void)memory_after;
+    (void)unit_before;
+    (void)unit_after;
+    (void)ready_before;
+    (void)ready_after;
+    rtcore_clear_replay_v03_hw_same_cycle_bypass_candidate(owner_hw_sid,
+                                                           service_cycle);
     rtcore_replay_v03_hw_queue_ingress_stats *ingress_stats =
         rtcore_replay_v03_hw_queue_ingress_stats_for_owner(owner_hw_sid);
-    ingress_stats->same_cycle_bypass_candidate_delta = candidate_delta;
+    ingress_stats->same_cycle_bypass_candidate_delta = 0;
     rtcore_update_replay_v03_hw_queue_ingress_maxima(ingress_stats);
 }
 
 static unsigned rtcore_replay_v03_hw_queue_budget_effective_delta(
-    unsigned raw_delta, unsigned bypass_candidate_delta)
+    unsigned raw_delta)
 {
-    return raw_delta > bypass_candidate_delta ? raw_delta - bypass_candidate_delta
-                                              : 0;
+    return raw_delta;
 }
 
 static void rtcore_record_replay_v03_hw_queue_budget_gate_result(
@@ -4589,11 +4541,9 @@ static void rtcore_record_replay_v03_hw_queue_budget_gate_result(
         rtcore_replay_v03_hw_same_cycle_bypass_candidate_delta(owner_hw_sid,
                                                                service_cycle);
     const unsigned queue_issue_effective_delta =
-        rtcore_replay_v03_hw_queue_budget_effective_delta(
-            queue_issue_delta, bypass_candidate_delta);
+        rtcore_replay_v03_hw_queue_budget_effective_delta(queue_issue_delta);
     const unsigned queue_push_effective_delta =
-        rtcore_replay_v03_hw_queue_budget_effective_delta(
-            queue_push_delta, bypass_candidate_delta);
+        rtcore_replay_v03_hw_queue_budget_effective_delta(queue_push_delta);
     const unsigned queue_issue_over_budget =
         rtcore_replay_over_budget_accesses(
             queue_issue_effective_delta,
@@ -5153,11 +5103,9 @@ static void rtcore_record_replay_v03_hw_queue_budget_stats(
         rtcore_replay_v03_hw_same_cycle_bypass_candidate_delta(owner_hw_sid,
                                                                service_cycle);
     const unsigned queue_issue_effective_delta =
-        rtcore_replay_v03_hw_queue_budget_effective_delta(
-            queue_issue_delta, bypass_candidate_delta);
+        rtcore_replay_v03_hw_queue_budget_effective_delta(queue_issue_delta);
     const unsigned queue_push_effective_delta =
-        rtcore_replay_v03_hw_queue_budget_effective_delta(
-            queue_push_delta, bypass_candidate_delta);
+        rtcore_replay_v03_hw_queue_budget_effective_delta(queue_push_delta);
     const unsigned queue_issue_over_budget =
         rtcore_replay_over_budget_accesses(
             queue_issue_effective_delta,
