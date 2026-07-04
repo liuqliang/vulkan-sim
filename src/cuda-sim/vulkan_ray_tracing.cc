@@ -4557,7 +4557,7 @@ static unsigned rtcore_replay_stack_unit_busy_cycles()
     return g_rtcore_replay_unit_arbitration_stats.stack_unit_issued;
 }
 
-static unsigned rtcore_replay_completion_unit_busy_cycles()
+static unsigned rtcore_replay_warp_completion_ingress_busy_cycles()
 {
     return g_rtcore_replay_unit_arbitration_stats
         .warp_completion_ingress_issued;
@@ -4568,7 +4568,7 @@ static unsigned rtcore_replay_total_unit_busy_cycles()
     return rtcore_replay_node_unit_busy_cycles() +
            rtcore_replay_primitive_unit_busy_cycles() +
            rtcore_replay_stack_unit_busy_cycles() +
-           rtcore_replay_completion_unit_busy_cycles();
+           rtcore_replay_warp_completion_ingress_busy_cycles();
 }
 
 static unsigned rtcore_replay_total_unit_issued()
@@ -4607,7 +4607,7 @@ static const char *rtcore_replay_dominant_issue_unit(unsigned *issue_count)
         count = stack_issued;
     }
     if (completion_issued > count) {
-        unit = "completion";
+        unit = "warp_completion_ingress";
         count = completion_issued;
     }
     if (issue_count) {
@@ -4622,7 +4622,7 @@ static const char *rtcore_replay_dominant_busy_unit(unsigned *busy_cycles)
     const unsigned primitive_cycles = rtcore_replay_primitive_unit_busy_cycles();
     const unsigned stack_cycles = rtcore_replay_stack_unit_busy_cycles();
     const unsigned completion_cycles =
-        rtcore_replay_completion_unit_busy_cycles();
+        rtcore_replay_warp_completion_ingress_busy_cycles();
 
     const char *unit = "none";
     unsigned cycles = 0;
@@ -4639,7 +4639,7 @@ static const char *rtcore_replay_dominant_busy_unit(unsigned *busy_cycles)
         cycles = stack_cycles;
     }
     if (completion_cycles > cycles) {
-        unit = "completion";
+        unit = "warp_completion_ingress";
         cycles = completion_cycles;
     }
     if (busy_cycles) {
@@ -5334,8 +5334,8 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         rtcore_replay_primitive_unit_busy_cycles();
     const unsigned stack_unit_busy_cycles =
         rtcore_replay_stack_unit_busy_cycles();
-    const unsigned completion_unit_busy_cycles =
-        rtcore_replay_completion_unit_busy_cycles();
+    const unsigned warp_completion_ingress_busy_cycles =
+        rtcore_replay_warp_completion_ingress_busy_cycles();
     const unsigned total_unit_busy_cycles =
         rtcore_replay_total_unit_busy_cycles();
     const unsigned memory_wake_blocked_count =
@@ -5696,10 +5696,11 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "service_ticks_progressed=%u admitted_lane_requests=%u "
            "completed_lane_requests=%u node_unit_issued=%u "
            "primitive_unit_issued=%u stack_unit_issued=%u "
-           "completion_unit_issued=%u total_unit_issued=%u "
+           "warp_completion_ingress_issued=%u total_unit_issued=%u "
            "dominant_issue_unit=%s dominant_issue_count=%u "
            "node_unit_busy_cycles=%u primitive_unit_busy_cycles=%u "
-           "stack_unit_busy_cycles=%u completion_unit_busy_cycles=%u "
+           "stack_unit_busy_cycles=%u "
+           "warp_completion_ingress_busy_cycles=%u "
            "total_unit_busy_cycles=%u "
            "dominant_busy_unit=%s dominant_busy_cycles=%u "
            "memory_blocked_events=%u "
@@ -5826,7 +5827,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
                .warp_completion_ingress_issued,
            total_unit_issued, dominant_issue_unit, dominant_issue_count,
            node_unit_busy_cycles, primitive_unit_busy_cycles,
-           stack_unit_busy_cycles, completion_unit_busy_cycles,
+           stack_unit_busy_cycles, warp_completion_ingress_busy_cycles,
            total_unit_busy_cycles, dominant_busy_unit, dominant_busy_cycles,
            memory_blocked_events, memory_wake_blocked_count,
            memory_wake_max_blocked_cycles,
