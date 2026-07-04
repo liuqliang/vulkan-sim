@@ -6491,6 +6491,24 @@ rtcore_replay_owner_ready_queues_for_owner(unsigned owner_hw_sid)
     return &g_rtcore_replay_owner_ready_queues[owner_hw_sid];
 }
 
+static bool rtcore_replay_v03_hw_completion_entry_main_path_enabled()
+{
+    return rtcore_replay_v03_hw_banked_ready_selection_enabled() &&
+           rtcore_replay_warp_completion_entry_enabled();
+}
+
+static bool rtcore_route_replay_completion_pending_to_warp_entry(
+    rtcore_replay_lane_request *request)
+{
+    if (!request || !request->valid) {
+        return false;
+    }
+
+    rtcore_refresh_replay_lane_request_ready_bits(request);
+    request->ready_result_bit = true;
+    return true;
+}
+
 static bool rtcore_enqueue_replay_request_by_state(
     rtcore_replay_lane_request *request_ptr, unsigned long long service_cycle = 0)
 {
@@ -6662,6 +6680,10 @@ static bool rtcore_enqueue_replay_request_by_state(
         }
         return true;
     case RTCORE_REPLAY_COMPLETION_PENDING:
+        if (rtcore_replay_v03_hw_completion_entry_main_path_enabled()) {
+            return rtcore_route_replay_completion_pending_to_warp_entry(
+                &request);
+        }
         if (!rtcore_replay_v03_hw_queue_ingress_budget_gate_allow_push(
                 &request, RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION,
                 service_cycle)) {
