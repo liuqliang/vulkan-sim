@@ -2745,10 +2745,7 @@ static unsigned rtcore_replay_queue_entry_ports_per_cycle_config()
 
 static unsigned rtcore_replay_request_table_ports_per_cycle_config()
 {
-    static unsigned ports = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_PORTS_PER_CYCLE", 0, 1,
-        1048576, true);
-    return ports;
+    return 0;
 }
 
 static unsigned rtcore_replay_request_table_capacity_config()
