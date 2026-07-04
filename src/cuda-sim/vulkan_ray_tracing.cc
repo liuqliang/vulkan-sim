@@ -14112,11 +14112,7 @@ static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
         g_rtcore_replay_v03_hw_queue_stage_budget_stats
                 .last_ready_issue_issue_delta > 0 ||
         g_rtcore_replay_v03_hw_queue_stage_budget_stats
-                .last_ready_issue_push_delta > 0 ||
-        g_rtcore_replay_v03_hw_queue_stage_budget_stats
-                .last_completion_tail_issue_delta > 0 ||
-        g_rtcore_replay_v03_hw_queue_stage_budget_stats
-                .last_completion_tail_push_delta > 0;
+                .last_ready_issue_push_delta > 0;
     if (!has_stage_delta) {
         return;
     }
@@ -14128,14 +14124,11 @@ static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
            "memory_wake_issue_delta=%u memory_wake_push_delta=%u "
            "unit_wake_issue_delta=%u unit_wake_push_delta=%u "
            "ready_issue_issue_delta=%u ready_issue_push_delta=%u "
-           "completion_tail_issue_delta=%u completion_tail_push_delta=%u "
            "evaluations=%u max_memory_issue_issue_delta=%u "
            "max_memory_issue_push_delta=%u max_memory_wake_issue_delta=%u "
            "max_memory_wake_push_delta=%u max_unit_wake_issue_delta=%u "
            "max_unit_wake_push_delta=%u max_ready_issue_issue_delta=%u "
-           "max_ready_issue_push_delta=%u "
-           "max_completion_tail_issue_delta=%u "
-           "max_completion_tail_push_delta=%u\n",
+           "max_ready_issue_push_delta=%u\n",
            owner_hw_sid, service_cycle,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
                .last_memory_issue_issue_delta,
@@ -14153,10 +14146,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
                .last_ready_issue_issue_delta,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
                .last_ready_issue_push_delta,
-           g_rtcore_replay_v03_hw_queue_stage_budget_stats
-               .last_completion_tail_issue_delta,
-           g_rtcore_replay_v03_hw_queue_stage_budget_stats
-               .last_completion_tail_push_delta,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats.evaluations,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
                .max_memory_issue_issue_delta,
@@ -14173,11 +14162,7 @@ static void rtcore_maybe_log_replay_v03_hw_queue_stage_budget_stats(
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
                .max_ready_issue_issue_delta,
            g_rtcore_replay_v03_hw_queue_stage_budget_stats
-               .max_ready_issue_push_delta,
-           g_rtcore_replay_v03_hw_queue_stage_budget_stats
-               .max_completion_tail_issue_delta,
-           g_rtcore_replay_v03_hw_queue_stage_budget_stats
-               .max_completion_tail_push_delta);
+               .max_ready_issue_push_delta);
     fflush(stdout);
 }
 
