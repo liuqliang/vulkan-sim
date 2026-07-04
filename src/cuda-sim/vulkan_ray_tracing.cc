@@ -524,13 +524,13 @@ static std::deque<rtcore_replay_lane_request>
 static std::map<unsigned long long, unsigned>
     g_rtcore_replay_v03_hw_ready_bank_rr_cursor_by_owner_unit;
 
-struct rtcore_replay_warp_completion_shadow_key {
+struct rtcore_replay_warp_completion_entry_key {
     unsigned owner_hw_sid;
     unsigned warp_uid;
     unsigned warp_id;
     unsigned active_mask;
 
-    bool operator<(const rtcore_replay_warp_completion_shadow_key &other) const
+    bool operator<(const rtcore_replay_warp_completion_entry_key &other) const
     {
         if (owner_hw_sid != other.owner_hw_sid) {
             return owner_hw_sid < other.owner_hw_sid;
@@ -545,17 +545,24 @@ struct rtcore_replay_warp_completion_shadow_key {
     }
 };
 
-struct rtcore_replay_warp_completion_shadow_state {
+typedef rtcore_replay_warp_completion_entry_key
+    rtcore_replay_warp_completion_shadow_key;
+
+struct rtcore_replay_warp_completion_entry_state {
     bool valid;
-    rtcore_replay_warp_completion_shadow_key key;
+    rtcore_replay_warp_completion_entry_key key;
     unsigned admitted_lane_mask;
     unsigned completed_lane_mask;
+    unsigned result_valid_mask;
     unsigned completed_lane_count;
     bool all_active_lanes_complete;
     bool all_active_lanes_complete_logged;
 };
 
-struct rtcore_replay_warp_completion_shadow_snapshot {
+typedef rtcore_replay_warp_completion_entry_state
+    rtcore_replay_warp_completion_shadow_state;
+
+struct rtcore_replay_warp_completion_entry_snapshot {
     bool enabled;
     bool found;
     bool all_active_lanes_complete;
@@ -565,12 +572,16 @@ struct rtcore_replay_warp_completion_shadow_snapshot {
     unsigned active_mask;
     unsigned admitted_lane_mask;
     unsigned completed_lane_mask;
+    unsigned result_valid_mask;
     unsigned completed_lane_count;
 };
 
-static std::map<rtcore_replay_warp_completion_shadow_key,
-                rtcore_replay_warp_completion_shadow_state>
-    g_rtcore_replay_warp_completion_shadow;
+typedef rtcore_replay_warp_completion_entry_snapshot
+    rtcore_replay_warp_completion_shadow_snapshot;
+
+static std::map<rtcore_replay_warp_completion_entry_key,
+                rtcore_replay_warp_completion_entry_state>
+    g_rtcore_replay_warp_completion_entries;
 
 struct rtcore_replay_queue_packet {
     unsigned thread_uid;
@@ -2325,9 +2336,21 @@ static bool rtcore_replay_request_state_port_gate_stats_log_enabled()
     return false;
 }
 
+static bool rtcore_replay_warp_completion_entry_enabled();
+
 static bool rtcore_replay_warp_completion_aggregation_shadow_enabled()
 {
+    return rtcore_replay_warp_completion_entry_enabled();
+}
+
+static bool rtcore_replay_warp_completion_entry_enabled()
+{
     static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_REPLAY_WARP_COMPLETION_ENTRY");
+        if (value && value[0] != '\0') {
+            return strcmp(value, "0") != 0 ? 1 : 0;
+        }
         return rtcore_replay_env_enabled_or_model_preset(
                    "VULKAN_SIM_RTCORE_REPLAY_WARP_COMPLETION_AGGREGATION_SHADOW",
                    true)
@@ -2798,6 +2821,14 @@ static unsigned rtcore_replay_v03_hw_request_state_bank_count_config()
         "VULKAN_SIM_RTCORE_REPLAY_V03_HW_REQUEST_STATE_BANK_COUNT", 8, 1,
         1024, true);
     return bank_count == 0 ? 1 : bank_count;
+}
+
+static unsigned rtcore_replay_warp_completion_entry_capacity_config()
+{
+    static unsigned capacity = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_WARP_COMPLETION_ENTRY_CAPACITY", 8, 1,
+        1024, false);
+    return capacity == 0 ? 1 : capacity;
 }
 
 static unsigned rtcore_replay_memory_contention_cache_lines_per_cycle_config()
@@ -6740,7 +6771,7 @@ rtcore_make_replay_service_progress_identity(unsigned thread_uid,
     return snapshot;
 }
 
-static unsigned rtcore_count_replay_warp_completion_shadow_lanes(unsigned mask)
+static unsigned rtcore_count_replay_warp_completion_entry_lanes(unsigned mask)
 {
     unsigned count = 0;
     while (mask != 0) {
@@ -6750,18 +6781,18 @@ static unsigned rtcore_count_replay_warp_completion_shadow_lanes(unsigned mask)
     return count;
 }
 
-static bool rtcore_replay_request_has_warp_completion_shadow_metadata(
+static bool rtcore_replay_request_has_warp_completion_entry_metadata(
     const rtcore_replay_lane_request &request)
 {
     return request.valid && request.has_warp_metadata && request.lane_id < 32 &&
            request.active_mask != 0;
 }
 
-static rtcore_replay_warp_completion_shadow_key
-rtcore_make_replay_warp_completion_shadow_key(
+static rtcore_replay_warp_completion_entry_key
+rtcore_make_replay_warp_completion_entry_key(
     const rtcore_replay_lane_request &request)
 {
-    rtcore_replay_warp_completion_shadow_key key = {};
+    rtcore_replay_warp_completion_entry_key key = {};
     key.owner_hw_sid = request.owner_hw_sid;
     key.warp_uid = request.warp_uid;
     key.warp_id = request.warp_id;
@@ -6769,8 +6800,8 @@ rtcore_make_replay_warp_completion_shadow_key(
     return key;
 }
 
-static void rtcore_update_replay_warp_completion_shadow_state(
-    rtcore_replay_warp_completion_shadow_state *state)
+static void rtcore_update_replay_warp_completion_entry_state(
+    rtcore_replay_warp_completion_entry_state *state)
 {
     if (!state || !state->valid) {
         return;
@@ -6779,16 +6810,27 @@ static void rtcore_update_replay_warp_completion_shadow_state(
     const unsigned active_completed_lanes =
         state->completed_lane_mask & state->key.active_mask;
     state->completed_lane_count =
-        rtcore_count_replay_warp_completion_shadow_lanes(
+        rtcore_count_replay_warp_completion_entry_lanes(
             active_completed_lanes);
     state->all_active_lanes_complete =
         state->key.active_mask != 0 &&
         active_completed_lanes == state->key.active_mask;
 }
 
-static void rtcore_log_replay_warp_completion_aggregation_shadow(
-    const rtcore_replay_warp_completion_shadow_state &state)
+static void rtcore_log_replay_warp_completion_entry(
+    const rtcore_replay_warp_completion_entry_state &state)
 {
+    printf("GPGPU-Sim RTCORE_REPLAY_WARP_COMPLETION_ENTRY "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+           "admitted_lane_mask=0x%08x completed_lane_mask=0x%08x "
+           "result_valid_mask=0x%08x completed_lane_count=%u "
+           "all_active_lanes_complete=%u capacity=%u\n",
+           state.key.owner_hw_sid, state.key.warp_uid, state.key.warp_id,
+           state.key.active_mask, state.admitted_lane_mask,
+           state.completed_lane_mask, state.result_valid_mask,
+           state.completed_lane_count,
+           state.all_active_lanes_complete ? 1 : 0,
+           rtcore_replay_warp_completion_entry_capacity_config());
     printf("GPGPU-Sim RTCORE_REPLAY_WARP_COMPLETION_AGGREGATION_SHADOW "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
            "admitted_lane_mask=0x%08x completed_lane_mask=0x%08x "
@@ -6800,50 +6842,63 @@ static void rtcore_log_replay_warp_completion_aggregation_shadow(
     fflush(stdout);
 }
 
-static void rtcore_record_replay_lane_admission_shadow(
+static void rtcore_record_replay_lane_admission_entry(
     const rtcore_replay_lane_request &request)
 {
-    if (!rtcore_replay_warp_completion_aggregation_shadow_enabled() ||
-        !rtcore_replay_request_has_warp_completion_shadow_metadata(request)) {
+    if (!rtcore_replay_warp_completion_entry_enabled() ||
+        !rtcore_replay_request_has_warp_completion_entry_metadata(request)) {
         return;
     }
 
-    const rtcore_replay_warp_completion_shadow_key key =
-        rtcore_make_replay_warp_completion_shadow_key(request);
-    rtcore_replay_warp_completion_shadow_state &state =
-        g_rtcore_replay_warp_completion_shadow[key];
+    const rtcore_replay_warp_completion_entry_key key =
+        rtcore_make_replay_warp_completion_entry_key(request);
+    rtcore_replay_warp_completion_entry_state &state =
+        g_rtcore_replay_warp_completion_entries[key];
     if (!state.valid) {
         state.valid = true;
         state.key = key;
     }
     state.admitted_lane_mask |= 1u << request.lane_id;
-    rtcore_update_replay_warp_completion_shadow_state(&state);
+    rtcore_update_replay_warp_completion_entry_state(&state);
 }
 
-static void rtcore_record_replay_lane_completion_shadow(
+static void rtcore_record_replay_lane_completion_entry(
     const rtcore_replay_lane_request &request)
 {
-    if (!rtcore_replay_warp_completion_aggregation_shadow_enabled() ||
-        !rtcore_replay_request_has_warp_completion_shadow_metadata(request)) {
+    if (!rtcore_replay_warp_completion_entry_enabled() ||
+        !rtcore_replay_request_has_warp_completion_entry_metadata(request)) {
         return;
     }
 
-    const rtcore_replay_warp_completion_shadow_key key =
-        rtcore_make_replay_warp_completion_shadow_key(request);
-    rtcore_replay_warp_completion_shadow_state &state =
-        g_rtcore_replay_warp_completion_shadow[key];
+    const rtcore_replay_warp_completion_entry_key key =
+        rtcore_make_replay_warp_completion_entry_key(request);
+    rtcore_replay_warp_completion_entry_state &state =
+        g_rtcore_replay_warp_completion_entries[key];
     if (!state.valid) {
         state.valid = true;
         state.key = key;
     }
     state.admitted_lane_mask |= 1u << request.lane_id;
     state.completed_lane_mask |= 1u << request.lane_id;
-    rtcore_update_replay_warp_completion_shadow_state(&state);
+    state.result_valid_mask |= 1u << request.lane_id;
+    rtcore_update_replay_warp_completion_entry_state(&state);
     if (state.all_active_lanes_complete &&
         !state.all_active_lanes_complete_logged) {
         state.all_active_lanes_complete_logged = true;
-        rtcore_log_replay_warp_completion_aggregation_shadow(state);
+        rtcore_log_replay_warp_completion_entry(state);
     }
+}
+
+static void rtcore_record_replay_lane_admission_shadow(
+    const rtcore_replay_lane_request &request)
+{
+    rtcore_record_replay_lane_admission_entry(request);
+}
+
+static void rtcore_record_replay_lane_completion_shadow(
+    const rtcore_replay_lane_request &request)
+{
+    rtcore_record_replay_lane_completion_entry(request);
 }
 
 static bool rtcore_record_replay_lane_completion_shadow(unsigned thread_uid)
@@ -6854,7 +6909,7 @@ static bool rtcore_record_replay_lane_completion_shadow(unsigned thread_uid)
         return false;
     }
 
-    rtcore_record_replay_lane_completion_shadow(it->second);
+    rtcore_record_replay_lane_completion_entry(it->second);
     return true;
 }
 
@@ -6888,10 +6943,10 @@ static unsigned
 rtcore_count_replay_model_completed_warp_aggregations(unsigned owner_hw_sid)
 {
     unsigned completed_warps = 0;
-    for (std::map<rtcore_replay_warp_completion_shadow_key,
-                  rtcore_replay_warp_completion_shadow_state>::const_iterator
-             it = g_rtcore_replay_warp_completion_shadow.begin();
-         it != g_rtcore_replay_warp_completion_shadow.end(); ++it) {
+    for (std::map<rtcore_replay_warp_completion_entry_key,
+                  rtcore_replay_warp_completion_entry_state>::const_iterator
+             it = g_rtcore_replay_warp_completion_entries.begin();
+         it != g_rtcore_replay_warp_completion_entries.end(); ++it) {
         if (!it->second.valid || it->second.key.owner_hw_sid != owner_hw_sid) {
             continue;
         }
@@ -14629,34 +14684,34 @@ extern "C" bool rtcore_service_replay_cycle_for_sm(
         ready_progressed, NULL);
 }
 
-extern "C" bool rtcore_query_replay_warp_completion_shadow(
+extern "C" bool rtcore_query_replay_warp_completion_entry(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask,
-    rtcore_replay_warp_completion_shadow_snapshot *snapshot)
+    rtcore_replay_warp_completion_entry_snapshot *snapshot)
 {
-    rtcore_replay_warp_completion_shadow_snapshot local_snapshot = {};
-    local_snapshot.enabled =
-        rtcore_replay_warp_completion_aggregation_shadow_enabled();
+    rtcore_replay_warp_completion_entry_snapshot local_snapshot = {};
+    local_snapshot.enabled = rtcore_replay_warp_completion_entry_enabled();
     local_snapshot.owner_hw_sid = owner_hw_sid;
     local_snapshot.warp_uid = warp_uid;
     local_snapshot.warp_id = warp_id;
     local_snapshot.active_mask = active_mask;
 
     if (local_snapshot.enabled) {
-        rtcore_replay_warp_completion_shadow_key key = {};
+        rtcore_replay_warp_completion_entry_key key = {};
         key.owner_hw_sid = owner_hw_sid;
         key.warp_uid = warp_uid;
         key.warp_id = warp_id;
         key.active_mask = active_mask;
-        std::map<rtcore_replay_warp_completion_shadow_key,
-                 rtcore_replay_warp_completion_shadow_state>::const_iterator it =
-            g_rtcore_replay_warp_completion_shadow.find(key);
-        if (it != g_rtcore_replay_warp_completion_shadow.end()) {
+        std::map<rtcore_replay_warp_completion_entry_key,
+                 rtcore_replay_warp_completion_entry_state>::const_iterator it =
+            g_rtcore_replay_warp_completion_entries.find(key);
+        if (it != g_rtcore_replay_warp_completion_entries.end()) {
             local_snapshot.found = true;
             local_snapshot.all_active_lanes_complete =
                 it->second.all_active_lanes_complete;
             local_snapshot.admitted_lane_mask = it->second.admitted_lane_mask;
             local_snapshot.completed_lane_mask = it->second.completed_lane_mask;
+            local_snapshot.result_valid_mask = it->second.result_valid_mask;
             local_snapshot.completed_lane_count = it->second.completed_lane_count;
         }
     }
@@ -14666,6 +14721,15 @@ extern "C" bool rtcore_query_replay_warp_completion_shadow(
     }
     return local_snapshot.enabled && local_snapshot.found &&
            local_snapshot.all_active_lanes_complete;
+}
+
+extern "C" bool rtcore_query_replay_warp_completion_shadow(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask,
+    rtcore_replay_warp_completion_shadow_snapshot *snapshot)
+{
+    return rtcore_query_replay_warp_completion_entry(
+        owner_hw_sid, warp_uid, warp_id, active_mask, snapshot);
 }
 
 static void rtcore_try_service_replay_after_admission(unsigned owner_hw_sid)
