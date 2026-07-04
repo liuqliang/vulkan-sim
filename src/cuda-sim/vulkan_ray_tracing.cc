@@ -2214,12 +2214,7 @@ static bool rtcore_replay_v03_hw_queue_depth_gate_stats_log_enabled()
 
 static bool rtcore_replay_v03_hw_queue_stage_budget_gate_enabled()
 {
-    static int enabled = []() {
-        const char *value =
-            getenv("VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_STAGE_BUDGET_GATE");
-        return value && value[0] && strcmp(value, "0") != 0;
-    }();
-    return enabled != 0;
+    return false;
 }
 
 static bool rtcore_replay_v03_hw_queue_stage_budget_gate_stats_log_enabled()
