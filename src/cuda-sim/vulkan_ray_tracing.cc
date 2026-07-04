@@ -604,7 +604,6 @@ struct rtcore_replay_ready_queues {
     rtcore_replay_queue ready_primitive_queue;
     rtcore_replay_queue ready_stack_queue;
     rtcore_replay_queue ready_memory_queue;
-    rtcore_replay_queue waiting_memory_queue;
     rtcore_replay_queue ready_completion_queue;
     rtcore_replay_queue done_queue;
 };
@@ -11013,38 +11012,6 @@ static bool rtcore_service_replay_completion_tail_requests_for_owner(
         &g_rtcore_replay_ready_queues.ready_completion_queue);
 }
 
-static bool rtcore_dequeue_waiting_memory_request(unsigned *thread_uid)
-{
-    rtcore_record_replay_queue_header_read(
-        g_rtcore_replay_ready_queues.waiting_memory_queue);
-    if (g_rtcore_replay_ready_queues.waiting_memory_queue.empty()) {
-        return false;
-    }
-
-    if (thread_uid) {
-        rtcore_record_replay_queue_entry_read();
-        *thread_uid =
-            g_rtcore_replay_ready_queues.waiting_memory_queue.front()
-                .thread_uid;
-    }
-    const unsigned removed_thread_uid =
-        g_rtcore_replay_ready_queues.waiting_memory_queue.front().thread_uid;
-    g_rtcore_replay_ready_queues.waiting_memory_queue.pop_front();
-    rtcore_record_replay_queue_entry_remove(
-        RTCORE_REPLAY_QUEUE_ACCESS_WAIT,
-        g_rtcore_replay_ready_queues.waiting_memory_queue);
-    std::map<unsigned, rtcore_replay_lane_request>::const_iterator request =
-        g_rtcore_replay_lane_requests.find(removed_thread_uid);
-    if (request != g_rtcore_replay_lane_requests.end()) {
-        (void)rtcore_remove_replay_request_from_queue(
-            rtcore_replay_owner_ready_queues_for_owner(
-                request->second.owner_hw_sid)
-                ->waiting_memory_queue,
-            removed_thread_uid);
-    }
-    return true;
-}
-
 static bool rtcore_dequeue_ready_memory_request(unsigned *thread_uid)
 {
     rtcore_record_replay_queue_header_read(
@@ -11123,38 +11090,6 @@ static bool rtcore_dequeue_ready_memory_request_for_owner(
             RTCORE_REPLAY_QUEUE_ACCESS_READY, queue);
         (void)rtcore_remove_replay_request_from_queue(
             g_rtcore_replay_ready_queues.ready_memory_queue,
-            selected_thread_uid);
-        return true;
-    }
-    return false;
-}
-
-static bool rtcore_dequeue_waiting_memory_request_for_owner(
-    unsigned owner_hw_sid, unsigned *thread_uid)
-{
-    rtcore_replay_queue &queue =
-        rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
-            ->waiting_memory_queue;
-    rtcore_record_replay_queue_header_read(queue);
-    if (queue.empty()) {
-        return false;
-    }
-
-    for (rtcore_replay_queue::iterator it = queue.begin();
-         it != queue.end(); ++it) {
-        rtcore_record_replay_queue_entry_read();
-        if (!rtcore_replay_request_owned_by_sm(it->thread_uid, owner_hw_sid)) {
-            continue;
-        }
-        const unsigned selected_thread_uid = it->thread_uid;
-        if (thread_uid) {
-            *thread_uid = selected_thread_uid;
-        }
-        queue.erase(it);
-        rtcore_record_replay_queue_entry_remove(
-            RTCORE_REPLAY_QUEUE_ACCESS_WAIT, queue);
-        (void)rtcore_remove_replay_request_from_queue(
-            g_rtcore_replay_ready_queues.waiting_memory_queue,
             selected_thread_uid);
         return true;
     }
@@ -13205,14 +13140,6 @@ rtcore_count_replay_ready_memory_queue_depth_for_owner(unsigned owner_hw_sid)
     return static_cast<unsigned>(
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
             ->ready_memory_queue.size());
-}
-
-static unsigned
-rtcore_count_replay_waiting_memory_queue_depth_for_owner(unsigned owner_hw_sid)
-{
-    return static_cast<unsigned>(
-        rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
-            ->waiting_memory_queue.size());
 }
 
 static void rtcore_count_replay_memory_outstanding_for_owner(
