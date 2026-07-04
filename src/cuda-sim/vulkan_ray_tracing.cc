@@ -452,6 +452,12 @@ struct rtcore_replay_lane_request {
     unsigned memory_event_count;
     unsigned completion_event_count;
     unsigned ready_order;
+    unsigned request_state_bank_id;
+    bool ready_node_bit;
+    bool ready_primitive_bit;
+    bool ready_stack_bit;
+    bool ready_memory_bit;
+    bool ready_result_bit;
     unsigned long long admitted_cycle;
     bool timing_trace_overflowed;
     rtcore_trace_timing_precision_class timing_precision_class;
@@ -2769,6 +2775,14 @@ static unsigned rtcore_replay_v03_hw_queue_ingress_push_budget_config()
 static unsigned rtcore_replay_v03_hw_bypass_budget_config()
 {
     return 0;
+}
+
+static unsigned rtcore_replay_v03_hw_request_state_bank_count_config()
+{
+    static unsigned bank_count = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_V03_HW_REQUEST_STATE_BANK_COUNT", 8, 1,
+        1024, true);
+    return bank_count == 0 ? 1 : bank_count;
 }
 
 static unsigned rtcore_replay_memory_contention_cache_lines_per_cycle_config()
@@ -6028,6 +6042,9 @@ static void rtcore_record_replay_request_table_capacity_admitted(
         request, occupancy, false, true, false);
 }
 
+static void rtcore_refresh_replay_lane_request_ready_bits(
+    rtcore_replay_lane_request *request);
+
 static bool rtcore_maybe_block_replay_request_table_capacity_admission(
     const rtcore_replay_lane_request &request)
 {
@@ -6117,6 +6134,7 @@ static void rtcore_mark_replay_request_completed(
     const bool was_completed = request->state == RTCORE_REPLAY_COMPLETED;
     request->state = RTCORE_REPLAY_COMPLETED;
     rtcore_record_replay_request_state_write();
+    rtcore_refresh_replay_lane_request_ready_bits(request);
     if (!was_completed) {
         rtcore_record_replay_request_table_capacity_release(*request,
                                                             service_cycle);
@@ -6259,6 +6277,58 @@ static bool rtcore_maybe_route_replay_unit_queue_capacity_gate(
 static bool rtcore_replay_request_state_has_memory_outstanding_work(
     const rtcore_replay_lane_request &request);
 
+static unsigned rtcore_replay_request_state_bank_for_request(
+    const rtcore_replay_lane_request &request)
+{
+    const unsigned bank_count =
+        rtcore_replay_v03_hw_request_state_bank_count_config();
+    return bank_count == 0 ? 0 : request.ready_order % bank_count;
+}
+
+static void rtcore_refresh_replay_lane_request_ready_bits(
+    rtcore_replay_lane_request *request)
+{
+    if (!request) {
+        return;
+    }
+
+    request->ready_node_bit = false;
+    request->ready_primitive_bit = false;
+    request->ready_stack_bit = false;
+    request->ready_memory_bit = false;
+    request->ready_result_bit = false;
+
+    if (!request->valid || request->unit_queue_capacity_gate_pending ||
+        request->v01_issue_state_capacity_gate_pending ||
+        request->v01_issue_state_gate_pending ||
+        request->unit_latency_gate_pending ||
+        request->v03_hw_queue_ingress_budget_gate_pending ||
+        request->v03_hw_queue_depth_gate_pending) {
+        return;
+    }
+
+    switch (request->state) {
+    case RTCORE_REPLAY_ISSUED_NODE:
+        request->ready_node_bit = true;
+        break;
+    case RTCORE_REPLAY_ISSUED_PRIMITIVE:
+        request->ready_primitive_bit = true;
+        break;
+    case RTCORE_REPLAY_ISSUED_STACK:
+        request->ready_stack_bit = true;
+        break;
+    case RTCORE_REPLAY_ISSUED_MEMORY:
+        request->ready_memory_bit =
+            !rtcore_replay_request_state_has_memory_outstanding_work(*request);
+        break;
+    case RTCORE_REPLAY_COMPLETION_PENDING:
+        request->ready_result_bit = true;
+        break;
+    default:
+        break;
+    }
+}
+
 static rtcore_replay_ready_queues *
 rtcore_replay_owner_ready_queues_for_owner(unsigned owner_hw_sid)
 {
@@ -6272,6 +6342,7 @@ static bool rtcore_enqueue_replay_request_by_state(
         return false;
     }
     rtcore_replay_lane_request &request = *request_ptr;
+    rtcore_refresh_replay_lane_request_ready_bits(&request);
     rtcore_replay_ready_queues *owner_queues =
         rtcore_replay_owner_ready_queues_for_owner(request.owner_hw_sid);
 
@@ -10509,6 +10580,9 @@ static void rtcore_commit_replay_request_table_admission(
 {
     rtcore_replay_lane_request admitted_request = request;
     admitted_request.admitted_cycle = 0;
+    admitted_request.request_state_bank_id =
+        rtcore_replay_request_state_bank_for_request(admitted_request);
+    rtcore_refresh_replay_lane_request_ready_bits(&admitted_request);
     g_rtcore_replay_lane_requests[admitted_request.thread_uid] =
         admitted_request;
     rtcore_record_replay_request_table_write();
@@ -10623,6 +10697,7 @@ static bool rtcore_replay_advance_lane_request(
         rtcore_unpack_compact_trace_event_type(
             request->events[request->next_event_index]));
     rtcore_record_replay_request_state_write();
+    rtcore_refresh_replay_lane_request_ready_bits(request);
     return true;
 }
 
