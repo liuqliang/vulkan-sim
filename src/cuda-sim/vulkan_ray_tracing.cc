@@ -557,6 +557,9 @@ struct rtcore_replay_warp_completion_entry_state {
     unsigned completed_lane_count;
     bool all_active_lanes_complete;
     bool all_active_lanes_complete_logged;
+    bool scoreboard_handoff_ready;
+    bool scoreboard_handoff_delivered;
+    unsigned long long scoreboard_handoff_cycle;
 };
 
 typedef rtcore_replay_warp_completion_entry_state
@@ -574,6 +577,9 @@ struct rtcore_replay_warp_completion_entry_snapshot {
     unsigned completed_lane_mask;
     unsigned result_valid_mask;
     unsigned completed_lane_count;
+    bool scoreboard_handoff_ready;
+    bool scoreboard_handoff_delivered;
+    unsigned long long scoreboard_handoff_cycle;
 };
 
 typedef rtcore_replay_warp_completion_entry_snapshot
@@ -2991,6 +2997,12 @@ static unsigned rtcore_replay_warp_completion_ingress_budget_config()
     }
     return rtcore_replay_issue_budget_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_COMPLETION_ISSUE_BUDGET", 1);
+}
+
+static unsigned rtcore_replay_scoreboard_result_handoff_budget_config()
+{
+    return rtcore_replay_issue_budget_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_SCOREBOARD_RESULT_HANDOFF_BUDGET", 1);
 }
 
 static rtcore_replay_issue_budget rtcore_replay_issue_budget_config()
@@ -6837,6 +6849,9 @@ static void rtcore_update_replay_warp_completion_entry_state(
     state->all_active_lanes_complete =
         state->key.active_mask != 0 &&
         active_completed_lanes == state->key.active_mask;
+    state->scoreboard_handoff_ready =
+        state->all_active_lanes_complete &&
+        !state->scoreboard_handoff_delivered;
 }
 
 static void rtcore_log_replay_warp_completion_entry(
@@ -6862,6 +6877,69 @@ static void rtcore_log_replay_warp_completion_entry(
            state.completed_lane_mask, state.completed_lane_count,
            state.all_active_lanes_complete ? 1 : 0);
     fflush(stdout);
+}
+
+static unsigned rtcore_count_scoreboard_handoff_ready_warp_entries(
+    unsigned owner_hw_sid)
+{
+    unsigned count = 0;
+    for (std::map<rtcore_replay_warp_completion_entry_key,
+                  rtcore_replay_warp_completion_entry_state>::iterator it =
+             g_rtcore_replay_warp_completion_entries.begin();
+         it != g_rtcore_replay_warp_completion_entries.end(); ++it) {
+        if (!it->second.valid || it->second.key.owner_hw_sid != owner_hw_sid) {
+            continue;
+        }
+        rtcore_update_replay_warp_completion_entry_state(&it->second);
+        if (it->second.scoreboard_handoff_ready) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static unsigned rtcore_service_completed_warp_entry_handoffs_for_owner(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    unsigned budget = rtcore_replay_scoreboard_result_handoff_budget_config();
+    unsigned delivered = 0;
+    const unsigned ready_before =
+        rtcore_count_scoreboard_handoff_ready_warp_entries(owner_hw_sid);
+
+    for (std::map<rtcore_replay_warp_completion_entry_key,
+                  rtcore_replay_warp_completion_entry_state>::iterator it =
+             g_rtcore_replay_warp_completion_entries.begin();
+         it != g_rtcore_replay_warp_completion_entries.end(); ++it) {
+        if (budget == 0) {
+            break;
+        }
+        if (!it->second.valid || it->second.key.owner_hw_sid != owner_hw_sid) {
+            continue;
+        }
+        rtcore_update_replay_warp_completion_entry_state(&it->second);
+        if (!it->second.scoreboard_handoff_ready) {
+            continue;
+        }
+        it->second.scoreboard_handoff_delivered = true;
+        it->second.scoreboard_handoff_ready = false;
+        it->second.scoreboard_handoff_cycle = service_cycle;
+        budget--;
+        delivered++;
+    }
+
+    if (ready_before > 0 || delivered > 0) {
+        printf("GPGPU-Sim RTCORE_REPLAY_SCOREBOARD_RESULT_HANDOFF "
+               "owner_hw_sid=%u service_cycle=%llu "
+               "scoreboard_result_handoff_budget=%u "
+               "scoreboard_handoff_ready_warp_count=%u "
+               "scoreboard_handoff_delivered_count=%u "
+               "scoreboard_handoff_blocked_count=%u\n",
+               owner_hw_sid, service_cycle,
+               rtcore_replay_scoreboard_result_handoff_budget_config(),
+               ready_before, delivered, ready_before - delivered);
+        fflush(stdout);
+    }
+    return delivered;
 }
 
 static void rtcore_record_replay_lane_admission_entry(
@@ -11310,6 +11388,13 @@ static bool rtcore_service_replay_completion_tail_requests_for_owner(
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
     unsigned long long service_cycle = 0)
 {
+    if (rtcore_replay_v03_hw_completion_entry_main_path_enabled()) {
+        const unsigned delivered =
+            rtcore_service_completed_warp_entry_handoffs_for_owner(
+                owner_hw_sid, service_cycle);
+        return delivered > 0;
+    }
+
     const bool collect_unit_stats = rtcore_replay_unit_arbitration_enabled();
     rtcore_replay_ready_queues *owner_queues =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid);
@@ -14735,6 +14820,12 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
             local_snapshot.completed_lane_mask = it->second.completed_lane_mask;
             local_snapshot.result_valid_mask = it->second.result_valid_mask;
             local_snapshot.completed_lane_count = it->second.completed_lane_count;
+            local_snapshot.scoreboard_handoff_ready =
+                it->second.scoreboard_handoff_ready;
+            local_snapshot.scoreboard_handoff_delivered =
+                it->second.scoreboard_handoff_delivered;
+            local_snapshot.scoreboard_handoff_cycle =
+                it->second.scoreboard_handoff_cycle;
         }
     }
 
