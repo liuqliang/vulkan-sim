@@ -13996,22 +13996,21 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_stats(
            "primitive_queue_push_budget=%u stack_queue_push_budget=%u "
            "memory_ready_queue_push_budget=%u "
            "memory_wait_queue_push_budget=%u "
-           "completion_queue_push_budget=%u "
            "ready_push_delta=%u node_push_delta=%u "
            "primitive_push_delta=%u stack_push_delta=%u "
            "memory_ready_push_delta=%u memory_wait_push_delta=%u "
-           "completion_push_delta=%u done_push_delta=%u "
+           "done_push_delta=%u "
            "waiting_unit_legacy_push_delta=%u ready_over_budget=%u "
            "node_over_budget=%u primitive_over_budget=%u "
            "stack_over_budget=%u memory_ready_over_budget=%u "
-           "memory_wait_over_budget=%u completion_over_budget=%u "
+           "memory_wait_over_budget=%u "
            "done_over_budget=%u waiting_unit_legacy_over_budget=%u "
            "total_over_budget=%u evaluations=%u "
            "max_ready_over_budget=%u max_node_over_budget=%u "
            "max_primitive_over_budget=%u max_stack_over_budget=%u "
            "max_memory_ready_over_budget=%u "
            "max_memory_wait_over_budget=%u "
-           "max_completion_over_budget=%u max_done_over_budget=%u "
+           "max_done_over_budget=%u "
            "max_waiting_unit_legacy_over_budget=%u "
            "max_total_over_budget=%u\n",
            owner_hw_sid, service_cycle,
@@ -14028,24 +14027,20 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_stats(
                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY),
            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_WAIT),
-           rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
-               RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION),
            stats.ready_push_delta, stats.node_push_delta,
            stats.primitive_push_delta, stats.stack_push_delta,
            stats.memory_ready_push_delta, stats.memory_wait_push_delta,
-           stats.completion_push_delta, stats.done_push_delta,
-           stats.waiting_unit_legacy_push_delta, stats.ready_over_budget,
-           stats.node_over_budget, stats.primitive_over_budget,
-           stats.stack_over_budget, stats.memory_ready_over_budget,
-           stats.memory_wait_over_budget, stats.completion_over_budget,
+           stats.done_push_delta, stats.waiting_unit_legacy_push_delta,
+           stats.ready_over_budget, stats.node_over_budget,
+           stats.primitive_over_budget, stats.stack_over_budget,
+           stats.memory_ready_over_budget, stats.memory_wait_over_budget,
            stats.done_over_budget, stats.waiting_unit_legacy_over_budget,
            stats.total_over_budget, stats.evaluations,
            stats.max_ready_over_budget, stats.max_node_over_budget,
            stats.max_primitive_over_budget, stats.max_stack_over_budget,
            stats.max_memory_ready_over_budget,
            stats.max_memory_wait_over_budget,
-           stats.max_completion_over_budget, stats.max_done_over_budget,
-           stats.max_waiting_unit_legacy_over_budget,
+           stats.max_done_over_budget, stats.max_waiting_unit_legacy_over_budget,
            stats.max_total_over_budget);
     fflush(stdout);
 }
@@ -14078,7 +14073,7 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_gate_stats(
            "node_queue_push_budget=%u primitive_queue_push_budget=%u "
            "stack_queue_push_budget=%u memory_ready_queue_push_budget=%u "
            "memory_wait_queue_push_budget=%u "
-           "completion_queue_push_budget=%u allowed_count=%u "
+           "allowed_count=%u "
            "blocked_count=%u retry_attempt_count=%u "
            "retry_progress_count=%u request_state_ready_pending_count=%u "
            "evaluations=%u max_request_state_ready_pending_count=%u "
@@ -14098,8 +14093,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_gate_stats(
                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY),
            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_WAIT),
-           rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
-               RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION),
            stats.allowed_count, stats.blocked_count,
            stats.retry_attempt_count, stats.retry_progress_count,
            stats.request_state_ready_pending_count, stats.evaluations,
