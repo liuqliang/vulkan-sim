@@ -6507,22 +6507,6 @@ static bool rtcore_enqueue_replay_request_by_state(
         request.v01_issue_state_capacity_gate_pending ||
         request.v01_issue_state_gate_pending ||
         request.unit_latency_gate_pending) {
-        if (!rtcore_replay_v03_hw_queue_ingress_budget_gate_allow_push(
-                &request, RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_WAITING_UNIT_LEGACY,
-                service_cycle)) {
-            return false;
-        }
-        rtcore_push_replay_queue_packet_pair(
-            g_rtcore_replay_ready_queues.waiting_unit_queue,
-            owner_queues->waiting_unit_queue, request);
-        rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
-            RTCORE_REPLAY_QUEUE_ACCESS_WAIT, request);
-        rtcore_record_replay_v03_hw_queue_ingress_target(
-            request.owner_hw_sid,
-            RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_WAITING_UNIT_LEGACY);
-        rtcore_record_replay_queue_entry_write(
-            RTCORE_REPLAY_QUEUE_ACCESS_WAIT,
-            g_rtcore_replay_ready_queues.waiting_unit_queue);
         return true;
     }
 
