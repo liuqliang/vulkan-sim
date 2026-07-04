@@ -3591,9 +3591,6 @@ static void rtcore_update_replay_v03_hw_queue_ingress_maxima(
         stats->target_done_queue_push_count,
         &stats->max_target_done_queue_push_count);
     rtcore_update_replay_data_path_port_budget_max(
-        stats->target_waiting_unit_legacy_push_count,
-        &stats->max_target_waiting_unit_legacy_push_count);
-    rtcore_update_replay_data_path_port_budget_max(
         stats->total_target_queue_push_count,
         &stats->max_total_target_queue_push_count);
     rtcore_update_replay_data_path_port_budget_max(
@@ -3631,8 +3628,7 @@ static void rtcore_record_replay_v03_hw_queue_ingress_target(
         stats->target_done_queue_push_count++;
         break;
     case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_WAITING_UNIT_LEGACY:
-        stats->target_waiting_unit_legacy_push_count++;
-        break;
+        return;
     }
     stats->total_target_queue_push_count++;
     rtcore_update_replay_v03_hw_queue_ingress_maxima(stats);
@@ -4072,9 +4068,6 @@ static void rtcore_update_replay_v03_hw_queue_ingress_budget_maxima(
     rtcore_update_replay_data_path_port_budget_max(
         budget_stats->done_over_budget, &budget_stats->max_done_over_budget);
     rtcore_update_replay_data_path_port_budget_max(
-        budget_stats->waiting_unit_legacy_over_budget,
-        &budget_stats->max_waiting_unit_legacy_over_budget);
-    rtcore_update_replay_data_path_port_budget_max(
         budget_stats->total_over_budget,
         &budget_stats->max_total_over_budget);
 }
@@ -4121,10 +4114,6 @@ static bool rtcore_record_replay_v03_hw_queue_ingress_budget_stats(
     budget_stats->done_push_delta = rtcore_replay_data_path_access_delta(
         stats.target_done_queue_push_count,
         budget_stats->last_done_queue_push_count);
-    budget_stats->waiting_unit_legacy_push_delta =
-        rtcore_replay_data_path_access_delta(
-            stats.target_waiting_unit_legacy_push_count,
-            budget_stats->last_waiting_unit_legacy_push_count);
 
     budget_stats->last_ready_queue_push_count =
         stats.target_ready_queue_push_count;
@@ -4142,16 +4131,13 @@ static bool rtcore_record_replay_v03_hw_queue_ingress_budget_stats(
         stats.target_completion_queue_push_count;
     budget_stats->last_done_queue_push_count =
         stats.target_done_queue_push_count;
-    budget_stats->last_waiting_unit_legacy_push_count =
-        stats.target_waiting_unit_legacy_push_count;
 
     const unsigned total_push_delta =
         budget_stats->ready_push_delta + budget_stats->node_push_delta +
         budget_stats->primitive_push_delta + budget_stats->stack_push_delta +
         budget_stats->memory_ready_push_delta +
         budget_stats->memory_wait_push_delta +
-        budget_stats->completion_push_delta + budget_stats->done_push_delta +
-        budget_stats->waiting_unit_legacy_push_delta;
+        budget_stats->completion_push_delta + budget_stats->done_push_delta;
     if (total_push_delta == 0) {
         return false;
     }
@@ -4192,18 +4178,12 @@ static bool rtcore_record_replay_v03_hw_queue_ingress_budget_stats(
         rtcore_replay_over_budget_accesses(budget_stats->done_push_delta,
                                            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
                                                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_DONE));
-    budget_stats->waiting_unit_legacy_over_budget =
-        rtcore_replay_over_budget_accesses(
-            budget_stats->waiting_unit_legacy_push_delta,
-            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
-                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_WAITING_UNIT_LEGACY));
     budget_stats->total_over_budget =
         budget_stats->ready_over_budget + budget_stats->node_over_budget +
         budget_stats->primitive_over_budget + budget_stats->stack_over_budget +
         budget_stats->memory_ready_over_budget +
         budget_stats->memory_wait_over_budget +
-        budget_stats->completion_over_budget + budget_stats->done_over_budget +
-        budget_stats->waiting_unit_legacy_over_budget;
+        budget_stats->completion_over_budget + budget_stats->done_over_budget;
     budget_stats->evaluations++;
     rtcore_update_replay_v03_hw_queue_ingress_budget_maxima(budget_stats);
     return true;
@@ -13910,7 +13890,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            "target_memory_ready_queue_push_count=%u "
            "target_memory_wait_queue_push_count=%u "
            "target_done_queue_push_count=%u "
-           "target_waiting_unit_legacy_push_count=%u "
            "total_target_queue_push_count=%u evaluations=%u "
            "max_target_ready_queue_push_count=%u "
            "max_target_node_queue_push_count=%u "
@@ -13919,7 +13898,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            "max_target_memory_ready_queue_push_count=%u "
            "max_target_memory_wait_queue_push_count=%u "
            "max_target_done_queue_push_count=%u "
-           "max_target_waiting_unit_legacy_push_count=%u "
            "max_total_target_queue_push_count=%u "
            "same_cycle_bypass_candidate_delta=%u "
            "max_same_cycle_bypass_candidate_delta=%u\n",
@@ -13931,7 +13909,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            stats.target_memory_ready_queue_push_count,
            stats.target_memory_wait_queue_push_count,
            stats.target_done_queue_push_count,
-           stats.target_waiting_unit_legacy_push_count,
            stats.total_target_queue_push_count, stats.evaluations,
            stats.max_target_ready_queue_push_count,
            stats.max_target_node_queue_push_count,
@@ -13940,7 +13917,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            stats.max_target_memory_ready_queue_push_count,
            stats.max_target_memory_wait_queue_push_count,
            stats.max_target_done_queue_push_count,
-           stats.max_target_waiting_unit_legacy_push_count,
            stats.max_total_target_queue_push_count,
            stats.same_cycle_bypass_candidate_delta,
            stats.max_same_cycle_bypass_candidate_delta);
@@ -13976,18 +13952,17 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_stats(
            "primitive_push_delta=%u stack_push_delta=%u "
            "memory_ready_push_delta=%u memory_wait_push_delta=%u "
            "done_push_delta=%u "
-           "waiting_unit_legacy_push_delta=%u ready_over_budget=%u "
+           "ready_over_budget=%u "
            "node_over_budget=%u primitive_over_budget=%u "
            "stack_over_budget=%u memory_ready_over_budget=%u "
            "memory_wait_over_budget=%u "
-           "done_over_budget=%u waiting_unit_legacy_over_budget=%u "
+           "done_over_budget=%u "
            "total_over_budget=%u evaluations=%u "
            "max_ready_over_budget=%u max_node_over_budget=%u "
            "max_primitive_over_budget=%u max_stack_over_budget=%u "
            "max_memory_ready_over_budget=%u "
            "max_memory_wait_over_budget=%u "
            "max_done_over_budget=%u "
-           "max_waiting_unit_legacy_over_budget=%u "
            "max_total_over_budget=%u\n",
            owner_hw_sid, service_cycle,
            rtcore_replay_v03_hw_queue_ingress_push_budget_config(),
@@ -14006,18 +13981,15 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_stats(
            stats.ready_push_delta, stats.node_push_delta,
            stats.primitive_push_delta, stats.stack_push_delta,
            stats.memory_ready_push_delta, stats.memory_wait_push_delta,
-           stats.done_push_delta, stats.waiting_unit_legacy_push_delta,
-           stats.ready_over_budget, stats.node_over_budget,
+           stats.done_push_delta, stats.ready_over_budget, stats.node_over_budget,
            stats.primitive_over_budget, stats.stack_over_budget,
            stats.memory_ready_over_budget, stats.memory_wait_over_budget,
-           stats.done_over_budget, stats.waiting_unit_legacy_over_budget,
-           stats.total_over_budget, stats.evaluations,
+           stats.done_over_budget, stats.total_over_budget, stats.evaluations,
            stats.max_ready_over_budget, stats.max_node_over_budget,
            stats.max_primitive_over_budget, stats.max_stack_over_budget,
            stats.max_memory_ready_over_budget,
            stats.max_memory_wait_over_budget,
-           stats.max_done_over_budget, stats.max_waiting_unit_legacy_over_budget,
-           stats.max_total_over_budget);
+           stats.max_done_over_budget, stats.max_total_over_budget);
     fflush(stdout);
 }
 
