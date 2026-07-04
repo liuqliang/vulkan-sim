@@ -1087,10 +1087,8 @@ struct rtcore_replay_v03_hw_queue_ownership_stats {
 struct rtcore_replay_v03_hw_queue_ingress_stats {
     unsigned evaluations;
     unsigned target_ready_queue_push_count;
-    unsigned target_completion_queue_push_count;
     unsigned total_target_queue_push_count;
     unsigned max_target_ready_queue_push_count;
-    unsigned max_target_completion_queue_push_count;
     unsigned max_total_target_queue_push_count;
     unsigned same_cycle_bypass_candidate_delta;
     unsigned max_same_cycle_bypass_candidate_delta;
@@ -1099,14 +1097,10 @@ struct rtcore_replay_v03_hw_queue_ingress_stats {
 struct rtcore_replay_v03_hw_queue_ingress_budget_stats {
     unsigned evaluations;
     unsigned last_ready_queue_push_count;
-    unsigned last_completion_queue_push_count;
     unsigned ready_push_delta;
-    unsigned completion_push_delta;
     unsigned ready_over_budget;
-    unsigned completion_over_budget;
     unsigned total_over_budget;
     unsigned max_ready_over_budget;
-    unsigned max_completion_over_budget;
     unsigned max_total_over_budget;
 };
 
@@ -3316,7 +3310,6 @@ static void rtcore_update_replay_data_path_port_budget_max(unsigned value,
 
 enum rtcore_replay_v03_hw_queue_ingress_target {
     RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY = 0,
-    RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION,
 };
 
 static rtcore_replay_v03_hw_queue_ingress_stats *
@@ -3335,9 +3328,6 @@ static void rtcore_update_replay_v03_hw_queue_ingress_maxima(
         stats->target_ready_queue_push_count,
         &stats->max_target_ready_queue_push_count);
     rtcore_update_replay_data_path_port_budget_max(
-        stats->target_completion_queue_push_count,
-        &stats->max_target_completion_queue_push_count);
-    rtcore_update_replay_data_path_port_budget_max(
         stats->total_target_queue_push_count,
         &stats->max_total_target_queue_push_count);
     rtcore_update_replay_data_path_port_budget_max(
@@ -3354,8 +3344,6 @@ static void rtcore_record_replay_v03_hw_queue_ingress_target(
     case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY:
         stats->target_ready_queue_push_count++;
         break;
-    case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION:
-        return;
     }
     stats->total_target_queue_push_count++;
     rtcore_update_replay_v03_hw_queue_ingress_maxima(stats);
@@ -3387,9 +3375,6 @@ rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
             rtcore_replay_v03_hw_queue_ingress_push_budget_config_from_env(
                 "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY_PUSH_BUDGET");
         return budget;
-    }
-    case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION: {
-        return rtcore_replay_v03_hw_queue_ingress_push_budget_config();
     }
     }
     return rtcore_replay_v03_hw_queue_ingress_push_budget_config();
@@ -3520,9 +3505,6 @@ static void rtcore_update_replay_v03_hw_queue_ingress_budget_maxima(
     rtcore_update_replay_data_path_port_budget_max(
         budget_stats->ready_over_budget, &budget_stats->max_ready_over_budget);
     rtcore_update_replay_data_path_port_budget_max(
-        budget_stats->completion_over_budget,
-        &budget_stats->max_completion_over_budget);
-    rtcore_update_replay_data_path_port_budget_max(
         budget_stats->total_over_budget,
         &budget_stats->max_total_over_budget);
 }
@@ -3546,17 +3528,11 @@ static bool rtcore_record_replay_v03_hw_queue_ingress_budget_stats(
     budget_stats->ready_push_delta = rtcore_replay_data_path_access_delta(
         stats.target_ready_queue_push_count,
         budget_stats->last_ready_queue_push_count);
-    budget_stats->completion_push_delta = rtcore_replay_data_path_access_delta(
-        stats.target_completion_queue_push_count,
-        budget_stats->last_completion_queue_push_count);
 
     budget_stats->last_ready_queue_push_count =
         stats.target_ready_queue_push_count;
-    budget_stats->last_completion_queue_push_count =
-        stats.target_completion_queue_push_count;
 
-    const unsigned total_push_delta =
-        budget_stats->ready_push_delta + budget_stats->completion_push_delta;
+    const unsigned total_push_delta = budget_stats->ready_push_delta;
     if (total_push_delta == 0) {
         return false;
     }
@@ -3565,13 +3541,7 @@ static bool rtcore_record_replay_v03_hw_queue_ingress_budget_stats(
         rtcore_replay_over_budget_accesses(budget_stats->ready_push_delta,
                                            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
                                                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY));
-    budget_stats->completion_over_budget =
-        rtcore_replay_over_budget_accesses(
-            budget_stats->completion_push_delta,
-            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
-                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION));
-    budget_stats->total_over_budget =
-        budget_stats->ready_over_budget + budget_stats->completion_over_budget;
+    budget_stats->total_over_budget = budget_stats->ready_over_budget;
     budget_stats->evaluations++;
     rtcore_update_replay_v03_hw_queue_ingress_budget_maxima(budget_stats);
     return true;
