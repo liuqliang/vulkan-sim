@@ -3626,8 +3626,7 @@ static void rtcore_record_replay_v03_hw_queue_ingress_target(
         stats->target_memory_wait_queue_push_count++;
         break;
     case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION:
-        stats->target_completion_queue_push_count++;
-        break;
+        return;
     case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_DONE:
         stats->target_done_queue_push_count++;
         break;
@@ -13783,14 +13782,6 @@ static unsigned rtcore_replay_ready_queue_depth_for_owner(unsigned owner_hw_sid)
         owner_queues->ready_memory_queue.size());
 }
 
-static unsigned
-rtcore_replay_completion_queue_depth_for_owner(unsigned owner_hw_sid)
-{
-    return static_cast<unsigned>(
-        rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
-            ->ready_completion_queue.size());
-}
-
 static unsigned rtcore_replay_global_total_queue_depth()
 {
     return static_cast<unsigned>(
@@ -13799,8 +13790,7 @@ static unsigned rtcore_replay_global_total_queue_depth()
         g_rtcore_replay_ready_queues.ready_stack_queue.size() +
         g_rtcore_replay_ready_queues.ready_memory_queue.size() +
         g_rtcore_replay_ready_queues.waiting_unit_queue.size() +
-        g_rtcore_replay_ready_queues.waiting_memory_queue.size() +
-        g_rtcore_replay_ready_queues.ready_completion_queue.size());
+        g_rtcore_replay_ready_queues.waiting_memory_queue.size());
 }
 
 static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
@@ -13820,12 +13810,9 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
         rtcore_count_replay_waiting_unit_queue_depth_for_owner(owner_hw_sid);
     const unsigned owner_local_waiting_memory_queue_depth =
         rtcore_count_replay_waiting_memory_queue_depth_for_owner(owner_hw_sid);
-    const unsigned owner_local_completion_queue_depth =
-        rtcore_replay_completion_queue_depth_for_owner(owner_hw_sid);
     const unsigned owner_local_total_queue_depth =
         owner_local_ready_queue_depth + owner_local_waiting_unit_queue_depth +
-        owner_local_waiting_memory_queue_depth +
-        owner_local_completion_queue_depth;
+        owner_local_waiting_memory_queue_depth;
     const unsigned global_total_queue_depth = rtcore_replay_global_total_queue_depth();
     if (owner_local_total_queue_depth == 0 && global_total_queue_depth == 0) {
         return;
@@ -13871,7 +13858,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
            "owner_local_ready_queue_depth=%u "
            "owner_local_waiting_unit_queue_depth=%u "
            "owner_local_waiting_memory_queue_depth=%u "
-           "owner_local_completion_queue_depth=%u "
            "owner_local_total_queue_depth=%u global_total_queue_depth=%u "
            "owner_scan_entry_visit_count=%u "
            "owner_scan_skipped_entry_count=%u "
@@ -13883,8 +13869,8 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
            owner_hw_sid, service_cycle, owner_local_ready_queue_depth,
            owner_local_waiting_unit_queue_depth,
            owner_local_waiting_memory_queue_depth,
-           owner_local_completion_queue_depth, owner_local_total_queue_depth,
-           global_total_queue_depth, owner_scan_entry_visit_count,
+           owner_local_total_queue_depth, global_total_queue_depth,
+           owner_scan_entry_visit_count,
            owner_scan_skipped_entry_count, local_queue_pressure_count,
            g_rtcore_replay_v03_hw_queue_ownership_stats.evaluations,
            g_rtcore_replay_v03_hw_queue_ownership_stats
@@ -13929,7 +13915,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            "target_stack_queue_push_count=%u "
            "target_memory_ready_queue_push_count=%u "
            "target_memory_wait_queue_push_count=%u "
-           "target_completion_queue_push_count=%u "
            "target_done_queue_push_count=%u "
            "target_waiting_unit_legacy_push_count=%u "
            "total_target_queue_push_count=%u evaluations=%u "
@@ -13939,7 +13924,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            "max_target_stack_queue_push_count=%u "
            "max_target_memory_ready_queue_push_count=%u "
            "max_target_memory_wait_queue_push_count=%u "
-           "max_target_completion_queue_push_count=%u "
            "max_target_done_queue_push_count=%u "
            "max_target_waiting_unit_legacy_push_count=%u "
            "max_total_target_queue_push_count=%u "
@@ -13952,7 +13936,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            stats.target_stack_queue_push_count,
            stats.target_memory_ready_queue_push_count,
            stats.target_memory_wait_queue_push_count,
-           stats.target_completion_queue_push_count,
            stats.target_done_queue_push_count,
            stats.target_waiting_unit_legacy_push_count,
            stats.total_target_queue_push_count, stats.evaluations,
@@ -13962,7 +13945,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            stats.max_target_stack_queue_push_count,
            stats.max_target_memory_ready_queue_push_count,
            stats.max_target_memory_wait_queue_push_count,
-           stats.max_target_completion_queue_push_count,
            stats.max_target_done_queue_push_count,
            stats.max_target_waiting_unit_legacy_push_count,
            stats.max_total_target_queue_push_count,
