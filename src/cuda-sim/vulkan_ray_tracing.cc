@@ -13789,7 +13789,6 @@ static unsigned rtcore_replay_global_total_queue_depth()
         g_rtcore_replay_ready_queues.ready_primitive_queue.size() +
         g_rtcore_replay_ready_queues.ready_stack_queue.size() +
         g_rtcore_replay_ready_queues.ready_memory_queue.size() +
-        g_rtcore_replay_ready_queues.waiting_unit_queue.size() +
         g_rtcore_replay_ready_queues.waiting_memory_queue.size());
 }
 
@@ -13806,13 +13805,10 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
 
     const unsigned owner_local_ready_queue_depth =
         rtcore_replay_ready_queue_depth_for_owner(owner_hw_sid);
-    const unsigned owner_local_waiting_unit_queue_depth =
-        rtcore_count_replay_waiting_unit_queue_depth_for_owner(owner_hw_sid);
     const unsigned owner_local_waiting_memory_queue_depth =
         rtcore_count_replay_waiting_memory_queue_depth_for_owner(owner_hw_sid);
     const unsigned owner_local_total_queue_depth =
-        owner_local_ready_queue_depth + owner_local_waiting_unit_queue_depth +
-        owner_local_waiting_memory_queue_depth;
+        owner_local_ready_queue_depth + owner_local_waiting_memory_queue_depth;
     const unsigned global_total_queue_depth = rtcore_replay_global_total_queue_depth();
     if (owner_local_total_queue_depth == 0 && global_total_queue_depth == 0) {
         return;
@@ -13856,7 +13852,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
            "queue_storage_owner_local_model=1 "
            "global_queue_owner_scan_legacy=0 "
            "owner_local_ready_queue_depth=%u "
-           "owner_local_waiting_unit_queue_depth=%u "
            "owner_local_waiting_memory_queue_depth=%u "
            "owner_local_total_queue_depth=%u global_total_queue_depth=%u "
            "owner_scan_entry_visit_count=%u "
@@ -13867,7 +13862,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
            "max_owner_scan_entry_visit_count=%u "
            "max_owner_scan_skipped_entry_count=%u\n",
            owner_hw_sid, service_cycle, owner_local_ready_queue_depth,
-           owner_local_waiting_unit_queue_depth,
            owner_local_waiting_memory_queue_depth,
            owner_local_total_queue_depth, global_total_queue_depth,
            owner_scan_entry_visit_count,
