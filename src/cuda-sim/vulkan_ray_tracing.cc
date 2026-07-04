@@ -1041,7 +1041,7 @@ struct rtcore_replay_request_table_capacity_gate_stats {
     unsigned last_admitted;
     unsigned last_released;
     unsigned last_pending_admissions;
-    unsigned max_request_table_occupancy;
+    unsigned max_lane_request_state_occupancy;
     unsigned max_pending_admissions;
 };
 
@@ -1074,9 +1074,9 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned memory_contention_max_contention_cycles;
     unsigned memory_contention_max_queue_delay_cycles;
     unsigned memory_contention_capacity_blocked_count;
-    unsigned request_table_capacity_blocked_count;
-    unsigned request_table_capacity_max_occupancy;
-    unsigned request_table_capacity_max_pending_admissions;
+    unsigned lane_request_state_capacity_blocked_count;
+    unsigned lane_request_state_capacity_max_occupancy;
+    unsigned lane_request_state_capacity_max_pending_admissions;
     unsigned warp_aggregated_completion_count;
     unsigned v01_independent_service_blocked_continue_count;
     unsigned v01_independent_service_progress_after_block_count;
@@ -2253,10 +2253,10 @@ static unsigned rtcore_replay_v03_hw_queue_ownership_stats_log_limit()
     return limit;
 }
 
-static unsigned rtcore_replay_request_table_capacity_gate_stats_log_limit()
+static unsigned rtcore_replay_lane_request_state_capacity_gate_stats_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
-        "VULKAN_SIM_RTCORE_REPLAY_REQUEST_TABLE_CAPACITY_GATE_STATS_LOG_LIMIT",
+        "VULKAN_SIM_RTCORE_REPLAY_LANE_REQUEST_STATE_CAPACITY_GATE_STATS_LOG_LIMIT",
         64);
     return limit;
 }
@@ -4115,9 +4115,9 @@ static void rtcore_update_replay_request_table_capacity_max(
 {
     if (occupancy >
         g_rtcore_replay_request_table_capacity_gate_stats
-            .max_request_table_occupancy) {
+            .max_lane_request_state_occupancy) {
         g_rtcore_replay_request_table_capacity_gate_stats
-            .max_request_table_occupancy = occupancy;
+            .max_lane_request_state_occupancy = occupancy;
     }
 }
 
@@ -4171,7 +4171,7 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
         return;
     }
     if (g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted >=
-        rtcore_replay_request_table_capacity_gate_stats_log_limit()) {
+        rtcore_replay_lane_request_state_capacity_gate_stats_log_limit()) {
         return;
     }
     g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted++;
@@ -4189,7 +4189,7 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
            "active_mask=0x%08x static_inst_uid=%u gate_enabled=%u "
            "capacity=%u occupancy=%u capacity_blocked=%u admitted=%u released=%u "
            "evaluations=%u admitted_count=%u "
-           "blocked_count=%u released_count=%u max_request_table_occupancy=%u "
+           "blocked_count=%u released_count=%u max_lane_request_state_occupancy=%u "
            "pending_count=%u max_pending_admissions=%u\n",
            request.owner_hw_sid, request.thread_uid, request.lane_id,
            request.has_warp_metadata ? 1u : 0u, request.warp_uid,
@@ -4203,7 +4203,7 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
            g_rtcore_replay_request_table_capacity_gate_stats.blocked_count,
            g_rtcore_replay_request_table_capacity_gate_stats.released_count,
            g_rtcore_replay_request_table_capacity_gate_stats
-               .max_request_table_occupancy,
+               .max_lane_request_state_occupancy,
            pending_admissions,
            g_rtcore_replay_request_table_capacity_gate_stats
                .max_pending_admissions);
@@ -5326,12 +5326,12 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.memory_contention_max_queue_delay_cycles ||
         last_snapshot.memory_contention_capacity_blocked_count !=
             snapshot.memory_contention_capacity_blocked_count ||
-        last_snapshot.request_table_capacity_blocked_count !=
-            snapshot.request_table_capacity_blocked_count ||
-        last_snapshot.request_table_capacity_max_occupancy !=
-            snapshot.request_table_capacity_max_occupancy ||
-        last_snapshot.request_table_capacity_max_pending_admissions !=
-            snapshot.request_table_capacity_max_pending_admissions ||
+        last_snapshot.lane_request_state_capacity_blocked_count !=
+            snapshot.lane_request_state_capacity_blocked_count ||
+        last_snapshot.lane_request_state_capacity_max_occupancy !=
+            snapshot.lane_request_state_capacity_max_occupancy ||
+        last_snapshot.lane_request_state_capacity_max_pending_admissions !=
+            snapshot.lane_request_state_capacity_max_pending_admissions ||
         last_snapshot.warp_aggregated_completion_count !=
             snapshot.warp_aggregated_completion_count ||
         independent_service_pressure_changed || data_path_pressure_changed ||
@@ -5817,12 +5817,12 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         g_rtcore_replay_memory_contention_gate_stats.max_queue_delay_cycles;
     const unsigned memory_contention_capacity_blocked_count =
         g_rtcore_replay_memory_contention_gate_stats.capacity_blocked_count;
-    const unsigned request_table_capacity_blocked_count =
+    const unsigned lane_request_state_capacity_blocked_count =
         g_rtcore_replay_request_table_capacity_gate_stats.blocked_count;
-    const unsigned request_table_capacity_max_occupancy =
+    const unsigned lane_request_state_capacity_max_occupancy =
         g_rtcore_replay_request_table_capacity_gate_stats
-            .max_request_table_occupancy;
-    const unsigned request_table_capacity_max_pending_admissions =
+            .max_lane_request_state_occupancy;
+    const unsigned lane_request_state_capacity_max_pending_admissions =
         g_rtcore_replay_request_table_capacity_gate_stats
             .max_pending_admissions;
     const unsigned v01_independent_service_blocked_continue_count =
@@ -5962,12 +5962,12 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         memory_contention_max_queue_delay_cycles;
     progress_snapshot.memory_contention_capacity_blocked_count =
         memory_contention_capacity_blocked_count;
-    progress_snapshot.request_table_capacity_blocked_count =
-        request_table_capacity_blocked_count;
-    progress_snapshot.request_table_capacity_max_occupancy =
-        request_table_capacity_max_occupancy;
-    progress_snapshot.request_table_capacity_max_pending_admissions =
-        request_table_capacity_max_pending_admissions;
+    progress_snapshot.lane_request_state_capacity_blocked_count =
+        lane_request_state_capacity_blocked_count;
+    progress_snapshot.lane_request_state_capacity_max_occupancy =
+        lane_request_state_capacity_max_occupancy;
+    progress_snapshot.lane_request_state_capacity_max_pending_admissions =
+        lane_request_state_capacity_max_pending_admissions;
     progress_snapshot.warp_aggregated_completion_count =
         warp_aggregated_completion_count;
     progress_snapshot.v01_independent_service_blocked_continue_count =
@@ -6176,9 +6176,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "memory_contention_max_contention_cycles=%u "
            "memory_contention_max_queue_delay_cycles=%u "
            "memory_contention_capacity_blocked_count=%u "
-           "request_table_capacity_blocked_count=%u "
-           "request_table_capacity_max_occupancy=%u "
-           "request_table_capacity_max_pending_admissions=%u "
+           "lane_request_state_capacity_blocked_count=%u "
+           "lane_request_state_capacity_max_occupancy=%u "
+           "lane_request_state_capacity_max_pending_admissions=%u "
            "memory_pressure_cycles=%u "
            "dominant_pressure_source=%s dominant_pressure_cycles=%u "
            "warp_aggregated_completion_count=%u "
@@ -6309,9 +6309,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            memory_contention_max_contention_cycles,
            memory_contention_max_queue_delay_cycles,
            memory_contention_capacity_blocked_count,
-           request_table_capacity_blocked_count,
-           request_table_capacity_max_occupancy,
-           request_table_capacity_max_pending_admissions,
+           lane_request_state_capacity_blocked_count,
+           lane_request_state_capacity_max_occupancy,
+           lane_request_state_capacity_max_pending_admissions,
            memory_pressure_cycles, dominant_pressure_source,
            dominant_pressure_cycles,
            warp_aggregated_completion_count,
