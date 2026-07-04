@@ -604,7 +604,6 @@ struct rtcore_replay_ready_queues {
     rtcore_replay_queue ready_primitive_queue;
     rtcore_replay_queue ready_stack_queue;
     rtcore_replay_queue ready_memory_queue;
-    rtcore_replay_queue waiting_unit_queue;
     rtcore_replay_queue waiting_memory_queue;
     rtcore_replay_queue ready_completion_queue;
     rtcore_replay_queue done_queue;
@@ -1113,7 +1112,6 @@ struct rtcore_replay_v03_hw_queue_ingress_stats {
     unsigned target_memory_wait_queue_push_count;
     unsigned target_completion_queue_push_count;
     unsigned target_done_queue_push_count;
-    unsigned target_waiting_unit_legacy_push_count;
     unsigned total_target_queue_push_count;
     unsigned max_target_ready_queue_push_count;
     unsigned max_target_node_queue_push_count;
@@ -1123,7 +1121,6 @@ struct rtcore_replay_v03_hw_queue_ingress_stats {
     unsigned max_target_memory_wait_queue_push_count;
     unsigned max_target_completion_queue_push_count;
     unsigned max_target_done_queue_push_count;
-    unsigned max_target_waiting_unit_legacy_push_count;
     unsigned max_total_target_queue_push_count;
     unsigned same_cycle_bypass_candidate_delta;
     unsigned max_same_cycle_bypass_candidate_delta;
@@ -1139,7 +1136,6 @@ struct rtcore_replay_v03_hw_queue_ingress_budget_stats {
     unsigned last_memory_wait_queue_push_count;
     unsigned last_completion_queue_push_count;
     unsigned last_done_queue_push_count;
-    unsigned last_waiting_unit_legacy_push_count;
     unsigned ready_push_delta;
     unsigned node_push_delta;
     unsigned primitive_push_delta;
@@ -1148,7 +1144,6 @@ struct rtcore_replay_v03_hw_queue_ingress_budget_stats {
     unsigned memory_wait_push_delta;
     unsigned completion_push_delta;
     unsigned done_push_delta;
-    unsigned waiting_unit_legacy_push_delta;
     unsigned ready_over_budget;
     unsigned node_over_budget;
     unsigned primitive_over_budget;
@@ -1157,7 +1152,6 @@ struct rtcore_replay_v03_hw_queue_ingress_budget_stats {
     unsigned memory_wait_over_budget;
     unsigned completion_over_budget;
     unsigned done_over_budget;
-    unsigned waiting_unit_legacy_over_budget;
     unsigned total_over_budget;
     unsigned max_ready_over_budget;
     unsigned max_node_over_budget;
@@ -1167,7 +1161,6 @@ struct rtcore_replay_v03_hw_queue_ingress_budget_stats {
     unsigned max_memory_wait_over_budget;
     unsigned max_completion_over_budget;
     unsigned max_done_over_budget;
-    unsigned max_waiting_unit_legacy_over_budget;
     unsigned max_total_over_budget;
 };
 
@@ -3551,7 +3544,6 @@ enum rtcore_replay_v03_hw_queue_ingress_target {
     RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_WAIT,
     RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION,
     RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_DONE,
-    RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_WAITING_UNIT_LEGACY,
 };
 
 static rtcore_replay_v03_hw_queue_ingress_stats *
@@ -3627,8 +3619,6 @@ static void rtcore_record_replay_v03_hw_queue_ingress_target(
     case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_DONE:
         stats->target_done_queue_push_count++;
         break;
-    case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_WAITING_UNIT_LEGACY:
-        return;
     }
     stats->total_target_queue_push_count++;
     rtcore_update_replay_v03_hw_queue_ingress_maxima(stats);
@@ -3698,12 +3688,6 @@ rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
         static unsigned budget =
             rtcore_replay_v03_hw_queue_ingress_push_budget_config_from_env(
                 "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_DONE_PUSH_BUDGET");
-        return budget;
-    }
-    case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_WAITING_UNIT_LEGACY: {
-        static unsigned budget =
-            rtcore_replay_v03_hw_queue_ingress_push_budget_config_from_env(
-                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_WAITING_UNIT_LEGACY_PUSH_BUDGET");
         return budget;
     }
     }
@@ -11435,37 +11419,6 @@ static bool rtcore_dequeue_ready_memory_request(unsigned *thread_uid)
     return true;
 }
 
-static bool rtcore_dequeue_waiting_unit_request(unsigned *thread_uid)
-{
-    rtcore_record_replay_queue_header_read(
-        g_rtcore_replay_ready_queues.waiting_unit_queue);
-    if (g_rtcore_replay_ready_queues.waiting_unit_queue.empty()) {
-        return false;
-    }
-
-    if (thread_uid) {
-        rtcore_record_replay_queue_entry_read();
-        *thread_uid =
-            g_rtcore_replay_ready_queues.waiting_unit_queue.front().thread_uid;
-    }
-    const unsigned removed_thread_uid =
-        g_rtcore_replay_ready_queues.waiting_unit_queue.front().thread_uid;
-    g_rtcore_replay_ready_queues.waiting_unit_queue.pop_front();
-    rtcore_record_replay_queue_entry_remove(
-        RTCORE_REPLAY_QUEUE_ACCESS_WAIT,
-        g_rtcore_replay_ready_queues.waiting_unit_queue);
-    std::map<unsigned, rtcore_replay_lane_request>::const_iterator request =
-        g_rtcore_replay_lane_requests.find(removed_thread_uid);
-    if (request != g_rtcore_replay_lane_requests.end()) {
-        (void)rtcore_remove_replay_request_from_queue(
-            rtcore_replay_owner_ready_queues_for_owner(
-                request->second.owner_hw_sid)
-                ->waiting_unit_queue,
-            removed_thread_uid);
-    }
-    return true;
-}
-
 static bool rtcore_dequeue_ready_memory_request_for_owner(
     unsigned owner_hw_sid, unsigned *thread_uid)
 {
@@ -11545,34 +11498,6 @@ static bool rtcore_dequeue_waiting_memory_request_for_owner(
             RTCORE_REPLAY_QUEUE_ACCESS_WAIT, queue);
         (void)rtcore_remove_replay_request_from_queue(
             g_rtcore_replay_ready_queues.waiting_memory_queue,
-            selected_thread_uid);
-        return true;
-    }
-    return false;
-}
-
-static bool rtcore_dequeue_waiting_unit_request_for_owner(
-    unsigned owner_hw_sid, unsigned *thread_uid)
-{
-    rtcore_replay_queue &queue =
-        rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
-            ->waiting_unit_queue;
-    rtcore_record_replay_queue_header_read(queue);
-    for (rtcore_replay_queue::iterator it = queue.begin();
-         it != queue.end(); ++it) {
-        rtcore_record_replay_queue_entry_read();
-        if (!rtcore_replay_request_owned_by_sm(it->thread_uid, owner_hw_sid)) {
-            continue;
-        }
-        const unsigned selected_thread_uid = it->thread_uid;
-        if (thread_uid) {
-            *thread_uid = selected_thread_uid;
-        }
-        queue.erase(it);
-        rtcore_record_replay_queue_entry_remove(
-            RTCORE_REPLAY_QUEUE_ACCESS_WAIT, queue);
-        (void)rtcore_remove_replay_request_from_queue(
-            g_rtcore_replay_ready_queues.waiting_unit_queue,
             selected_thread_uid);
         return true;
     }
@@ -11759,17 +11684,6 @@ rtcore_count_replay_request_state_unit_wake_work_for_owner(unsigned owner_hw_sid
     return count;
 }
 
-static void rtcore_remove_replay_request_from_waiting_unit_mirrors(
-    unsigned owner_hw_sid, unsigned thread_uid)
-{
-    (void)rtcore_remove_replay_request_from_queue(
-        g_rtcore_replay_ready_queues.waiting_unit_queue, thread_uid);
-    (void)rtcore_remove_replay_request_from_queue(
-        rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
-            ->waiting_unit_queue,
-        thread_uid);
-}
-
 static bool rtcore_service_waiting_unit_replay_requests(
     unsigned wake_budget,
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
@@ -11796,14 +11710,6 @@ static bool rtcore_service_waiting_unit_replay_requests(
         const rtcore_replay_v01_resource_route pending_route =
             rtcore_replay_v01_pending_route_for_independent_service(
                 thread_uid);
-        std::map<unsigned, rtcore_replay_lane_request>::const_iterator
-            request_it = g_rtcore_replay_lane_requests.find(thread_uid);
-        const unsigned owner_hw_sid =
-            request_it != g_rtcore_replay_lane_requests.end()
-                ? request_it->second.owner_hw_sid
-                : 0;
-        rtcore_remove_replay_request_from_waiting_unit_mirrors(owner_hw_sid,
-                                                               thread_uid);
         g_rtcore_replay_v03_hw_unit_state_wake_service_stats
             .wake_attempt_count++;
         g_rtcore_replay_v03_hw_unit_state_wake_service_stats
@@ -11868,8 +11774,6 @@ static bool rtcore_service_waiting_unit_replay_requests_for_owner(
         const rtcore_replay_v01_resource_route pending_route =
             rtcore_replay_v01_pending_route_for_independent_service(
                 thread_uid);
-        rtcore_remove_replay_request_from_waiting_unit_mirrors(owner_hw_sid,
-                                                               thread_uid);
         g_rtcore_replay_v03_hw_unit_state_wake_service_stats
             .wake_attempt_count++;
         g_rtcore_replay_v03_hw_unit_state_wake_service_stats
@@ -13319,14 +13223,6 @@ static bool rtcore_replay_request_state_has_unit_ready_pending_work(
     return request.unit_queue_capacity_gate_pending ||
            rtcore_replay_request_state_has_queue_ingress_ready_pending_work(
                request);
-}
-
-static unsigned
-rtcore_count_replay_waiting_unit_queue_depth_for_owner(unsigned owner_hw_sid)
-{
-    return static_cast<unsigned>(
-        rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
-            ->waiting_unit_queue.size());
 }
 
 static void rtcore_count_replay_unit_request_state_for_owner(
