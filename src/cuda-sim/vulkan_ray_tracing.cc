@@ -593,7 +593,7 @@ struct rtcore_replay_issue_budget {
     unsigned node_issue_budget;
     unsigned primitive_issue_budget;
     unsigned stack_issue_budget;
-    unsigned completion_issue_budget;
+    unsigned warp_completion_ingress_budget;
 };
 
 struct rtcore_replay_service_cycle_identity_snapshot {
@@ -2305,7 +2305,7 @@ static rtcore_replay_issue_budget rtcore_replay_issue_budget_config()
             "VULKAN_SIM_RTCORE_REPLAY_PRIMITIVE_ISSUE_BUDGET", 4);
         parsed.stack_issue_budget = rtcore_replay_issue_budget_from_env(
             "VULKAN_SIM_RTCORE_REPLAY_STACK_ISSUE_BUDGET", 1);
-        parsed.completion_issue_budget =
+        parsed.warp_completion_ingress_budget =
             rtcore_replay_warp_completion_ingress_budget_config();
         return parsed;
     }();
@@ -2352,7 +2352,8 @@ static bool rtcore_replay_issue_budget_available(
     const rtcore_replay_issue_budget &budget)
 {
     return budget.node_issue_budget || budget.primitive_issue_budget ||
-           budget.stack_issue_budget || budget.completion_issue_budget;
+           budget.stack_issue_budget ||
+           budget.warp_completion_ingress_budget;
 }
 
 enum rtcore_replay_queue_access_class {
@@ -5659,7 +5660,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "claims_new_hardware_bvh_engine=0 "
            "max_trace_events_per_lane=%u "
            "node_issue_budget=%u primitive_issue_budget=%u "
-           "stack_issue_budget=%u completion_issue_budget=%u "
+           "stack_issue_budget=%u warp_completion_ingress_budget=%u "
            "node_event_base_cycles=%u "
            "primitive_event_base_cycles=%u "
            "memory_contention_cache_lines_per_cycle=%u "
@@ -5783,7 +5784,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            owner_hw_sid, RTCORE_TRACE_REPLAY_MODEL_NAME,
            rtcore_compact_trace_events_per_lane_config(),
            budget.node_issue_budget, budget.primitive_issue_budget,
-           budget.stack_issue_budget, budget.completion_issue_budget,
+           budget.stack_issue_budget, budget.warp_completion_ingress_budget,
            rtcore_replay_node_test_latency_config(),
            rtcore_replay_primitive_test_latency_config(),
            rtcore_replay_memory_contention_cache_lines_per_cycle_config(),
