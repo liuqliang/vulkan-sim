@@ -6168,8 +6168,7 @@ rtcore_replay_owner_ready_queues_for_owner(unsigned owner_hw_sid)
 
 static bool rtcore_replay_v03_hw_completion_entry_main_path_enabled()
 {
-    return rtcore_replay_v03_hw_banked_ready_selection_enabled() &&
-           rtcore_replay_warp_completion_entry_enabled();
+    return true;
 }
 
 static bool rtcore_route_replay_completion_pending_to_warp_entry(
@@ -6319,27 +6318,8 @@ static bool rtcore_enqueue_replay_request_by_state(
         }
         return true;
     case RTCORE_REPLAY_COMPLETION_PENDING:
-        if (rtcore_replay_v03_hw_completion_entry_main_path_enabled()) {
-            return rtcore_route_replay_completion_pending_to_warp_entry(
-                &request);
-        }
-        if (!rtcore_replay_v03_hw_queue_ingress_budget_gate_allow_push(
-                &request, RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION,
-                service_cycle)) {
-            return false;
-        }
-        rtcore_push_replay_queue_packet_pair(
-            g_rtcore_replay_ready_queues.ready_completion_queue,
-            owner_queues->ready_completion_queue, request);
-        rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
-            RTCORE_REPLAY_QUEUE_ACCESS_COMPLETION, request);
-        rtcore_record_replay_v03_hw_queue_ingress_target(
-            request.owner_hw_sid,
-            RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION);
-        rtcore_record_replay_queue_entry_write(
-            RTCORE_REPLAY_QUEUE_ACCESS_COMPLETION,
-            g_rtcore_replay_ready_queues.ready_completion_queue);
-        return true;
+        return rtcore_route_replay_completion_pending_to_warp_entry(
+            &request);
     case RTCORE_REPLAY_COMPLETED:
         if (!rtcore_replay_v03_hw_queue_ingress_budget_gate_allow_push(
                 &request, RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_DONE,
@@ -10983,33 +10963,12 @@ static bool rtcore_service_replay_completion_tail_requests_for_owner(
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
     unsigned long long service_cycle = 0)
 {
-    if (rtcore_replay_v03_hw_completion_entry_main_path_enabled()) {
-        const unsigned delivered =
-            rtcore_service_completed_warp_entry_handoffs_for_owner(
-                owner_hw_sid, service_cycle);
-        return delivered > 0;
-    }
-
-    const bool collect_unit_stats = rtcore_replay_unit_arbitration_enabled();
-    rtcore_replay_ready_queues *owner_queues =
-        rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid);
-    return rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_completion_queue,
-        RTCORE_REPLAY_COMPLETION_PENDING, owner_hw_sid,
-        &budget.completion_issue_budget,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .completion_unit_issue_attempts
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.completion_unit_issued
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .completion_unit_budget_exhausted
-            : NULL,
-        last_identity, service_cycle,
-        &g_rtcore_replay_ready_queues.ready_completion_queue);
+    (void)budget;
+    (void)last_identity;
+    const unsigned delivered =
+        rtcore_service_completed_warp_entry_handoffs_for_owner(
+            owner_hw_sid, service_cycle);
+    return delivered > 0;
 }
 
 static bool rtcore_dequeue_ready_memory_request(unsigned *thread_uid)
