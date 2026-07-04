@@ -11340,6 +11340,27 @@ static bool rtcore_dequeue_waiting_unit_request(unsigned *thread_uid)
 static bool rtcore_dequeue_ready_memory_request_for_owner(
     unsigned owner_hw_sid, unsigned *thread_uid)
 {
+    if (rtcore_replay_v03_hw_banked_ready_selection_enabled()) {
+        unsigned selected_thread_uid = 0;
+        if (!rtcore_select_banked_ready_request_for_owner(
+                RTCORE_REPLAY_ISSUED_MEMORY, owner_hw_sid,
+                &selected_thread_uid)) {
+            return false;
+        }
+        if (thread_uid) {
+            *thread_uid = selected_thread_uid;
+        }
+        rtcore_replay_queue &owner_queue =
+            rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
+                ->ready_memory_queue;
+        (void)rtcore_remove_replay_request_from_queue(owner_queue,
+                                                       selected_thread_uid);
+        (void)rtcore_remove_replay_request_from_queue(
+            g_rtcore_replay_ready_queues.ready_memory_queue,
+            selected_thread_uid);
+        return true;
+    }
+
     rtcore_replay_queue &queue =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
             ->ready_memory_queue;
