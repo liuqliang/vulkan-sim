@@ -2950,6 +2950,18 @@ static unsigned rtcore_replay_issue_budget_from_env(const char *name,
     return static_cast<unsigned>(parsed);
 }
 
+static unsigned rtcore_replay_warp_completion_ingress_budget_config()
+{
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_WARP_COMPLETION_INGRESS_BUDGET");
+    if (value && value[0] != '\0') {
+        return rtcore_replay_issue_budget_from_env(
+            "VULKAN_SIM_RTCORE_REPLAY_WARP_COMPLETION_INGRESS_BUDGET", 1);
+    }
+    return rtcore_replay_issue_budget_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_COMPLETION_ISSUE_BUDGET", 1);
+}
+
 static rtcore_replay_issue_budget rtcore_replay_issue_budget_config()
 {
     static rtcore_replay_issue_budget budget = []() {
@@ -2960,8 +2972,8 @@ static rtcore_replay_issue_budget rtcore_replay_issue_budget_config()
             "VULKAN_SIM_RTCORE_REPLAY_PRIMITIVE_ISSUE_BUDGET", 1);
         parsed.stack_issue_budget = rtcore_replay_issue_budget_from_env(
             "VULKAN_SIM_RTCORE_REPLAY_STACK_ISSUE_BUDGET", 1);
-        parsed.completion_issue_budget = rtcore_replay_issue_budget_from_env(
-            "VULKAN_SIM_RTCORE_REPLAY_COMPLETION_ISSUE_BUDGET", 1);
+        parsed.completion_issue_budget =
+            rtcore_replay_warp_completion_ingress_budget_config();
         return parsed;
     }();
     return budget;
