@@ -2284,7 +2284,7 @@ static unsigned rtcore_replay_issue_budget_from_env(const char *name,
 static unsigned rtcore_replay_warp_completion_ingress_budget_config()
 {
     return rtcore_replay_issue_budget_from_env(
-        "VULKAN_SIM_RTCORE_REPLAY_WARP_COMPLETION_INGRESS_BUDGET", 1);
+        "VULKAN_SIM_RTCORE_REPLAY_WARP_COMPLETION_INGRESS_BUDGET", 8);
 }
 
 static unsigned rtcore_replay_scoreboard_result_handoff_budget_config()
@@ -2298,9 +2298,9 @@ static rtcore_replay_issue_budget rtcore_replay_issue_budget_config()
     static rtcore_replay_issue_budget budget = []() {
         rtcore_replay_issue_budget parsed = {};
         parsed.node_issue_budget = rtcore_replay_issue_budget_from_env(
-            "VULKAN_SIM_RTCORE_REPLAY_NODE_ISSUE_BUDGET", 1);
+            "VULKAN_SIM_RTCORE_REPLAY_NODE_ISSUE_BUDGET", 8);
         parsed.primitive_issue_budget = rtcore_replay_issue_budget_from_env(
-            "VULKAN_SIM_RTCORE_REPLAY_PRIMITIVE_ISSUE_BUDGET", 1);
+            "VULKAN_SIM_RTCORE_REPLAY_PRIMITIVE_ISSUE_BUDGET", 4);
         parsed.stack_issue_budget = rtcore_replay_issue_budget_from_env(
             "VULKAN_SIM_RTCORE_REPLAY_STACK_ISSUE_BUDGET", 1);
         parsed.completion_issue_budget =
@@ -2313,7 +2313,7 @@ static rtcore_replay_issue_budget rtcore_replay_issue_budget_config()
 static unsigned rtcore_replay_memory_wake_budget_config()
 {
     static unsigned budget = rtcore_replay_issue_budget_from_env(
-        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_WAKE_BUDGET", 1);
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_WAKE_BUDGET", 4);
     return budget;
 }
 
