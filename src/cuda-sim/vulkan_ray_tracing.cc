@@ -595,7 +595,6 @@ typedef std::deque<rtcore_replay_queue_packet> rtcore_replay_queue;
 
 struct rtcore_replay_ready_queues {
     rtcore_replay_queue queued_queue;
-    rtcore_replay_queue ready_memory_queue;
 };
 
 struct rtcore_replay_issue_budget {
@@ -1033,7 +1032,6 @@ struct rtcore_replay_v03_hw_memory_outstanding_stats {
     unsigned memory_wake_progress_count;
     unsigned memory_shadow_register_count;
     unsigned memory_shadow_release_count;
-    unsigned max_ready_memory_queue_depth;
     unsigned max_memory_ready_issue_count;
     unsigned max_outstanding_entry_count;
     unsigned max_wait_map_waiter_count;
@@ -1092,11 +1090,9 @@ struct rtcore_replay_v03_hw_queue_ownership_stats {
 struct rtcore_replay_v03_hw_queue_ingress_stats {
     unsigned evaluations;
     unsigned target_ready_queue_push_count;
-    unsigned target_memory_ready_queue_push_count;
     unsigned target_completion_queue_push_count;
     unsigned total_target_queue_push_count;
     unsigned max_target_ready_queue_push_count;
-    unsigned max_target_memory_ready_queue_push_count;
     unsigned max_target_completion_queue_push_count;
     unsigned max_total_target_queue_push_count;
     unsigned same_cycle_bypass_candidate_delta;
@@ -1106,17 +1102,13 @@ struct rtcore_replay_v03_hw_queue_ingress_stats {
 struct rtcore_replay_v03_hw_queue_ingress_budget_stats {
     unsigned evaluations;
     unsigned last_ready_queue_push_count;
-    unsigned last_memory_ready_queue_push_count;
     unsigned last_completion_queue_push_count;
     unsigned ready_push_delta;
-    unsigned memory_ready_push_delta;
     unsigned completion_push_delta;
     unsigned ready_over_budget;
-    unsigned memory_ready_over_budget;
     unsigned completion_over_budget;
     unsigned total_over_budget;
     unsigned max_ready_over_budget;
-    unsigned max_memory_ready_over_budget;
     unsigned max_completion_over_budget;
     unsigned max_total_over_budget;
 };
@@ -1141,8 +1133,6 @@ struct rtcore_replay_v03_hw_queue_depth_gate_stats {
     unsigned retry_progress_count;
     unsigned request_state_ready_pending_count;
     unsigned max_request_state_ready_pending_count;
-    unsigned memory_ready_blocked_count;
-    unsigned max_memory_ready_queue_depth;
     unsigned blocked_target_mask;
     unsigned max_blocked_target_mask;
 };
@@ -3372,7 +3362,6 @@ static void rtcore_update_replay_data_path_port_budget_max(unsigned value,
 
 enum rtcore_replay_v03_hw_queue_ingress_target {
     RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY = 0,
-    RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY,
     RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION,
 };
 
@@ -3392,9 +3381,6 @@ static void rtcore_update_replay_v03_hw_queue_ingress_maxima(
         stats->target_ready_queue_push_count,
         &stats->max_target_ready_queue_push_count);
     rtcore_update_replay_data_path_port_budget_max(
-        stats->target_memory_ready_queue_push_count,
-        &stats->max_target_memory_ready_queue_push_count);
-    rtcore_update_replay_data_path_port_budget_max(
         stats->target_completion_queue_push_count,
         &stats->max_target_completion_queue_push_count);
     rtcore_update_replay_data_path_port_budget_max(
@@ -3413,9 +3399,6 @@ static void rtcore_record_replay_v03_hw_queue_ingress_target(
     switch (target) {
     case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY:
         stats->target_ready_queue_push_count++;
-        break;
-    case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY:
-        stats->target_memory_ready_queue_push_count++;
         break;
     case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION:
         return;
@@ -3451,12 +3434,6 @@ rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
                 "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY_PUSH_BUDGET");
         return budget;
     }
-    case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY: {
-        static unsigned budget =
-            rtcore_replay_v03_hw_queue_ingress_push_budget_config_from_env(
-                "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY_PUSH_BUDGET");
-        return budget;
-    }
     case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION: {
         return rtcore_replay_v03_hw_queue_ingress_push_budget_config();
     }
@@ -3475,46 +3452,25 @@ static unsigned
 rtcore_replay_v03_hw_queue_depth_capacity_config_for_target(
     rtcore_replay_v03_hw_queue_ingress_target target)
 {
-    switch (target) {
-    case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY: {
-        static unsigned capacity =
-            rtcore_replay_v03_hw_queue_depth_capacity_config_from_env(
-                "VULKAN_SIM_RTCORE_REPLAY_MEMORY_READY_QUEUE_CAPACITY");
-        return capacity;
-    }
-    default:
-        return 0;
-    }
+    (void)target;
+    return 0;
 }
 
 static unsigned rtcore_replay_v03_hw_queue_depth_for_target(
     unsigned owner_hw_sid, rtcore_replay_v03_hw_queue_ingress_target target)
 {
-    rtcore_replay_ready_queues &owner_queues =
-        g_rtcore_replay_owner_ready_queues[owner_hw_sid];
-    switch (target) {
-    case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY:
-        return static_cast<unsigned>(owner_queues.ready_memory_queue.size());
-    default:
-        return 0;
-    }
+    (void)owner_hw_sid;
+    (void)target;
+    return 0;
 }
 
 static void rtcore_update_replay_v03_hw_queue_depth_gate_max_depth(
     rtcore_replay_v03_hw_queue_depth_gate_stats *stats,
     rtcore_replay_v03_hw_queue_ingress_target target, unsigned queue_depth)
 {
-    if (!stats) {
-        return;
-    }
-    switch (target) {
-    case RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY:
-        rtcore_update_replay_data_path_port_budget_max(
-            queue_depth, &stats->max_memory_ready_queue_depth);
-        break;
-    default:
-        break;
-    }
+    (void)stats;
+    (void)target;
+    (void)queue_depth;
 }
 
 static bool rtcore_replay_request_state_has_queue_ingress_ready_pending_work(
@@ -3592,36 +3548,20 @@ static void rtcore_maybe_log_replay_v03_hw_queue_depth_gate_stats(
         return;
     }
 
-    const unsigned memory_ready_depth =
-        rtcore_replay_v03_hw_queue_depth_for_target(
-            owner_hw_sid, RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY);
-    rtcore_update_replay_v03_hw_queue_depth_gate_max_depth(
-        &stats, RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY,
-        memory_ready_depth);
-
     g_rtcore_replay_v03_hw_queue_depth_gate_stats_logs_emitted++;
     printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_QUEUE_DEPTH_GATE "
            "owner_hw_sid=%u service_cycle=%llu gate_enabled=%u "
-           "memory_ready_queue_capacity=%u "
-           "memory_ready_queue_depth=%u "
            "allowed_count=%u blocked_count=%u "
-           "memory_ready_blocked_count=%u "
            "retry_attempt_count=%u retry_progress_count=%u "
            "request_state_ready_pending_count=%u evaluations=%u "
            "max_request_state_ready_pending_count=%u "
-           "max_memory_ready_queue_depth=%u "
            "blocked_target_mask=0x%x max_blocked_target_mask=0x%x\n",
            owner_hw_sid, service_cycle,
            rtcore_replay_v03_hw_queue_depth_gate_enabled() ? 1u : 0u,
-           rtcore_replay_v03_hw_queue_depth_capacity_config_for_target(
-               RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY),
-           memory_ready_depth, stats.allowed_count,
-           stats.blocked_count, stats.memory_ready_blocked_count,
-           stats.retry_attempt_count,
+           stats.allowed_count, stats.blocked_count, stats.retry_attempt_count,
            stats.retry_progress_count, stats.request_state_ready_pending_count,
            stats.evaluations, stats.max_request_state_ready_pending_count,
-           stats.max_memory_ready_queue_depth, stats.blocked_target_mask,
-           stats.max_blocked_target_mask);
+           stats.blocked_target_mask, stats.max_blocked_target_mask);
     fflush(stdout);
 }
 
@@ -3664,9 +3604,6 @@ static bool rtcore_replay_v03_hw_queue_depth_gate_allow_push(
         request->v03_hw_queue_depth_gate_blocked_cycle = service_cycle;
         rtcore_record_replay_request_state_write();
         stats.blocked_count++;
-        if (target == RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY) {
-            stats.memory_ready_blocked_count++;
-        }
         stats.blocked_target_mask |=
             rtcore_replay_v03_hw_queue_ingress_target_mask(target);
         stats.max_blocked_target_mask |= stats.blocked_target_mask;
@@ -3781,9 +3718,6 @@ static void rtcore_update_replay_v03_hw_queue_ingress_budget_maxima(
     rtcore_update_replay_data_path_port_budget_max(
         budget_stats->ready_over_budget, &budget_stats->max_ready_over_budget);
     rtcore_update_replay_data_path_port_budget_max(
-        budget_stats->memory_ready_over_budget,
-        &budget_stats->max_memory_ready_over_budget);
-    rtcore_update_replay_data_path_port_budget_max(
         budget_stats->completion_over_budget,
         &budget_stats->max_completion_over_budget);
     rtcore_update_replay_data_path_port_budget_max(
@@ -3810,25 +3744,17 @@ static bool rtcore_record_replay_v03_hw_queue_ingress_budget_stats(
     budget_stats->ready_push_delta = rtcore_replay_data_path_access_delta(
         stats.target_ready_queue_push_count,
         budget_stats->last_ready_queue_push_count);
-    budget_stats->memory_ready_push_delta =
-        rtcore_replay_data_path_access_delta(
-            stats.target_memory_ready_queue_push_count,
-            budget_stats->last_memory_ready_queue_push_count);
     budget_stats->completion_push_delta = rtcore_replay_data_path_access_delta(
         stats.target_completion_queue_push_count,
         budget_stats->last_completion_queue_push_count);
 
     budget_stats->last_ready_queue_push_count =
         stats.target_ready_queue_push_count;
-    budget_stats->last_memory_ready_queue_push_count =
-        stats.target_memory_ready_queue_push_count;
     budget_stats->last_completion_queue_push_count =
         stats.target_completion_queue_push_count;
 
     const unsigned total_push_delta =
-        budget_stats->ready_push_delta +
-        budget_stats->memory_ready_push_delta +
-        budget_stats->completion_push_delta;
+        budget_stats->ready_push_delta + budget_stats->completion_push_delta;
     if (total_push_delta == 0) {
         return false;
     }
@@ -3837,20 +3763,13 @@ static bool rtcore_record_replay_v03_hw_queue_ingress_budget_stats(
         rtcore_replay_over_budget_accesses(budget_stats->ready_push_delta,
                                            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
                                                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY));
-    budget_stats->memory_ready_over_budget =
-        rtcore_replay_over_budget_accesses(
-            budget_stats->memory_ready_push_delta,
-            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
-                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY));
     budget_stats->completion_over_budget =
         rtcore_replay_over_budget_accesses(
             budget_stats->completion_push_delta,
             rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
                 RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_COMPLETION));
     budget_stats->total_over_budget =
-        budget_stats->ready_over_budget +
-        budget_stats->memory_ready_over_budget +
-        budget_stats->completion_over_budget;
+        budget_stats->ready_over_budget + budget_stats->completion_over_budget;
     budget_stats->evaluations++;
     rtcore_update_replay_v03_hw_queue_ingress_budget_maxima(budget_stats);
     return true;
@@ -6064,31 +5983,6 @@ static bool rtcore_enqueue_replay_request_by_state(
     case RTCORE_REPLAY_ISSUED_STACK:
         return true;
     case RTCORE_REPLAY_ISSUED_MEMORY:
-        if (rtcore_replay_request_state_has_memory_outstanding_work(request)) {
-            return true;
-        } else {
-            if (!rtcore_replay_v03_hw_queue_depth_gate_allow_push(
-                    &request, RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY,
-                    service_cycle)) {
-                return false;
-            }
-            if (!rtcore_replay_v03_hw_queue_ingress_budget_gate_allow_push(
-                    &request, RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY,
-                    service_cycle)) {
-                return false;
-            }
-            rtcore_push_replay_queue_packet_pair(
-                g_rtcore_replay_ready_queues.ready_memory_queue,
-                owner_queues->ready_memory_queue, request);
-            rtcore_record_replay_v03_hw_typed_queue_packet_enqueue(
-                RTCORE_REPLAY_QUEUE_ACCESS_READY, request);
-            rtcore_record_replay_v03_hw_queue_ingress_target(
-                request.owner_hw_sid,
-                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY);
-            rtcore_record_replay_queue_entry_write(
-                RTCORE_REPLAY_QUEUE_ACCESS_READY,
-                g_rtcore_replay_ready_queues.ready_memory_queue);
-        }
         return true;
     case RTCORE_REPLAY_COMPLETION_PENDING:
         return rtcore_route_replay_completion_pending_to_warp_entry(
@@ -10303,90 +10197,6 @@ static bool rtcore_service_replay_completion_tail_requests_for_owner(
     return delivered > 0;
 }
 
-static bool rtcore_dequeue_ready_memory_request(unsigned *thread_uid)
-{
-    rtcore_record_replay_queue_header_read(
-        g_rtcore_replay_ready_queues.ready_memory_queue);
-    if (g_rtcore_replay_ready_queues.ready_memory_queue.empty()) {
-        return false;
-    }
-
-    if (thread_uid) {
-        rtcore_record_replay_queue_entry_read();
-        *thread_uid =
-            g_rtcore_replay_ready_queues.ready_memory_queue.front().thread_uid;
-    }
-    const unsigned removed_thread_uid =
-        g_rtcore_replay_ready_queues.ready_memory_queue.front().thread_uid;
-    g_rtcore_replay_ready_queues.ready_memory_queue.pop_front();
-    rtcore_record_replay_queue_entry_remove(
-        RTCORE_REPLAY_QUEUE_ACCESS_READY,
-        g_rtcore_replay_ready_queues.ready_memory_queue);
-    std::map<unsigned, rtcore_replay_lane_request>::const_iterator request =
-        g_rtcore_replay_lane_requests.find(removed_thread_uid);
-    if (request != g_rtcore_replay_lane_requests.end()) {
-        (void)rtcore_remove_replay_request_from_queue(
-            rtcore_replay_owner_ready_queues_for_owner(
-                request->second.owner_hw_sid)
-                ->ready_memory_queue,
-            removed_thread_uid);
-    }
-    return true;
-}
-
-static bool rtcore_dequeue_ready_memory_request_for_owner(
-    unsigned owner_hw_sid, unsigned *thread_uid)
-{
-    if (rtcore_replay_v03_hw_banked_ready_selection_enabled()) {
-        unsigned selected_thread_uid = 0;
-        if (!rtcore_select_banked_ready_request_for_owner(
-                RTCORE_REPLAY_ISSUED_MEMORY, owner_hw_sid,
-                &selected_thread_uid)) {
-            return false;
-        }
-        if (thread_uid) {
-            *thread_uid = selected_thread_uid;
-        }
-        rtcore_replay_queue &owner_queue =
-            rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
-                ->ready_memory_queue;
-        (void)rtcore_remove_replay_request_from_queue(owner_queue,
-                                                       selected_thread_uid);
-        (void)rtcore_remove_replay_request_from_queue(
-            g_rtcore_replay_ready_queues.ready_memory_queue,
-            selected_thread_uid);
-        return true;
-    }
-
-    rtcore_replay_queue &queue =
-        rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
-            ->ready_memory_queue;
-    rtcore_record_replay_queue_header_read(queue);
-    if (queue.empty()) {
-        return false;
-    }
-
-    for (rtcore_replay_queue::iterator it = queue.begin();
-         it != queue.end(); ++it) {
-        rtcore_record_replay_queue_entry_read();
-        if (!rtcore_replay_request_owned_by_sm(it->thread_uid, owner_hw_sid)) {
-            continue;
-        }
-        const unsigned selected_thread_uid = it->thread_uid;
-        if (thread_uid) {
-            *thread_uid = selected_thread_uid;
-        }
-        queue.erase(it);
-        rtcore_record_replay_queue_entry_remove(
-            RTCORE_REPLAY_QUEUE_ACCESS_READY, queue);
-        (void)rtcore_remove_replay_request_from_queue(
-            g_rtcore_replay_ready_queues.ready_memory_queue,
-            selected_thread_uid);
-        return true;
-    }
-    return false;
-}
-
 static bool rtcore_wake_waiting_unit_replay_request(
     unsigned thread_uid, unsigned long long service_cycle)
 {
@@ -10732,85 +10542,31 @@ static bool rtcore_issue_ready_memory_replay_request(
     return rtcore_route_admitted_replay_request(thread_uid, service_cycle);
 }
 
-static bool rtcore_service_ready_memory_replay_requests(
-    unsigned issue_budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
-    unsigned long long service_cycle = 0)
+static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
+    unsigned owner_hw_sid, unsigned *issue_budget,
+    rtcore_replay_service_cycle_identity_snapshot *last_identity,
+    unsigned long long service_cycle)
 {
     bool progressed = false;
-    const bool independent_service =
-        rtcore_replay_v01_independent_service_enabled();
-    unsigned attempts_remaining =
-        independent_service
-            ? static_cast<unsigned>(
-                  g_rtcore_replay_ready_queues.ready_memory_queue.size())
-            : issue_budget;
-    unsigned blocked_route_mask = 0;
-    rtcore_replay_v01_resource_route last_blocked_route =
-        RTCORE_REPLAY_V01_ROUTE_INVALID;
-    while (issue_budget > 0 && attempts_remaining > 0) {
-        unsigned thread_uid = 0;
-        attempts_remaining--;
-        if (!rtcore_dequeue_ready_memory_request(&thread_uid)) {
-            break;
-        }
-        const rtcore_replay_v01_resource_route pending_route =
-            rtcore_replay_v01_pending_route_for_independent_service(
-                thread_uid);
-        g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .memory_ready_issue_attempt_count++;
-        if (!rtcore_issue_ready_memory_replay_request(thread_uid,
-                                                      service_cycle)) {
-            rtcore_route_admitted_replay_request(thread_uid, service_cycle);
-            const unsigned pending_route_mask =
-                rtcore_replay_v01_route_mask(pending_route);
-            if (independent_service && pending_route_mask != 0) {
-                blocked_route_mask |= pending_route_mask;
-                last_blocked_route = pending_route;
-                rtcore_record_replay_v01_independent_memory_service_blocked_continue(
-                    0, service_cycle, pending_route);
-                continue;
-            }
-            break;
-        }
-        if (independent_service && blocked_route_mask != 0) {
-            rtcore_record_replay_v01_independent_memory_service_progress_after_block(
-                0, service_cycle, pending_route, last_blocked_route,
-                blocked_route_mask);
-        }
-        if (last_identity) {
-            *last_identity = rtcore_make_replay_service_progress_identity(
-                thread_uid, true, false);
-        }
-        g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .memory_ready_issue_count++;
-        issue_budget--;
-        progressed = true;
+    if (!issue_budget) {
+        return false;
     }
-    return progressed;
-}
-
-static bool rtcore_service_ready_memory_replay_requests_for_owner(
-    unsigned owner_hw_sid, unsigned issue_budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
-    unsigned long long service_cycle = 0)
-{
-    bool progressed = false;
     const bool independent_service =
         rtcore_replay_v01_independent_service_enabled();
     unsigned attempts_remaining =
         independent_service
             ? static_cast<unsigned>(
-                  g_rtcore_replay_ready_queues.ready_memory_queue.size())
-            : issue_budget;
+                  rtcore_count_replay_ready_unit_requests_for_owner(
+                      RTCORE_REPLAY_ISSUED_MEMORY, owner_hw_sid))
+            : *issue_budget;
     unsigned blocked_route_mask = 0;
     rtcore_replay_v01_resource_route last_blocked_route =
         RTCORE_REPLAY_V01_ROUTE_INVALID;
-    while (issue_budget > 0 && attempts_remaining > 0) {
+    while (*issue_budget > 0 && attempts_remaining > 0) {
         unsigned thread_uid = 0;
         attempts_remaining--;
-        if (!rtcore_dequeue_ready_memory_request_for_owner(owner_hw_sid,
-                                                           &thread_uid)) {
+        if (!rtcore_select_banked_ready_request_for_owner(
+                RTCORE_REPLAY_ISSUED_MEMORY, owner_hw_sid, &thread_uid)) {
             break;
         }
         const rtcore_replay_v01_resource_route pending_route =
@@ -10834,8 +10590,8 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner(
         }
         if (independent_service && blocked_route_mask != 0) {
             rtcore_record_replay_v01_independent_memory_service_progress_after_block(
-                owner_hw_sid, service_cycle, pending_route, last_blocked_route,
-                blocked_route_mask);
+                owner_hw_sid, service_cycle, pending_route,
+                last_blocked_route, blocked_route_mask);
         }
         if (last_identity) {
             *last_identity = rtcore_make_replay_service_progress_identity(
@@ -10843,10 +10599,43 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner(
         }
         g_rtcore_replay_v03_hw_memory_outstanding_stats
             .memory_ready_issue_count++;
-        issue_budget--;
+        (*issue_budget)--;
         progressed = true;
     }
     return progressed;
+}
+
+static bool rtcore_service_ready_memory_replay_requests(
+    unsigned issue_budget,
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
+    unsigned long long service_cycle = 0)
+{
+    bool progressed = false;
+    std::set<unsigned> owners;
+    rtcore_collect_replay_request_owners(&owners);
+    while (issue_budget > 0) {
+        bool round_progressed = false;
+        for (std::set<unsigned>::const_iterator it = owners.begin();
+             it != owners.end() && issue_budget > 0; ++it) {
+            round_progressed |=
+                rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
+                    *it, &issue_budget, last_identity, service_cycle);
+        }
+        if (!round_progressed) {
+            break;
+        }
+        progressed = true;
+    }
+    return progressed;
+}
+
+static bool rtcore_service_ready_memory_replay_requests_for_owner(
+    unsigned owner_hw_sid, unsigned issue_budget,
+    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
+    unsigned long long service_cycle = 0)
+{
+    return rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
+        owner_hw_sid, &issue_budget, last_identity, service_cycle);
 }
 
 static bool rtcore_replay_v01_memory_queue_capacity_gate_can_wake(
@@ -12424,14 +12213,6 @@ static bool rtcore_replay_request_state_has_memory_outstanding_work(
            request.memory_wake_latency_gate_pending;
 }
 
-static unsigned
-rtcore_count_replay_ready_memory_queue_depth_for_owner(unsigned owner_hw_sid)
-{
-    return static_cast<unsigned>(
-        rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid)
-            ->ready_memory_queue.size());
-}
-
 static void rtcore_count_replay_memory_outstanding_for_owner(
     unsigned owner_hw_sid, unsigned *outstanding_entry_count,
     unsigned *wait_map_waiter_count, unsigned *outstanding_chunk_count)
@@ -12485,11 +12266,9 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
     rtcore_count_replay_memory_outstanding_for_owner(
         owner_hw_sid, &outstanding_entry_count, &wait_map_waiter_count,
         &outstanding_chunk_count);
-    const unsigned ready_memory_queue_depth =
-        rtcore_count_replay_ready_memory_queue_depth_for_owner(owner_hw_sid);
 
     if (outstanding_entry_count == 0 && wait_map_waiter_count == 0 &&
-        outstanding_chunk_count == 0 && ready_memory_queue_depth == 0 &&
+        outstanding_chunk_count == 0 &&
         g_rtcore_replay_v03_hw_memory_outstanding_stats
                 .memory_ready_issue_attempt_count == 0 &&
         g_rtcore_replay_v03_hw_memory_outstanding_stats
@@ -12545,12 +12324,6 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
             g_rtcore_replay_v03_hw_memory_outstanding_stats
                 .memory_shadow_release_count;
     }
-    if (ready_memory_queue_depth >
-        g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_ready_memory_queue_depth) {
-        g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_ready_memory_queue_depth = ready_memory_queue_depth;
-    }
     if (g_rtcore_replay_v03_hw_memory_outstanding_stats
             .memory_wake_progress_count >
         g_rtcore_replay_v03_hw_memory_outstanding_stats
@@ -12577,8 +12350,7 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "memory_unit_internal=1 outstanding_table_model=1 "
            "wait_map_model=1 memory_outstanding_shadow_model=1 "
            "request_state_waiting_memory_model=1 "
-           "memory_queue_ready_to_issue_model=1 "
-           "memory_ready_queue_depth=%u "
+           "memory_ready_bit_issue_model=1 "
            "memory_ready_issue_attempt_count=%u "
            "memory_ready_issue_count=%u "
            "outstanding_entry_count=%u wait_map_waiter_count=%u "
@@ -12588,7 +12360,7 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "memory_shadow_register_count=%u "
            "memory_shadow_release_count=%u "
            "memory_wake_attempt_count=%u memory_wake_progress_count=%u "
-           "evaluations=%u max_memory_ready_queue_depth=%u "
+           "evaluations=%u "
            "max_memory_ready_issue_count=%u max_outstanding_entry_count=%u "
            "max_wait_map_waiter_count=%u max_outstanding_chunk_count=%u "
            "max_memory_shadow_active_entry_count=%u "
@@ -12596,7 +12368,7 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "max_memory_shadow_register_count=%u "
            "max_memory_shadow_release_count=%u "
            "max_memory_wake_progress_count=%u\n",
-           owner_hw_sid, service_cycle, ready_memory_queue_depth,
+           owner_hw_sid, service_cycle,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .memory_ready_issue_attempt_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
@@ -12613,8 +12385,6 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .memory_wake_progress_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats.evaluations,
-           g_rtcore_replay_v03_hw_memory_outstanding_stats
-               .max_ready_memory_queue_depth,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .max_memory_ready_issue_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
@@ -12658,13 +12428,13 @@ static unsigned rtcore_replay_ready_queue_depth_for_owner(unsigned owner_hw_sid)
 {
     rtcore_replay_ready_queues *owner_queues =
         rtcore_replay_owner_ready_queues_for_owner(owner_hw_sid);
-    return static_cast<unsigned>(owner_queues->ready_memory_queue.size());
+    return static_cast<unsigned>(owner_queues->queued_queue.size());
 }
 
 static unsigned rtcore_replay_global_total_queue_depth()
 {
     return static_cast<unsigned>(
-        g_rtcore_replay_ready_queues.ready_memory_queue.size());
+        g_rtcore_replay_ready_queues.queued_queue.size());
 }
 
 static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
@@ -12775,19 +12545,15 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
            "queue_push_ingress_model=1 owner_local_storage_model=1 "
            "target_ready_queue_push_count=%u "
-           "target_memory_ready_queue_push_count=%u "
            "total_target_queue_push_count=%u evaluations=%u "
            "max_target_ready_queue_push_count=%u "
-           "max_target_memory_ready_queue_push_count=%u "
            "max_total_target_queue_push_count=%u "
            "same_cycle_bypass_candidate_delta=%u "
            "max_same_cycle_bypass_candidate_delta=%u\n",
            owner_hw_sid, service_cycle,
            stats.target_ready_queue_push_count,
-           stats.target_memory_ready_queue_push_count,
            stats.total_target_queue_push_count, stats.evaluations,
            stats.max_target_ready_queue_push_count,
-           stats.max_target_memory_ready_queue_push_count,
            stats.max_total_target_queue_push_count,
            stats.same_cycle_bypass_candidate_delta,
            stats.max_same_cycle_bypass_candidate_delta);
@@ -12816,28 +12582,19 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_stats(
            "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
            "queue_push_ingress_model=1 target_queue_push_budget=%u "
            "ready_queue_push_budget=%u "
-           "memory_ready_queue_push_budget=%u "
            "ready_push_delta=%u "
-           "memory_ready_push_delta=%u "
            "ready_over_budget=%u "
-           "memory_ready_over_budget=%u "
            "total_over_budget=%u evaluations=%u "
            "max_ready_over_budget=%u "
-           "max_memory_ready_over_budget=%u "
            "max_total_over_budget=%u\n",
            owner_hw_sid, service_cycle,
            rtcore_replay_v03_hw_queue_ingress_push_budget_config(),
            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY),
-           rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
-               RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY),
            stats.ready_push_delta,
-           stats.memory_ready_push_delta,
            stats.ready_over_budget,
-           stats.memory_ready_over_budget,
            stats.total_over_budget, stats.evaluations,
            stats.max_ready_over_budget,
-           stats.max_memory_ready_over_budget,
            stats.max_total_over_budget);
     fflush(stdout);
 }
@@ -12867,7 +12624,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_gate_stats(
     printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_BUDGET_GATE "
            "owner_hw_sid=%u service_cycle=%llu gate_enabled=%u "
            "target_queue_push_budget=%u ready_queue_push_budget=%u "
-           "memory_ready_queue_push_budget=%u "
            "allowed_count=%u "
            "blocked_count=%u retry_attempt_count=%u "
            "retry_progress_count=%u request_state_ready_pending_count=%u "
@@ -12878,8 +12634,6 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_budget_gate_stats(
            rtcore_replay_v03_hw_queue_ingress_push_budget_config(),
            rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
                RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_READY),
-           rtcore_replay_v03_hw_queue_ingress_push_budget_config_for_target(
-               RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_MEMORY_READY),
            stats.allowed_count, stats.blocked_count,
            stats.retry_attempt_count, stats.retry_progress_count,
            stats.request_state_ready_pending_count, stats.evaluations,
