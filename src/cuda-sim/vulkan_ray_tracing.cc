@@ -604,7 +604,6 @@ struct rtcore_replay_ready_queues {
     rtcore_replay_queue ready_primitive_queue;
     rtcore_replay_queue ready_stack_queue;
     rtcore_replay_queue ready_memory_queue;
-    rtcore_replay_queue ready_completion_queue;
     rtcore_replay_queue done_queue;
 };
 
@@ -5893,8 +5892,6 @@ static const rtcore_replay_queue *rtcore_replay_ready_unit_queue_for_state(
         return &g_rtcore_replay_ready_queues.ready_primitive_queue;
     case RTCORE_REPLAY_ISSUED_STACK:
         return &g_rtcore_replay_ready_queues.ready_stack_queue;
-    case RTCORE_REPLAY_COMPLETION_PENDING:
-        return &g_rtcore_replay_ready_queues.ready_completion_queue;
     default:
         return NULL;
     }
@@ -8171,9 +8168,6 @@ static bool rtcore_select_oldest_ready_request(unsigned *thread_uid)
     rtcore_consider_oldest_ready_queue_front(
         g_rtcore_replay_ready_queues.ready_stack_queue, &has_selection,
         &selected_thread_uid, &selected_order);
-    rtcore_consider_oldest_ready_queue_front(
-        g_rtcore_replay_ready_queues.ready_completion_queue,
-        &has_selection, &selected_thread_uid, &selected_order);
 
     if (!has_selection) {
         return false;
@@ -8202,9 +8196,6 @@ static bool rtcore_select_oldest_ready_request_for_owner(
     rtcore_consider_oldest_ready_queue_for_owner(
         owner_queues->ready_stack_queue, owner_hw_sid,
         &has_selection, &selected_thread_uid, &selected_order);
-    rtcore_consider_oldest_ready_queue_for_owner(
-        owner_queues->ready_completion_queue, owner_hw_sid,
-        &has_selection, &selected_thread_uid, &selected_order);
 
     if (!has_selection) {
         return false;
@@ -8228,9 +8219,6 @@ static bool rtcore_ready_queue_front_by_round_robin_slot(unsigned slot,
         break;
     case 2:
         queue = &g_rtcore_replay_ready_queues.ready_stack_queue;
-        break;
-    case 3:
-        queue = &g_rtcore_replay_ready_queues.ready_completion_queue;
         break;
     default:
         return false;
@@ -8266,9 +8254,6 @@ static bool rtcore_ready_queue_request_by_round_robin_slot_for_owner(
     case 2:
         queue = &owner_queues->ready_stack_queue;
         break;
-    case 3:
-        queue = &owner_queues->ready_completion_queue;
-        break;
     default:
         return false;
     }
@@ -8297,10 +8282,10 @@ static bool rtcore_ready_queue_request_by_round_robin_slot_for_owner(
 
 static bool rtcore_select_round_robin_ready_request(unsigned *thread_uid)
 {
-    for (unsigned offset = 0; offset < 4; ++offset) {
-        unsigned slot = (g_rtcore_replay_round_robin_cursor + offset) % 4;
+    for (unsigned offset = 0; offset < 3; ++offset) {
+        unsigned slot = (g_rtcore_replay_round_robin_cursor + offset) % 3;
         if (rtcore_ready_queue_front_by_round_robin_slot(slot, thread_uid)) {
-            g_rtcore_replay_round_robin_cursor = (slot + 1) % 4;
+            g_rtcore_replay_round_robin_cursor = (slot + 1) % 3;
             return true;
         }
     }
@@ -8310,11 +8295,11 @@ static bool rtcore_select_round_robin_ready_request(unsigned *thread_uid)
 static bool rtcore_select_round_robin_ready_request_for_owner(
     unsigned owner_hw_sid, unsigned *thread_uid)
 {
-    for (unsigned offset = 0; offset < 4; ++offset) {
-        unsigned slot = (g_rtcore_replay_round_robin_cursor + offset) % 4;
+    for (unsigned offset = 0; offset < 3; ++offset) {
+        unsigned slot = (g_rtcore_replay_round_robin_cursor + offset) % 3;
         if (rtcore_ready_queue_request_by_round_robin_slot_for_owner(
                 slot, owner_hw_sid, thread_uid)) {
-            g_rtcore_replay_round_robin_cursor = (slot + 1) % 4;
+            g_rtcore_replay_round_robin_cursor = (slot + 1) % 3;
             return true;
         }
     }
@@ -8387,8 +8372,6 @@ static bool rtcore_remove_replay_request_from_local_ready_queues(
         queues->ready_primitive_queue, thread_uid);
     removed |= rtcore_remove_replay_request_from_queue(
         queues->ready_stack_queue, thread_uid);
-    removed |= rtcore_remove_replay_request_from_queue(
-        queues->ready_completion_queue, thread_uid);
     return removed;
 }
 
@@ -8402,8 +8385,6 @@ static bool rtcore_remove_replay_request_from_global_ready_queues(
         g_rtcore_replay_ready_queues.ready_primitive_queue, thread_uid);
     removed |= rtcore_remove_replay_request_from_queue(
         g_rtcore_replay_ready_queues.ready_stack_queue, thread_uid);
-    removed |= rtcore_remove_replay_request_from_queue(
-        g_rtcore_replay_ready_queues.ready_completion_queue, thread_uid);
     return removed;
 }
 
@@ -10884,17 +10865,6 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
         &g_rtcore_replay_unit_arbitration_stats.stack_unit_budget_exhausted,
         last_identity, service_cycle,
         &g_rtcore_replay_ready_queues.ready_stack_queue);
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
-        owner_queues->ready_completion_queue,
-        RTCORE_REPLAY_COMPLETION_PENDING, owner_hw_sid,
-        &budget.completion_issue_budget,
-        &g_rtcore_replay_unit_arbitration_stats
-             .completion_unit_issue_attempts,
-        &g_rtcore_replay_unit_arbitration_stats.completion_unit_issued,
-        &g_rtcore_replay_unit_arbitration_stats
-             .completion_unit_budget_exhausted,
-        last_identity, service_cycle,
-        &g_rtcore_replay_ready_queues.ready_completion_queue);
     return progressed;
 }
 
