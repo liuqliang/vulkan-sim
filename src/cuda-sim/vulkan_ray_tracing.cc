@@ -923,11 +923,13 @@ struct rtcore_replay_v03_hw_memory_outstanding_stats {
     unsigned evaluations;
     unsigned memory_ready_issue_attempt_count;
     unsigned memory_ready_issue_count;
+    unsigned memory_outstanding_capacity_blocked_count;
     unsigned memory_wake_attempt_count;
     unsigned memory_wake_progress_count;
     unsigned memory_shadow_register_count;
     unsigned memory_shadow_release_count;
     unsigned max_memory_ready_issue_count;
+    unsigned max_memory_outstanding_capacity_blocked_count;
     unsigned max_outstanding_entry_count;
     unsigned max_wait_map_waiter_count;
     unsigned max_outstanding_chunk_count;
@@ -2314,6 +2316,21 @@ static unsigned rtcore_replay_memory_wake_budget_config()
 {
     static unsigned budget = rtcore_replay_issue_budget_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_MEMORY_WAKE_BUDGET", 4);
+    return budget;
+}
+
+static unsigned rtcore_replay_memory_outstanding_capacity_config()
+{
+    static unsigned capacity = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_OUTSTANDING_CAPACITY", 32, 1,
+        1048576, true);
+    return capacity == 0 ? 1 : capacity;
+}
+
+static unsigned rtcore_replay_memory_outstanding_alloc_budget_config()
+{
+    static unsigned budget = rtcore_replay_issue_budget_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_OUTSTANDING_ALLOC_BUDGET", 1);
     return budget;
 }
 
@@ -6181,6 +6198,10 @@ static unsigned rtcore_replay_memory_wake_latency_cycles_for_event(
 static unsigned rtcore_replay_v01_memory_queue_chunks_for_event(
     const rtcore_compact_trace_event &event);
 
+static void rtcore_count_replay_memory_outstanding_for_owner(
+    unsigned owner_hw_sid, unsigned *outstanding_entry_count,
+    unsigned *wait_map_waiter_count, unsigned *outstanding_chunk_count);
+
 static rtcore_replay_memory_outstanding_key
 rtcore_make_replay_memory_outstanding_key(
     const rtcore_replay_lane_request &request, unsigned kind,
@@ -8641,13 +8662,38 @@ static bool rtcore_issue_ready_memory_replay_request(
     return rtcore_route_admitted_replay_request(thread_uid, service_cycle);
 }
 
+static bool rtcore_replay_memory_outstanding_capacity_can_issue(
+    unsigned owner_hw_sid)
+{
+    unsigned outstanding_entry_count = 0;
+    rtcore_count_replay_memory_outstanding_for_owner(
+        owner_hw_sid, &outstanding_entry_count, NULL, NULL);
+    if (outstanding_entry_count <
+        rtcore_replay_memory_outstanding_capacity_config()) {
+        return true;
+    }
+
+    g_rtcore_replay_v03_hw_memory_outstanding_stats
+        .memory_outstanding_capacity_blocked_count++;
+    if (g_rtcore_replay_v03_hw_memory_outstanding_stats
+            .memory_outstanding_capacity_blocked_count >
+        g_rtcore_replay_v03_hw_memory_outstanding_stats
+            .max_memory_outstanding_capacity_blocked_count) {
+        g_rtcore_replay_v03_hw_memory_outstanding_stats
+            .max_memory_outstanding_capacity_blocked_count =
+            g_rtcore_replay_v03_hw_memory_outstanding_stats
+                .memory_outstanding_capacity_blocked_count;
+    }
+    return false;
+}
+
 static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
-    unsigned owner_hw_sid, unsigned *issue_budget,
+    unsigned owner_hw_sid, unsigned *issue_budget, unsigned *alloc_budget,
     rtcore_replay_service_cycle_identity_snapshot *last_identity,
     unsigned long long service_cycle)
 {
     bool progressed = false;
-    if (!issue_budget) {
+    if (!issue_budget || !alloc_budget) {
         return false;
     }
     const bool independent_service =
@@ -8661,7 +8707,7 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
     unsigned blocked_route_mask = 0;
     rtcore_replay_v01_resource_route last_blocked_route =
         RTCORE_REPLAY_V01_ROUTE_INVALID;
-    while (*issue_budget > 0 && attempts_remaining > 0) {
+    while (*issue_budget > 0 && *alloc_budget > 0 && attempts_remaining > 0) {
         unsigned thread_uid = 0;
         attempts_remaining--;
         if (!rtcore_select_banked_ready_request_for_owner(
@@ -8673,6 +8719,10 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
                 thread_uid);
         g_rtcore_replay_v03_hw_memory_outstanding_stats
             .memory_ready_issue_attempt_count++;
+        if (!rtcore_replay_memory_outstanding_capacity_can_issue(
+                owner_hw_sid)) {
+            break;
+        }
         if (!rtcore_issue_ready_memory_replay_request(thread_uid,
                                                       service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid, service_cycle);
@@ -8699,6 +8749,7 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
         g_rtcore_replay_v03_hw_memory_outstanding_stats
             .memory_ready_issue_count++;
         (*issue_budget)--;
+        (*alloc_budget)--;
         progressed = true;
     }
     return progressed;
@@ -8712,13 +8763,15 @@ static bool rtcore_service_ready_memory_replay_requests(
     bool progressed = false;
     std::set<unsigned> owners;
     rtcore_collect_replay_request_owners(&owners);
+    unsigned alloc_budget = rtcore_replay_memory_outstanding_alloc_budget_config();
     while (issue_budget > 0) {
         bool round_progressed = false;
         for (std::set<unsigned>::const_iterator it = owners.begin();
-             it != owners.end() && issue_budget > 0; ++it) {
+             it != owners.end() && issue_budget > 0 && alloc_budget > 0; ++it) {
             round_progressed |=
                 rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
-                    *it, &issue_budget, last_identity, service_cycle);
+                    *it, &issue_budget, &alloc_budget, last_identity,
+                    service_cycle);
         }
         if (!round_progressed) {
             break;
@@ -8733,8 +8786,10 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner(
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
     unsigned long long service_cycle = 0)
 {
+    unsigned alloc_budget = rtcore_replay_memory_outstanding_alloc_budget_config();
     return rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
-        owner_hw_sid, &issue_budget, last_identity, service_cycle);
+        owner_hw_sid, &issue_budget, &alloc_budget, last_identity,
+        service_cycle);
 }
 
 static bool rtcore_replay_v01_memory_queue_capacity_gate_can_wake(
@@ -10096,6 +10151,10 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "wait_map_model=1 memory_outstanding_shadow_model=1 "
            "request_state_waiting_memory_model=1 "
            "memory_ready_bit_issue_model=1 "
+           "memory_outstanding_capacity=%u "
+           "memory_outstanding_alloc_budget=%u "
+           "memory_response_wake_budget=%u "
+           "memory_outstanding_capacity_blocked_count=%u "
            "memory_ready_issue_attempt_count=%u "
            "memory_ready_issue_count=%u "
            "outstanding_entry_count=%u wait_map_waiter_count=%u "
@@ -10106,6 +10165,7 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "memory_shadow_release_count=%u "
            "memory_wake_attempt_count=%u memory_wake_progress_count=%u "
            "evaluations=%u "
+           "max_memory_outstanding_capacity_blocked_count=%u "
            "max_memory_ready_issue_count=%u max_outstanding_entry_count=%u "
            "max_wait_map_waiter_count=%u max_outstanding_chunk_count=%u "
            "max_memory_shadow_active_entry_count=%u "
@@ -10114,6 +10174,11 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "max_memory_shadow_release_count=%u "
            "max_memory_wake_progress_count=%u\n",
            owner_hw_sid, service_cycle,
+           rtcore_replay_memory_outstanding_capacity_config(),
+           rtcore_replay_memory_outstanding_alloc_budget_config(),
+           rtcore_replay_memory_wake_budget_config(),
+           g_rtcore_replay_v03_hw_memory_outstanding_stats
+               .memory_outstanding_capacity_blocked_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .memory_ready_issue_attempt_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
@@ -10130,6 +10195,8 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .memory_wake_progress_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats.evaluations,
+           g_rtcore_replay_v03_hw_memory_outstanding_stats
+               .max_memory_outstanding_capacity_blocked_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .max_memory_ready_issue_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
