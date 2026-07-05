@@ -451,19 +451,19 @@ static unsigned rtcore_memory_unit_issue_budget_per_cycle() {
   return budget;
 }
 
-static bool rtcore_v02_lsu_shared_frontend_arbiter_gate_enabled() {
+static bool rtcore_shared_lsu_frontend_arbiter_gate_enabled() {
   static int enabled = []() {
     const char *value =
-        getenv("VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_ARBITER_GATE");
+        getenv("VULKAN_SIM_RTCORE_REPLAY_SHARED_LSU_FRONTEND_ARBITER_GATE");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
 }
 
-static unsigned rtcore_v02_lsu_shared_frontend_budget_per_cycle() {
+static unsigned rtcore_shared_lsu_frontend_budget_per_cycle() {
   static unsigned budget = []() {
     const char *value =
-        getenv("VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_BUDGET_PER_CYCLE");
+        getenv("VULKAN_SIM_RTCORE_REPLAY_SHARED_LSU_FRONTEND_BUDGET_PER_CYCLE");
     if (value == NULL || *value == '\0') {
       return 1u;
     }
@@ -480,10 +480,10 @@ static unsigned rtcore_v02_lsu_shared_frontend_budget_per_cycle() {
   return budget;
 }
 
-static unsigned rtcore_v02_lsu_shared_frontend_policy() {
+static unsigned rtcore_shared_lsu_frontend_policy() {
   static unsigned policy = []() {
     const char *value =
-        getenv("VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_POLICY");
+        getenv("VULKAN_SIM_RTCORE_REPLAY_SHARED_LSU_FRONTEND_POLICY");
     if (value != NULL && strcmp(value, "rt_first") == 0) {
       return 1u;
     }
@@ -492,29 +492,29 @@ static unsigned rtcore_v02_lsu_shared_frontend_policy() {
   return policy;
 }
 
-static bool rtcore_v02_lsu_shared_frontend_policy_rt_first() {
-  return rtcore_v02_lsu_shared_frontend_policy() == 1u;
+static bool rtcore_shared_lsu_frontend_policy_rt_first() {
+  return rtcore_shared_lsu_frontend_policy() == 1u;
 }
 
-static const char *rtcore_v02_lsu_shared_frontend_policy_name() {
-  return rtcore_v02_lsu_shared_frontend_policy_rt_first() ? "rt_first"
+static const char *rtcore_shared_lsu_frontend_policy_name() {
+  return rtcore_shared_lsu_frontend_policy_rt_first() ? "rt_first"
                                                           : "normal_first";
 }
 
 static bool
-rtcore_v02_lsu_shared_frontend_normal_lsu_observation_gate_enabled() {
+rtcore_shared_lsu_frontend_normal_lsu_observation_gate_enabled() {
   static int enabled = []() {
     const char *value = getenv(
-        "VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_NORMAL_LSU_OBSERVATION_GATE");
+        "VULKAN_SIM_RTCORE_REPLAY_SHARED_LSU_FRONTEND_NORMAL_LSU_OBSERVATION_GATE");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
 }
 
-static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle() {
+static unsigned rtcore_shared_lsu_frontend_normal_lsu_proxy_per_cycle() {
   static unsigned proxy = []() {
     const char *value = getenv(
-        "VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_NORMAL_LSU_PROXY_PER_CYCLE");
+        "VULKAN_SIM_RTCORE_REPLAY_SHARED_LSU_FRONTEND_NORMAL_LSU_PROXY_PER_CYCLE");
     if (value == NULL || *value == '\0') {
       return 0u;
     }
@@ -531,10 +531,10 @@ static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle() {
   return proxy;
 }
 
-static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_dispatch_weight() {
+static unsigned rtcore_shared_lsu_frontend_normal_lsu_dispatch_weight() {
   static unsigned weight = []() {
     const char *value = getenv(
-        "VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_NORMAL_LSU_DISPATCH_WEIGHT");
+        "VULKAN_SIM_RTCORE_REPLAY_SHARED_LSU_FRONTEND_NORMAL_LSU_DISPATCH_WEIGHT");
     if (value == NULL || *value == '\0') {
       return 1u;
     }
@@ -551,10 +551,10 @@ static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_dispatch_weight() {
   return weight;
 }
 
-static unsigned rtcore_v02_lsu_shared_frontend_normal_lsu_response_fifo_weight() {
+static unsigned rtcore_shared_lsu_frontend_normal_lsu_response_fifo_weight() {
   static unsigned weight = []() {
     const char *value = getenv(
-        "VULKAN_SIM_RTCORE_V02_LSU_SHARED_FRONTEND_NORMAL_LSU_RESPONSE_FIFO_WEIGHT");
+        "VULKAN_SIM_RTCORE_REPLAY_SHARED_LSU_FRONTEND_NORMAL_LSU_RESPONSE_FIFO_WEIGHT");
     if (value == NULL || *value == '\0') {
       return 1u;
     }
@@ -1379,18 +1379,18 @@ static void rtcore_maybe_log_memory_unit_request_offer_stats(
             .v02_lsu_sideband_issue_bandwidth_budget_exhausted_count,
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_sideband_issue_bandwidth_max_deferred_count,
-         rtcore_v02_lsu_shared_frontend_arbiter_gate_enabled() ? 1u : 0u,
-         rtcore_v02_lsu_shared_frontend_policy_name(),
-         rtcore_v02_lsu_shared_frontend_budget_per_cycle(),
+         rtcore_shared_lsu_frontend_arbiter_gate_enabled() ? 1u : 0u,
+         rtcore_shared_lsu_frontend_policy_name(),
+         rtcore_shared_lsu_frontend_budget_per_cycle(),
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_shared_frontend_evaluations,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_shared_frontend_normal_lsu_used_count,
-         rtcore_v02_lsu_shared_frontend_normal_lsu_observation_gate_enabled()
+         rtcore_shared_lsu_frontend_normal_lsu_observation_gate_enabled()
              ? 1u
              : 0u,
-         rtcore_v02_lsu_shared_frontend_normal_lsu_dispatch_weight(),
-         rtcore_v02_lsu_shared_frontend_normal_lsu_response_fifo_weight(),
+         rtcore_shared_lsu_frontend_normal_lsu_dispatch_weight(),
+         rtcore_shared_lsu_frontend_normal_lsu_response_fifo_weight(),
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_shared_frontend_normal_lsu_observed_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -2266,11 +2266,11 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   const bool issue_bandwidth_gate_enabled =
       rtcore_memory_unit_issue_bandwidth_gate_enabled();
   const bool shared_frontend_gate_enabled =
-      rtcore_v02_lsu_shared_frontend_arbiter_gate_enabled();
+      rtcore_shared_lsu_frontend_arbiter_gate_enabled();
   const unsigned issue_budget_per_cycle =
       rtcore_memory_unit_issue_budget_per_cycle();
   const unsigned shared_frontend_budget_per_cycle =
-      rtcore_v02_lsu_shared_frontend_budget_per_cycle();
+      rtcore_shared_lsu_frontend_budget_per_cycle();
   unsigned sideband_issued_this_cycle = 0;
   if (issue_bandwidth_gate_enabled) {
     g_rtcore_replay_cycle_hook_consumer_stats
@@ -2278,7 +2278,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   }
   unsigned shared_frontend_normal_lsu_used = 0;
   const bool shared_frontend_normal_lsu_observation_enabled =
-      rtcore_v02_lsu_shared_frontend_normal_lsu_observation_gate_enabled();
+      rtcore_shared_lsu_frontend_normal_lsu_observation_gate_enabled();
   unsigned shared_frontend_normal_lsu_observed_dispatch_busy = 0;
   unsigned shared_frontend_normal_lsu_observed_response_fifo_occupancy = 0;
   unsigned shared_frontend_normal_lsu_observed_dispatch_pressure = 0;
@@ -2343,7 +2343,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
       }
     } else {
       shared_frontend_normal_lsu_used =
-          rtcore_v02_lsu_shared_frontend_normal_lsu_proxy_per_cycle();
+          rtcore_shared_lsu_frontend_normal_lsu_proxy_per_cycle();
     }
     if (shared_frontend_normal_lsu_used > shared_frontend_budget_per_cycle) {
       shared_frontend_normal_lsu_used = shared_frontend_budget_per_cycle;
@@ -2459,7 +2459,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     unsigned shared_frontend_rt_budget = 0;
     const unsigned shared_frontend_used_before_queue =
         sideband_issued_this_cycle +
-        (rtcore_v02_lsu_shared_frontend_policy_rt_first()
+        (rtcore_shared_lsu_frontend_policy_rt_first()
              ? 0u
              : shared_frontend_normal_lsu_used);
     unsigned shared_frontend_rt_first_budget = 0;
@@ -2492,7 +2492,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
       shared_frontend_normal_lsu_budget_pressure =
           shared_frontend_normal_lsu_used;
     }
-    if (rtcore_v02_lsu_shared_frontend_policy_rt_first()) {
+    if (rtcore_shared_lsu_frontend_policy_rt_first()) {
       g_rtcore_replay_cycle_hook_consumer_stats
           .v02_lsu_shared_frontend_rt_first_priority_count +=
           shared_frontend_normal_lsu_budget_pressure;
@@ -2506,7 +2506,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     const unsigned shared_frontend_normal_first_queue_budget =
         std::min(queued_sideband_count_before_drain,
                  shared_frontend_normal_first_budget);
-    if (!rtcore_v02_lsu_shared_frontend_policy_rt_first()) {
+    if (!rtcore_shared_lsu_frontend_policy_rt_first()) {
       unsigned long long shared_frontend_policy_opportunity = 0;
       if (shared_frontend_rt_first_queue_budget >
           shared_frontend_normal_first_queue_budget) {
@@ -10637,11 +10637,11 @@ void ldst_unit::cycle() {
   done &= memory_cycle(pipe_reg, rc_fail, type);
   const unsigned normal_lsu_dispatch_pressure_for_rtcore =
       normal_lsu_dispatch_busy_for_rtcore
-          ? rtcore_v02_lsu_shared_frontend_normal_lsu_dispatch_weight()
+          ? rtcore_shared_lsu_frontend_normal_lsu_dispatch_weight()
           : 0u;
   const unsigned normal_lsu_response_fifo_pressure_for_rtcore =
       response_fifo_occupancy_for_rtcore > 0
-          ? rtcore_v02_lsu_shared_frontend_normal_lsu_response_fifo_weight()
+          ? rtcore_shared_lsu_frontend_normal_lsu_response_fifo_weight()
           : 0u;
   const unsigned normal_lsu_pressure_for_rtcore =
       normal_lsu_dispatch_pressure_for_rtcore +
