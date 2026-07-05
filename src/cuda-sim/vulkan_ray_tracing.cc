@@ -520,6 +520,9 @@ struct rtcore_replay_warp_completion_entry_state {
     unsigned completed_lane_mask;
     unsigned result_valid_mask;
     unsigned completed_lane_count;
+    unsigned result_reg_base;
+    unsigned result_data_slot[32];
+    unsigned lane_status[32];
     bool all_active_lanes_complete;
     bool all_active_lanes_complete_logged;
     bool scoreboard_handoff_ready;
@@ -539,6 +542,9 @@ struct rtcore_replay_warp_completion_entry_snapshot {
     unsigned completed_lane_mask;
     unsigned result_valid_mask;
     unsigned completed_lane_count;
+    unsigned result_reg_base;
+    unsigned result_data_slot[32];
+    unsigned lane_status[32];
     bool scoreboard_handoff_ready;
     bool scoreboard_handoff_delivered;
     unsigned long long scoreboard_handoff_cycle;
@@ -3160,6 +3166,42 @@ static void rtcore_update_replay_warp_completion_entry_state(
         !state->scoreboard_handoff_delivered;
 }
 
+static unsigned rtcore_make_replay_result_data_slot(
+    const rtcore_replay_lane_request &request)
+{
+    return ((static_cast<unsigned>(RTCORE_REPLAY_COMPLETED) & 0xffu) << 24) |
+           ((request.lane_id & 0xffu) << 16) | (request.thread_uid & 0xffffu);
+}
+
+static unsigned rtcore_make_replay_lane_status(
+    const rtcore_replay_lane_request &request)
+{
+    (void)request;
+    return static_cast<unsigned>(RTCORE_REPLAY_COMPLETED);
+}
+
+static unsigned rtcore_replay_lane_status_valid_mask(
+    const rtcore_replay_warp_completion_entry_state &state)
+{
+    unsigned mask = 0;
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        if (state.lane_status[lane] != 0) {
+            mask |= 1u << lane;
+        }
+    }
+    return mask;
+}
+
+static unsigned rtcore_replay_first_active_lane(unsigned mask)
+{
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        if (mask & (1u << lane)) {
+            return lane;
+        }
+    }
+    return 0;
+}
+
 static void rtcore_log_replay_warp_completion_entry(
     const rtcore_replay_warp_completion_entry_state &state)
 {
@@ -3167,13 +3209,39 @@ static void rtcore_log_replay_warp_completion_entry(
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
            "admitted_lane_mask=0x%08x completed_lane_mask=0x%08x "
            "result_valid_mask=0x%08x completed_lane_count=%u "
+           "result_reg_base=%u lane_status_valid_mask=0x%08x "
            "all_active_lanes_complete=%u capacity=%u\n",
            state.key.owner_hw_sid, state.key.warp_uid, state.key.warp_id,
            state.key.active_mask, state.admitted_lane_mask,
            state.completed_lane_mask, state.result_valid_mask,
-           state.completed_lane_count,
+           state.completed_lane_count, state.result_reg_base,
+           rtcore_replay_lane_status_valid_mask(state),
            state.all_active_lanes_complete ? 1 : 0,
            rtcore_replay_warp_completion_entry_capacity_config());
+    fflush(stdout);
+}
+
+static void rtcore_log_replay_scoreboard_result_packet(
+    const rtcore_replay_warp_completion_entry_state &state,
+    unsigned long long service_cycle)
+{
+    const unsigned first_lane =
+        rtcore_replay_first_active_lane(state.result_valid_mask);
+    printf("GPGPU-Sim RTCORE_REPLAY_SCOREBOARD_RESULT_PACKET "
+           "owner_hw_sid=%u service_cycle=%llu "
+           "scoreboard_result_packet_valid=%u "
+           "warp_uid=%u warp_id=%u active_mask=0x%08x "
+           "packet_result_reg_base=%u packet_result_valid_mask=0x%08x "
+           "packet_lane_status_valid_mask=0x%08x "
+           "packet_first_result_data_slot=0x%08x "
+           "packet_first_lane_status=0x%08x "
+           "scoreboard_handoff_cycle=%llu\n",
+           state.key.owner_hw_sid, service_cycle,
+           state.scoreboard_handoff_delivered ? 1 : 0, state.key.warp_uid,
+           state.key.warp_id, state.key.active_mask, state.result_reg_base,
+           state.result_valid_mask, rtcore_replay_lane_status_valid_mask(state),
+           state.result_data_slot[first_lane], state.lane_status[first_lane],
+           state.scoreboard_handoff_cycle);
     fflush(stdout);
 }
 
@@ -3221,6 +3289,7 @@ static unsigned rtcore_service_completed_warp_entry_handoffs_for_owner(
         it->second.scoreboard_handoff_delivered = true;
         it->second.scoreboard_handoff_ready = false;
         it->second.scoreboard_handoff_cycle = service_cycle;
+        rtcore_log_replay_scoreboard_result_packet(it->second, service_cycle);
         budget--;
         delivered++;
     }
@@ -3295,6 +3364,10 @@ static void rtcore_record_replay_lane_completion_entry(
     state.admitted_lane_mask |= 1u << request.lane_id;
     state.completed_lane_mask |= 1u << request.lane_id;
     state.result_valid_mask |= 1u << request.lane_id;
+    state.result_data_slot[request.lane_id] =
+        rtcore_make_replay_result_data_slot(request);
+    state.lane_status[request.lane_id] =
+        rtcore_make_replay_lane_status(request);
     rtcore_update_replay_warp_completion_entry_state(&state);
     if (state.all_active_lanes_complete &&
         !state.all_active_lanes_complete_logged) {
@@ -7242,6 +7315,12 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
             local_snapshot.completed_lane_mask = it->second.completed_lane_mask;
             local_snapshot.result_valid_mask = it->second.result_valid_mask;
             local_snapshot.completed_lane_count = it->second.completed_lane_count;
+            local_snapshot.result_reg_base = it->second.result_reg_base;
+            for (unsigned lane = 0; lane < 32; ++lane) {
+                local_snapshot.result_data_slot[lane] =
+                    it->second.result_data_slot[lane];
+                local_snapshot.lane_status[lane] = it->second.lane_status[lane];
+            }
             local_snapshot.scoreboard_handoff_ready =
                 it->second.scoreboard_handoff_ready;
             local_snapshot.scoreboard_handoff_delivered =

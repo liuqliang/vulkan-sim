@@ -82,6 +82,9 @@ struct rtcore_replay_warp_completion_entry_snapshot {
   unsigned completed_lane_mask;
   unsigned result_valid_mask;
   unsigned completed_lane_count;
+  unsigned result_reg_base;
+  unsigned result_data_slot[32];
+  unsigned lane_status[32];
   bool scoreboard_handoff_ready;
   bool scoreboard_handoff_delivered;
   unsigned long long scoreboard_handoff_cycle;
