@@ -576,7 +576,7 @@ struct rtcore_replay_service_tick_result {
     bool ready_progressed;
     bool unit_wake_progressed;
     bool ready_issue_progressed;
-    bool completion_tail_progressed;
+    bool scoreboard_handoff_progressed;
     rtcore_replay_service_cycle_identity_snapshot last_progress_identity;
 };
 
@@ -592,7 +592,7 @@ struct rtcore_replay_service_tick_stats {
     unsigned service_stage_memory_and_ready_issue_progressed_count;
     unsigned service_stage_unit_and_ready_issue_progressed_count;
     unsigned service_stage_all_progressed_count;
-    unsigned service_stage_completion_tail_progressed_count;
+    unsigned scoreboard_handoff_progressed_count;
 };
 
 struct rtcore_replay_overflow_summary_estimate_stats {
@@ -5816,7 +5816,7 @@ static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
     return progressed;
 }
 
-static bool rtcore_service_replay_completion_tail_requests_for_owner(
+static bool rtcore_service_replay_scoreboard_handoff_requests_for_owner(
     unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
     unsigned long long service_cycle = 0)
@@ -6247,7 +6247,7 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
     rtcore_replay_service_cycle_identity_snapshot memory_identity = {};
     rtcore_replay_service_cycle_identity_snapshot unit_identity = {};
     rtcore_replay_service_cycle_identity_snapshot ready_identity = {};
-    rtcore_replay_service_cycle_identity_snapshot completion_identity = {};
+    rtcore_replay_service_cycle_identity_snapshot scoreboard_handoff_identity = {};
     const bool memory_issue_progressed =
         rtcore_service_ready_memory_replay_requests_for_owner(
             owner_hw_sid, rtcore_replay_memory_issue_budget_config(),
@@ -6266,18 +6266,19 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
         rtcore_service_replay_non_completion_ready_requests_for_owner(
             owner_hw_sid, rtcore_replay_issue_budget_config(), &ready_identity,
             service_cycle);
-    const bool completion_tail_progressed =
-        rtcore_service_replay_completion_tail_requests_for_owner(
+    const bool scoreboard_handoff_progressed =
+        rtcore_service_replay_scoreboard_handoff_requests_for_owner(
             owner_hw_sid, rtcore_replay_issue_budget_config(),
-            &completion_identity, service_cycle);
+            &scoreboard_handoff_identity, service_cycle);
     result.unit_wake_progressed = unit_progressed;
     result.ready_issue_progressed = ready_issue_progressed;
-    result.completion_tail_progressed = completion_tail_progressed;
+    result.scoreboard_handoff_progressed = scoreboard_handoff_progressed;
     result.ready_progressed =
-        unit_progressed || ready_issue_progressed || completion_tail_progressed;
+        unit_progressed || ready_issue_progressed ||
+        scoreboard_handoff_progressed;
     result.progressed = result.memory_progressed || result.ready_progressed;
-    if (completion_tail_progressed) {
-        result.last_progress_identity = completion_identity;
+    if (scoreboard_handoff_progressed) {
+        result.last_progress_identity = scoreboard_handoff_identity;
     } else if (ready_issue_progressed) {
         result.last_progress_identity = ready_identity;
     } else if (unit_progressed) {
@@ -6322,9 +6323,8 @@ static void rtcore_record_replay_service_tick_result(
         g_rtcore_replay_service_tick_stats
             .service_stage_ready_issue_progressed_count++;
     }
-    if (result.completion_tail_progressed) {
-        g_rtcore_replay_service_tick_stats
-            .service_stage_completion_tail_progressed_count++;
+    if (result.scoreboard_handoff_progressed) {
+        g_rtcore_replay_service_tick_stats.scoreboard_handoff_progressed_count++;
     }
     if (result.memory_progressed && result.unit_wake_progressed) {
         g_rtcore_replay_service_tick_stats
