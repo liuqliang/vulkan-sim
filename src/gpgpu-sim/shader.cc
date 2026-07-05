@@ -422,19 +422,19 @@ static unsigned rtcore_memory_unit_request_offer_stats_log_limit() {
   return cached_limit;
 }
 
-static bool rtcore_v02_lsu_sideband_issue_bandwidth_gate_enabled() {
+static bool rtcore_memory_unit_issue_bandwidth_gate_enabled() {
   static int enabled = []() {
     const char *value =
-        getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_ISSUE_BANDWIDTH_GATE");
+        getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_ISSUE_BANDWIDTH_GATE");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
 }
 
-static unsigned rtcore_v02_lsu_sideband_issue_budget_per_cycle() {
+static unsigned rtcore_memory_unit_issue_budget_per_cycle() {
   static unsigned budget = []() {
     const char *value =
-        getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_ISSUE_BUDGET_PER_CYCLE");
+        getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_ISSUE_BUDGET_PER_CYCLE");
     if (value == NULL || *value == '\0') {
       return 1u;
     }
@@ -1367,8 +1367,8 @@ static void rtcore_maybe_log_memory_unit_request_offer_stats(
              .v02_lsu_sideband_icnt_injection_flit_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_icnt_injection_max_waiter_count,
-         rtcore_v02_lsu_sideband_issue_bandwidth_gate_enabled() ? 1u : 0u,
-         rtcore_v02_lsu_sideband_issue_budget_per_cycle(),
+         rtcore_memory_unit_issue_bandwidth_gate_enabled() ? 1u : 0u,
+         rtcore_memory_unit_issue_budget_per_cycle(),
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_issue_bandwidth_evaluations,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -2264,11 +2264,11 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     g_rtcore_replay_cycle_hook_consumer_stats.ready_progressed_results++;
   }
   const bool issue_bandwidth_gate_enabled =
-      rtcore_v02_lsu_sideband_issue_bandwidth_gate_enabled();
+      rtcore_memory_unit_issue_bandwidth_gate_enabled();
   const bool shared_frontend_gate_enabled =
       rtcore_v02_lsu_shared_frontend_arbiter_gate_enabled();
   const unsigned issue_budget_per_cycle =
-      rtcore_v02_lsu_sideband_issue_budget_per_cycle();
+      rtcore_memory_unit_issue_budget_per_cycle();
   const unsigned shared_frontend_budget_per_cycle =
       rtcore_v02_lsu_shared_frontend_budget_per_cycle();
   unsigned sideband_issued_this_cycle = 0;
