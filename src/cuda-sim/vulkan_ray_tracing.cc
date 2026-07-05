@@ -488,7 +488,6 @@ struct rtcore_replay_lane_request {
     unsigned long long v02_lsu_response_wait_armed_cycle;
     std::set<unsigned> v02_lsu_response_wait_completed_chunks;
     bool v01_issue_state_gate_pending;
-    bool v01_issue_state_capacity_gate_pending;
     unsigned v01_issue_state_event_index;
     rtcore_replay_v01_resource_route v01_issue_state_route;
     rtcore_replay_lane_request_state v01_issue_state_target_state;
@@ -730,15 +729,8 @@ struct rtcore_replay_v01_issue_state_gate_stats {
     unsigned completion_gate_armed_count;
     unsigned gate_blocked_count;
     unsigned gate_woken_count;
-    unsigned completion_capacity_blocked_count;
     unsigned max_latency_cycles;
     unsigned max_blocked_cycles;
-    unsigned max_completion_inflight;
-};
-
-struct rtcore_replay_v01_issue_state_owner_state {
-    unsigned completion_inflight;
-    unsigned completion_reservations;
 };
 
 struct rtcore_replay_v01_independent_service_stats {
@@ -1001,8 +993,6 @@ static std::map<unsigned, rtcore_replay_v01_memory_queue_owner_state>
     g_rtcore_replay_v01_memory_queue_owner_states;
 static rtcore_replay_v01_issue_state_gate_stats
     g_rtcore_replay_v01_issue_state_gate_stats;
-static std::map<unsigned, rtcore_replay_v01_issue_state_owner_state>
-    g_rtcore_replay_v01_issue_state_owner_states;
 static rtcore_replay_v01_independent_service_stats
     g_rtcore_replay_v01_independent_service_stats;
 static rtcore_replay_v01_stage_data_path_gate_stats
@@ -1921,14 +1911,6 @@ static unsigned rtcore_replay_v01_completion_latency_cycles_config()
         "VULKAN_SIM_RTCORE_REPLAY_V01_COMPLETION_LATENCY_CYCLES",
         RTCORE_REPLAY_V01_COMPLETION_LATENCY_CYCLES, 4, 1048576, false);
     return latency == 0 ? 1 : latency;
-}
-
-static unsigned rtcore_replay_v01_completion_queue_capacity_config()
-{
-    static unsigned capacity = rtcore_replay_uint_config_or_model_preset(
-        "VULKAN_SIM_RTCORE_REPLAY_V01_COMPLETION_QUEUE_CAPACITY", 0, 1,
-        1048576, false);
-    return capacity;
 }
 
 static unsigned rtcore_replay_memory_cache_line_latency_config()
@@ -3266,9 +3248,7 @@ static void rtcore_refresh_replay_lane_request_ready_bits(
     request->ready_memory_bit = false;
     request->ready_result_bit = false;
 
-    if (!request->valid ||
-        request->v01_issue_state_capacity_gate_pending ||
-        request->v01_issue_state_gate_pending ||
+    if (!request->valid || request->v01_issue_state_gate_pending ||
         request->unit_latency_gate_pending) {
         return;
     }
@@ -3300,7 +3280,6 @@ static bool rtcore_replay_request_ready_for_state(
     rtcore_replay_lane_request_state unit_state)
 {
     if (!request.valid || request.state != unit_state ||
-        request.v01_issue_state_capacity_gate_pending ||
         request.v01_issue_state_gate_pending ||
         request.unit_latency_gate_pending) {
         return false;
@@ -3424,8 +3403,7 @@ static bool rtcore_enqueue_replay_request_by_state(
     }
     rtcore_replay_lane_request &request = *request_ptr;
     rtcore_refresh_replay_lane_request_ready_bits(&request);
-    if (request.v01_issue_state_capacity_gate_pending ||
-        request.v01_issue_state_gate_pending ||
+    if (request.v01_issue_state_gate_pending ||
         request.unit_latency_gate_pending) {
         return true;
     }
@@ -5608,8 +5586,7 @@ static void rtcore_record_replay_v01_issue_state_gate_arm(
 
 static void rtcore_maybe_log_replay_v01_issue_state_gate_stats(
     const rtcore_replay_lane_request &request, bool armed, bool blocked,
-    bool woken, bool completion_capacity_blocked,
-    unsigned long long service_cycle)
+    bool woken, unsigned long long service_cycle)
 {
     if (!rtcore_replay_v01_issue_state_gate_stats_log_enabled()) {
         return;
@@ -5625,14 +5602,6 @@ static void rtcore_maybe_log_replay_v01_issue_state_gate_stats(
             ? static_cast<unsigned>(rtcore_unpack_compact_trace_event_type(
                   request.events[request.v01_issue_state_event_index]))
             : 0;
-    unsigned completion_inflight = 0;
-    std::map<unsigned, rtcore_replay_v01_issue_state_owner_state>::
-        const_iterator owner_it =
-            g_rtcore_replay_v01_issue_state_owner_states.find(
-                request.owner_hw_sid);
-    if (owner_it != g_rtcore_replay_v01_issue_state_owner_states.end()) {
-        completion_inflight = owner_it->second.completion_inflight;
-    }
     const unsigned long long blocked_cycles =
         request.v01_issue_state_ready_cycle > service_cycle
             ? request.v01_issue_state_ready_cycle - service_cycle
@@ -5643,16 +5612,14 @@ static void rtcore_maybe_log_replay_v01_issue_state_gate_stats(
            "has_warp_metadata=%u warp_uid=%u warp_id=%u "
            "active_mask=0x%08x static_inst_uid=%u event_index=%u "
            "event_type=%u route=%u target_state=%u gate_enabled=%u "
-           "armed=%u blocked=%u woken=%u completion_capacity_blocked=%u "
+           "armed=%u blocked=%u woken=%u "
            "service_cycle=%llu ready_cycle=%llu latency_cycles=%u "
            "blocked_cycles=%llu admitted_cycle=%llu "
-           "completion_queue_capacity=%u completion_inflight=%u "
            "gate_evaluations=%u node_gate_armed_count=%u "
            "primitive_gate_armed_count=%u stack_gate_armed_count=%u "
            "completion_gate_armed_count=%u gate_blocked_count=%u "
-           "gate_woken_count=%u completion_capacity_blocked_count=%u "
-           "max_latency_cycles=%u max_blocked_cycles=%u "
-           "max_completion_inflight=%u\n",
+           "gate_woken_count=%u max_latency_cycles=%u "
+           "max_blocked_cycles=%u\n",
            request.owner_hw_sid, request.thread_uid, request.lane_id,
            request.has_warp_metadata ? 1u : 0u, request.warp_uid,
            request.warp_id, request.active_mask, request.static_inst_uid,
@@ -5661,12 +5628,10 @@ static void rtcore_maybe_log_replay_v01_issue_state_gate_stats(
            static_cast<unsigned>(request.v01_issue_state_target_state),
            rtcore_replay_v01_issue_state_gate_enabled() ? 1u : 0u,
            armed ? 1u : 0u, blocked ? 1u : 0u, woken ? 1u : 0u,
-           completion_capacity_blocked ? 1u : 0u, service_cycle,
+           service_cycle,
            request.v01_issue_state_ready_cycle,
            request.v01_issue_state_latency_cycles, blocked_cycles,
            request.admitted_cycle,
-           rtcore_replay_v01_completion_queue_capacity_config(),
-           completion_inflight,
            g_rtcore_replay_v01_issue_state_gate_stats.gate_evaluations,
            g_rtcore_replay_v01_issue_state_gate_stats.node_gate_armed_count,
            g_rtcore_replay_v01_issue_state_gate_stats
@@ -5676,11 +5641,8 @@ static void rtcore_maybe_log_replay_v01_issue_state_gate_stats(
                .completion_gate_armed_count,
            g_rtcore_replay_v01_issue_state_gate_stats.gate_blocked_count,
            g_rtcore_replay_v01_issue_state_gate_stats.gate_woken_count,
-           g_rtcore_replay_v01_issue_state_gate_stats
-               .completion_capacity_blocked_count,
            g_rtcore_replay_v01_issue_state_gate_stats.max_latency_cycles,
-           g_rtcore_replay_v01_issue_state_gate_stats.max_blocked_cycles,
-           g_rtcore_replay_v01_issue_state_gate_stats.max_completion_inflight);
+           g_rtcore_replay_v01_issue_state_gate_stats.max_blocked_cycles);
     fflush(stdout);
 }
 
@@ -5726,50 +5688,6 @@ static bool rtcore_maybe_arm_replay_v01_issue_state_gate(
     request->v01_issue_state_armed_cycle = service_cycle;
     request->v01_issue_state_ready_cycle = service_cycle + latency_cycles;
 
-    rtcore_replay_v01_issue_state_owner_state &owner_state =
-        g_rtcore_replay_v01_issue_state_owner_states[request->owner_hw_sid];
-    const unsigned completion_capacity =
-        rtcore_replay_v01_completion_queue_capacity_config();
-    if (route == RTCORE_REPLAY_V01_ROUTE_COMPLETION &&
-        completion_capacity > 0 &&
-        owner_state.completion_inflight >= completion_capacity) {
-        request->v01_issue_state_capacity_gate_pending = true;
-        request->v01_issue_state_gate_pending = false;
-        request->v01_issue_state_ready_cycle = 0;
-        request->state = target_state;
-        rtcore_record_replay_request_state_write();
-
-        g_rtcore_replay_v01_issue_state_gate_stats.gate_evaluations++;
-        g_rtcore_replay_v01_issue_state_gate_stats
-            .completion_capacity_blocked_count++;
-        if (owner_state.completion_inflight >
-            g_rtcore_replay_v01_issue_state_gate_stats
-                .max_completion_inflight) {
-            g_rtcore_replay_v01_issue_state_gate_stats
-                .max_completion_inflight = owner_state.completion_inflight;
-        }
-        if (latency_cycles >
-            g_rtcore_replay_v01_issue_state_gate_stats.max_latency_cycles) {
-            g_rtcore_replay_v01_issue_state_gate_stats.max_latency_cycles =
-                latency_cycles;
-        }
-        rtcore_maybe_log_replay_v01_issue_state_gate_stats(
-            *request, false, false, false, true, service_cycle);
-        return true;
-    }
-
-    if (route == RTCORE_REPLAY_V01_ROUTE_COMPLETION) {
-        owner_state.completion_inflight++;
-        owner_state.completion_reservations++;
-        if (owner_state.completion_inflight >
-            g_rtcore_replay_v01_issue_state_gate_stats
-                .max_completion_inflight) {
-            g_rtcore_replay_v01_issue_state_gate_stats
-                .max_completion_inflight = owner_state.completion_inflight;
-        }
-    }
-
-    request->v01_issue_state_capacity_gate_pending = false;
     request->v01_issue_state_gate_pending = true;
     request->state = target_state;
     rtcore_record_replay_request_state_write();
@@ -5782,38 +5700,8 @@ static bool rtcore_maybe_arm_replay_v01_issue_state_gate(
             latency_cycles;
     }
     rtcore_maybe_log_replay_v01_issue_state_gate_stats(
-        *request, true, false, false, false, service_cycle);
+        *request, true, false, false, service_cycle);
     return true;
-}
-
-static bool rtcore_replay_v01_issue_state_capacity_gate_ready(
-    rtcore_replay_lane_request *request, unsigned long long service_cycle)
-{
-    if (!request || !request->v01_issue_state_capacity_gate_pending) {
-        return true;
-    }
-
-    if (request->v01_issue_state_route ==
-        RTCORE_REPLAY_V01_ROUTE_COMPLETION) {
-        const unsigned completion_capacity =
-            rtcore_replay_v01_completion_queue_capacity_config();
-        rtcore_replay_v01_issue_state_owner_state &owner_state =
-            g_rtcore_replay_v01_issue_state_owner_states[
-                request->owner_hw_sid];
-        if (completion_capacity > 0 &&
-            owner_state.completion_inflight >= completion_capacity) {
-            g_rtcore_replay_v01_issue_state_gate_stats.gate_evaluations++;
-            g_rtcore_replay_v01_issue_state_gate_stats
-                .completion_capacity_blocked_count++;
-            rtcore_maybe_log_replay_v01_issue_state_gate_stats(
-                *request, false, false, false, true, service_cycle);
-            return false;
-        }
-    }
-
-    request->v01_issue_state_capacity_gate_pending = false;
-    return rtcore_maybe_arm_replay_v01_issue_state_gate(request,
-                                                        service_cycle);
 }
 
 static bool rtcore_replay_v01_issue_state_gate_ready(
@@ -5833,24 +5721,14 @@ static bool rtcore_replay_v01_issue_state_gate_ready(
                 blocked_cycles;
         }
         rtcore_maybe_log_replay_v01_issue_state_gate_stats(
-            *request, false, true, false, false, service_cycle);
+            *request, false, true, false, service_cycle);
         return false;
-    }
-
-    if (request->v01_issue_state_route ==
-        RTCORE_REPLAY_V01_ROUTE_COMPLETION) {
-        rtcore_replay_v01_issue_state_owner_state &owner_state =
-            g_rtcore_replay_v01_issue_state_owner_states[
-                request->owner_hw_sid];
-        if (owner_state.completion_inflight > 0) {
-            owner_state.completion_inflight--;
-        }
     }
 
     g_rtcore_replay_v01_issue_state_gate_stats.gate_evaluations++;
     g_rtcore_replay_v01_issue_state_gate_stats.gate_woken_count++;
     rtcore_maybe_log_replay_v01_issue_state_gate_stats(
-        *request, false, false, true, false, service_cycle);
+        *request, false, false, true, service_cycle);
     request->v01_issue_state_gate_pending = false;
     return true;
 }
@@ -5874,8 +5752,7 @@ static rtcore_replay_v01_resource_route
 rtcore_replay_v01_pending_route_for_independent_service(
     const rtcore_replay_lane_request &request)
 {
-    if (request.v01_issue_state_capacity_gate_pending ||
-        request.v01_issue_state_gate_pending) {
+    if (request.v01_issue_state_gate_pending) {
         return request.v01_issue_state_route;
     }
     if (request.v01_memory_queue_capacity_gate_pending ||
@@ -6822,13 +6699,6 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
     bool v01_issue_state_resolved_this_step = false;
     bool memory_contention_resolved_this_step = false;
     bool v02_lsu_response_wait_resolved_this_step = false;
-    if (it->second.v01_issue_state_capacity_gate_pending) {
-        if (!rtcore_replay_v01_issue_state_capacity_gate_ready(
-                &it->second, service_cycle)) {
-            return false;
-        }
-        return true;
-    }
     if (it->second.v01_issue_state_gate_pending) {
         if (!rtcore_replay_v01_issue_state_gate_ready(&it->second,
                                                       service_cycle)) {
@@ -7160,8 +7030,7 @@ static bool rtcore_wake_waiting_unit_replay_request(
     if (it == g_rtcore_replay_lane_requests.end()) {
         return false;
     }
-    if (!it->second.v01_issue_state_capacity_gate_pending &&
-        !it->second.v01_issue_state_gate_pending &&
+    if (!it->second.v01_issue_state_gate_pending &&
         !it->second.unit_latency_gate_pending) {
         return false;
     }
@@ -7174,34 +7043,8 @@ static bool rtcore_wake_waiting_unit_replay_request(
 static bool rtcore_replay_request_state_has_unit_wake_service_work(
     const rtcore_replay_lane_request &request)
 {
-    return request.valid &&
-           (request.v01_issue_state_capacity_gate_pending ||
-            request.v01_issue_state_gate_pending ||
-            request.unit_latency_gate_pending);
-}
-
-static bool rtcore_replay_v01_issue_state_capacity_gate_can_wake(
-    const rtcore_replay_lane_request &request)
-{
-    if (!request.v01_issue_state_capacity_gate_pending) {
-        return false;
-    }
-    if (request.v01_issue_state_route !=
-        RTCORE_REPLAY_V01_ROUTE_COMPLETION) {
-        return true;
-    }
-    const unsigned completion_capacity =
-        rtcore_replay_v01_completion_queue_capacity_config();
-    std::map<unsigned, rtcore_replay_v01_issue_state_owner_state>::
-        const_iterator owner_state =
-            g_rtcore_replay_v01_issue_state_owner_states.find(
-                request.owner_hw_sid);
-    const unsigned completion_inflight =
-        owner_state == g_rtcore_replay_v01_issue_state_owner_states.end()
-            ? 0
-            : owner_state->second.completion_inflight;
-    return completion_capacity == 0 ||
-           completion_inflight < completion_capacity;
+    return request.valid && (request.v01_issue_state_gate_pending ||
+                             request.unit_latency_gate_pending);
 }
 
 static bool rtcore_replay_request_state_unit_wake_service_ready(
@@ -7210,9 +7053,6 @@ static bool rtcore_replay_request_state_unit_wake_service_ready(
 {
     if (!rtcore_replay_request_state_has_unit_wake_service_work(request)) {
         return false;
-    }
-    if (rtcore_replay_v01_issue_state_capacity_gate_can_wake(request)) {
-        return true;
     }
     if (request.v01_issue_state_gate_pending &&
         service_cycle >= request.v01_issue_state_ready_cycle) {
@@ -8251,8 +8091,7 @@ static bool rtcore_replay_request_state_has_unit_executing_work(
     const rtcore_replay_lane_request &request)
 {
     return request.unit_latency_gate_pending ||
-           request.v01_issue_state_gate_pending ||
-           request.v01_issue_state_capacity_gate_pending;
+           request.v01_issue_state_gate_pending;
 }
 
 static bool rtcore_replay_request_state_has_unit_ready_pending_work(
