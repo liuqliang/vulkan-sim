@@ -7543,33 +7543,6 @@ static void rtcore_collect_replay_request_owners(std::set<unsigned> *owners)
     }
 }
 
-static bool rtcore_service_replay_ready_requests_with_budget(
-    rtcore_replay_issue_budget budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
-    unsigned long long service_cycle = 0)
-{
-    bool progressed = false;
-    std::set<unsigned> owners;
-    rtcore_collect_replay_request_owners(&owners);
-    const bool collect_unit_stats = rtcore_replay_unit_arbitration_enabled();
-    while (rtcore_replay_issue_budget_available(budget)) {
-        bool round_progressed = false;
-        for (std::set<unsigned>::const_iterator it = owners.begin();
-             it != owners.end() && rtcore_replay_issue_budget_available(budget);
-             ++it) {
-            round_progressed |=
-                rtcore_service_replay_compute_ready_requests_for_owner(
-                    *it, &budget, collect_unit_stats, last_identity,
-                    service_cycle);
-        }
-        if (!round_progressed) {
-            break;
-        }
-        progressed = true;
-    }
-    return progressed;
-}
-
 static bool rtcore_service_replay_ready_requests_with_budget_for_owner(
     unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
@@ -7772,32 +7745,6 @@ static bool rtcore_replay_request_state_unit_wake_service_ready(
     return false;
 }
 
-static bool rtcore_select_replay_request_state_unit_wake_request(
-    unsigned *thread_uid, unsigned long long service_cycle)
-{
-    bool found = false;
-    unsigned selected_thread_uid = 0;
-    unsigned selected_ready_order = 0;
-    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
-             g_rtcore_replay_lane_requests.begin();
-         it != g_rtcore_replay_lane_requests.end(); ++it) {
-        const rtcore_replay_lane_request &request = it->second;
-        if (!rtcore_replay_request_state_unit_wake_service_ready(
-                request, service_cycle)) {
-            continue;
-        }
-        if (!found || request.ready_order < selected_ready_order) {
-            found = true;
-            selected_thread_uid = request.thread_uid;
-            selected_ready_order = request.ready_order;
-        }
-    }
-    if (found && thread_uid) {
-        *thread_uid = selected_thread_uid;
-    }
-    return found;
-}
-
 static bool rtcore_select_banked_unit_wake_request_for_owner(
     unsigned owner_hw_sid, unsigned *thread_uid,
     unsigned long long service_cycle)
@@ -7858,20 +7805,6 @@ static bool rtcore_select_replay_request_state_unit_wake_request_for_owner(
         owner_hw_sid, thread_uid, service_cycle);
 }
 
-static unsigned rtcore_count_replay_request_state_unit_wake_work()
-{
-    unsigned count = 0;
-    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
-             g_rtcore_replay_lane_requests.begin();
-         it != g_rtcore_replay_lane_requests.end(); ++it) {
-        if (rtcore_replay_request_state_has_unit_wake_service_work(
-                it->second)) {
-            count++;
-        }
-    }
-    return count;
-}
-
 static unsigned
 rtcore_count_replay_request_state_unit_wake_work_for_owner(unsigned owner_hw_sid)
 {
@@ -7887,69 +7820,6 @@ rtcore_count_replay_request_state_unit_wake_work_for_owner(unsigned owner_hw_sid
         }
     }
     return count;
-}
-
-static bool rtcore_service_waiting_unit_replay_requests(
-    unsigned wake_budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
-    unsigned long long service_cycle = 0)
-{
-    bool progressed = false;
-    const bool independent_service =
-        rtcore_replay_v01_independent_service_enabled();
-    unsigned attempts_remaining =
-        independent_service
-            ? static_cast<unsigned>(
-                  rtcore_count_replay_request_state_unit_wake_work())
-            : wake_budget;
-    unsigned blocked_route_mask = 0;
-    rtcore_replay_v01_resource_route last_blocked_route =
-        RTCORE_REPLAY_V01_ROUTE_INVALID;
-    while (wake_budget > 0 && attempts_remaining > 0) {
-        unsigned thread_uid = 0;
-        attempts_remaining--;
-        if (!rtcore_select_replay_request_state_unit_wake_request(
-                &thread_uid, service_cycle)) {
-            break;
-        }
-        const rtcore_replay_v01_resource_route pending_route =
-            rtcore_replay_v01_pending_route_for_independent_service(
-                thread_uid);
-        g_rtcore_replay_v03_hw_unit_state_wake_service_stats
-            .wake_attempt_count++;
-        g_rtcore_replay_v03_hw_unit_state_wake_service_stats
-            .request_state_unit_wake_attempt_count++;
-        if (!rtcore_wake_waiting_unit_replay_request(thread_uid,
-                                                     service_cycle)) {
-            rtcore_route_admitted_replay_request(thread_uid, service_cycle);
-            const unsigned pending_route_mask =
-                rtcore_replay_v01_route_mask(pending_route);
-            if (independent_service && pending_route_mask != 0) {
-                blocked_route_mask |= pending_route_mask;
-                last_blocked_route = pending_route;
-                rtcore_record_replay_v01_independent_service_blocked_continue(
-                    0, service_cycle, pending_route);
-                continue;
-            }
-            break;
-        }
-        if (independent_service && blocked_route_mask != 0) {
-            rtcore_record_replay_v01_independent_service_progress_after_block(
-                0, service_cycle, pending_route, last_blocked_route,
-                blocked_route_mask);
-        }
-        if (last_identity) {
-            *last_identity = rtcore_make_replay_service_progress_identity(
-                thread_uid, false, true);
-        }
-        g_rtcore_replay_v03_hw_unit_state_wake_service_stats
-            .wake_progress_count++;
-        g_rtcore_replay_v03_hw_unit_state_wake_service_stats
-            .request_state_unit_wake_progress_count++;
-        wake_budget--;
-        progressed = true;
-    }
-    return progressed;
 }
 
 static bool rtcore_service_waiting_unit_replay_requests_for_owner(
@@ -8147,32 +8017,6 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
     return progressed;
 }
 
-static bool rtcore_service_ready_memory_replay_requests(
-    unsigned issue_budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
-    unsigned long long service_cycle = 0)
-{
-    bool progressed = false;
-    std::set<unsigned> owners;
-    rtcore_collect_replay_request_owners(&owners);
-    unsigned alloc_budget = rtcore_replay_memory_outstanding_alloc_budget_config();
-    while (issue_budget > 0) {
-        bool round_progressed = false;
-        for (std::set<unsigned>::const_iterator it = owners.begin();
-             it != owners.end() && issue_budget > 0 && alloc_budget > 0; ++it) {
-            round_progressed |=
-                rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
-                    *it, &issue_budget, &alloc_budget, last_identity,
-                    service_cycle);
-        }
-        if (!round_progressed) {
-            break;
-        }
-        progressed = true;
-    }
-    return progressed;
-}
-
 static bool rtcore_service_ready_memory_replay_requests_for_owner(
     unsigned owner_hw_sid, unsigned issue_budget,
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
@@ -8259,32 +8103,6 @@ static bool rtcore_replay_request_state_memory_wake_service_ready(
     return false;
 }
 
-static bool rtcore_select_replay_request_state_memory_wake_request(
-    unsigned *thread_uid, unsigned long long service_cycle)
-{
-    bool found = false;
-    unsigned selected_thread_uid = 0;
-    unsigned selected_ready_order = 0;
-    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
-             g_rtcore_replay_lane_requests.begin();
-         it != g_rtcore_replay_lane_requests.end(); ++it) {
-        const rtcore_replay_lane_request &request = it->second;
-        if (!rtcore_replay_request_state_memory_wake_service_ready(
-                request, service_cycle)) {
-            continue;
-        }
-        if (!found || request.ready_order < selected_ready_order) {
-            found = true;
-            selected_thread_uid = request.thread_uid;
-            selected_ready_order = request.ready_order;
-        }
-    }
-    if (found && thread_uid) {
-        *thread_uid = selected_thread_uid;
-    }
-    return found;
-}
-
 static bool rtcore_select_replay_request_state_memory_wake_request_for_owner(
     unsigned owner_hw_sid, unsigned *thread_uid,
     unsigned long long service_cycle)
@@ -8313,21 +8131,6 @@ static bool rtcore_select_replay_request_state_memory_wake_request_for_owner(
     return found;
 }
 
-static unsigned rtcore_count_replay_request_state_memory_wake_work()
-{
-    unsigned count = 0;
-    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
-             g_rtcore_replay_lane_requests.begin();
-         it != g_rtcore_replay_lane_requests.end(); ++it) {
-        const rtcore_replay_lane_request &request = it->second;
-        if (request.valid && request.state == RTCORE_REPLAY_ISSUED_MEMORY &&
-            rtcore_replay_request_state_has_memory_outstanding_work(request)) {
-            count++;
-        }
-    }
-    return count;
-}
-
 static unsigned
 rtcore_count_replay_request_state_memory_wake_work_for_owner(
     unsigned owner_hw_sid)
@@ -8344,65 +8147,6 @@ rtcore_count_replay_request_state_memory_wake_work_for_owner(
         }
     }
     return count;
-}
-
-static bool rtcore_service_waiting_memory_replay_requests(
-    unsigned wake_budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
-    unsigned long long service_cycle = 0)
-{
-    bool progressed = false;
-    const bool independent_service =
-        rtcore_replay_v01_independent_service_enabled();
-    unsigned attempts_remaining =
-        independent_service
-            ? static_cast<unsigned>(
-                  rtcore_count_replay_request_state_memory_wake_work())
-            : wake_budget;
-    unsigned blocked_route_mask = 0;
-    rtcore_replay_v01_resource_route last_blocked_route =
-        RTCORE_REPLAY_V01_ROUTE_INVALID;
-    while (wake_budget > 0 && attempts_remaining > 0) {
-        unsigned thread_uid = 0;
-        attempts_remaining--;
-        if (!rtcore_select_replay_request_state_memory_wake_request(
-                &thread_uid, service_cycle)) {
-            break;
-        }
-        const rtcore_replay_v01_resource_route pending_route =
-            rtcore_replay_v01_pending_route_for_independent_service(
-                thread_uid);
-        g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .memory_wake_attempt_count++;
-        if (!rtcore_wake_waiting_memory_replay_request(thread_uid,
-                                                       service_cycle)) {
-            rtcore_route_admitted_replay_request(thread_uid, service_cycle);
-            const unsigned pending_route_mask =
-                rtcore_replay_v01_route_mask(pending_route);
-            if (independent_service && pending_route_mask != 0) {
-                blocked_route_mask |= pending_route_mask;
-                last_blocked_route = pending_route;
-                rtcore_record_replay_v01_independent_memory_service_blocked_continue(
-                    0, service_cycle, pending_route);
-                continue;
-            }
-            break;
-        }
-        if (independent_service && blocked_route_mask != 0) {
-            rtcore_record_replay_v01_independent_memory_service_progress_after_block(
-                0, service_cycle, pending_route, last_blocked_route,
-                blocked_route_mask);
-        }
-        if (last_identity) {
-            *last_identity = rtcore_make_replay_service_progress_identity(
-                thread_uid, true, false);
-        }
-        g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .memory_wake_progress_count++;
-        wake_budget--;
-        progressed = true;
-    }
-    return progressed;
 }
 
 static bool rtcore_service_waiting_memory_replay_requests_for_owner(
@@ -8465,12 +8209,6 @@ static bool rtcore_service_waiting_memory_replay_requests_for_owner(
     return progressed;
 }
 
-static bool rtcore_service_waiting_memory_replay_requests()
-{
-    return rtcore_service_waiting_memory_replay_requests(
-        rtcore_replay_memory_wake_budget_config());
-}
-
 static bool rtcore_service_waiting_memory_replay_requests_for_owner(
     unsigned owner_hw_sid)
 {
@@ -8478,56 +8216,11 @@ static bool rtcore_service_waiting_memory_replay_requests_for_owner(
         owner_hw_sid, rtcore_replay_memory_wake_budget_config());
 }
 
-static bool rtcore_service_waiting_unit_replay_requests()
-{
-    return rtcore_service_waiting_unit_replay_requests(
-        rtcore_replay_unit_wake_budget_config());
-}
-
 static bool rtcore_service_waiting_unit_replay_requests_for_owner(
     unsigned owner_hw_sid)
 {
     return rtcore_service_waiting_unit_replay_requests_for_owner(
         owner_hw_sid, rtcore_replay_unit_wake_budget_config());
-}
-
-static rtcore_replay_service_tick_result
-rtcore_service_replay_tick(unsigned long long service_cycle = 0)
-{
-    rtcore_replay_service_tick_result result = {};
-    rtcore_replay_service_cycle_identity_snapshot memory_identity = {};
-    rtcore_replay_service_cycle_identity_snapshot unit_identity = {};
-    rtcore_replay_service_cycle_identity_snapshot ready_identity = {};
-    const bool memory_issue_progressed =
-        rtcore_service_ready_memory_replay_requests(
-            rtcore_replay_memory_issue_budget_config(), &memory_identity,
-            service_cycle);
-    const bool memory_wake_progressed =
-        rtcore_service_waiting_memory_replay_requests(
-            rtcore_replay_memory_wake_budget_config(), &memory_identity,
-            service_cycle);
-    result.memory_progressed =
-        memory_issue_progressed || memory_wake_progressed;
-    const bool unit_progressed =
-        rtcore_service_waiting_unit_replay_requests(
-            rtcore_replay_unit_wake_budget_config(), &unit_identity,
-            service_cycle);
-    const bool ready_issue_progressed =
-        rtcore_service_replay_ready_requests_with_budget(
-            rtcore_replay_issue_budget_config(), &ready_identity,
-            service_cycle);
-    result.unit_wake_progressed = unit_progressed;
-    result.ready_issue_progressed = ready_issue_progressed;
-    result.ready_progressed = unit_progressed || ready_issue_progressed;
-    result.progressed = result.memory_progressed || result.ready_progressed;
-    if (ready_issue_progressed) {
-        result.last_progress_identity = ready_identity;
-    } else if (unit_progressed) {
-        result.last_progress_identity = unit_identity;
-    } else if (result.memory_progressed) {
-        result.last_progress_identity = memory_identity;
-    }
-    return result;
 }
 
 static rtcore_replay_service_tick_result
@@ -8700,16 +8393,6 @@ rtcore_service_replay_tick_for_owner_stage_gated(
         result.last_progress_identity = memory_identity;
     }
     return result;
-}
-
-static rtcore_replay_service_tick_result
-rtcore_maybe_service_replay_tick(unsigned long long service_cycle = 0)
-{
-    rtcore_replay_service_tick_result result = {};
-    if (!rtcore_replay_service_tick_enabled()) {
-        return result;
-    }
-    return rtcore_service_replay_tick(service_cycle);
 }
 
 static rtcore_replay_service_tick_result
