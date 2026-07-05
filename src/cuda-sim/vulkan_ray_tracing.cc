@@ -798,13 +798,6 @@ struct rtcore_replay_data_path_access_snapshot {
     unsigned request_state_accesses;
 };
 
-struct rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot {
-    bool valid;
-    unsigned owner_hw_sid;
-    unsigned long long service_cycle;
-    unsigned candidate_delta;
-};
-
 struct rtcore_replay_v03_hw_request_state_scoreboard_stats {
     unsigned evaluations;
     unsigned max_request_state_hot_delta;
@@ -892,8 +885,6 @@ struct rtcore_replay_v03_hw_queue_ingress_stats {
     unsigned evaluations;
     unsigned total_target_queue_push_count;
     unsigned max_total_target_queue_push_count;
-    unsigned same_cycle_bypass_candidate_delta;
-    unsigned max_same_cycle_bypass_candidate_delta;
 };
 
 struct rtcore_replay_lane_request_state_capacity_gate_stats {
@@ -991,8 +982,6 @@ static rtcore_replay_scoreboard_result_handoff_stats
 static rtcore_replay_data_path_access_stats
     g_rtcore_replay_data_path_access_stats;
 static rtcore_replay_resource_route_stats g_rtcore_replay_resource_route_stats;
-static rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
-    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot;
 static rtcore_replay_v03_hw_request_state_scoreboard_stats
     g_rtcore_replay_v03_hw_request_state_scoreboard_stats;
 static rtcore_replay_v03_hw_unit_state_wake_service_stats
@@ -2100,60 +2089,6 @@ static void rtcore_update_replay_v03_hw_queue_ingress_maxima(
     rtcore_update_replay_unsigned_max(
         stats->total_target_queue_push_count,
         &stats->max_total_target_queue_push_count);
-    rtcore_update_replay_unsigned_max(
-        stats->same_cycle_bypass_candidate_delta,
-        &stats->max_same_cycle_bypass_candidate_delta);
-}
-
-static void rtcore_clear_replay_v03_hw_same_cycle_bypass_candidate(
-    unsigned owner_hw_sid, unsigned long long service_cycle)
-{
-    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.valid = false;
-    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.owner_hw_sid =
-        owner_hw_sid;
-    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.service_cycle =
-        service_cycle;
-    g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
-        .candidate_delta = 0;
-}
-
-static unsigned rtcore_replay_v03_hw_same_cycle_bypass_candidate_delta(
-    unsigned owner_hw_sid, unsigned long long service_cycle)
-{
-    if (!g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot.valid) {
-        return 0;
-    }
-    if (g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
-            .owner_hw_sid != owner_hw_sid ||
-        g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
-            .service_cycle != service_cycle) {
-        return 0;
-    }
-    return g_rtcore_replay_v03_hw_same_cycle_bypass_candidate_snapshot
-        .candidate_delta;
-}
-
-static void rtcore_record_replay_v03_hw_same_cycle_bypass_candidate(
-    unsigned owner_hw_sid, unsigned long long service_cycle,
-    const rtcore_replay_data_path_access_snapshot &memory_before,
-    const rtcore_replay_data_path_access_snapshot &memory_after,
-    const rtcore_replay_data_path_access_snapshot &unit_before,
-    const rtcore_replay_data_path_access_snapshot &unit_after,
-    const rtcore_replay_data_path_access_snapshot &ready_before,
-    const rtcore_replay_data_path_access_snapshot &ready_after)
-{
-    (void)memory_before;
-    (void)memory_after;
-    (void)unit_before;
-    (void)unit_after;
-    (void)ready_before;
-    (void)ready_after;
-    rtcore_clear_replay_v03_hw_same_cycle_bypass_candidate(owner_hw_sid,
-                                                           service_cycle);
-    rtcore_replay_v03_hw_queue_ingress_stats *ingress_stats =
-        rtcore_replay_v03_hw_queue_ingress_stats_for_owner(owner_hw_sid);
-    ingress_stats->same_cycle_bypass_candidate_delta = 0;
-    rtcore_update_replay_v03_hw_queue_ingress_maxima(ingress_stats);
 }
 
 static uint32_t rtcore_pack_compact_trace_fields(
@@ -8282,14 +8217,10 @@ static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
            "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
            "queue_push_ingress_model=1 owner_local_storage_model=1 "
            "total_target_queue_push_count=%u evaluations=%u "
-           "max_total_target_queue_push_count=%u "
-           "same_cycle_bypass_candidate_delta=%u "
-           "max_same_cycle_bypass_candidate_delta=%u\n",
+           "max_total_target_queue_push_count=%u\n",
            owner_hw_sid, service_cycle,
            stats.total_target_queue_push_count, stats.evaluations,
-           stats.max_total_target_queue_push_count,
-           stats.same_cycle_bypass_candidate_delta,
-           stats.max_same_cycle_bypass_candidate_delta);
+           stats.max_total_target_queue_push_count);
     fflush(stdout);
 }
 
@@ -8313,9 +8244,6 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
     if (!result.service_enabled) {
         return result;
     }
-    rtcore_clear_replay_v03_hw_same_cycle_bypass_candidate(owner_hw_sid,
-                                                           service_cycle);
-
     const rtcore_replay_data_path_access_snapshot data_path_before =
         rtcore_get_replay_data_path_access_snapshot();
     result.tick_result =
