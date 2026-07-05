@@ -1251,6 +1251,13 @@ static bool rtcore_memory_unit_response_wait_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_replay_memory_unit_path_active()
+{
+    return rtcore_replay_memory_unit_request_offer_enabled() &&
+           rtcore_replay_memory_unit_l1d_client_enabled() &&
+           rtcore_memory_unit_response_wait_enabled();
+}
+
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
 {
     static int enabled = []() {
@@ -4115,7 +4122,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "data_path_request_state_accesses=%u "
            "data_path_max_lane_request_state_entries=%u "
            "memory_unit_contract_enabled=1 "
-           "memory_unit_path_active=0 "
+           "memory_unit_path_active=%u "
            "memory_unit_request_granule_bytes=%u "
            "memory_unit_handoff_window_global_memory_contract=1 "
            "memory_unit_same_cycle_32b_merge_policy=1 "
@@ -4169,6 +4176,7 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            data_path_access.lane_request_state_identity_accesses,
            data_path_access.request_state_accesses,
            data_path_max_lane_request_state_entries,
+           rtcore_replay_memory_unit_path_active() ? 1u : 0u,
            RTCORE_REPLAY_MEMORY_REQUEST_GRANULE_BYTES,
            service_cycle);
     fflush(stdout);
