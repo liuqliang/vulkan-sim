@@ -215,7 +215,7 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long ready_progressed_results;
   unsigned last_owner_hw_sid;
   unsigned long long last_cycle;
-  unsigned long long v02_lsu_sideband_offered_count;
+  unsigned long long memory_unit_request_offered_count;
   unsigned long long v02_lsu_sideband_accepted_count;
   unsigned long long v02_lsu_sideband_rejected_count;
   unsigned long long v02_lsu_sideband_real_mem_fetch_count;
@@ -380,7 +380,7 @@ static std::map<unsigned, rtcore_v02_lsu_shared_frontend_normal_lsu_observation>
     g_rtcore_v02_lsu_shared_frontend_normal_lsu_observation_by_sm;
 static bool g_rtcore_v02_lsu_same_cycle_merge_map_initialized = false;
 static unsigned long long g_rtcore_v02_lsu_same_cycle_merge_map_cycle = 0;
-static unsigned g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted = 0;
+static unsigned g_rtcore_memory_unit_request_offer_stats_logs_emitted = 0;
 static unsigned g_rtcore_v03_shader_only_ldst_observation_logs_emitted = 0;
 
 static const unsigned RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE = 1;
@@ -394,18 +394,18 @@ static const unsigned RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE = 6;
 static const unsigned RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES = 32;
 static const unsigned RTCORE_V02_LSU_TRANSACTION_IDENTITY_FIELD_COUNT = 10;
 
-static bool rtcore_v02_lsu_sideband_offer_log_enabled() {
+static bool rtcore_memory_unit_request_offer_log_enabled() {
   static int enabled = []() {
-    const char *value = getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_OFFER_LOG");
+    const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_REQUEST_OFFER_LOG");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
 }
 
-static unsigned rtcore_v02_lsu_sideband_offer_stats_log_limit() {
+static unsigned rtcore_memory_unit_request_offer_stats_log_limit() {
   static unsigned cached_limit = []() {
     const char *value =
-        getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_OFFER_LOG_LIMIT");
+        getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_REQUEST_OFFER_LOG_LIMIT");
     if (value == NULL || *value == '\0') {
       return 256u;
     }
@@ -1037,16 +1037,16 @@ static void rtcore_record_replay_cycle_hook_smoke(
       ready_progressed, progressed, identity_snapshot);
 }
 
-static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
+static void rtcore_maybe_log_memory_unit_request_offer_stats(
     unsigned owner_hw_sid) {
-  if (!rtcore_v02_lsu_sideband_offer_log_enabled()) {
+  if (!rtcore_memory_unit_request_offer_log_enabled()) {
     return;
   }
-  if (g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted >=
-      rtcore_v02_lsu_sideband_offer_stats_log_limit()) {
+  if (g_rtcore_memory_unit_request_offer_stats_logs_emitted >=
+      rtcore_memory_unit_request_offer_stats_log_limit()) {
     return;
   }
-  g_rtcore_v02_lsu_sideband_offer_stats_logs_emitted++;
+  g_rtcore_memory_unit_request_offer_stats_logs_emitted++;
 
   const unsigned long long response_latency_observation_count =
       g_rtcore_replay_cycle_hook_consumer_stats
@@ -1103,7 +1103,7 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
           : handoff_acquire_response_latency_total_cycles /
                 handoff_acquire_response_latency_observation_count;
 
-  printf("GPGPU-Sim RTCORE_V02_LSU_SIDEBAND_OFFER_STATS "
+  printf("GPGPU-Sim RTCORE_REPLAY_MEMORY_UNIT_REQUEST_OFFER_STATS "
          "owner_hw_sid=%u path_active=%u rt_unit_consumer_visible=1 "
          "offered_count=%llu accepted_count=%llu rejected_count=%llu "
          "real_mem_fetch_count=%llu request_granule_bytes=%u "
@@ -1234,7 +1234,7 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
          "same_cycle_fanout_wake_count=%llu\n",
          owner_hw_sid, rtcore_v02_lsu_memory_client_enabled() ? 1 : 0,
          g_rtcore_replay_cycle_hook_consumer_stats
-             .v02_lsu_sideband_offered_count,
+             .memory_unit_request_offered_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_accepted_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -2040,7 +2040,7 @@ rtcore_make_result_with_v02_lsu_sideband_snapshot(
   return result;
 }
 
-static void rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
+static void rtcore_consume_memory_unit_request_offer_from_rt_unit(
     const rtcore_replay_cycle_hook_result &result,
     shader_core_mem_fetch_allocator *mf_allocator,
     const shader_core_config *config, shader_core_ctx *core,
@@ -2050,7 +2050,7 @@ static void rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
     return;
   }
   g_rtcore_replay_cycle_hook_consumer_stats
-      .v02_lsu_sideband_offered_count++;
+      .memory_unit_request_offered_count++;
   if (result.lsu_sideband_is_write) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_write_offer_count++;
@@ -2101,7 +2101,7 @@ static void rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
   }
   rtcore_maybe_accept_v02_lsu_sideband_memory_client(
       result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
-  rtcore_maybe_log_v02_lsu_sideband_offer_stats(result.owner_hw_sid);
+  rtcore_maybe_log_memory_unit_request_offer_stats(result.owner_hw_sid);
 }
 
 static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
@@ -2138,7 +2138,7 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_response_wakeup_count += completed_count;
     rtcore_v02_lsu_update_sideband_pending_count();
-    rtcore_maybe_log_v02_lsu_sideband_offer_stats(owner_hw_sid);
+    rtcore_maybe_log_memory_unit_request_offer_stats(owner_hw_sid);
     delete mf;
     return true;
   }
@@ -2176,7 +2176,7 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_response_wakeup_count += completed_count;
   rtcore_v02_lsu_update_sideband_pending_count();
-  rtcore_maybe_log_v02_lsu_sideband_offer_stats(owner_hw_sid);
+  rtcore_maybe_log_memory_unit_request_offer_stats(owner_hw_sid);
   return true;
 }
 
@@ -2411,7 +2411,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     }
   }
   if (!direct_sideband_requeued) {
-    rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
+    rtcore_consume_memory_unit_request_offer_from_rt_unit(
         result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
   }
   if (result.lsu_sideband_valid && !direct_sideband_requeued) {
@@ -2564,7 +2564,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     const rtcore_replay_cycle_hook_result drained_result =
         rtcore_make_result_with_v02_lsu_sideband_snapshot(result,
                                                           sideband_snapshot);
-    rtcore_consume_v02_lsu_sideband_offer_from_rt_unit(
+    rtcore_consume_memory_unit_request_offer_from_rt_unit(
         drained_result, mf_allocator, config, core, l1d_cache, l0_cache, stats,
         sid);
     drained_sideband_count++;
@@ -2605,7 +2605,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
       }
     }
     if (deferred_count > 0) {
-      rtcore_maybe_log_v02_lsu_sideband_offer_stats(result.owner_hw_sid);
+      rtcore_maybe_log_memory_unit_request_offer_stats(result.owner_hw_sid);
     }
   }
 }
@@ -9944,13 +9944,13 @@ void rt_unit::writeback() {
   while (L1D->access_ready()) {
     if (!L1D->next_access_rt()) {
       rtcore_record_v02_lsu_shared_l1d_response_rt_blocked_by_normal();
-      rtcore_maybe_log_v02_lsu_sideband_offer_stats(m_sid);
+      rtcore_maybe_log_memory_unit_request_offer_stats(m_sid);
       break;
     }
     mem_fetch *mf = L1D->next_access();
     // m_next_wb = mf->get_inst();
     rtcore_record_v02_lsu_shared_l1d_response_rt_serviced();
-    rtcore_maybe_log_v02_lsu_sideband_offer_stats(m_sid);
+    rtcore_maybe_log_memory_unit_request_offer_stats(m_sid);
     delete mf;
     // serviced_client = next_client;
   }
@@ -10485,13 +10485,13 @@ void ldst_unit::writeback() {
           // Check if it's for RT unit or for LDST unit
           if (m_L1D->next_access_rt()) {
             rtcore_record_v02_lsu_shared_l1d_response_normal_blocked_by_rt();
-            rtcore_maybe_log_v02_lsu_sideband_offer_stats(m_sid);
+            rtcore_maybe_log_memory_unit_request_offer_stats(m_sid);
           } else {
             mem_fetch *mf = m_L1D->next_access();
             if (!mf->israytrace()) {
               m_next_wb = mf->get_inst();
               rtcore_record_v02_lsu_shared_l1d_response_normal_serviced();
-              rtcore_maybe_log_v02_lsu_sideband_offer_stats(m_sid);
+              rtcore_maybe_log_memory_unit_request_offer_stats(m_sid);
               delete mf;
               serviced_client = next_client;
             }

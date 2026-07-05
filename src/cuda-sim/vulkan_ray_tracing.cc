@@ -1241,11 +1241,11 @@ static bool rtcore_replay_memory_unit_request_descriptor_log_enabled()
     return enabled != 0;
 }
 
-static bool rtcore_v02_lsu_sideband_offer_enabled()
+static bool rtcore_replay_memory_unit_request_offer_enabled()
 {
     static int enabled = []() {
         const char *value =
-            getenv("VULKAN_SIM_RTCORE_V02_LSU_SIDEBAND_OFFER");
+            getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_REQUEST_OFFER");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -3707,7 +3707,7 @@ static void rtcore_record_replay_memory_unit_request_descriptor(
     const bool descriptor_log_enabled =
         rtcore_replay_memory_unit_request_descriptor_log_enabled();
     const bool sideband_offer_enabled =
-        rtcore_v02_lsu_sideband_offer_enabled();
+        rtcore_replay_memory_unit_request_offer_enabled();
     if (!descriptor_log_enabled && !sideband_offer_enabled) {
         return;
     }
@@ -3861,7 +3861,7 @@ static bool rtcore_v02_lsu_response_wait_manages_stack_load_event(
 {
     unsigned access_kind = RTCORE_V02_LSU_ACCESS_KIND_COUNT;
     return rtcore_v02_lsu_response_wait_gate_enabled() &&
-           rtcore_v02_lsu_sideband_offer_enabled() &&
+           rtcore_replay_memory_unit_request_offer_enabled() &&
            rtcore_v02_lsu_memory_client_enabled() &&
            rtcore_v02_lsu_stack_sideband_enabled() &&
            rtcore_v02_lsu_stack_sideband_access_for_event(event, &access_kind,
@@ -3873,7 +3873,7 @@ static bool rtcore_maybe_enqueue_v02_lsu_stack_sideband(
     const rtcore_replay_lane_request &request, unsigned long long service_cycle)
 {
     if (!request.valid || !rtcore_v02_lsu_stack_sideband_enabled() ||
-        !rtcore_v02_lsu_sideband_offer_enabled()) {
+        !rtcore_replay_memory_unit_request_offer_enabled()) {
         return false;
     }
     if (request.next_event_index >= request.events.size()) {
@@ -4718,7 +4718,7 @@ static bool rtcore_maybe_arm_v02_lsu_response_wait_gate(
 {
     if (!request || !request->valid ||
         !rtcore_v02_lsu_response_wait_gate_enabled() ||
-        !rtcore_v02_lsu_sideband_offer_enabled() ||
+        !rtcore_replay_memory_unit_request_offer_enabled() ||
         !rtcore_v02_lsu_memory_client_enabled()) {
         return false;
     }
