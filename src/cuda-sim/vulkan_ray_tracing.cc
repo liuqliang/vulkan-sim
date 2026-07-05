@@ -972,14 +972,6 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned data_path_lane_request_state_identity_accesses;
     unsigned data_path_request_state_accesses;
     unsigned data_path_max_lane_request_state_entries;
-    unsigned v01_issue_state_gate_evaluations;
-    unsigned v01_issue_state_node_gate_armed_count;
-    unsigned v01_issue_state_primitive_gate_armed_count;
-    unsigned v01_issue_state_stack_gate_armed_count;
-    unsigned v01_issue_state_gate_blocked_count;
-    unsigned v01_issue_state_gate_woken_count;
-    unsigned v01_issue_state_max_latency_cycles;
-    unsigned v01_issue_state_max_blocked_cycles;
     unsigned v01_service_stage_memory_wake_progressed_count;
     unsigned v01_service_stage_unit_wake_progressed_count;
     unsigned v01_service_stage_ready_issue_progressed_count;
@@ -4079,23 +4071,6 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.data_path_request_state_accesses ||
         last_snapshot.data_path_max_lane_request_state_entries !=
             snapshot.data_path_max_lane_request_state_entries;
-    const bool v01_gate_pressure_changed =
-        last_snapshot.v01_issue_state_gate_evaluations !=
-            snapshot.v01_issue_state_gate_evaluations ||
-        last_snapshot.v01_issue_state_node_gate_armed_count !=
-            snapshot.v01_issue_state_node_gate_armed_count ||
-        last_snapshot.v01_issue_state_primitive_gate_armed_count !=
-            snapshot.v01_issue_state_primitive_gate_armed_count ||
-        last_snapshot.v01_issue_state_stack_gate_armed_count !=
-            snapshot.v01_issue_state_stack_gate_armed_count ||
-        last_snapshot.v01_issue_state_gate_blocked_count !=
-            snapshot.v01_issue_state_gate_blocked_count ||
-        last_snapshot.v01_issue_state_gate_woken_count !=
-            snapshot.v01_issue_state_gate_woken_count ||
-        last_snapshot.v01_issue_state_max_latency_cycles !=
-            snapshot.v01_issue_state_max_latency_cycles ||
-        last_snapshot.v01_issue_state_max_blocked_cycles !=
-            snapshot.v01_issue_state_max_blocked_cycles;
     const bool v01_service_stage_changed =
         last_snapshot.v01_service_stage_memory_wake_progressed_count !=
             snapshot.v01_service_stage_memory_wake_progressed_count ||
@@ -4181,7 +4156,7 @@ static bool rtcore_should_log_replay_model_summary_stats(
         last_snapshot.scoreboard_handoff_max_blocked_count !=
             snapshot.scoreboard_handoff_max_blocked_count ||
         independent_service_pressure_changed || data_path_pressure_changed ||
-        v01_gate_pressure_changed || v01_service_stage_changed ||
+        v01_service_stage_changed ||
         v01_stage_resource_demand_changed || v01_stage_data_path_gate_changed;
     if (!changed) {
         return false;
@@ -4703,23 +4678,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         rtcore_get_replay_data_path_access_snapshot();
     const unsigned data_path_max_lane_request_state_entries =
         g_rtcore_replay_data_path_access_stats.max_lane_request_state_entries;
-    const unsigned v01_issue_state_gate_evaluations =
-        g_rtcore_replay_v01_issue_state_gate_stats.gate_evaluations;
-    const unsigned v01_issue_state_node_gate_armed_count =
-        g_rtcore_replay_v01_issue_state_gate_stats.node_gate_armed_count;
-    const unsigned v01_issue_state_primitive_gate_armed_count =
-        g_rtcore_replay_v01_issue_state_gate_stats
-            .primitive_gate_armed_count;
-    const unsigned v01_issue_state_stack_gate_armed_count =
-        g_rtcore_replay_v01_issue_state_gate_stats.stack_gate_armed_count;
-    const unsigned v01_issue_state_gate_blocked_count =
-        g_rtcore_replay_v01_issue_state_gate_stats.gate_blocked_count;
-    const unsigned v01_issue_state_gate_woken_count =
-        g_rtcore_replay_v01_issue_state_gate_stats.gate_woken_count;
-    const unsigned v01_issue_state_max_latency_cycles =
-        g_rtcore_replay_v01_issue_state_gate_stats.max_latency_cycles;
-    const unsigned v01_issue_state_max_blocked_cycles =
-        g_rtcore_replay_v01_issue_state_gate_stats.max_blocked_cycles;
     const unsigned v01_service_stage_memory_wake_progressed_count =
         g_rtcore_replay_service_tick_stats
             .service_stage_memory_wake_progressed_count;
@@ -4809,22 +4767,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         data_path_access.request_state_accesses;
     progress_snapshot.data_path_max_lane_request_state_entries =
         data_path_max_lane_request_state_entries;
-    progress_snapshot.v01_issue_state_gate_evaluations =
-        v01_issue_state_gate_evaluations;
-    progress_snapshot.v01_issue_state_node_gate_armed_count =
-        v01_issue_state_node_gate_armed_count;
-    progress_snapshot.v01_issue_state_primitive_gate_armed_count =
-        v01_issue_state_primitive_gate_armed_count;
-    progress_snapshot.v01_issue_state_stack_gate_armed_count =
-        v01_issue_state_stack_gate_armed_count;
-    progress_snapshot.v01_issue_state_gate_blocked_count =
-        v01_issue_state_gate_blocked_count;
-    progress_snapshot.v01_issue_state_gate_woken_count =
-        v01_issue_state_gate_woken_count;
-    progress_snapshot.v01_issue_state_max_latency_cycles =
-        v01_issue_state_max_latency_cycles;
-    progress_snapshot.v01_issue_state_max_blocked_cycles =
-        v01_issue_state_max_blocked_cycles;
     progress_snapshot.v01_service_stage_memory_wake_progressed_count =
         v01_service_stage_memory_wake_progressed_count;
     progress_snapshot.v01_service_stage_unit_wake_progressed_count =
@@ -4965,14 +4907,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "data_path_lane_request_state_identity_accesses=%u "
            "data_path_request_state_accesses=%u "
            "data_path_max_lane_request_state_entries=%u "
-           "v01_issue_state_gate_evaluations=%u "
-           "v01_issue_state_node_gate_armed_count=%u "
-           "v01_issue_state_primitive_gate_armed_count=%u "
-           "v01_issue_state_stack_gate_armed_count=%u "
-           "v01_issue_state_gate_blocked_count=%u "
-           "v01_issue_state_gate_woken_count=%u "
-           "v01_issue_state_max_latency_cycles=%u "
-           "v01_issue_state_max_blocked_cycles=%u "
            "v01_service_stage_memory_wake_progressed_count=%u "
            "v01_service_stage_unit_wake_progressed_count=%u "
            "v01_service_stage_ready_issue_progressed_count=%u "
@@ -5072,14 +5006,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            data_path_access.lane_request_state_identity_accesses,
            data_path_access.request_state_accesses,
            data_path_max_lane_request_state_entries,
-           v01_issue_state_gate_evaluations,
-           v01_issue_state_node_gate_armed_count,
-           v01_issue_state_primitive_gate_armed_count,
-           v01_issue_state_stack_gate_armed_count,
-           v01_issue_state_gate_blocked_count,
-           v01_issue_state_gate_woken_count,
-           v01_issue_state_max_latency_cycles,
-           v01_issue_state_max_blocked_cycles,
            v01_service_stage_memory_wake_progressed_count,
            v01_service_stage_unit_wake_progressed_count,
            v01_service_stage_ready_issue_progressed_count,
