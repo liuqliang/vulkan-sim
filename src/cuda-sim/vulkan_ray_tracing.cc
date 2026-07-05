@@ -773,11 +773,11 @@ struct rtcore_replay_unit_arbitration_stats {
 };
 
 struct rtcore_replay_data_path_access_stats {
-    unsigned request_table_reads;
-    unsigned request_table_writes;
+    unsigned lane_request_state_identity_reads;
+    unsigned lane_request_state_identity_writes;
     unsigned request_state_reads;
     unsigned request_state_writes;
-    unsigned max_request_table_entries;
+    unsigned max_lane_request_state_entries;
 };
 
 struct rtcore_replay_resource_route_stats {
@@ -803,11 +803,11 @@ struct rtcore_replay_resource_route_stats {
 };
 
 struct rtcore_replay_data_path_access_snapshot {
-    unsigned request_table_reads;
-    unsigned request_table_writes;
+    unsigned lane_request_state_identity_reads;
+    unsigned lane_request_state_identity_writes;
     unsigned request_state_reads;
     unsigned request_state_writes;
-    unsigned request_table_accesses;
+    unsigned lane_request_state_identity_accesses;
     unsigned request_state_accesses;
 };
 
@@ -957,9 +957,9 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned v01_independent_service_memory_blocked_continue_count;
     unsigned v01_independent_service_memory_progress_after_block_count;
     unsigned v01_independent_service_memory_cross_resource_progress_after_block_count;
-    unsigned data_path_request_table_accesses;
+    unsigned data_path_lane_request_state_identity_accesses;
     unsigned data_path_request_state_accesses;
-    unsigned data_path_max_request_table_entries;
+    unsigned data_path_max_lane_request_state_entries;
     unsigned v01_memory_queue_gate_evaluations;
     unsigned v01_memory_queue_gate_armed_count;
     unsigned v01_memory_queue_gate_blocked_count;
@@ -2178,26 +2178,26 @@ static bool rtcore_replay_issue_budget_available(
            budget.warp_completion_ingress_budget;
 }
 
-static void rtcore_update_replay_data_path_max_request_table_entries()
+static void rtcore_update_replay_data_path_max_lane_request_state_entries()
 {
     const unsigned entries =
         static_cast<unsigned>(g_rtcore_replay_lane_requests.size());
     if (entries >
-        g_rtcore_replay_data_path_access_stats.max_request_table_entries) {
-        g_rtcore_replay_data_path_access_stats.max_request_table_entries =
+        g_rtcore_replay_data_path_access_stats.max_lane_request_state_entries) {
+        g_rtcore_replay_data_path_access_stats.max_lane_request_state_entries =
             entries;
     }
 }
 
-static void rtcore_record_replay_request_table_read()
+static void rtcore_record_replay_lane_request_state_identity_read()
 {
-    g_rtcore_replay_data_path_access_stats.request_table_reads++;
+    g_rtcore_replay_data_path_access_stats.lane_request_state_identity_reads++;
 }
 
-static void rtcore_record_replay_request_table_write()
+static void rtcore_record_replay_lane_request_state_identity_write()
 {
-    g_rtcore_replay_data_path_access_stats.request_table_writes++;
-    rtcore_update_replay_data_path_max_request_table_entries();
+    g_rtcore_replay_data_path_access_stats.lane_request_state_identity_writes++;
+    rtcore_update_replay_data_path_max_lane_request_state_entries();
 }
 
 static void rtcore_record_replay_request_state_read()
@@ -2214,17 +2214,17 @@ static rtcore_replay_data_path_access_snapshot
 rtcore_get_replay_data_path_access_snapshot()
 {
     rtcore_replay_data_path_access_snapshot snapshot = {};
-    snapshot.request_table_reads =
-        g_rtcore_replay_data_path_access_stats.request_table_reads;
-    snapshot.request_table_writes =
-        g_rtcore_replay_data_path_access_stats.request_table_writes;
+    snapshot.lane_request_state_identity_reads =
+        g_rtcore_replay_data_path_access_stats.lane_request_state_identity_reads;
+    snapshot.lane_request_state_identity_writes =
+        g_rtcore_replay_data_path_access_stats.lane_request_state_identity_writes;
     snapshot.request_state_reads =
         g_rtcore_replay_data_path_access_stats.request_state_reads;
     snapshot.request_state_writes =
         g_rtcore_replay_data_path_access_stats.request_state_writes;
-    snapshot.request_table_accesses =
-        g_rtcore_replay_data_path_access_stats.request_table_reads +
-        g_rtcore_replay_data_path_access_stats.request_table_writes;
+    snapshot.lane_request_state_identity_accesses =
+        g_rtcore_replay_data_path_access_stats.lane_request_state_identity_reads +
+        g_rtcore_replay_data_path_access_stats.lane_request_state_identity_writes;
     snapshot.request_state_accesses =
         g_rtcore_replay_data_path_access_stats.request_state_reads +
         g_rtcore_replay_data_path_access_stats.request_state_writes;
@@ -2237,12 +2237,12 @@ static unsigned rtcore_replay_data_path_access_delta(unsigned after,
     return after >= before ? after - before : 0;
 }
 
-static const unsigned RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_TABLE_MASK =
+static const unsigned RTCORE_REPLAY_DATA_PATH_RESOURCE_LANE_REQUEST_STATE_IDENTITY_MASK =
     1u << 0;
 static const unsigned RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_STATE_MASK =
     1u << 1;
 static const unsigned RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK =
-    RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_TABLE_MASK |
+    RTCORE_REPLAY_DATA_PATH_RESOURCE_LANE_REQUEST_STATE_IDENTITY_MASK |
     RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_STATE_MASK;
 static const unsigned RTCORE_REPLAY_V01_STAGE_MEMORY_WAKE_RESOURCE_MASK =
     RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
@@ -2251,7 +2251,7 @@ static const unsigned RTCORE_REPLAY_V01_STAGE_UNIT_WAKE_RESOURCE_MASK =
 static const unsigned RTCORE_REPLAY_V01_STAGE_READY_ISSUE_RESOURCE_MASK =
     RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
 static const unsigned RTCORE_REPLAY_V01_STAGE_COMPLETION_TAIL_RESOURCE_MASK =
-    RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_TABLE_MASK |
+    RTCORE_REPLAY_DATA_PATH_RESOURCE_LANE_REQUEST_STATE_IDENTITY_MASK |
     RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_STATE_MASK;
 static unsigned rtcore_replay_v01_stage_memory_wake_resource_mask()
 {
@@ -3111,7 +3111,7 @@ static unsigned rtcore_count_replay_request_table_occupied_entries_for_owner(
     for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
              g_rtcore_replay_lane_requests.begin();
          it != g_rtcore_replay_lane_requests.end(); ++it) {
-        rtcore_record_replay_request_table_read();
+        rtcore_record_replay_lane_request_state_identity_read();
         const rtcore_replay_lane_request &request = it->second;
         if (request.owner_hw_sid == owner_hw_sid &&
             rtcore_replay_request_table_capacity_consumes_entry(request)) {
@@ -3356,7 +3356,7 @@ static unsigned rtcore_count_replay_ready_unit_requests_for_owner(
         if (request.owner_hw_sid != owner_hw_sid) {
             continue;
         }
-        rtcore_record_replay_request_table_read();
+        rtcore_record_replay_lane_request_state_identity_read();
         rtcore_record_replay_request_state_read();
         if (rtcore_replay_request_ready_for_state(request, state)) {
             count++;
@@ -3577,7 +3577,7 @@ static bool rtcore_route_admitted_replay_request(
     if (it == g_rtcore_replay_lane_requests.end()) {
         return false;
     }
-    rtcore_record_replay_request_table_read();
+    rtcore_record_replay_lane_request_state_identity_read();
     rtcore_record_replay_request_state_read();
     return rtcore_enqueue_replay_request_by_state(&it->second, service_cycle);
 }
@@ -3590,7 +3590,7 @@ static bool rtcore_replay_request_owned_by_sm(unsigned thread_uid,
     if (it == g_rtcore_replay_lane_requests.end()) {
         return false;
     }
-    rtcore_record_replay_request_table_read();
+    rtcore_record_replay_lane_request_state_identity_read();
 
     const rtcore_replay_lane_request &request = it->second;
     return request.owner_hw_sid == owner_hw_sid;
@@ -3607,7 +3607,7 @@ rtcore_make_replay_service_progress_identity(unsigned thread_uid,
     if (it == g_rtcore_replay_lane_requests.end()) {
         return snapshot;
     }
-    rtcore_record_replay_request_table_read();
+    rtcore_record_replay_lane_request_state_identity_read();
 
     const rtcore_replay_lane_request &request = it->second;
     snapshot.valid = true;
@@ -4066,12 +4066,12 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot
                 .v01_independent_service_memory_cross_resource_progress_after_block_count;
     const bool data_path_pressure_changed =
-        last_snapshot.data_path_request_table_accesses !=
-            snapshot.data_path_request_table_accesses ||
+        last_snapshot.data_path_lane_request_state_identity_accesses !=
+            snapshot.data_path_lane_request_state_identity_accesses ||
         last_snapshot.data_path_request_state_accesses !=
             snapshot.data_path_request_state_accesses ||
-        last_snapshot.data_path_max_request_table_entries !=
-            snapshot.data_path_max_request_table_entries;
+        last_snapshot.data_path_max_lane_request_state_entries !=
+            snapshot.data_path_max_lane_request_state_entries;
     const bool v01_gate_pressure_changed =
         last_snapshot.v01_memory_queue_gate_evaluations !=
             snapshot.v01_memory_queue_gate_evaluations ||
@@ -4714,8 +4714,8 @@ static void rtcore_maybe_log_replay_model_summary_stats(
                 .waiting_memory_cross_resource_progress_after_block_count;
     rtcore_replay_data_path_access_snapshot data_path_access =
         rtcore_get_replay_data_path_access_snapshot();
-    const unsigned data_path_max_request_table_entries =
-        g_rtcore_replay_data_path_access_stats.max_request_table_entries;
+    const unsigned data_path_max_lane_request_state_entries =
+        g_rtcore_replay_data_path_access_stats.max_lane_request_state_entries;
     const unsigned v01_memory_queue_gate_evaluations =
         g_rtcore_replay_v01_memory_queue_gate_stats.gate_evaluations;
     const unsigned v01_memory_queue_gate_armed_count =
@@ -4839,12 +4839,12 @@ static void rtcore_maybe_log_replay_model_summary_stats(
     progress_snapshot
         .v01_independent_service_memory_cross_resource_progress_after_block_count =
         v01_independent_service_memory_cross_resource_progress_after_block_count;
-    progress_snapshot.data_path_request_table_accesses =
-        data_path_access.request_table_accesses;
+    progress_snapshot.data_path_lane_request_state_identity_accesses =
+        data_path_access.lane_request_state_identity_accesses;
     progress_snapshot.data_path_request_state_accesses =
         data_path_access.request_state_accesses;
-    progress_snapshot.data_path_max_request_table_entries =
-        data_path_max_request_table_entries;
+    progress_snapshot.data_path_max_lane_request_state_entries =
+        data_path_max_lane_request_state_entries;
     progress_snapshot.v01_memory_queue_gate_evaluations =
         v01_memory_queue_gate_evaluations;
     progress_snapshot.v01_memory_queue_gate_armed_count =
@@ -5029,9 +5029,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "v01_independent_service_memory_blocked_continue_count=%u "
            "v01_independent_service_memory_progress_after_block_count=%u "
            "v01_independent_service_memory_cross_resource_progress_after_block_count=%u "
-           "data_path_request_table_accesses=%u "
+           "data_path_lane_request_state_identity_accesses=%u "
            "data_path_request_state_accesses=%u "
-           "data_path_max_request_table_entries=%u "
+           "data_path_max_lane_request_state_entries=%u "
            "v01_memory_queue_gate_evaluations=%u "
            "v01_memory_queue_gate_armed_count=%u "
            "v01_memory_queue_gate_blocked_count=%u "
@@ -5147,9 +5147,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            v01_independent_service_memory_blocked_continue_count,
            v01_independent_service_memory_progress_after_block_count,
            v01_independent_service_memory_cross_resource_progress_after_block_count,
-           data_path_access.request_table_accesses,
+           data_path_access.lane_request_state_identity_accesses,
            data_path_access.request_state_accesses,
-           data_path_max_request_table_entries,
+           data_path_max_lane_request_state_entries,
            v01_memory_queue_gate_evaluations,
            v01_memory_queue_gate_armed_count,
            v01_memory_queue_gate_blocked_count,
@@ -6428,7 +6428,7 @@ rtcore_replay_v01_pending_route_for_independent_service(unsigned thread_uid)
     if (it == g_rtcore_replay_lane_requests.end()) {
         return RTCORE_REPLAY_V01_ROUTE_INVALID;
     }
-    rtcore_record_replay_request_table_read();
+    rtcore_record_replay_lane_request_state_identity_read();
     return rtcore_replay_v01_pending_route_for_independent_service(it->second);
 }
 
@@ -7174,7 +7174,7 @@ static bool rtcore_service_replay_completion_ingress_requests_for_owner(
         if (request_it == g_rtcore_replay_lane_requests.end()) {
             break;
         }
-        rtcore_record_replay_request_table_read();
+        rtcore_record_replay_lane_request_state_identity_read();
         rtcore_record_replay_request_state_read();
         rtcore_replay_lane_request &request = request_it->second;
         rtcore_refresh_replay_lane_request_ready_bits(&request);
@@ -7211,7 +7211,7 @@ static void rtcore_commit_replay_request_table_admission(
     rtcore_refresh_replay_lane_request_ready_bits(&admitted_request);
     g_rtcore_replay_lane_requests[admitted_request.thread_uid] =
         admitted_request;
-    rtcore_record_replay_request_table_write();
+    rtcore_record_replay_lane_request_state_identity_write();
     rtcore_record_replay_request_state_write();
     rtcore_record_replay_lane_admission_shadow(admitted_request);
     if (admitted_request.state == RTCORE_REPLAY_COMPLETED) {
@@ -7349,7 +7349,7 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
     if (it == g_rtcore_replay_lane_requests.end()) {
         return false;
     }
-    rtcore_record_replay_request_table_read();
+    rtcore_record_replay_lane_request_state_identity_read();
     if (rtcore_replay_request_done(it->second)) {
         return false;
     }
@@ -8007,7 +8007,7 @@ static bool rtcore_wake_waiting_memory_replay_request(
     if (it == g_rtcore_replay_lane_requests.end()) {
         return false;
     }
-    rtcore_record_replay_request_table_read();
+    rtcore_record_replay_lane_request_state_identity_read();
     rtcore_record_replay_request_state_read();
     if (it->second.state != RTCORE_REPLAY_ISSUED_MEMORY) {
         return false;
@@ -8026,7 +8026,7 @@ static bool rtcore_issue_ready_memory_replay_request(
     if (it == g_rtcore_replay_lane_requests.end()) {
         return false;
     }
-    rtcore_record_replay_request_table_read();
+    rtcore_record_replay_lane_request_state_identity_read();
     rtcore_record_replay_request_state_read();
     if (it->second.state != RTCORE_REPLAY_ISSUED_MEMORY) {
         return false;
@@ -8919,19 +8919,19 @@ static void rtcore_maybe_log_replay_unit_arbitration_stats(
 
 static unsigned rtcore_replay_data_path_total_accesses()
 {
-    return g_rtcore_replay_data_path_access_stats.request_table_reads +
-           g_rtcore_replay_data_path_access_stats.request_table_writes +
+    return g_rtcore_replay_data_path_access_stats.lane_request_state_identity_reads +
+           g_rtcore_replay_data_path_access_stats.lane_request_state_identity_writes +
            g_rtcore_replay_data_path_access_stats.request_state_reads +
            g_rtcore_replay_data_path_access_stats.request_state_writes;
 }
 
 static bool rtcore_replay_data_path_contract_observed()
 {
-    return g_rtcore_replay_data_path_access_stats.request_table_reads > 0 &&
-           g_rtcore_replay_data_path_access_stats.request_table_writes > 0 &&
+    return g_rtcore_replay_data_path_access_stats.lane_request_state_identity_reads > 0 &&
+           g_rtcore_replay_data_path_access_stats.lane_request_state_identity_writes > 0 &&
            g_rtcore_replay_data_path_access_stats.request_state_reads > 0 &&
            g_rtcore_replay_data_path_access_stats.request_state_writes > 0 &&
-           g_rtcore_replay_data_path_access_stats.max_request_table_entries > 0;
+           g_rtcore_replay_data_path_access_stats.max_lane_request_state_entries > 0;
 }
 
 static void rtcore_maybe_log_replay_data_path_access_stats(
@@ -8954,16 +8954,16 @@ static void rtcore_maybe_log_replay_data_path_access_stats(
     g_rtcore_replay_data_path_access_stats_logs_emitted++;
     printf("GPGPU-Sim RTCORE_REPLAY_DATA_PATH_ACCESS_STATS "
            "owner_hw_sid=%u service_cycle=%llu "
-           "request_table_reads=%u "
-           "request_table_writes=%u request_state_reads=%u "
+           "lane_request_state_identity_reads=%u "
+           "lane_request_state_identity_writes=%u request_state_reads=%u "
            "request_state_writes=%u "
-           "max_request_table_entries=%u\n",
+           "max_lane_request_state_entries=%u\n",
            owner_hw_sid, service_cycle,
-           g_rtcore_replay_data_path_access_stats.request_table_reads,
-           g_rtcore_replay_data_path_access_stats.request_table_writes,
+           g_rtcore_replay_data_path_access_stats.lane_request_state_identity_reads,
+           g_rtcore_replay_data_path_access_stats.lane_request_state_identity_writes,
            g_rtcore_replay_data_path_access_stats.request_state_reads,
            g_rtcore_replay_data_path_access_stats.request_state_writes,
-           g_rtcore_replay_data_path_access_stats.max_request_table_entries);
+           g_rtcore_replay_data_path_access_stats.max_lane_request_state_entries);
     fflush(stdout);
 }
 
@@ -8985,11 +8985,11 @@ static void rtcore_maybe_log_replay_v03_hw_request_state_scoreboard_stats(
                                              before.request_state_reads) +
         rtcore_replay_data_path_access_delta(after.request_state_writes,
                                              before.request_state_writes);
-    const unsigned request_table_cold_delta =
-        rtcore_replay_data_path_access_delta(after.request_table_reads,
-                                             before.request_table_reads) +
-        rtcore_replay_data_path_access_delta(after.request_table_writes,
-                                             before.request_table_writes);
+    const unsigned lane_request_state_identity_delta =
+        rtcore_replay_data_path_access_delta(after.lane_request_state_identity_reads,
+                                             before.lane_request_state_identity_reads) +
+        rtcore_replay_data_path_access_delta(after.lane_request_state_identity_writes,
+                                             before.lane_request_state_identity_writes);
     if (request_state_hot_delta == 0) {
         return;
     }
@@ -9016,17 +9016,17 @@ static void rtcore_maybe_log_replay_v03_hw_request_state_scoreboard_stats(
            "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
            "per_entry_update_model=1 "
            "request_state_read_count=%u request_state_write_count=%u "
-           "request_table_read_count=%u request_table_write_count=%u "
-           "request_state_hot_delta=%u request_table_cold_delta=%u "
+           "lane_request_state_identity_read_count=%u lane_request_state_identity_write_count=%u "
+           "request_state_hot_delta=%u lane_request_state_identity_delta=%u "
            "scoreboard_update_count=%u payload_cache_update_count=%u "
            "evaluations=%u max_request_state_hot_delta=%u "
            "max_scoreboard_update_count=%u\n",
            owner_hw_sid, service_cycle,
            g_rtcore_replay_data_path_access_stats.request_state_reads,
            g_rtcore_replay_data_path_access_stats.request_state_writes,
-           g_rtcore_replay_data_path_access_stats.request_table_reads,
-           g_rtcore_replay_data_path_access_stats.request_table_writes,
-           request_state_hot_delta, request_table_cold_delta,
+           g_rtcore_replay_data_path_access_stats.lane_request_state_identity_reads,
+           g_rtcore_replay_data_path_access_stats.lane_request_state_identity_writes,
+           request_state_hot_delta, lane_request_state_identity_delta,
            scoreboard_update_count, payload_cache_update_count,
            g_rtcore_replay_v03_hw_request_state_scoreboard_stats.evaluations,
            g_rtcore_replay_v03_hw_request_state_scoreboard_stats
