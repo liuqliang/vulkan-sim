@@ -4224,7 +4224,8 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "node_event_base_cycles=%u "
            "primitive_event_base_cycles=%u "
            "memory_contention_cache_lines_per_cycle=%u "
-           "memory_contention_queue_capacity=%u "
+           "memory_outstanding_capacity=%u "
+           "memory_outstanding_alloc_budget=%u "
            "service_ticks_progressed=%u admitted_lane_requests=%u "
            "completed_lane_requests=%u node_unit_issued=%u "
            "primitive_unit_issued=%u stack_unit_issued=%u "
@@ -4278,7 +4279,8 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            rtcore_replay_node_test_latency_config(),
            rtcore_replay_primitive_test_latency_config(),
            rtcore_replay_memory_contention_cache_lines_per_cycle_config(),
-           rtcore_replay_memory_contention_queue_capacity_config(),
+           rtcore_replay_memory_outstanding_capacity_config(),
+           rtcore_replay_memory_outstanding_alloc_budget_config(),
            g_rtcore_replay_service_tick_stats.ticks_progressed,
            admitted_lane_requests, completed_lane_requests,
            g_rtcore_replay_unit_arbitration_stats.node_unit_issued,
