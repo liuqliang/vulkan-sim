@@ -758,17 +758,17 @@ struct rtcore_replay_v03_hw_memory_outstanding_stats {
     unsigned memory_outstanding_capacity_blocked_count;
     unsigned memory_wake_attempt_count;
     unsigned memory_wake_progress_count;
-    unsigned memory_shadow_register_count;
-    unsigned memory_shadow_release_count;
+    unsigned memory_outstanding_table_register_count;
+    unsigned memory_outstanding_table_release_count;
     unsigned max_memory_ready_issue_count;
     unsigned max_memory_outstanding_capacity_blocked_count;
     unsigned max_outstanding_entry_count;
     unsigned max_wait_map_waiter_count;
     unsigned max_outstanding_chunk_count;
-    unsigned max_memory_shadow_active_entry_count;
-    unsigned max_memory_shadow_wait_map_waiter_count;
-    unsigned max_memory_shadow_register_count;
-    unsigned max_memory_shadow_release_count;
+    unsigned max_memory_outstanding_table_active_entry_count;
+    unsigned max_memory_outstanding_table_wait_map_waiter_count;
+    unsigned max_memory_outstanding_table_register_count;
+    unsigned max_memory_outstanding_table_release_count;
     unsigned max_memory_wake_progress_count;
 };
 
@@ -799,7 +799,7 @@ struct rtcore_replay_memory_outstanding_key {
     }
 };
 
-struct rtcore_replay_memory_outstanding_shadow_entry {
+struct rtcore_replay_memory_outstanding_entry {
     bool active;
     rtcore_replay_memory_outstanding_key key;
     unsigned chunk_count;
@@ -915,8 +915,8 @@ static rtcore_replay_v03_hw_unit_state_wake_service_stats
 static rtcore_replay_v03_hw_memory_outstanding_stats
     g_rtcore_replay_v03_hw_memory_outstanding_stats;
 static std::map<rtcore_replay_memory_outstanding_key,
-                rtcore_replay_memory_outstanding_shadow_entry>
-    g_rtcore_replay_memory_outstanding_shadow_table;
+                rtcore_replay_memory_outstanding_entry>
+    g_rtcore_replay_memory_outstanding_table;
 static rtcore_replay_v03_hw_queue_ownership_stats
     g_rtcore_replay_v03_hw_queue_ownership_stats;
 static std::map<unsigned, rtcore_replay_v03_hw_queue_ingress_stats>
@@ -4549,7 +4549,7 @@ rtcore_make_replay_memory_outstanding_key(
     return key;
 }
 
-static void rtcore_register_replay_memory_outstanding_shadow(
+static void rtcore_register_replay_memory_outstanding_entry(
     const rtcore_replay_lane_request &request, unsigned kind,
     unsigned event_index, unsigned chunk_count,
     unsigned long long service_cycle)
@@ -4560,11 +4560,11 @@ static void rtcore_register_replay_memory_outstanding_shadow(
 
     const rtcore_replay_memory_outstanding_key key =
         rtcore_make_replay_memory_outstanding_key(request, kind, event_index);
-    rtcore_replay_memory_outstanding_shadow_entry &entry =
-        g_rtcore_replay_memory_outstanding_shadow_table[key];
+    rtcore_replay_memory_outstanding_entry &entry =
+        g_rtcore_replay_memory_outstanding_table[key];
     if (!entry.active) {
         g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .memory_shadow_register_count++;
+            .memory_outstanding_table_register_count++;
     }
     entry.active = true;
     entry.key = key;
@@ -4573,7 +4573,7 @@ static void rtcore_register_replay_memory_outstanding_shadow(
     entry.issue_cycle = service_cycle;
 }
 
-static void rtcore_release_replay_memory_outstanding_shadow(
+static void rtcore_release_replay_memory_outstanding_entry(
     const rtcore_replay_lane_request &request, unsigned kind,
     unsigned event_index)
 {
@@ -4584,16 +4584,16 @@ static void rtcore_release_replay_memory_outstanding_shadow(
     const rtcore_replay_memory_outstanding_key key =
         rtcore_make_replay_memory_outstanding_key(request, kind, event_index);
     std::map<rtcore_replay_memory_outstanding_key,
-             rtcore_replay_memory_outstanding_shadow_entry>::iterator it =
-        g_rtcore_replay_memory_outstanding_shadow_table.find(key);
-    if (it == g_rtcore_replay_memory_outstanding_shadow_table.end() ||
+             rtcore_replay_memory_outstanding_entry>::iterator it =
+        g_rtcore_replay_memory_outstanding_table.find(key);
+    if (it == g_rtcore_replay_memory_outstanding_table.end() ||
         !it->second.active) {
         return;
     }
 
     g_rtcore_replay_v03_hw_memory_outstanding_stats
-        .memory_shadow_release_count++;
-    g_rtcore_replay_memory_outstanding_shadow_table.erase(it);
+        .memory_outstanding_table_release_count++;
+    g_rtcore_replay_memory_outstanding_table.erase(it);
 }
 
 static void rtcore_maybe_log_replay_memory_wake_latency_gate_stats(
@@ -4682,7 +4682,7 @@ static bool rtcore_maybe_arm_replay_memory_wake_latency_gate(
             chunk_count = event_chunks;
         }
     }
-    rtcore_register_replay_memory_outstanding_shadow(
+    rtcore_register_replay_memory_outstanding_entry(
         *request, RTCORE_REPLAY_MEMORY_OUTSTANDING_WAKE_LATENCY,
         request->memory_wake_event_index, chunk_count, service_cycle);
 
@@ -4723,7 +4723,7 @@ static bool rtcore_replay_memory_wake_latency_gate_ready(
     g_rtcore_replay_memory_wake_latency_gate_stats.gate_woken_count++;
     rtcore_maybe_log_replay_memory_wake_latency_gate_stats(
         *request, false, false, true, service_cycle);
-    rtcore_release_replay_memory_outstanding_shadow(
+    rtcore_release_replay_memory_outstanding_entry(
         *request, RTCORE_REPLAY_MEMORY_OUTSTANDING_WAKE_LATENCY,
         request->memory_wake_event_index);
     request->memory_wake_latency_gate_pending = false;
@@ -4803,7 +4803,7 @@ static bool rtcore_maybe_arm_v02_lsu_response_wait_gate(
     request->v02_lsu_response_wait_completed_chunks.clear();
     request->state = RTCORE_REPLAY_ISSUED_MEMORY;
     rtcore_record_replay_request_state_write();
-    rtcore_register_replay_memory_outstanding_shadow(
+    rtcore_register_replay_memory_outstanding_entry(
         *request, RTCORE_REPLAY_MEMORY_OUTSTANDING_V02_LSU_RESPONSE_WAIT,
         request->v02_lsu_response_wait_event_index, chunk_count,
         service_cycle);
@@ -4858,7 +4858,7 @@ static bool rtcore_v02_lsu_response_wait_gate_ready(
     }
     request->v02_lsu_response_wait_gate_pending = false;
     request->v02_lsu_response_wait_completed_chunks.clear();
-    rtcore_release_replay_memory_outstanding_shadow(
+    rtcore_release_replay_memory_outstanding_entry(
         *request, RTCORE_REPLAY_MEMORY_OUTSTANDING_V02_LSU_RESPONSE_WAIT,
         request->v02_lsu_response_wait_event_index);
     rtcore_maybe_log_v02_lsu_response_wait_stats(request->owner_hw_sid);
@@ -5081,7 +5081,7 @@ static bool rtcore_maybe_arm_replay_memory_contention_gate(
     request->memory_contention_ready_cycle = ready_cycle;
     request->state = RTCORE_REPLAY_ISSUED_MEMORY;
     rtcore_record_replay_request_state_write();
-    rtcore_register_replay_memory_outstanding_shadow(
+    rtcore_register_replay_memory_outstanding_entry(
         *request, RTCORE_REPLAY_MEMORY_OUTSTANDING_CONTENTION,
         request->memory_contention_event_index, cache_lines, service_cycle);
 
@@ -5168,7 +5168,7 @@ static bool rtcore_replay_memory_contention_gate_ready(
     }
     rtcore_maybe_log_replay_memory_contention_gate_stats(
         *request, false, false, true, false, service_cycle);
-    rtcore_release_replay_memory_outstanding_shadow(
+    rtcore_release_replay_memory_outstanding_entry(
         *request, RTCORE_REPLAY_MEMORY_OUTSTANDING_CONTENTION,
         request->memory_contention_event_index);
     request->memory_contention_gate_pending = false;
@@ -6940,11 +6940,11 @@ static void rtcore_count_replay_memory_outstanding_for_owner(
     }
 
     for (std::map<rtcore_replay_memory_outstanding_key,
-                  rtcore_replay_memory_outstanding_shadow_entry>::
+                  rtcore_replay_memory_outstanding_entry>::
              const_iterator it =
-                 g_rtcore_replay_memory_outstanding_shadow_table.begin();
-         it != g_rtcore_replay_memory_outstanding_shadow_table.end(); ++it) {
-        const rtcore_replay_memory_outstanding_shadow_entry &entry =
+                 g_rtcore_replay_memory_outstanding_table.begin();
+         it != g_rtcore_replay_memory_outstanding_table.end(); ++it) {
+        const rtcore_replay_memory_outstanding_entry &entry =
             it->second;
         if (!entry.active || entry.key.owner_hw_sid != owner_hw_sid) {
             continue;
@@ -7008,33 +7008,33 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
     }
     if (outstanding_entry_count >
         g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_memory_shadow_active_entry_count) {
+            .max_memory_outstanding_table_active_entry_count) {
         g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_memory_shadow_active_entry_count = outstanding_entry_count;
+            .max_memory_outstanding_table_active_entry_count = outstanding_entry_count;
     }
     if (wait_map_waiter_count >
         g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_memory_shadow_wait_map_waiter_count) {
+            .max_memory_outstanding_table_wait_map_waiter_count) {
         g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_memory_shadow_wait_map_waiter_count = wait_map_waiter_count;
+            .max_memory_outstanding_table_wait_map_waiter_count = wait_map_waiter_count;
     }
     if (g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .memory_shadow_register_count >
+            .memory_outstanding_table_register_count >
         g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_memory_shadow_register_count) {
+            .max_memory_outstanding_table_register_count) {
         g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_memory_shadow_register_count =
+            .max_memory_outstanding_table_register_count =
             g_rtcore_replay_v03_hw_memory_outstanding_stats
-                .memory_shadow_register_count;
+                .memory_outstanding_table_register_count;
     }
     if (g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .memory_shadow_release_count >
+            .memory_outstanding_table_release_count >
         g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_memory_shadow_release_count) {
+            .max_memory_outstanding_table_release_count) {
         g_rtcore_replay_v03_hw_memory_outstanding_stats
-            .max_memory_shadow_release_count =
+            .max_memory_outstanding_table_release_count =
             g_rtcore_replay_v03_hw_memory_outstanding_stats
-                .memory_shadow_release_count;
+                .memory_outstanding_table_release_count;
     }
     if (g_rtcore_replay_v03_hw_memory_outstanding_stats
             .memory_wake_progress_count >
@@ -7060,7 +7060,7 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
     printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_MEMORY_OUTSTANDING_STATS "
            "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
            "memory_unit_internal=1 outstanding_table_model=1 "
-           "wait_map_model=1 memory_outstanding_shadow_model=1 "
+           "wait_map_model=1 "
            "request_state_waiting_memory_model=1 "
            "memory_ready_bit_issue_model=1 "
            "memory_outstanding_capacity=%u "
@@ -7071,19 +7071,19 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "memory_ready_issue_count=%u "
            "outstanding_entry_count=%u wait_map_waiter_count=%u "
            "outstanding_chunk_count=%u "
-           "memory_shadow_active_entry_count=%u "
-           "memory_shadow_wait_map_waiter_count=%u "
-           "memory_shadow_register_count=%u "
-           "memory_shadow_release_count=%u "
+           "memory_outstanding_table_active_entry_count=%u "
+           "memory_outstanding_table_wait_map_waiter_count=%u "
+           "memory_outstanding_table_register_count=%u "
+           "memory_outstanding_table_release_count=%u "
            "memory_wake_attempt_count=%u memory_wake_progress_count=%u "
            "evaluations=%u "
            "max_memory_outstanding_capacity_blocked_count=%u "
            "max_memory_ready_issue_count=%u max_outstanding_entry_count=%u "
            "max_wait_map_waiter_count=%u max_outstanding_chunk_count=%u "
-           "max_memory_shadow_active_entry_count=%u "
-           "max_memory_shadow_wait_map_waiter_count=%u "
-           "max_memory_shadow_register_count=%u "
-           "max_memory_shadow_release_count=%u "
+           "max_memory_outstanding_table_active_entry_count=%u "
+           "max_memory_outstanding_table_wait_map_waiter_count=%u "
+           "max_memory_outstanding_table_register_count=%u "
+           "max_memory_outstanding_table_release_count=%u "
            "max_memory_wake_progress_count=%u\n",
            owner_hw_sid, service_cycle,
            rtcore_replay_memory_outstanding_capacity_config(),
@@ -7099,9 +7099,9 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            wait_map_waiter_count, outstanding_chunk_count,
            outstanding_entry_count, wait_map_waiter_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
-               .memory_shadow_register_count,
+               .memory_outstanding_table_register_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
-               .memory_shadow_release_count,
+               .memory_outstanding_table_release_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .memory_wake_attempt_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
@@ -7118,13 +7118,13 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .max_outstanding_chunk_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
-               .max_memory_shadow_active_entry_count,
+               .max_memory_outstanding_table_active_entry_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
-               .max_memory_shadow_wait_map_waiter_count,
+               .max_memory_outstanding_table_wait_map_waiter_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
-               .max_memory_shadow_register_count,
+               .max_memory_outstanding_table_register_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
-               .max_memory_shadow_release_count,
+               .max_memory_outstanding_table_release_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .max_memory_wake_progress_count);
     fflush(stdout);
