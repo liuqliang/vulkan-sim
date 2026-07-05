@@ -11238,6 +11238,10 @@ rtcore_allocate_symbolic_rt_token_slot(
   allocation.generation = 0;
   allocation.allocated = false;
   bool reused_slot = false;
+  bool nominal_capacity_exhausted =
+      g_rtcore_symbolic_rt_token_allocator.slots.size() >=
+      profile.rt_tokens_per_execution_partition;
+  bool capacity_oversubscribed = false;
   rtcore_symbolic_rt_token_allocator_slot *slot = NULL;
 
   if (!g_rtcore_symbolic_rt_token_allocator.free_slot_ids.empty()) {
@@ -11253,8 +11257,8 @@ rtcore_allocate_symbolic_rt_token_slot(
       slot = &free_slot->second;
       reused_slot = true;
     }
-  } else if (g_rtcore_symbolic_rt_token_allocator.slots.size() <
-             profile.rt_tokens_per_execution_partition) {
+  } else {
+    capacity_oversubscribed = nominal_capacity_exhausted;
     rtcore_symbolic_rt_token_allocator_slot new_slot;
     allocation.slot_id =
         g_rtcore_symbolic_rt_token_allocator.next_slot_id++;
@@ -11288,7 +11292,9 @@ rtcore_allocate_symbolic_rt_token_slot(
          "allocator_generation=%u, allocator_live=%zu, "
          "allocator_released=%zu, allocator_free=%zu, "
          "allocator_slots=%zu, allocator_slot_reused=%u, "
-         "rt_tokens_per_execution_partition=%u, allocated=%u\n",
+         "rt_tokens_per_execution_partition=%u, "
+         "nominal_capacity_exhausted=%u, "
+         "capacity_oversubscribed=%u, allocated=%u\n",
          pI->source_file(), pI->source_line(), key.context_ptr,
          key.handoff_window_base, key.lane_slot_index, key.owner_hw_tid,
          key.owner_hw_wid, key.owner_hw_sid, allocation.slot_id,
@@ -11298,6 +11304,8 @@ rtcore_allocate_symbolic_rt_token_slot(
          rtcore_symbolic_rt_token_allocator_free_count(),
          rtcore_symbolic_rt_token_allocator_slot_count(),
          reused_slot ? 1 : 0, profile.rt_tokens_per_execution_partition,
+         nominal_capacity_exhausted ? 1 : 0,
+         capacity_oversubscribed ? 1 : 0,
          allocation.allocated ? 1 : 0);
   fflush(stdout);
 
@@ -11587,21 +11595,20 @@ bool rtcore_symbolic_submit_token_reservation_available(
   const bool reservation_live =
       reservation != g_rtcore_symbolic_rt_token_reservations.end();
   bool reservation_inserted = false;
+  bool capacity_oversubscribed = false;
   bool token_capacity_available = reservation_live;
 
   if (!reservation_live) {
-    token_capacity_available = allocator_capacity_available;
-    if (token_capacity_available) {
-      rtcore_symbolic_rt_token_reservation_record record;
-      record.active_mask = key.active_mask;
-      record.active_lanes = active_lanes;
-      record.acquired_lane_mask = 0;
-      reservation_inserted =
-          g_rtcore_symbolic_rt_token_reservations.insert(
-              std::make_pair(key, record))
-              .second;
-      token_capacity_available = reservation_inserted;
-    }
+    capacity_oversubscribed = !allocator_capacity_available;
+    rtcore_symbolic_rt_token_reservation_record record;
+    record.active_mask = key.active_mask;
+    record.active_lanes = active_lanes;
+    record.acquired_lane_mask = 0;
+    reservation_inserted =
+        g_rtcore_symbolic_rt_token_reservations.insert(
+            std::make_pair(key, record))
+            .second;
+    token_capacity_available = reservation_inserted;
   }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT token-reservation-check (%s:%u), "
@@ -11614,6 +11621,7 @@ bool rtcore_symbolic_submit_token_reservation_available(
          "live_tokens=%zu, token_map_live_tokens=%zu, "
          "allocator_live_tokens=%zu, allocator_reserved_tokens=%u, "
          "allocator_live_plus_reserved_tokens=%zu, "
+         "allocator_capacity_available=%u, capacity_oversubscribed=%u, "
          "token_capacity_available=%u\n",
          pI->source_file(), pI->source_line(), key.context_ptr,
          key.handoff_window_base, lane_slot_index, token_key.owner_hw_tid,
@@ -11623,12 +11631,15 @@ bool rtcore_symbolic_submit_token_reservation_available(
          profile.rt_tokens_per_execution_partition, live_tokens,
          token_map_live_tokens, allocator_live_tokens, reserved_tokens,
          allocator_live_plus_reserved_tokens,
+         allocator_capacity_available ? 1 : 0,
+         capacity_oversubscribed ? 1 : 0,
          token_capacity_available ? 1 : 0);
   fflush(stdout);
 
-  if (!token_capacity_available) {
-    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
-           "reason=RT_TOKEN_CAPACITY_EXHAUSTED, context_ptr=0x%llx, "
+  if (capacity_oversubscribed) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT token-resource-backpressure (%s:%u), "
+           "diagnostic=RT_SUBMIT token-reservation-capacity, "
+           "context_ptr=0x%llx, "
            "handoff_window_base=0x%llx, lane_slot_index=%u, "
            "owner_hw_tid=%u, owner_hw_wid=%u, owner_hw_sid=%u, "
            "warp_uid=%u, static_inst_uid=%u, active_lane_mask=0x%08x, "
@@ -11637,9 +11648,11 @@ bool rtcore_symbolic_submit_token_reservation_available(
            "token_map_live_tokens=%zu, allocator_live_tokens=%zu, "
            "allocator_reserved_tokens=%u, "
            "allocator_live_plus_reserved_tokens=%zu, "
+           "allocator_capacity_available=%u, capacity_oversubscribed=%u, "
            "token_capacity_available=%u, remaining_windows=%zu, "
            "remaining_tokens=%zu, remaining_reservations=%zu, "
-           "remaining_allocator_live=%zu, consumed=0\n",
+           "remaining_allocator_live=%zu, action=oversubscribe, "
+           "functional_progress=1, consumed=0\n",
            pI->source_file(), pI->source_line(), key.context_ptr,
            key.handoff_window_base, lane_slot_index, token_key.owner_hw_tid,
            key.warp_id, key.owner_hw_sid, key.warp_uid, key.static_inst_uid,
@@ -11647,6 +11660,8 @@ bool rtcore_symbolic_submit_token_reservation_available(
            reserved_tokens, profile.rt_tokens_per_execution_partition,
            live_tokens, token_map_live_tokens, allocator_live_tokens,
            reserved_tokens, allocator_live_plus_reserved_tokens,
+           allocator_capacity_available ? 1 : 0,
+           capacity_oversubscribed ? 1 : 0,
            token_capacity_available ? 1 : 0,
            rtcore_synthetic_handoff_window_count(),
            rtcore_symbolic_rt_token_count(),
