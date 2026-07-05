@@ -1143,17 +1143,6 @@ static bool rtcore_replay_service_tick_stats_log_enabled()
     return enabled != 0;
 }
 
-static bool rtcore_replay_unit_arbitration_enabled()
-{
-    static int enabled = []() {
-        return rtcore_replay_env_enabled_or_model_preset(
-                   "VULKAN_SIM_RTCORE_REPLAY_UNIT_ARBITRATION", true)
-                   ? 1
-                   : 0;
-    }();
-    return enabled != 0;
-}
-
 static bool rtcore_replay_v03_hw_banked_ready_selection_enabled()
 {
     return true;
@@ -5558,76 +5547,6 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
     return advanced;
 }
 
-static bool rtcore_service_replay_compute_ready_requests_for_owner(
-    unsigned owner_hw_sid, rtcore_replay_issue_budget *budget,
-    bool collect_unit_stats,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
-    unsigned long long service_cycle = 0)
-{
-    if (!budget) {
-        return false;
-    }
-    bool progressed = false;
-    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
-        RTCORE_REPLAY_ISSUED_NODE, owner_hw_sid,
-        &budget->node_issue_budget,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.node_unit_issue_attempts
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.node_unit_issued
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted
-            : NULL,
-        last_identity, service_cycle);
-    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
-        RTCORE_REPLAY_ISSUED_PRIMITIVE, owner_hw_sid,
-        &budget->primitive_issue_budget,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .primitive_unit_issue_attempts
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .primitive_unit_budget_exhausted
-            : NULL,
-        last_identity, service_cycle);
-    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
-        RTCORE_REPLAY_ISSUED_STACK, owner_hw_sid,
-        &budget->stack_issue_budget,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.stack_unit_issue_attempts
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.stack_unit_issued
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .stack_unit_budget_exhausted
-            : NULL,
-        last_identity, service_cycle);
-    progressed |= rtcore_service_replay_completion_ingress_requests_for_owner(
-        owner_hw_sid, &budget->warp_completion_ingress_budget,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .warp_completion_ingress_attempts
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .warp_completion_ingress_issued
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .warp_completion_ingress_budget_exhausted
-            : NULL,
-        last_identity, service_cycle);
-    return progressed;
-}
-
 static void rtcore_collect_replay_request_owners(std::set<unsigned> *owners)
 {
     if (!owners) {
@@ -5643,17 +5562,7 @@ static void rtcore_collect_replay_request_owners(std::set<unsigned> *owners)
     }
 }
 
-static bool rtcore_service_replay_ready_requests_with_budget_for_owner(
-    unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
-    unsigned long long service_cycle = 0)
-{
-    return rtcore_service_replay_compute_ready_requests_for_owner(
-        owner_hw_sid, &budget, false, last_identity, service_cycle);
-}
-
-static bool
-rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
+static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
     unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
     unsigned long long service_cycle = 0)
@@ -5681,66 +5590,6 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
         &g_rtcore_replay_unit_arbitration_stats.stack_unit_issued,
         &g_rtcore_replay_unit_arbitration_stats.stack_unit_budget_exhausted,
         last_identity, service_cycle);
-    progressed |= rtcore_service_replay_completion_ingress_requests_for_owner(
-        owner_hw_sid, &budget.warp_completion_ingress_budget,
-        &g_rtcore_replay_unit_arbitration_stats
-             .warp_completion_ingress_attempts,
-        &g_rtcore_replay_unit_arbitration_stats.warp_completion_ingress_issued,
-        &g_rtcore_replay_unit_arbitration_stats
-             .warp_completion_ingress_budget_exhausted,
-        last_identity, service_cycle);
-    return progressed;
-}
-
-static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
-    unsigned owner_hw_sid, rtcore_replay_issue_budget budget,
-    rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
-    unsigned long long service_cycle = 0)
-{
-    bool progressed = false;
-    const bool collect_unit_stats = rtcore_replay_unit_arbitration_enabled();
-    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
-        RTCORE_REPLAY_ISSUED_NODE, owner_hw_sid,
-        &budget.node_issue_budget,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.node_unit_issue_attempts
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.node_unit_issued
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted
-            : NULL,
-        last_identity, service_cycle);
-    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
-        RTCORE_REPLAY_ISSUED_PRIMITIVE, owner_hw_sid,
-        &budget.primitive_issue_budget,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .primitive_unit_issue_attempts
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.primitive_unit_issued
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .primitive_unit_budget_exhausted
-            : NULL,
-        last_identity, service_cycle);
-    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
-        RTCORE_REPLAY_ISSUED_STACK, owner_hw_sid,
-        &budget.stack_issue_budget,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.stack_unit_issue_attempts
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats.stack_unit_issued
-            : NULL,
-        collect_unit_stats
-            ? &g_rtcore_replay_unit_arbitration_stats
-                   .stack_unit_budget_exhausted
-            : NULL,
-        last_identity, service_cycle);
     return progressed;
 }
 
@@ -5749,22 +5598,14 @@ static bool rtcore_service_replay_scoreboard_handoff_requests_for_owner(
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
     unsigned long long service_cycle = 0)
 {
-    const bool collect_unit_stats = rtcore_replay_unit_arbitration_enabled();
     const bool ingress_progressed =
         rtcore_service_replay_completion_ingress_requests_for_owner(
             owner_hw_sid, &budget.warp_completion_ingress_budget,
-            collect_unit_stats
-                ? &g_rtcore_replay_unit_arbitration_stats
-                       .warp_completion_ingress_attempts
-                : NULL,
-            collect_unit_stats
-                ? &g_rtcore_replay_unit_arbitration_stats
-                       .warp_completion_ingress_issued
-                : NULL,
-            collect_unit_stats
-                ? &g_rtcore_replay_unit_arbitration_stats
-                       .warp_completion_ingress_budget_exhausted
-                : NULL,
+            &g_rtcore_replay_unit_arbitration_stats
+                 .warp_completion_ingress_attempts,
+            &g_rtcore_replay_unit_arbitration_stats.warp_completion_ingress_issued,
+            &g_rtcore_replay_unit_arbitration_stats
+                 .warp_completion_ingress_budget_exhausted,
             last_identity, service_cycle);
     const unsigned delivered =
         rtcore_service_completed_warp_entry_handoffs_for_owner(
