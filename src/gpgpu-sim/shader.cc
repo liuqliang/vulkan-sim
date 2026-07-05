@@ -7838,14 +7838,14 @@ rt_unit::rtcore_make_resident_warp_demand_snapshot(
   snapshot.resident_live_warps =
       snapshot.live_rt_unit_warps + snapshot.dispatch_pending_warps +
       snapshot.rt_core_out_pending_warps;
-  snapshot.resident_warp_capacity = m_config->m_rt_max_warps;
+  snapshot.resident_rt_warp_capacity = m_config->m_rt_max_warps;
   snapshot.resident_live_plus_demand_warps =
       snapshot.resident_live_warps + 1;
   snapshot.zero_capacity_fail_closed =
-      snapshot.resident_warp_capacity == 0;
+      snapshot.resident_rt_warp_capacity == 0;
   snapshot.capacity_available =
       snapshot.zero_capacity_fail_closed ||
-      snapshot.resident_live_warps < snapshot.resident_warp_capacity;
+      snapshot.resident_live_warps < snapshot.resident_rt_warp_capacity;
   return snapshot;
 }
 
@@ -7865,7 +7865,7 @@ bool rt_unit::rtcore_resident_warp_capacity_available(
     printf("GPGPU-Sim PTX: RT_SUBMIT resident-warp-backpressure, "
            "diagnostic=RT_SUBMIT issue-resource-snapshot, warp_id=%u, "
            "owner_hw_sid=%u, static_inst_pc=0x%llx, "
-           "resident_live_warps=%u, resident_warp_capacity=%u, "
+           "resident_live_warps=%u, resident_rt_warp_capacity=%u, "
            "resident_dispatch_pending_warps=%u, "
            "resident_rt_core_out_pending_warps=%u, "
            "resident_live_plus_demand_warps=%u, "
@@ -7888,7 +7888,7 @@ bool rt_unit::rtcore_resident_warp_capacity_available(
            "resident_gate_decoded_value_record_source_snapshot_consumes_capacity_decision=0, "
            "resident_gate_decoded_value_record_source_snapshot_consumes_backpressure_behavior=0\n",
            warp_id, owner_hw_sid, static_inst_pc,
-           snapshot.resident_live_warps, snapshot.resident_warp_capacity,
+           snapshot.resident_live_warps, snapshot.resident_rt_warp_capacity,
            snapshot.dispatch_pending_warps,
            snapshot.rt_core_out_pending_warps,
            snapshot.resident_live_plus_demand_warps,

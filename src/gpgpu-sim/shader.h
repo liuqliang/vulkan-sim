@@ -1471,7 +1471,7 @@ struct rtcore_resident_warp_demand_snapshot {
         dispatch_pending_warps(0),
         rt_core_out_pending_warps(0),
         resident_live_warps(0),
-        resident_warp_capacity(0),
+        resident_rt_warp_capacity(0),
         resident_live_plus_demand_warps(0),
         zero_capacity_fail_closed(false),
         capacity_available(true) {}
@@ -1480,7 +1480,7 @@ struct rtcore_resident_warp_demand_snapshot {
   unsigned dispatch_pending_warps;
   unsigned rt_core_out_pending_warps;
   unsigned resident_live_warps;
-  unsigned resident_warp_capacity;
+  unsigned resident_rt_warp_capacity;
   unsigned resident_live_plus_demand_warps;
   bool zero_capacity_fail_closed;
   bool capacity_available;
