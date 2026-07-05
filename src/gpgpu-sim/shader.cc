@@ -162,6 +162,47 @@ static bool rtcore_replay_env_enabled_or_model_preset(const char *name,
   return preset_enabled && rtcore_replay_model_preset_simple_enabled();
 }
 
+struct rtcore_warp_admission_budget_cycle_state {
+  rtcore_warp_admission_budget_cycle_state() : cycle(0), used(0) {}
+  unsigned long long cycle;
+  unsigned used;
+};
+
+static std::map<unsigned, rtcore_warp_admission_budget_cycle_state>
+    g_rtcore_warp_admission_budget_by_owner;
+
+static unsigned rtcore_warp_admission_budget_config() {
+  static unsigned budget = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_WARP_ADMISSION_BUDGET");
+    if (value == NULL || *value == '\0') {
+      return 1u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || parsed == 0) {
+      return 1u;
+    }
+    if (parsed > 1024) {
+      return 1024u;
+    }
+    return static_cast<unsigned>(parsed);
+  }();
+  return budget;
+}
+
+static rtcore_warp_admission_budget_cycle_state &
+rtcore_warp_admission_budget_state_for_owner(unsigned owner_hw_sid,
+                                             unsigned long long issue_cycle) {
+  rtcore_warp_admission_budget_cycle_state &state =
+      g_rtcore_warp_admission_budget_by_owner[owner_hw_sid];
+  if (state.cycle != issue_cycle) {
+    state.cycle = issue_cycle;
+    state.used = 0;
+  }
+  return state;
+}
+
 static bool rtcore_replay_cycle_hook_enabled() {
   static int cached_enabled = -1;
   if (cached_enabled < 0) {
@@ -4479,6 +4520,49 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
       inst, warp_id, m_sid, inst.pc, snapshot, materialized_input_provenance);
 }
 
+bool shader_core_ctx::rtcore_submit_warp_admission_budget_available(
+    const warp_inst_t &inst, unsigned warp_id,
+    unsigned long long issue_cycle) const {
+  if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
+    return true;
+  }
+  if (!rtcore_symbolic_submit_issue_resource_backpressure_is_enabled()) {
+    return true;
+  }
+  const unsigned budget = rtcore_warp_admission_budget_config();
+  const rtcore_warp_admission_budget_cycle_state &state =
+      rtcore_warp_admission_budget_state_for_owner(m_sid, issue_cycle);
+  if (state.used < budget) {
+    return true;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "warp-admission-budget-backpressure=1, owner_hw_sid=%u, "
+         "issue_cycle=%llu, warp_id=%u, static_inst_pc=0x%llx, "
+         "warp_admission_budget=%u, warp_admission_used=%u, action=stall\n",
+         m_sid, issue_cycle, warp_id,
+         static_cast<unsigned long long>(inst.pc), budget, state.used);
+  fflush(stdout);
+  return false;
+}
+
+void shader_core_ctx::rtcore_submit_warp_admission_budget_consume(
+    const warp_inst_t &inst, unsigned warp_id,
+    unsigned long long issue_cycle) const {
+  (void)warp_id;
+  if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
+    return;
+  }
+  if (!rtcore_symbolic_submit_issue_resource_backpressure_is_enabled()) {
+    return;
+  }
+  const unsigned budget = rtcore_warp_admission_budget_config();
+  rtcore_warp_admission_budget_cycle_state &state =
+      rtcore_warp_admission_budget_state_for_owner(m_sid, issue_cycle);
+  if (state.used < budget) {
+    state.used++;
+  }
+}
+
 bool shader_core_ctx::rtcore_submit_warp_completion_entry_reserve_issue_slot(
     const warp_inst_t &inst, unsigned warp_id,
     unsigned issued_active_mask,
@@ -6433,6 +6517,19 @@ void scheduler_unit::cycle() {
                 fflush(stdout);
               }
               if (rt_core_issue_slot_ready) {
+                const unsigned long long rtcore_warp_admission_issue_cycle =
+                    m_shader->m_gpu->gpu_sim_cycle +
+                    m_shader->m_gpu->gpu_tot_sim_cycle;
+                const bool rtcore_warp_admission_budget_ready =
+                    pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+                    m_shader->rtcore_submit_warp_admission_budget_available(
+                        *pI, warp_id, rtcore_warp_admission_issue_cycle);
+                if (!rtcore_warp_admission_budget_ready) {
+                  rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
+                      "scheduler_bridge_rollback_after_warp_admission_budget");
+                  break;
+                }
+
                 rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot
                     rtcore_warp_completion_entry_gate_materialized_input_provenance;
                 rtcore_warp_completion_entry_gate_materialized_input_provenance
@@ -6494,6 +6591,10 @@ void scheduler_unit::cycle() {
                   break;
                 }
 
+                if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT) {
+                  m_shader->rtcore_submit_warp_admission_budget_consume(
+                      *pI, warp_id, rtcore_warp_admission_issue_cycle);
+                }
                 m_shader->issue_warp(*m_rt_core_out, pI, active_mask,
                                      warp_id, m_id);
                 if (rtcore_scheduler_credit_ledger_scheduler_bridge_enabled) {

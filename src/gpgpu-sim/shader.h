@@ -3282,6 +3282,12 @@ class shader_core_ctx : public core_t {
       unsigned rt_core_out_pending_warps,
       const rtcore_resident_gate_materialized_input_provenance_snapshot
           &materialized_input_provenance) const;
+  bool rtcore_submit_warp_admission_budget_available(
+      const warp_inst_t &inst, unsigned warp_id,
+      unsigned long long issue_cycle) const;
+  void rtcore_submit_warp_admission_budget_consume(
+      const warp_inst_t &inst, unsigned warp_id,
+      unsigned long long issue_cycle) const;
   bool rtcore_submit_warp_completion_entry_reserve_issue_slot(
       const warp_inst_t &inst, unsigned warp_id,
       unsigned issued_active_mask,
