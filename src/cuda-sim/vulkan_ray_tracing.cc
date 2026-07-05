@@ -387,8 +387,6 @@ enum rtcore_replay_lane_request_state {
 static bool rtcore_replay_v01_memory_queue_gate_enabled();
 static bool rtcore_replay_v01_issue_state_gate_enabled();
 static bool rtcore_replay_v01_independent_service_enabled();
-static bool rtcore_replay_v01_stage_data_path_gate_enabled();
-
 enum rtcore_replay_unit_latency_gate_unit {
     RTCORE_REPLAY_UNIT_LATENCY_NONE = 0,
     RTCORE_REPLAY_UNIT_LATENCY_NODE = 1,
@@ -627,17 +625,6 @@ struct rtcore_replay_service_tick_stats {
     unsigned service_stage_unit_and_ready_issue_progressed_count;
     unsigned service_stage_all_progressed_count;
     unsigned service_stage_completion_tail_progressed_count;
-};
-
-struct rtcore_replay_v01_stage_data_path_gate_stats {
-    unsigned memory_wake_allowed_count;
-    unsigned memory_wake_blocked_count;
-    unsigned unit_wake_allowed_count;
-    unsigned unit_wake_blocked_count;
-    unsigned ready_issue_allowed_count;
-    unsigned ready_issue_blocked_count;
-    unsigned completion_tail_allowed_count;
-    unsigned completion_tail_blocked_count;
 };
 
 struct rtcore_replay_overflow_summary_estimate_stats {
@@ -995,8 +982,6 @@ static rtcore_replay_v01_issue_state_gate_stats
     g_rtcore_replay_v01_issue_state_gate_stats;
 static rtcore_replay_v01_independent_service_stats
     g_rtcore_replay_v01_independent_service_stats;
-static rtcore_replay_v01_stage_data_path_gate_stats
-    g_rtcore_replay_v01_stage_data_path_gate_stats;
 static rtcore_replay_unit_latency_gate_stats
     g_rtcore_replay_unit_latency_gate_stats;
 static rtcore_replay_unit_arbitration_stats
@@ -1305,17 +1290,6 @@ static bool rtcore_replay_v01_independent_service_enabled()
     static int enabled = []() {
         return rtcore_replay_env_enabled_or_model_preset(
                    "VULKAN_SIM_RTCORE_REPLAY_V01_INDEPENDENT_SERVICE", true)
-                   ? 1
-                   : 0;
-    }();
-    return enabled != 0;
-}
-
-static bool rtcore_replay_v01_stage_data_path_gate_enabled()
-{
-    static int enabled = []() {
-        return rtcore_replay_env_enabled_or_model_preset(
-                   "VULKAN_SIM_RTCORE_REPLAY_V01_STAGE_DATA_PATH_GATE", true)
                    ? 1
                    : 0;
     }();
@@ -2103,35 +2077,6 @@ static const unsigned RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_STATE_MASK =
 static const unsigned RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK =
     RTCORE_REPLAY_DATA_PATH_RESOURCE_LANE_REQUEST_STATE_IDENTITY_MASK |
     RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_STATE_MASK;
-static const unsigned RTCORE_REPLAY_V01_STAGE_MEMORY_WAKE_RESOURCE_MASK =
-    RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
-static const unsigned RTCORE_REPLAY_V01_STAGE_UNIT_WAKE_RESOURCE_MASK =
-    RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
-static const unsigned RTCORE_REPLAY_V01_STAGE_READY_ISSUE_RESOURCE_MASK =
-    RTCORE_REPLAY_DATA_PATH_RESOURCE_ALL_MASK;
-static const unsigned RTCORE_REPLAY_V01_STAGE_COMPLETION_TAIL_RESOURCE_MASK =
-    RTCORE_REPLAY_DATA_PATH_RESOURCE_LANE_REQUEST_STATE_IDENTITY_MASK |
-    RTCORE_REPLAY_DATA_PATH_RESOURCE_REQUEST_STATE_MASK;
-static unsigned rtcore_replay_v01_stage_memory_wake_resource_mask()
-{
-    return RTCORE_REPLAY_V01_STAGE_MEMORY_WAKE_RESOURCE_MASK;
-}
-
-static unsigned rtcore_replay_v01_stage_unit_wake_resource_mask()
-{
-    return RTCORE_REPLAY_V01_STAGE_UNIT_WAKE_RESOURCE_MASK;
-}
-
-static unsigned rtcore_replay_v01_stage_ready_issue_resource_mask()
-{
-    return RTCORE_REPLAY_V01_STAGE_READY_ISSUE_RESOURCE_MASK;
-}
-
-static unsigned rtcore_replay_v01_stage_completion_tail_resource_mask()
-{
-    return RTCORE_REPLAY_V01_STAGE_COMPLETION_TAIL_RESOURCE_MASK;
-}
-
 static void rtcore_update_replay_unsigned_max(unsigned value,
                                               unsigned *maximum)
 {
@@ -2209,34 +2154,6 @@ static void rtcore_record_replay_v03_hw_same_cycle_bypass_candidate(
         rtcore_replay_v03_hw_queue_ingress_stats_for_owner(owner_hw_sid);
     ingress_stats->same_cycle_bypass_candidate_delta = 0;
     rtcore_update_replay_v03_hw_queue_ingress_maxima(ingress_stats);
-}
-
-static bool rtcore_replay_v01_stage_data_path_gate_can_service(
-    unsigned owner_hw_sid, unsigned long long service_cycle,
-    unsigned stage_resource_mask)
-{
-    (void)owner_hw_sid;
-    (void)service_cycle;
-    (void)stage_resource_mask;
-    if (!rtcore_replay_v01_stage_data_path_gate_enabled()) {
-        return true;
-    }
-    return true;
-}
-
-static void rtcore_record_replay_v01_stage_data_path_gate_result(
-    bool allowed, unsigned *allowed_count, unsigned *blocked_count)
-{
-    if (!rtcore_replay_v01_stage_data_path_gate_enabled()) {
-        return;
-    }
-    if (allowed) {
-        if (allowed_count) {
-            (*allowed_count)++;
-        }
-    } else if (blocked_count) {
-        (*blocked_count)++;
-    }
 }
 
 static uint32_t rtcore_pack_compact_trace_fields(
@@ -7582,6 +7499,7 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
     rtcore_replay_service_cycle_identity_snapshot memory_identity = {};
     rtcore_replay_service_cycle_identity_snapshot unit_identity = {};
     rtcore_replay_service_cycle_identity_snapshot ready_identity = {};
+    rtcore_replay_service_cycle_identity_snapshot completion_identity = {};
     const bool memory_issue_progressed =
         rtcore_service_ready_memory_replay_requests_for_owner(
             owner_hw_sid, rtcore_replay_memory_issue_budget_config(),
@@ -7597,137 +7515,13 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
             owner_hw_sid, rtcore_replay_unit_wake_budget_config(),
             &unit_identity, service_cycle);
     const bool ready_issue_progressed =
-        rtcore_replay_unit_arbitration_enabled()
-            ? rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
-                  owner_hw_sid, rtcore_replay_issue_budget_config(),
-                  &ready_identity, service_cycle)
-            : rtcore_service_replay_ready_requests_with_budget_for_owner(
-                  owner_hw_sid, rtcore_replay_issue_budget_config(),
-                  &ready_identity, service_cycle);
-    result.unit_wake_progressed = unit_progressed;
-    result.ready_issue_progressed = ready_issue_progressed;
-    result.ready_progressed = unit_progressed || ready_issue_progressed;
-    result.progressed = result.memory_progressed || result.ready_progressed;
-    if (ready_issue_progressed) {
-        result.last_progress_identity = ready_identity;
-    } else if (unit_progressed) {
-        result.last_progress_identity = unit_identity;
-    } else if (result.memory_progressed) {
-        result.last_progress_identity = memory_identity;
-    }
-    return result;
-}
-
-static rtcore_replay_service_tick_result
-rtcore_service_replay_tick_for_owner_stage_gated(
-    unsigned owner_hw_sid, unsigned long long service_cycle = 0)
-{
-    rtcore_replay_service_tick_result result = {};
-    rtcore_replay_service_cycle_identity_snapshot memory_identity = {};
-    rtcore_replay_service_cycle_identity_snapshot unit_identity = {};
-    rtcore_replay_service_cycle_identity_snapshot ready_identity = {};
-    rtcore_replay_service_cycle_identity_snapshot completion_identity = {};
-
-    const bool memory_issue_data_path_allowed =
-        rtcore_replay_v01_stage_data_path_gate_can_service(
-            owner_hw_sid, service_cycle,
-            rtcore_replay_v01_stage_memory_wake_resource_mask());
-    const bool memory_issue_allowed = memory_issue_data_path_allowed;
-    const rtcore_replay_data_path_access_snapshot memory_issue_stage_before =
-        rtcore_get_replay_data_path_access_snapshot();
-    const bool memory_issue_progressed =
-        memory_issue_allowed
-            ? rtcore_service_ready_memory_replay_requests_for_owner(
-                  owner_hw_sid, rtcore_replay_memory_issue_budget_config(),
-                  &memory_identity, service_cycle)
-            : false;
-    const bool memory_wake_data_path_allowed =
-        rtcore_replay_v01_stage_data_path_gate_can_service(
-            owner_hw_sid, service_cycle,
-            rtcore_replay_v01_stage_memory_wake_resource_mask());
-    rtcore_record_replay_v01_stage_data_path_gate_result(
-        memory_wake_data_path_allowed,
-        &g_rtcore_replay_v01_stage_data_path_gate_stats
-             .memory_wake_allowed_count,
-        &g_rtcore_replay_v01_stage_data_path_gate_stats
-             .memory_wake_blocked_count);
-    const bool memory_wake_allowed = memory_wake_data_path_allowed;
-    const rtcore_replay_data_path_access_snapshot memory_wake_stage_before =
-        rtcore_get_replay_data_path_access_snapshot();
-    const bool memory_wake_progressed =
-        memory_wake_allowed
-            ? rtcore_service_waiting_memory_replay_requests_for_owner(
-                  owner_hw_sid, rtcore_replay_memory_wake_budget_config(),
-                  &memory_identity, service_cycle)
-            : false;
-    result.memory_progressed =
-        memory_issue_progressed || memory_wake_progressed;
-    const rtcore_replay_data_path_access_snapshot memory_wake_stage_after =
-        rtcore_get_replay_data_path_access_snapshot();
-    const bool unit_wake_data_path_allowed =
-        rtcore_replay_v01_stage_data_path_gate_can_service(
-            owner_hw_sid, service_cycle,
-            rtcore_replay_v01_stage_unit_wake_resource_mask());
-    rtcore_record_replay_v01_stage_data_path_gate_result(
-        unit_wake_data_path_allowed,
-        &g_rtcore_replay_v01_stage_data_path_gate_stats
-             .unit_wake_allowed_count,
-        &g_rtcore_replay_v01_stage_data_path_gate_stats
-             .unit_wake_blocked_count);
-    const bool unit_wake_allowed = unit_wake_data_path_allowed;
-    const rtcore_replay_data_path_access_snapshot unit_stage_before =
-        rtcore_get_replay_data_path_access_snapshot();
-    const bool unit_progressed =
-        unit_wake_allowed
-            ? rtcore_service_waiting_unit_replay_requests_for_owner(
-                  owner_hw_sid, rtcore_replay_unit_wake_budget_config(),
-                  &unit_identity, service_cycle)
-            : false;
-    const rtcore_replay_data_path_access_snapshot unit_stage_after =
-        rtcore_get_replay_data_path_access_snapshot();
-    const bool ready_issue_data_path_allowed =
-        rtcore_replay_v01_stage_data_path_gate_can_service(
-            owner_hw_sid, service_cycle,
-            rtcore_replay_v01_stage_ready_issue_resource_mask());
-    rtcore_record_replay_v01_stage_data_path_gate_result(
-        ready_issue_data_path_allowed,
-        &g_rtcore_replay_v01_stage_data_path_gate_stats
-             .ready_issue_allowed_count,
-        &g_rtcore_replay_v01_stage_data_path_gate_stats
-             .ready_issue_blocked_count);
-    const bool ready_issue_allowed = ready_issue_data_path_allowed;
-    const rtcore_replay_data_path_access_snapshot ready_stage_before =
-        rtcore_get_replay_data_path_access_snapshot();
-    const bool ready_issue_progressed =
-        ready_issue_allowed
-            ? rtcore_service_replay_non_completion_ready_requests_for_owner(
-                  owner_hw_sid, rtcore_replay_issue_budget_config(),
-                  &ready_identity, service_cycle)
-            : false;
-    const rtcore_replay_data_path_access_snapshot ready_stage_after =
-        rtcore_get_replay_data_path_access_snapshot();
-    const bool completion_tail_data_path_allowed =
-        rtcore_replay_v01_stage_data_path_gate_can_service(
-            owner_hw_sid, service_cycle,
-            rtcore_replay_v01_stage_completion_tail_resource_mask());
-    rtcore_record_replay_v01_stage_data_path_gate_result(
-        completion_tail_data_path_allowed,
-        &g_rtcore_replay_v01_stage_data_path_gate_stats
-             .completion_tail_allowed_count,
-        &g_rtcore_replay_v01_stage_data_path_gate_stats
-             .completion_tail_blocked_count);
-    const bool completion_tail_allowed = completion_tail_data_path_allowed;
+        rtcore_service_replay_non_completion_ready_requests_for_owner(
+            owner_hw_sid, rtcore_replay_issue_budget_config(), &ready_identity,
+            service_cycle);
     const bool completion_tail_progressed =
-        completion_tail_allowed
-            ? rtcore_service_replay_completion_tail_requests_for_owner(
-                  owner_hw_sid, rtcore_replay_issue_budget_config(),
-                  &completion_identity, service_cycle)
-            : false;
-    rtcore_record_replay_v03_hw_same_cycle_bypass_candidate(
-        owner_hw_sid, service_cycle, memory_issue_stage_before,
-        memory_wake_stage_after, unit_stage_before, unit_stage_after,
-        ready_stage_before, ready_stage_after);
-
+        rtcore_service_replay_completion_tail_requests_for_owner(
+            owner_hw_sid, rtcore_replay_issue_budget_config(),
+            &completion_identity, service_cycle);
     result.unit_wake_progressed = unit_progressed;
     result.ready_issue_progressed = ready_issue_progressed;
     result.completion_tail_progressed = completion_tail_progressed;
@@ -7753,10 +7547,6 @@ rtcore_maybe_service_replay_tick(unsigned owner_hw_sid,
     rtcore_replay_service_tick_result result = {};
     if (!rtcore_replay_service_tick_enabled()) {
         return result;
-    }
-    if (rtcore_replay_v01_stage_data_path_gate_enabled()) {
-        return rtcore_service_replay_tick_for_owner_stage_gated(owner_hw_sid,
-                                                                service_cycle);
     }
     return rtcore_service_replay_tick_for_owner(owner_hw_sid, service_cycle);
 }
