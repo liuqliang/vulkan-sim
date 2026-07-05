@@ -1709,8 +1709,8 @@ class rt_unit : public pipelined_simd_unit {
               issued_lane_active(false),
               completion_event_found(false),
               joined(false),
-              warp_completion_shadow_enabled(false),
-              warp_completion_shadow_found(false),
+              warp_completion_entry_enabled(false),
+              warp_completion_entry_found(false),
               warp_completion_all_active_lanes_complete(false),
               owner_hw_sid(0),
               cycle(0),
@@ -1743,8 +1743,8 @@ class rt_unit : public pipelined_simd_unit {
         bool issued_lane_active;
         bool completion_event_found;
         bool joined;
-        bool warp_completion_shadow_enabled;
-        bool warp_completion_shadow_found;
+        bool warp_completion_entry_enabled;
+        bool warp_completion_entry_found;
         bool warp_completion_all_active_lanes_complete;
         unsigned owner_hw_sid;
         unsigned long long cycle;

@@ -70,7 +70,7 @@ struct rtcore_replay_service_cycle_identity_snapshot {
   unsigned static_inst_uid;
 };
 
-struct rtcore_replay_warp_completion_shadow_snapshot {
+struct rtcore_replay_warp_completion_entry_snapshot {
   bool enabled;
   bool found;
   bool all_active_lanes_complete;
@@ -131,10 +131,10 @@ extern "C" bool rtcore_record_memory_unit_response(
     unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
     unsigned chunk_id, unsigned chunk_count, unsigned response_target,
     unsigned long long response_cycle);
-extern "C" bool rtcore_query_replay_warp_completion_shadow(
+extern "C" bool rtcore_query_replay_warp_completion_entry(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask,
-    rtcore_replay_warp_completion_shadow_snapshot *snapshot);
+    rtcore_replay_warp_completion_entry_snapshot *snapshot);
 
 namespace {
 
@@ -2693,10 +2693,10 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
 static void rtcore_record_replay_cycle_release_gate_shadow_decision(
     const rtcore_replay_cycle_hook_result &result, bool legacy_ready,
     bool release_identity_joined_for_shadow,
-    bool warp_completion_shadow_enabled, bool warp_completion_shadow_found,
+    bool warp_completion_entry_enabled, bool warp_completion_entry_found,
     bool warp_completion_all_active_lanes_complete,
-    bool candidate_warp_completion_shadow_enabled,
-    bool candidate_warp_completion_shadow_found,
+    bool candidate_warp_completion_entry_enabled,
+    bool candidate_warp_completion_entry_found,
     bool candidate_warp_completion_all_active_lanes_complete,
     bool candidate_all_lanes_shadow_release_allowed, bool activation_enabled,
     bool activation_blocked,
@@ -2738,8 +2738,8 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
   }
 
   const bool all_lanes_ready =
-      release_identity_joined && warp_completion_shadow_enabled &&
-      warp_completion_shadow_found &&
+      release_identity_joined && warp_completion_entry_enabled &&
+      warp_completion_entry_found &&
       warp_completion_all_active_lanes_complete;
   const bool all_lanes_shadow_release_allowed =
       legacy_ready && result.hook_enabled && result.service_enabled &&
@@ -2808,13 +2808,13 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
   printf("GPGPU-Sim RTCORE_REPLAY_CYCLE_RELEASE_GATE_SHADOW "
          "owner_hw_sid=%u cycle=%llu legacy_ready=%u hook_enabled=%u "
          "service_enabled=%u progressed=%u release_identity_joined=%u "
-         "warp_completion_shadow_enabled=%u "
-         "warp_completion_shadow_found=%u "
+         "warp_completion_entry_enabled=%u "
+         "warp_completion_entry_found=%u "
          "warp_completion_all_active_lanes_complete=%u "
          "legacy_shadow_release_allowed=%u "
          "all_lanes_shadow_release_allowed=%u "
-         "candidate_warp_completion_shadow_enabled=%u "
-         "candidate_warp_completion_shadow_found=%u "
+         "candidate_warp_completion_entry_enabled=%u "
+         "candidate_warp_completion_entry_found=%u "
          "candidate_warp_completion_all_active_lanes_complete=%u "
          "candidate_all_lanes_shadow_release_allowed=%u "
          "activation_enabled=%u activation_blocked=%u "
@@ -2824,13 +2824,13 @@ static void rtcore_record_replay_cycle_release_gate_shadow_decision(
          result.owner_hw_sid, result.cycle, legacy_ready ? 1 : 0,
          result.hook_enabled ? 1 : 0, result.service_enabled ? 1 : 0,
          result.progressed ? 1 : 0, release_identity_joined ? 1 : 0,
-         warp_completion_shadow_enabled ? 1 : 0,
-         warp_completion_shadow_found ? 1 : 0,
+         warp_completion_entry_enabled ? 1 : 0,
+         warp_completion_entry_found ? 1 : 0,
          warp_completion_all_active_lanes_complete ? 1 : 0,
          legacy_shadow_release_allowed ? 1 : 0,
          all_lanes_shadow_release_allowed ? 1 : 0,
-         candidate_warp_completion_shadow_enabled ? 1 : 0,
-         candidate_warp_completion_shadow_found ? 1 : 0,
+         candidate_warp_completion_entry_enabled ? 1 : 0,
+         candidate_warp_completion_entry_found ? 1 : 0,
          candidate_warp_completion_all_active_lanes_complete ? 1 : 0,
          candidate_all_lanes_shadow_release_allowed ? 1 : 0,
          activation_enabled ? 1 : 0, activation_blocked ? 1 : 0,
@@ -9065,13 +9065,13 @@ rt_unit::rtcore_make_replay_release_identity_join_snapshot(
   snapshot.joined_static_inst_pc = inst.pc;
 
   if (identity_valid && identity_has_warp_metadata) {
-    rtcore_replay_warp_completion_shadow_snapshot completion_snapshot = {};
-    rtcore_query_replay_warp_completion_shadow(
+    rtcore_replay_warp_completion_entry_snapshot completion_snapshot = {};
+    rtcore_query_replay_warp_completion_entry(
         identity_owner_hw_sid, identity_warp_uid, identity_warp_id,
         identity_active_mask, &completion_snapshot);
-    snapshot.warp_completion_shadow_enabled =
+    snapshot.warp_completion_entry_enabled =
         completion_snapshot.enabled;
-    snapshot.warp_completion_shadow_found = completion_snapshot.found;
+    snapshot.warp_completion_entry_found = completion_snapshot.found;
     snapshot.warp_completion_all_active_lanes_complete =
         completion_snapshot.all_active_lanes_complete;
     snapshot.warp_completion_active_mask = completion_snapshot.active_mask;
@@ -9165,8 +9165,8 @@ void rt_unit::rtcore_record_replay_release_identity_join_shadow(
          "completion_event_found=%u joined=%u joined_warp_uid=%u "
          "joined_warp_id=%u joined_static_inst_pc=0x%llx "
          "joined_issued_active_mask=0x%08x "
-         "warp_completion_shadow_enabled=%u "
-         "warp_completion_shadow_found=%u "
+         "warp_completion_entry_enabled=%u "
+         "warp_completion_entry_found=%u "
          "warp_completion_active_mask=0x%08x "
          "warp_completion_completed_lane_mask=0x%08x "
          "warp_completion_all_active_lanes_complete=%u "
@@ -9188,8 +9188,8 @@ void rt_unit::rtcore_record_replay_release_identity_join_shadow(
          snapshot.joined_warp_uid, snapshot.joined_warp_id,
          static_cast<unsigned long long>(snapshot.joined_static_inst_pc),
          snapshot.joined_issued_active_mask,
-         snapshot.warp_completion_shadow_enabled ? 1 : 0,
-         snapshot.warp_completion_shadow_found ? 1 : 0,
+         snapshot.warp_completion_entry_enabled ? 1 : 0,
+         snapshot.warp_completion_entry_found ? 1 : 0,
          snapshot.warp_completion_active_mask,
          snapshot.warp_completion_completed_lane_mask,
          snapshot.warp_completion_all_active_lanes_complete ? 1 : 0,
@@ -9901,7 +9901,7 @@ void rt_unit::cycle() {
             replay_cycle_result.cycle,
             it->second);
     rtcore_record_replay_release_identity_join_shadow(release_identity_join);
-    rtcore_replay_warp_completion_shadow_snapshot candidate_completion = {};
+    rtcore_replay_warp_completion_entry_snapshot candidate_completion = {};
     const bool synthetic_submit_release_candidate =
         it->second.rt_subop == RT_CORE_SUBOP_SUBMIT &&
         synthetic_submit_completion_ready;
@@ -9918,7 +9918,7 @@ void rt_unit::cycle() {
         synthetic_submit_release_candidate && candidate_completion_event_found;
     if (synthetic_submit_release_candidate &&
         candidate_completion_event_found) {
-      rtcore_query_replay_warp_completion_shadow(m_sid, it->second.get_uid(),
+      rtcore_query_replay_warp_completion_entry(m_sid, it->second.get_uid(),
           it->second.warp_id(), candidate_issued_active_mask,
           &candidate_completion);
     }
@@ -9946,8 +9946,8 @@ void rt_unit::cycle() {
     rtcore_record_replay_cycle_release_gate_shadow_decision(
         replay_cycle_result, synthetic_submit_completion_ready,
         release_identity_join.joined,
-        release_identity_join.warp_completion_shadow_enabled,
-        release_identity_join.warp_completion_shadow_found,
+        release_identity_join.warp_completion_entry_enabled,
+        release_identity_join.warp_completion_entry_found,
         release_identity_join.warp_completion_all_active_lanes_complete,
         candidate_completion.enabled, candidate_completion.found,
         candidate_completion.all_active_lanes_complete,
