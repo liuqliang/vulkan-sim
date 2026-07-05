@@ -722,9 +722,10 @@ static bool rtcore_v02_lsu_cache_config_identity_log_enabled() {
 static void rtcore_maybe_log_v02_lsu_cache_config_identity_stats(
     unsigned owner_hw_sid);
 
-static bool rtcore_v02_lsu_response_wait_gate_enabled() {
+static bool rtcore_memory_unit_response_wait_enabled() {
   static int enabled = []() {
-    const char *value = getenv("VULKAN_SIM_RTCORE_V02_LSU_RESPONSE_WAIT_GATE");
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_RESPONSE_WAIT");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
@@ -2431,14 +2432,14 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   }
 
   unsigned max_sideband_drain_per_cycle =
-      (rtcore_v02_lsu_response_wait_gate_enabled() &&
+      (rtcore_memory_unit_response_wait_enabled() &&
        !shared_frontend_gate_enabled)
           ? 0u
           : 4096u;
   if (issue_bandwidth_gate_enabled) {
     if (sideband_issued_this_cycle >= issue_budget_per_cycle) {
       max_sideband_drain_per_cycle = 0;
-    } else if (!rtcore_v02_lsu_response_wait_gate_enabled() ||
+    } else if (!rtcore_memory_unit_response_wait_enabled() ||
                shared_frontend_gate_enabled) {
       max_sideband_drain_per_cycle =
           issue_budget_per_cycle - sideband_issued_this_cycle;
