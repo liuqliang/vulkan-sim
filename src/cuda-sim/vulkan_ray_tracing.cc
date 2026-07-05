@@ -6799,6 +6799,8 @@ static void rtcore_maybe_log_replay_v03_hw_request_state_scoreboard_stats(
     printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_REQUEST_STATE_SCOREBOARD_STATS "
            "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
            "per_entry_update_model=1 "
+           "banked_ready_selection_model=%u request_state_bank_count=%u "
+           "per_bank_select_width=1 ready_bank_rr_cursor_model=1 "
            "request_state_read_count=%u request_state_write_count=%u "
            "lane_request_state_identity_read_count=%u lane_request_state_identity_write_count=%u "
            "request_state_hot_delta=%u lane_request_state_identity_delta=%u "
@@ -6806,6 +6808,8 @@ static void rtcore_maybe_log_replay_v03_hw_request_state_scoreboard_stats(
            "evaluations=%u max_request_state_hot_delta=%u "
            "max_scoreboard_update_count=%u\n",
            owner_hw_sid, service_cycle,
+           rtcore_replay_v03_hw_banked_ready_selection_enabled() ? 1u : 0u,
+           rtcore_replay_v03_hw_request_state_bank_count_config(),
            g_rtcore_replay_data_path_access_stats.request_state_reads,
            g_rtcore_replay_data_path_access_stats.request_state_writes,
            g_rtcore_replay_data_path_access_stats.lane_request_state_identity_reads,
