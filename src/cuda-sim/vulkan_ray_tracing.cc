@@ -816,12 +816,36 @@ struct rtcore_replay_memory_outstanding_key {
     }
 };
 
+struct rtcore_replay_memory_unit_transaction_key {
+    unsigned owner_hw_sid;
+    unsigned long long service_cycle;
+    unsigned long long aligned_32b_addr;
+    bool is_write;
+
+    bool operator<(const rtcore_replay_memory_unit_transaction_key &other) const
+    {
+        if (owner_hw_sid != other.owner_hw_sid) {
+            return owner_hw_sid < other.owner_hw_sid;
+        }
+        if (service_cycle != other.service_cycle) {
+            return service_cycle < other.service_cycle;
+        }
+        if (aligned_32b_addr != other.aligned_32b_addr) {
+            return aligned_32b_addr < other.aligned_32b_addr;
+        }
+        return is_write < other.is_write;
+    }
+};
+
 struct rtcore_replay_memory_outstanding_entry {
     bool active;
     rtcore_replay_memory_outstanding_key key;
     unsigned chunk_count;
     unsigned response_fanout_waiter_count;
     unsigned long long issue_cycle;
+    bool has_transaction_key;
+    rtcore_replay_memory_unit_transaction_key transaction_key;
+    std::set<rtcore_replay_memory_unit_transaction_key> transaction_keys;
 };
 
 struct rtcore_replay_lane_request_state_capacity_gate_stats {
@@ -925,6 +949,12 @@ static rtcore_replay_v03_hw_memory_outstanding_stats
 static std::map<rtcore_replay_memory_outstanding_key,
                 rtcore_replay_memory_outstanding_entry>
     g_rtcore_replay_memory_outstanding_table;
+static std::map<rtcore_replay_memory_unit_transaction_key, unsigned>
+    g_rtcore_replay_memory_unit_transaction_groups_this_cycle;
+static bool
+    g_rtcore_replay_memory_unit_transaction_groups_cycle_valid = false;
+static unsigned long long
+    g_rtcore_replay_memory_unit_transaction_groups_cycle = 0;
 static rtcore_replay_lane_request_state_capacity_gate_stats
     g_rtcore_replay_lane_request_state_capacity_gate_stats;
 static rtcore_replay_memory_unit_request_descriptor_stats
@@ -4554,6 +4584,105 @@ static unsigned rtcore_replay_memory_wake_latency_cycles_for_event(
 static unsigned rtcore_replay_memory_request_chunks_for_event(
     const rtcore_compact_trace_event &event);
 
+static void rtcore_replay_memory_unit_refresh_transaction_accounting(
+    unsigned long long service_cycle)
+{
+    if (!g_rtcore_replay_memory_unit_transaction_groups_cycle_valid ||
+        g_rtcore_replay_memory_unit_transaction_groups_cycle != service_cycle) {
+        g_rtcore_replay_memory_unit_transaction_groups_this_cycle.clear();
+        g_rtcore_replay_memory_unit_transaction_groups_cycle = service_cycle;
+        g_rtcore_replay_memory_unit_transaction_groups_cycle_valid = true;
+    }
+}
+
+static bool rtcore_replay_memory_unit_transaction_keys_for_event(
+    const rtcore_replay_lane_request &request,
+    const rtcore_compact_trace_event &event, unsigned event_index,
+    unsigned long long service_cycle,
+    std::set<rtcore_replay_memory_unit_transaction_key> *keys)
+{
+    if (!keys) {
+        return false;
+    }
+
+    unsigned chunk_count = rtcore_replay_memory_request_chunks_for_event(event);
+    unsigned long long base_address = event.address_or_ref;
+    bool is_write = false;
+    if (chunk_count == 0 &&
+        rtcore_memory_unit_response_wait_manages_stack_load_event(event)) {
+        chunk_count = rtcore_v02_lsu_stack_sideband_chunk_count(event);
+        base_address =
+            rtcore_v02_lsu_stack_sideband_base_address(request, event,
+                                                       event_index);
+    }
+    if (chunk_count == 0) {
+        return false;
+    }
+
+    for (unsigned chunk_id = 0; chunk_id < chunk_count; ++chunk_id) {
+        const unsigned long long chunk_address =
+            base_address +
+            static_cast<unsigned long long>(
+                chunk_id * RTCORE_REPLAY_MEMORY_REQUEST_GRANULE_BYTES);
+        rtcore_replay_memory_unit_transaction_key key = {};
+        key.owner_hw_sid = request.owner_hw_sid;
+        key.service_cycle = service_cycle;
+        key.aligned_32b_addr = rtcore_v02_lsu_align_32b(chunk_address);
+        key.is_write = is_write;
+        keys->insert(key);
+    }
+    return !keys->empty();
+}
+
+static unsigned
+rtcore_replay_memory_unit_new_transaction_count_for_current_event(
+    const rtcore_replay_lane_request &request,
+    unsigned long long service_cycle)
+{
+    if (!request.valid || request.next_event_index >= request.events.size()) {
+        return 1;
+    }
+    rtcore_replay_memory_unit_refresh_transaction_accounting(service_cycle);
+    std::set<rtcore_replay_memory_unit_transaction_key> keys;
+    if (!rtcore_replay_memory_unit_transaction_keys_for_event(
+            request, request.events[request.next_event_index],
+            request.next_event_index, service_cycle, &keys)) {
+        return 1;
+    }
+    for (std::set<rtcore_replay_memory_unit_transaction_key>::const_iterator
+             key_it = keys.begin();
+         key_it != keys.end(); ++key_it) {
+        if (g_rtcore_replay_memory_unit_transaction_groups_this_cycle.find(
+                *key_it) ==
+            g_rtcore_replay_memory_unit_transaction_groups_this_cycle.end()) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+rtcore_replay_memory_unit_note_issued_transactions_for_current_event(
+    const rtcore_replay_lane_request &request,
+    unsigned long long service_cycle)
+{
+    if (!request.valid || request.next_event_index >= request.events.size()) {
+        return;
+    }
+    rtcore_replay_memory_unit_refresh_transaction_accounting(service_cycle);
+    std::set<rtcore_replay_memory_unit_transaction_key> keys;
+    if (!rtcore_replay_memory_unit_transaction_keys_for_event(
+            request, request.events[request.next_event_index],
+            request.next_event_index, service_cycle, &keys)) {
+        return;
+    }
+    for (std::set<rtcore_replay_memory_unit_transaction_key>::const_iterator
+             key_it = keys.begin();
+         key_it != keys.end(); ++key_it) {
+        g_rtcore_replay_memory_unit_transaction_groups_this_cycle[*key_it]++;
+    }
+}
+
 static void rtcore_count_replay_memory_outstanding_for_owner(
     unsigned owner_hw_sid, unsigned *outstanding_entry_count,
     unsigned *response_fanout_waiter_count, unsigned *outstanding_chunk_count);
@@ -4593,6 +4722,19 @@ static void rtcore_register_replay_memory_outstanding_entry(
     entry.chunk_count = chunk_count;
     entry.response_fanout_waiter_count = 1;
     entry.issue_cycle = service_cycle;
+    entry.has_transaction_key = false;
+    entry.transaction_keys.clear();
+    if (event_index < request.events.size()) {
+        std::set<rtcore_replay_memory_unit_transaction_key> transaction_keys;
+        if (rtcore_replay_memory_unit_transaction_keys_for_event(
+                request, request.events[event_index], event_index,
+                service_cycle, &transaction_keys) &&
+            !transaction_keys.empty()) {
+            entry.has_transaction_key = true;
+            entry.transaction_key = *transaction_keys.begin();
+            entry.transaction_keys = transaction_keys;
+        }
+    }
 }
 
 static void rtcore_release_replay_memory_outstanding_entry(
@@ -6139,12 +6281,15 @@ static bool rtcore_issue_ready_memory_replay_request(
 }
 
 static bool rtcore_replay_memory_outstanding_capacity_can_issue(
-    unsigned owner_hw_sid)
+    unsigned owner_hw_sid, unsigned new_transaction_count)
 {
+    if (new_transaction_count == 0) {
+        return true;
+    }
     unsigned outstanding_entry_count = 0;
     rtcore_count_replay_memory_outstanding_for_owner(
         owner_hw_sid, &outstanding_entry_count, NULL, NULL);
-    if (outstanding_entry_count <
+    if (outstanding_entry_count + new_transaction_count <=
         rtcore_replay_memory_outstanding_capacity_config()) {
         return true;
     }
@@ -6243,12 +6388,17 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
             }
         }
 
-        if (*issue_budget == 0 || *alloc_budget == 0) {
+        const unsigned new_transaction_count =
+            rtcore_replay_memory_unit_new_transaction_count_for_current_event(
+                request, service_cycle);
+        if (*issue_budget == 0 || *alloc_budget < new_transaction_count) {
             break;
         }
-        if (!rtcore_replay_memory_outstanding_capacity_can_issue(owner_hw_sid)) {
+        if (!rtcore_replay_memory_outstanding_capacity_can_issue(
+                owner_hw_sid, new_transaction_count)) {
             break;
         }
+        const rtcore_replay_lane_request issued_request_snapshot = request;
         if (!rtcore_issue_ready_memory_replay_request(thread_uid, service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid, service_cycle);
             break;
@@ -6259,9 +6409,11 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
         }
         g_rtcore_replay_v03_hw_memory_outstanding_stats
             .memory_ready_issue_count++;
+        rtcore_replay_memory_unit_note_issued_transactions_for_current_event(
+            issued_request_snapshot, service_cycle);
         selected_bank_ids.insert(selected_bank_id);
         (*issue_budget)--;
-        (*alloc_budget)--;
+        (*alloc_budget) -= new_transaction_count;
         progressed = true;
     }
     return progressed;
@@ -7000,6 +7152,8 @@ static void rtcore_count_replay_memory_outstanding_for_owner(
         *outstanding_chunk_count = 0;
     }
 
+    std::set<rtcore_replay_memory_unit_transaction_key> unique_transactions;
+    unsigned transactionless_entry_count = 0;
     for (std::map<rtcore_replay_memory_outstanding_key,
                   rtcore_replay_memory_outstanding_entry>::
              const_iterator it =
@@ -7010,8 +7164,13 @@ static void rtcore_count_replay_memory_outstanding_for_owner(
         if (!entry.active || entry.key.owner_hw_sid != owner_hw_sid) {
             continue;
         }
-        if (outstanding_entry_count) {
-            (*outstanding_entry_count)++;
+        if (entry.has_transaction_key && !entry.transaction_keys.empty()) {
+            unique_transactions.insert(entry.transaction_keys.begin(),
+                                       entry.transaction_keys.end());
+        } else if (entry.has_transaction_key) {
+            unique_transactions.insert(entry.transaction_key);
+        } else {
+            transactionless_entry_count++;
         }
         if (response_fanout_waiter_count) {
             *response_fanout_waiter_count +=
@@ -7020,6 +7179,11 @@ static void rtcore_count_replay_memory_outstanding_for_owner(
         if (outstanding_chunk_count) {
             *outstanding_chunk_count += entry.chunk_count;
         }
+    }
+    if (outstanding_entry_count) {
+        *outstanding_entry_count =
+            static_cast<unsigned>(unique_transactions.size()) +
+            transactionless_entry_count;
     }
 }
 
@@ -7138,6 +7302,8 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "response_fanout_model=1 "
            "request_state_memory_pending_model=1 "
            "memory_ready_bit_issue_model=1 "
+           "same_cycle_transaction_alloc_model=1 "
+           "outstanding_capacity_transaction_model=1 "
            "memory_address_gen_budget=%u "
            "memory_address_gen_latency=%u "
            "memory_outstanding_capacity=%u "
