@@ -448,6 +448,12 @@ struct rtcore_replay_lane_request {
     unsigned overflow_summary_events;
     rtcore_compact_trace_overflow_summary overflow_summary;
     rtcore_replay_lane_request_state state;
+    bool memory_address_gen_latency_gate_pending;
+    bool memory_address_gen_completed_valid;
+    unsigned memory_address_gen_event_index;
+    unsigned memory_address_gen_latency_cycles;
+    unsigned long long memory_address_gen_armed_cycle;
+    unsigned long long memory_address_gen_ready_cycle;
     bool memory_wake_latency_gate_pending;
     unsigned memory_wake_event_index;
     unsigned memory_wake_latency_cycles;
@@ -757,6 +763,10 @@ struct rtcore_replay_v03_hw_unit_state_wake_service_stats {
 
 struct rtcore_replay_v03_hw_memory_outstanding_stats {
     unsigned evaluations;
+    unsigned memory_address_gen_attempt_count;
+    unsigned memory_address_gen_issued_count;
+    unsigned memory_address_gen_blocked_count;
+    unsigned memory_address_gen_latency_blocked_count;
     unsigned memory_ready_issue_attempt_count;
     unsigned memory_ready_issue_count;
     unsigned memory_outstanding_capacity_blocked_count;
@@ -764,6 +774,9 @@ struct rtcore_replay_v03_hw_memory_outstanding_stats {
     unsigned memory_wake_progress_count;
     unsigned memory_outstanding_table_register_count;
     unsigned memory_outstanding_table_release_count;
+    unsigned max_memory_address_gen_issued_count;
+    unsigned max_memory_address_gen_blocked_count;
+    unsigned max_memory_address_gen_latency_blocked_count;
     unsigned max_memory_ready_issue_count;
     unsigned max_memory_outstanding_capacity_blocked_count;
     unsigned max_outstanding_entry_count;
@@ -1698,6 +1711,21 @@ static unsigned rtcore_replay_memory_outstanding_alloc_budget_config()
     static unsigned budget = rtcore_replay_issue_budget_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_MEMORY_OUTSTANDING_ALLOC_BUDGET", 1);
     return budget;
+}
+
+static unsigned rtcore_replay_memory_address_gen_budget_config()
+{
+    static unsigned budget = rtcore_replay_issue_budget_from_env(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_ADDRESS_GEN_BUDGET", 1);
+    return budget;
+}
+
+static unsigned rtcore_replay_memory_address_gen_latency_config()
+{
+    static unsigned latency = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_REPLAY_MEMORY_ADDRESS_GEN_LATENCY", 1, 1, 1048576,
+        true);
+    return latency == 0 ? 1 : latency;
 }
 
 static unsigned rtcore_replay_memory_issue_budget_config()
@@ -2876,6 +2904,11 @@ static void rtcore_refresh_replay_lane_request_ready_bits(
     if (!request->valid || request->unit_latency_gate_pending) {
         return;
     }
+    if (request->memory_address_gen_latency_gate_pending) {
+        request->ready_memory_bit =
+            request->state == RTCORE_REPLAY_ISSUED_MEMORY;
+        return;
+    }
 
     switch (request->state) {
     case RTCORE_REPLAY_ISSUED_NODE:
@@ -2905,6 +2938,10 @@ static bool rtcore_replay_request_ready_for_state(
 {
     if (!request.valid || request.state != unit_state ||
         request.unit_latency_gate_pending) {
+        return false;
+    }
+    if (request.memory_address_gen_latency_gate_pending &&
+        unit_state != RTCORE_REPLAY_ISSUED_MEMORY) {
         return false;
     }
 
@@ -4737,6 +4774,81 @@ static unsigned rtcore_replay_memory_request_chunks_for_event(
            RTCORE_REPLAY_MEMORY_REQUEST_GRANULE_BYTES;
 }
 
+static bool rtcore_replay_memory_address_gen_applies_to_event(
+    const rtcore_compact_trace_event &event)
+{
+    if (rtcore_replay_memory_request_chunks_for_event(event) > 0) {
+        return true;
+    }
+    return rtcore_memory_unit_response_wait_manages_stack_load_event(event);
+}
+
+static bool rtcore_replay_memory_address_gen_completed_for_current_event(
+    const rtcore_replay_lane_request &request)
+{
+    return request.memory_address_gen_completed_valid &&
+           request.memory_address_gen_event_index == request.next_event_index;
+}
+
+static bool rtcore_maybe_arm_memory_address_gen_latency(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    if (!request || !request->valid ||
+        request->state != RTCORE_REPLAY_ISSUED_MEMORY) {
+        return false;
+    }
+    if (request->next_event_index >= request->events.size()) {
+        return false;
+    }
+    if (request->memory_address_gen_latency_gate_pending ||
+        rtcore_replay_memory_address_gen_completed_for_current_event(*request)) {
+        return false;
+    }
+    if (!rtcore_replay_memory_address_gen_applies_to_event(
+            request->events[request->next_event_index])) {
+        return false;
+    }
+
+    const unsigned latency_cycles =
+        rtcore_replay_memory_address_gen_latency_config();
+    request->memory_address_gen_latency_gate_pending = true;
+    request->memory_address_gen_completed_valid = false;
+    request->memory_address_gen_event_index = request->next_event_index;
+    request->memory_address_gen_latency_cycles = latency_cycles;
+    request->memory_address_gen_armed_cycle = service_cycle;
+    request->memory_address_gen_ready_cycle =
+        service_cycle + (latency_cycles > 0 ? latency_cycles - 1 : 0);
+    rtcore_record_replay_request_state_write();
+    return true;
+}
+
+static bool rtcore_replay_memory_address_gen_latency_ready(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    if (!request || !request->memory_address_gen_latency_gate_pending) {
+        return true;
+    }
+    if (service_cycle < request->memory_address_gen_ready_cycle) {
+        g_rtcore_replay_v03_hw_memory_outstanding_stats
+            .memory_address_gen_latency_blocked_count++;
+        if (g_rtcore_replay_v03_hw_memory_outstanding_stats
+                .memory_address_gen_latency_blocked_count >
+            g_rtcore_replay_v03_hw_memory_outstanding_stats
+                .max_memory_address_gen_latency_blocked_count) {
+            g_rtcore_replay_v03_hw_memory_outstanding_stats
+                .max_memory_address_gen_latency_blocked_count =
+                g_rtcore_replay_v03_hw_memory_outstanding_stats
+                    .memory_address_gen_latency_blocked_count;
+        }
+        return false;
+    }
+
+    request->memory_address_gen_latency_gate_pending = false;
+    request->memory_address_gen_completed_valid = true;
+    rtcore_record_replay_request_state_write();
+    return true;
+}
+
 static bool rtcore_maybe_arm_memory_unit_response_wait(
     rtcore_replay_lane_request *request, unsigned long long service_cycle)
 {
@@ -5706,6 +5818,12 @@ static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
     if (rtcore_replay_request_done(it->second)) {
         return false;
     }
+    if (it->second.memory_address_gen_latency_gate_pending) {
+        if (!rtcore_replay_memory_address_gen_latency_ready(
+                &it->second, service_cycle)) {
+            return false;
+        }
+    }
     bool memory_contention_resolved_this_step = false;
     bool v02_lsu_response_wait_resolved_this_step = false;
     if (it->second.v02_lsu_response_wait_gate_pending) {
@@ -6046,16 +6164,17 @@ static bool rtcore_replay_memory_outstanding_capacity_can_issue(
 }
 
 static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
-    unsigned owner_hw_sid, unsigned *issue_budget, unsigned *alloc_budget,
+    unsigned owner_hw_sid, unsigned *issue_budget, unsigned *address_gen_budget,
+    unsigned *alloc_budget,
     rtcore_replay_service_cycle_identity_snapshot *last_identity,
     unsigned long long service_cycle)
 {
     bool progressed = false;
-    if (!issue_budget || !alloc_budget) {
+    if (!issue_budget || !address_gen_budget || !alloc_budget) {
         return false;
     }
     std::set<unsigned> selected_bank_ids;
-    while (*issue_budget > 0 && *alloc_budget > 0) {
+    while (true) {
         unsigned thread_uid = 0;
         unsigned selected_bank_id = 0;
         if (!rtcore_select_banked_ready_request_for_owner(
@@ -6065,12 +6184,72 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
         }
         g_rtcore_replay_v03_hw_memory_outstanding_stats
             .memory_ready_issue_attempt_count++;
-        if (!rtcore_replay_memory_outstanding_capacity_can_issue(
-                owner_hw_sid)) {
+
+        std::map<unsigned, rtcore_replay_lane_request>::iterator request_it =
+            g_rtcore_replay_lane_requests.find(thread_uid);
+        if (request_it == g_rtcore_replay_lane_requests.end()) {
             break;
         }
-        if (!rtcore_issue_ready_memory_replay_request(thread_uid,
-                                                      service_cycle)) {
+        rtcore_replay_lane_request &request = request_it->second;
+        bool address_gen_completed =
+            rtcore_replay_memory_address_gen_completed_for_current_event(
+                request);
+        const bool address_gen_applicable =
+            request.next_event_index < request.events.size() &&
+            rtcore_replay_memory_address_gen_applies_to_event(
+                request.events[request.next_event_index]);
+        if (request.memory_address_gen_latency_gate_pending ||
+            (!address_gen_completed && address_gen_applicable)) {
+            g_rtcore_replay_v03_hw_memory_outstanding_stats
+                .memory_address_gen_attempt_count++;
+        }
+        if (request.memory_address_gen_latency_gate_pending) {
+            if (!rtcore_replay_memory_address_gen_latency_ready(
+                    &request, service_cycle)) {
+                selected_bank_ids.insert(selected_bank_id);
+                continue;
+            }
+            progressed = true;
+            address_gen_completed =
+                rtcore_replay_memory_address_gen_completed_for_current_event(
+                    request);
+        }
+        if (!address_gen_completed && address_gen_applicable) {
+            if (*address_gen_budget == 0) {
+                g_rtcore_replay_v03_hw_memory_outstanding_stats
+                    .memory_address_gen_blocked_count++;
+                if (g_rtcore_replay_v03_hw_memory_outstanding_stats
+                        .memory_address_gen_blocked_count >
+                    g_rtcore_replay_v03_hw_memory_outstanding_stats
+                        .max_memory_address_gen_blocked_count) {
+                    g_rtcore_replay_v03_hw_memory_outstanding_stats
+                        .max_memory_address_gen_blocked_count =
+                        g_rtcore_replay_v03_hw_memory_outstanding_stats
+                            .memory_address_gen_blocked_count;
+                }
+                break;
+            }
+            if (rtcore_maybe_arm_memory_address_gen_latency(&request,
+                                                            service_cycle)) {
+                (*address_gen_budget)--;
+                g_rtcore_replay_v03_hw_memory_outstanding_stats
+                    .memory_address_gen_issued_count++;
+                if (!rtcore_replay_memory_address_gen_latency_ready(
+                        &request, service_cycle)) {
+                    selected_bank_ids.insert(selected_bank_id);
+                    continue;
+                }
+                progressed = true;
+            }
+        }
+
+        if (*issue_budget == 0 || *alloc_budget == 0) {
+            break;
+        }
+        if (!rtcore_replay_memory_outstanding_capacity_can_issue(owner_hw_sid)) {
+            break;
+        }
+        if (!rtcore_issue_ready_memory_replay_request(thread_uid, service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid, service_cycle);
             break;
         }
@@ -6094,8 +6273,11 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner(
     unsigned long long service_cycle = 0)
 {
     unsigned alloc_budget = rtcore_replay_memory_outstanding_alloc_budget_config();
+    unsigned address_gen_budget =
+        rtcore_replay_memory_address_gen_budget_config();
     return rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
-        owner_hw_sid, &issue_budget, &alloc_budget, last_identity,
+        owner_hw_sid, &issue_budget, &address_gen_budget, &alloc_budget,
+        last_identity,
         service_cycle);
 }
 
@@ -6860,6 +7042,8 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
         g_rtcore_replay_v03_hw_memory_outstanding_stats
                 .memory_ready_issue_attempt_count == 0 &&
         g_rtcore_replay_v03_hw_memory_outstanding_stats
+                .memory_address_gen_attempt_count == 0 &&
+        g_rtcore_replay_v03_hw_memory_outstanding_stats
                 .memory_wake_attempt_count == 0) {
         return;
     }
@@ -6932,6 +7116,15 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
             g_rtcore_replay_v03_hw_memory_outstanding_stats
                 .memory_ready_issue_count;
     }
+    if (g_rtcore_replay_v03_hw_memory_outstanding_stats
+            .memory_address_gen_issued_count >
+        g_rtcore_replay_v03_hw_memory_outstanding_stats
+            .max_memory_address_gen_issued_count) {
+        g_rtcore_replay_v03_hw_memory_outstanding_stats
+            .max_memory_address_gen_issued_count =
+            g_rtcore_replay_v03_hw_memory_outstanding_stats
+                .memory_address_gen_issued_count;
+    }
 
     g_rtcore_replay_v03_hw_memory_outstanding_stats.evaluations++;
     g_rtcore_replay_v03_hw_memory_outstanding_stats_logs_emitted++;
@@ -6941,9 +7134,15 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "response_fanout_model=1 "
            "request_state_memory_pending_model=1 "
            "memory_ready_bit_issue_model=1 "
+           "memory_address_gen_budget=%u "
+           "memory_address_gen_latency=%u "
            "memory_outstanding_capacity=%u "
            "memory_outstanding_alloc_budget=%u "
            "memory_response_wake_budget=%u "
+           "memory_address_gen_attempt_count=%u "
+           "memory_address_gen_issued_count=%u "
+           "memory_address_gen_blocked_count=%u "
+           "memory_address_gen_latency_blocked_count=%u "
            "memory_outstanding_capacity_blocked_count=%u "
            "memory_ready_issue_attempt_count=%u "
            "memory_ready_issue_count=%u "
@@ -6955,6 +7154,9 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "memory_outstanding_table_release_count=%u "
            "memory_wake_attempt_count=%u memory_wake_progress_count=%u "
            "evaluations=%u "
+           "max_memory_address_gen_issued_count=%u "
+           "max_memory_address_gen_blocked_count=%u "
+           "max_memory_address_gen_latency_blocked_count=%u "
            "max_memory_outstanding_capacity_blocked_count=%u "
            "max_memory_ready_issue_count=%u max_outstanding_entry_count=%u "
            "max_response_fanout_waiter_count=%u "
@@ -6965,9 +7167,19 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "max_memory_outstanding_table_release_count=%u "
            "max_memory_wake_progress_count=%u\n",
            owner_hw_sid, service_cycle,
+           rtcore_replay_memory_address_gen_budget_config(),
+           rtcore_replay_memory_address_gen_latency_config(),
            rtcore_replay_memory_outstanding_capacity_config(),
            rtcore_replay_memory_outstanding_alloc_budget_config(),
            rtcore_replay_memory_wake_budget_config(),
+           g_rtcore_replay_v03_hw_memory_outstanding_stats
+               .memory_address_gen_attempt_count,
+           g_rtcore_replay_v03_hw_memory_outstanding_stats
+               .memory_address_gen_issued_count,
+           g_rtcore_replay_v03_hw_memory_outstanding_stats
+               .memory_address_gen_blocked_count,
+           g_rtcore_replay_v03_hw_memory_outstanding_stats
+               .memory_address_gen_latency_blocked_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .memory_outstanding_capacity_blocked_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
@@ -6986,6 +7198,12 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .memory_wake_progress_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats.evaluations,
+           g_rtcore_replay_v03_hw_memory_outstanding_stats
+               .max_memory_address_gen_issued_count,
+           g_rtcore_replay_v03_hw_memory_outstanding_stats
+               .max_memory_address_gen_blocked_count,
+           g_rtcore_replay_v03_hw_memory_outstanding_stats
+               .max_memory_address_gen_latency_blocked_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
                .max_memory_outstanding_capacity_blocked_count,
            g_rtcore_replay_v03_hw_memory_outstanding_stats
