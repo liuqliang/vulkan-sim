@@ -2013,20 +2013,20 @@ class rt_unit : public pipelined_simd_unit {
               stack_component_source("unavailable"),
               completion_component_source("unavailable"),
               backpressure_component_source("unavailable"),
-              completion_queue_state_source("unavailable"),
+              warp_completion_entry_state_source("unavailable"),
               custom_abi_input_authority_admitted(false),
               uses_reused_traversal_backend(true),
               claims_new_hardware_bvh_engine(false),
-              completion_queue_capacity_enabled(false),
-              completion_queue_capacity_available(true),
-              completion_queue_backpressure_observed(false),
+              warp_completion_entry_capacity_enabled(false),
+              warp_completion_entry_capacity_available(true),
+              warp_completion_entry_backpressure_observed(false),
               adapter_max_node_visits(0),
               adapter_max_primitive_tests(0),
               traversal_stack_entries_per_warp_demand(0),
-              completion_queue_capacity(0),
-              completion_queue_inflight(0),
-              completion_queue_reserved(0),
-              completion_queue_live_plus_reserved(0),
+              warp_completion_entry_capacity(0),
+              warp_completion_entry_inflight(0),
+              warp_completion_entry_reserved(0),
+              warp_completion_entry_live_plus_reserved(0),
               completion_latency(0) {}
 
         const char *snapshot_source;
@@ -2036,25 +2036,25 @@ class rt_unit : public pipelined_simd_unit {
         const char *stack_component_source;
         const char *completion_component_source;
         const char *backpressure_component_source;
-        const char *completion_queue_state_source;
+        const char *warp_completion_entry_state_source;
         bool custom_abi_input_authority_admitted;
         bool uses_reused_traversal_backend;
         bool claims_new_hardware_bvh_engine;
-        bool completion_queue_capacity_enabled;
-        bool completion_queue_capacity_available;
-        bool completion_queue_backpressure_observed;
+        bool warp_completion_entry_capacity_enabled;
+        bool warp_completion_entry_capacity_available;
+        bool warp_completion_entry_backpressure_observed;
         unsigned adapter_max_node_visits;
         unsigned adapter_max_primitive_tests;
         unsigned traversal_stack_entries_per_warp_demand;
-        unsigned completion_queue_capacity;
-        unsigned completion_queue_inflight;
-        unsigned completion_queue_reserved;
-        unsigned completion_queue_live_plus_reserved;
+        unsigned warp_completion_entry_capacity;
+        unsigned warp_completion_entry_inflight;
+        unsigned warp_completion_entry_reserved;
+        unsigned warp_completion_entry_live_plus_reserved;
         unsigned completion_latency;
       };
       unsigned rtcore_synthetic_completion_latency() const;
-      unsigned rtcore_completion_queue_capacity() const;
-      unsigned rtcore_completion_queue_inflight() const;
+      unsigned rtcore_warp_completion_entry_capacity() const;
+      unsigned rtcore_warp_completion_entry_inflight() const;
       rtcore_completion_queue_state_snapshot
       rtcore_make_completion_queue_state_snapshot(
           const warp_inst_t &inst,
