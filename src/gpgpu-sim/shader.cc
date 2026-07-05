@@ -83,7 +83,7 @@ struct rtcore_replay_warp_completion_shadow_snapshot {
   unsigned completed_lane_count;
 };
 
-struct rtcore_v02_lsu_sideband_request_snapshot {
+struct rtcore_memory_unit_request_snapshot {
   bool valid;
   unsigned response_target;
   unsigned owner_hw_sid;
@@ -115,16 +115,16 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot,
-    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
+    rtcore_memory_unit_request_snapshot *sideband_snapshot);
 extern "C" bool rtcore_pop_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
-    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
+    rtcore_memory_unit_request_snapshot *sideband_snapshot);
 extern "C" bool rtcore_push_front_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
-    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
+    const rtcore_memory_unit_request_snapshot *sideband_snapshot);
 extern "C" bool rtcore_push_back_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
-    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
+    const rtcore_memory_unit_request_snapshot *sideband_snapshot);
 extern "C" unsigned rtcore_count_memory_unit_requests_for_sm(
     unsigned owner_hw_sid);
 extern "C" bool rtcore_record_memory_unit_response(
@@ -339,7 +339,7 @@ struct rtcore_replay_cycle_hook_consumer_stats {
 
 static rtcore_replay_cycle_hook_consumer_stats
     g_rtcore_replay_cycle_hook_consumer_stats = {};
-static std::map<unsigned, std::vector<rtcore_v02_lsu_sideband_request_snapshot> >
+static std::map<unsigned, std::vector<rtcore_memory_unit_request_snapshot> >
     g_rtcore_v02_lsu_pending_memory_requests;
 struct rtcore_v02_lsu_sideband_same_cycle_merge_key {
   unsigned owner_hw_sid;
@@ -1552,10 +1552,10 @@ static void rtcore_maybe_log_v02_lsu_sideband_offer_stats(
   fflush(stdout);
 }
 
-static rtcore_v02_lsu_sideband_request_snapshot
+static rtcore_memory_unit_request_snapshot
 rtcore_v02_lsu_sideband_snapshot_from_result(
     const rtcore_replay_cycle_hook_result &result) {
-  rtcore_v02_lsu_sideband_request_snapshot snapshot = {};
+  rtcore_memory_unit_request_snapshot snapshot = {};
   snapshot.valid = result.lsu_sideband_valid;
   snapshot.response_target = result.lsu_sideband_response_target;
   snapshot.owner_hw_sid = result.lsu_sideband_owner_hw_sid;
@@ -1573,7 +1573,7 @@ rtcore_v02_lsu_sideband_snapshot_from_result(
 
 static bool rtcore_requeue_v02_lsu_sideband_request_for_retry(
     const rtcore_replay_cycle_hook_result &result) {
-  const rtcore_v02_lsu_sideband_request_snapshot snapshot =
+  const rtcore_memory_unit_request_snapshot snapshot =
       rtcore_v02_lsu_sideband_snapshot_from_result(result);
   return rtcore_push_back_memory_unit_request_for_sm(
       result.lsu_sideband_owner_hw_sid, &snapshot);
@@ -1597,7 +1597,7 @@ static void rtcore_record_v02_lsu_sideband_immediate_completion_kind(
 }
 
 static void rtcore_record_v02_lsu_sideband_response_wakeup_kind(
-    const rtcore_v02_lsu_sideband_request_snapshot &snapshot) {
+    const rtcore_memory_unit_request_snapshot &snapshot) {
   if (snapshot.is_write) {
     if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_STACK_STORE) {
       g_rtcore_replay_cycle_hook_consumer_stats
@@ -1630,7 +1630,7 @@ static void rtcore_record_v02_lsu_sideband_response_wakeup_kind(
 }
 
 static void rtcore_record_v02_lsu_sideband_response_latency(
-    const rtcore_v02_lsu_sideband_request_snapshot &snapshot,
+    const rtcore_memory_unit_request_snapshot &snapshot,
     unsigned long long response_cycle) {
   if (response_cycle < snapshot.issue_cycle) {
     return;
@@ -1674,7 +1674,7 @@ static void rtcore_record_v02_lsu_sideband_response_latency(
 }
 
 static void rtcore_record_v02_lsu_sideband_response_completion(
-    const rtcore_v02_lsu_sideband_request_snapshot &snapshot,
+    const rtcore_memory_unit_request_snapshot &snapshot,
     unsigned long long response_cycle) {
   if (!snapshot.valid) {
     return;
@@ -1695,7 +1695,7 @@ static void rtcore_v02_lsu_update_sideband_pending_count() {
   unsigned long long pending_waiter_count = 0;
   for (std::map<
            unsigned,
-           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator it =
+           std::vector<rtcore_memory_unit_request_snapshot> >::iterator it =
            g_rtcore_v02_lsu_pending_memory_requests.begin();
        it != g_rtcore_v02_lsu_pending_memory_requests.end(); ++it) {
     pending_waiter_count += it->second.size();
@@ -1781,7 +1781,7 @@ static bool rtcore_record_v02_lsu_sideband_icnt_injection(mem_fetch *mf) {
     return false;
   }
   std::map<unsigned,
-           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator it =
+           std::vector<rtcore_memory_unit_request_snapshot> >::iterator it =
       g_rtcore_v02_lsu_pending_memory_requests.find(mf->get_request_uid());
   if (it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
     return false;
@@ -1818,7 +1818,7 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
   }
 
   std::map<unsigned,
-           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator it =
+           std::vector<rtcore_memory_unit_request_snapshot> >::iterator it =
       g_rtcore_v02_lsu_pending_memory_requests.find(mf->get_request_uid());
   if (it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
     return 0;
@@ -1831,7 +1831,7 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
   if (last_owner_hw_sid != NULL) {
     *last_owner_hw_sid = it->second.front().owner_hw_sid;
   }
-  for (std::vector<rtcore_v02_lsu_sideband_request_snapshot>::const_iterator
+  for (std::vector<rtcore_memory_unit_request_snapshot>::const_iterator
            waiter_it = it->second.begin();
        waiter_it != it->second.end(); ++waiter_it) {
     rtcore_record_v02_lsu_sideband_response_latency(*waiter_it,
@@ -1887,7 +1887,7 @@ static bool rtcore_try_merge_v02_lsu_sideband_same_cycle(
     return false;
   }
   std::map<unsigned,
-           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator
+           std::vector<rtcore_memory_unit_request_snapshot> >::iterator
       pending_it =
           g_rtcore_v02_lsu_pending_memory_requests.find(key_it->second);
   if (pending_it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
@@ -2103,7 +2103,7 @@ static void rtcore_maybe_accept_v02_lsu_sideband_memory_client(
 static rtcore_replay_cycle_hook_result
 rtcore_make_result_with_v02_lsu_sideband_snapshot(
     const rtcore_replay_cycle_hook_result &base,
-    const rtcore_v02_lsu_sideband_request_snapshot &snapshot) {
+    const rtcore_memory_unit_request_snapshot &snapshot) {
   rtcore_replay_cycle_hook_result result = base;
   result.lsu_sideband_valid = snapshot.valid;
   result.lsu_sideband_response_target = snapshot.response_target;
@@ -2193,7 +2193,7 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
     return false;
   }
   std::map<unsigned,
-           std::vector<rtcore_v02_lsu_sideband_request_snapshot> >::iterator it =
+           std::vector<rtcore_memory_unit_request_snapshot> >::iterator it =
       g_rtcore_v02_lsu_pending_memory_requests.find(mf->get_request_uid());
   if (it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
     return false;
@@ -2274,7 +2274,7 @@ rtcore_maybe_service_replay_cycle_from_rt_unit(
   bool memory_progressed = false;
   bool ready_progressed = false;
   rtcore_replay_service_cycle_identity_snapshot identity_snapshot = {};
-  rtcore_v02_lsu_sideband_request_snapshot sideband_snapshot = {};
+  rtcore_memory_unit_request_snapshot sideband_snapshot = {};
   bool progressed =
       rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
           owner_hw_sid, current_cycle, &service_enabled, &memory_progressed,
@@ -2480,7 +2480,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   }
   bool direct_sideband_requeued = false;
   if (shared_frontend_gate_enabled && result.lsu_sideband_valid) {
-    const rtcore_v02_lsu_sideband_request_snapshot direct_snapshot =
+    const rtcore_memory_unit_request_snapshot direct_snapshot =
         rtcore_v02_lsu_sideband_snapshot_from_result(result);
     direct_sideband_requeued =
         rtcore_push_front_memory_unit_request_for_sm(
@@ -2637,7 +2637,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     }
   }
   unsigned drained_sideband_count = 0;
-  rtcore_v02_lsu_sideband_request_snapshot sideband_snapshot = {};
+  rtcore_memory_unit_request_snapshot sideband_snapshot = {};
   while (drained_sideband_count < max_sideband_drain_per_cycle &&
          rtcore_pop_memory_unit_request_for_sm(result.owner_hw_sid,
                                                     &sideband_snapshot)) {

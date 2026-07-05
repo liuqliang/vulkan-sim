@@ -321,7 +321,7 @@ struct rtcore_v02_lsu_response_wait_stats {
     unsigned response_target_rtcore_count;
 };
 
-struct rtcore_v02_lsu_sideband_request_snapshot {
+struct rtcore_memory_unit_request_snapshot {
     bool valid;
     unsigned response_target;
     unsigned owner_hw_sid;
@@ -1040,8 +1040,8 @@ static std::map<rtcore_v02_lsu_merge_key, unsigned>
 static rtcore_v02_lsu_response_wait_stats
     g_rtcore_v02_lsu_response_wait_stats;
 static std::map<unsigned,
-                std::deque<rtcore_v02_lsu_sideband_request_snapshot> >
-    g_rtcore_v02_lsu_sideband_request_snapshots_by_owner;
+                std::deque<rtcore_memory_unit_request_snapshot> >
+    g_rtcore_memory_unit_request_snapshots_by_owner;
 static rtcore_service_tick_stats_snapshot
     g_rtcore_replay_service_tick_stats_snapshot;
 static unsigned g_rtcore_replay_service_tick_stats_logs_emitted = 0;
@@ -4203,7 +4203,7 @@ static void rtcore_record_v02_lsu_fetch_descriptor_shadow(
                 request, request.next_event_index, chunk_id, chunk_count,
                 access_kind, chunk_address, service_cycle);
         if (sideband_offer_enabled) {
-            rtcore_v02_lsu_sideband_request_snapshot snapshot = {};
+            rtcore_memory_unit_request_snapshot snapshot = {};
             snapshot.valid = true;
             snapshot.response_target = identity.response_target;
             snapshot.owner_hw_sid = identity.owner_hw_sid;
@@ -4216,7 +4216,7 @@ static void rtcore_record_v02_lsu_fetch_descriptor_shadow(
             snapshot.aligned_32b_addr = identity.aligned_32b_addr;
             snapshot.is_write = identity.is_write;
             snapshot.issue_cycle = identity.issue_cycle;
-            g_rtcore_v02_lsu_sideband_request_snapshots_by_owner
+            g_rtcore_memory_unit_request_snapshots_by_owner
                 [identity.owner_hw_sid]
                     .push_back(snapshot);
         }
@@ -4338,7 +4338,7 @@ static bool rtcore_maybe_enqueue_v02_lsu_stack_sideband(
             base_address +
             static_cast<unsigned long long>(
                 chunk_id * RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES);
-        rtcore_v02_lsu_sideband_request_snapshot snapshot = {};
+        rtcore_memory_unit_request_snapshot snapshot = {};
         snapshot.valid = true;
         snapshot.response_target = RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE;
         snapshot.owner_hw_sid = request.owner_hw_sid;
@@ -4351,7 +4351,7 @@ static bool rtcore_maybe_enqueue_v02_lsu_stack_sideband(
         snapshot.aligned_32b_addr = rtcore_v02_lsu_align_32b(chunk_address);
         snapshot.is_write = is_write;
         snapshot.issue_cycle = service_cycle;
-        g_rtcore_v02_lsu_sideband_request_snapshots_by_owner[request.owner_hw_sid]
+        g_rtcore_memory_unit_request_snapshots_by_owner[request.owner_hw_sid]
             .push_back(snapshot);
     }
     return true;
@@ -8738,7 +8738,7 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot,
-    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+    rtcore_memory_unit_request_snapshot *sideband_snapshot)
 {
     rtcore_replay_service_cycle_result result =
         rtcore_service_replay_cycle(owner_hw_sid, service_cycle);
@@ -8755,14 +8755,14 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
         *identity_snapshot = result.tick_result.last_progress_identity;
     }
     if (sideband_snapshot) {
-        *sideband_snapshot = rtcore_v02_lsu_sideband_request_snapshot();
+        *sideband_snapshot = rtcore_memory_unit_request_snapshot();
         std::map<unsigned,
-                 std::deque<rtcore_v02_lsu_sideband_request_snapshot> >::
+                 std::deque<rtcore_memory_unit_request_snapshot> >::
             iterator queue_it =
-                g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.find(
+                g_rtcore_memory_unit_request_snapshots_by_owner.find(
                     owner_hw_sid);
         if (queue_it !=
-                g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.end() &&
+                g_rtcore_memory_unit_request_snapshots_by_owner.end() &&
             !queue_it->second.empty()) {
             *sideband_snapshot = queue_it->second.front();
             queue_it->second.pop_front();
@@ -8776,7 +8776,7 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot,
-    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+    rtcore_memory_unit_request_snapshot *sideband_snapshot)
 {
     return rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
         owner_hw_sid, service_cycle, service_enabled, memory_progressed,
@@ -8785,18 +8785,18 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
 
 extern "C" bool rtcore_pop_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
-    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+    rtcore_memory_unit_request_snapshot *sideband_snapshot)
 {
     if (sideband_snapshot) {
-        *sideband_snapshot = rtcore_v02_lsu_sideband_request_snapshot();
+        *sideband_snapshot = rtcore_memory_unit_request_snapshot();
     }
     std::map<unsigned,
-             std::deque<rtcore_v02_lsu_sideband_request_snapshot> >::
+             std::deque<rtcore_memory_unit_request_snapshot> >::
         iterator queue_it =
-            g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.find(
+            g_rtcore_memory_unit_request_snapshots_by_owner.find(
                 owner_hw_sid);
     if (queue_it ==
-            g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.end() ||
+            g_rtcore_memory_unit_request_snapshots_by_owner.end() ||
         queue_it->second.empty()) {
         return false;
     }
@@ -8809,7 +8809,7 @@ extern "C" bool rtcore_pop_memory_unit_request_for_sm(
 
 extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
     unsigned owner_hw_sid,
-    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+    rtcore_memory_unit_request_snapshot *sideband_snapshot)
 {
     return rtcore_pop_memory_unit_request_for_sm(owner_hw_sid,
                                                  sideband_snapshot);
@@ -8817,19 +8817,19 @@ extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
 
 extern "C" bool rtcore_push_front_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
-    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+    const rtcore_memory_unit_request_snapshot *sideband_snapshot)
 {
     if (!sideband_snapshot || !sideband_snapshot->valid) {
         return false;
     }
-    g_rtcore_v02_lsu_sideband_request_snapshots_by_owner[owner_hw_sid]
+    g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid]
         .push_front(*sideband_snapshot);
     return true;
 }
 
 extern "C" bool rtcore_push_front_v02_lsu_sideband_request_for_sm(
     unsigned owner_hw_sid,
-    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+    const rtcore_memory_unit_request_snapshot *sideband_snapshot)
 {
     return rtcore_push_front_memory_unit_request_for_sm(owner_hw_sid,
                                                         sideband_snapshot);
@@ -8837,19 +8837,19 @@ extern "C" bool rtcore_push_front_v02_lsu_sideband_request_for_sm(
 
 extern "C" bool rtcore_push_back_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
-    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+    const rtcore_memory_unit_request_snapshot *sideband_snapshot)
 {
     if (!sideband_snapshot || !sideband_snapshot->valid) {
         return false;
     }
-    g_rtcore_v02_lsu_sideband_request_snapshots_by_owner[owner_hw_sid]
+    g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid]
         .push_back(*sideband_snapshot);
     return true;
 }
 
 extern "C" bool rtcore_push_back_v02_lsu_sideband_request_for_sm(
     unsigned owner_hw_sid,
-    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+    const rtcore_memory_unit_request_snapshot *sideband_snapshot)
 {
     return rtcore_push_back_memory_unit_request_for_sm(owner_hw_sid,
                                                        sideband_snapshot);
@@ -8859,12 +8859,12 @@ extern "C" unsigned rtcore_count_memory_unit_requests_for_sm(
     unsigned owner_hw_sid)
 {
     std::map<unsigned,
-             std::deque<rtcore_v02_lsu_sideband_request_snapshot> >::
+             std::deque<rtcore_memory_unit_request_snapshot> >::
         const_iterator queue_it =
-            g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.find(
+            g_rtcore_memory_unit_request_snapshots_by_owner.find(
                 owner_hw_sid);
     if (queue_it ==
-        g_rtcore_v02_lsu_sideband_request_snapshots_by_owner.end()) {
+        g_rtcore_memory_unit_request_snapshots_by_owner.end()) {
         return 0;
     }
     return static_cast<unsigned>(queue_it->second.size());
@@ -8890,7 +8890,7 @@ extern "C" void rtcore_enqueue_memory_unit_handoff_window_request(
             byte_address +
             static_cast<unsigned long long>(
                 chunk_id * RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES);
-        rtcore_v02_lsu_sideband_request_snapshot snapshot = {};
+        rtcore_memory_unit_request_snapshot snapshot = {};
         snapshot.valid = true;
         snapshot.response_target = RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE;
         snapshot.owner_hw_sid = owner_hw_sid;
@@ -8903,7 +8903,7 @@ extern "C" void rtcore_enqueue_memory_unit_handoff_window_request(
         snapshot.aligned_32b_addr = rtcore_v02_lsu_align_32b(chunk_address);
         snapshot.is_write = is_write;
         snapshot.issue_cycle = issue_cycle;
-        g_rtcore_v02_lsu_sideband_request_snapshots_by_owner[owner_hw_sid]
+        g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid]
             .push_back(snapshot);
     }
 }
