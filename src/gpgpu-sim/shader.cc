@@ -4479,15 +4479,15 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
       inst, warp_id, m_sid, inst.pc, snapshot, materialized_input_provenance);
 }
 
-bool shader_core_ctx::rtcore_submit_completion_queue_reserve_issue_slot(
+bool shader_core_ctx::rtcore_submit_warp_completion_entry_reserve_issue_slot(
     const warp_inst_t &inst, unsigned warp_id,
     unsigned issued_active_mask,
-    const rtcore_completion_queue_gate_materialized_input_provenance_snapshot
+    const rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot
         &materialized_input_provenance) const {
   if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
     return true;
   }
-  return m_rt_unit->rtcore_completion_queue_reserve_issue_slot(
+  return m_rt_unit->rtcore_warp_completion_entry_reserve_issue_slot(
       inst, warp_id, m_sid, inst.pc, issued_active_mask,
       materialized_input_provenance);
 }
@@ -6433,64 +6433,64 @@ void scheduler_unit::cycle() {
                 fflush(stdout);
               }
               if (rt_core_issue_slot_ready) {
-                rtcore_completion_queue_gate_materialized_input_provenance_snapshot
-                    rtcore_completion_queue_gate_materialized_input_provenance;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot
+                    rtcore_warp_completion_entry_gate_materialized_input_provenance;
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .available =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .available;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .has_provider_materialized_traversal_input_snapshot =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .has_provider_materialized_traversal_input_snapshot;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_snapshot_valid =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_snapshot_valid;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_snapshot_source =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_snapshot_source;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_actual_abi_snapshot_admitted =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_actual_abi_snapshot_admitted;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_decoded_value_record_valid =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_decoded_value_record_valid;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_decoded_value_record_source =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_decoded_value_record_source;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_decoded_value_record_consumed =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_decoded_value_record_consumed;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_decoded_value_record_source_snapshot_valid;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_decoded_value_record_source_snapshot_admitted;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_decoded_value_record_source_snapshot_consumed;
-                rtcore_completion_queue_gate_materialized_input_provenance
+                rtcore_warp_completion_entry_gate_materialized_input_provenance
                     .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason =
                     rtcore_scheduler_credit_ledger_issue_gate_consumed_provenance
                         .provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
-                const bool rtcore_completion_queue_ready =
+                const bool rtcore_warp_completion_entry_ready =
                     pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
-                    m_shader->rtcore_submit_completion_queue_reserve_issue_slot(
+                    m_shader->rtcore_submit_warp_completion_entry_reserve_issue_slot(
                         *pI, warp_id, rtcore_active_mask,
-                        rtcore_completion_queue_gate_materialized_input_provenance);
-                if (!rtcore_completion_queue_ready) {
+                        rtcore_warp_completion_entry_gate_materialized_input_provenance);
+                if (!rtcore_warp_completion_entry_ready) {
                   rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
-                      "scheduler_bridge_rollback_after_completion_queue");
+                      "scheduler_bridge_rollback_after_warp_completion_entry");
                   break;
                 }
 
@@ -7808,7 +7808,7 @@ bool rt_unit::can_issue(const warp_inst_t &inst) const {
       return false;
   }
   if (n_warps >= (m_config->m_rt_max_warps)) return false;
-  if (!rtcore_completion_queue_has_capacity(inst)) return false;
+  if (!rtcore_warp_completion_entry_has_capacity(inst)) return false;
   return m_dispatch_reg->empty() && !occupied.test(inst.latency);
 }
         
@@ -7937,13 +7937,13 @@ bool rt_unit::rtcore_resident_warp_capacity_available(
   return true;
 }
 
-struct rtcore_completion_queue_reservation_key {
+struct rtcore_warp_completion_entry_reservation_key {
   unsigned owner_hw_sid;
   unsigned warp_id;
   unsigned long long static_inst_pc;
   unsigned issued_active_mask;
 
-  bool operator<(const rtcore_completion_queue_reservation_key &other) const {
+  bool operator<(const rtcore_warp_completion_entry_reservation_key &other) const {
     if (owner_hw_sid != other.owner_hw_sid) {
       return owner_hw_sid < other.owner_hw_sid;
     }
@@ -7958,14 +7958,14 @@ struct rtcore_completion_queue_reservation_key {
 };
 
 static std::map<unsigned, unsigned> g_rtcore_warp_completion_entry_inflight_by_sm;
-static std::set<rtcore_completion_queue_reservation_key>
-    g_rtcore_completion_queue_reservations;
+static std::set<rtcore_warp_completion_entry_reservation_key>
+    g_rtcore_warp_completion_entry_reservations;
 
-static rtcore_completion_queue_reservation_key
-rtcore_make_completion_queue_reservation_key(
+static rtcore_warp_completion_entry_reservation_key
+rtcore_make_warp_completion_entry_reservation_key(
     unsigned owner_hw_sid, unsigned warp_id,
     unsigned long long static_inst_pc, unsigned issued_active_mask) {
-  rtcore_completion_queue_reservation_key key;
+  rtcore_warp_completion_entry_reservation_key key;
   key.owner_hw_sid = owner_hw_sid;
   key.warp_id = warp_id;
   key.static_inst_pc = static_inst_pc;
@@ -7976,9 +7976,9 @@ rtcore_make_completion_queue_reservation_key(
 static unsigned rtcore_warp_completion_entry_reservation_count(
     unsigned owner_hw_sid) {
   unsigned count = 0;
-  for (std::set<rtcore_completion_queue_reservation_key>::const_iterator it =
-           g_rtcore_completion_queue_reservations.begin();
-       it != g_rtcore_completion_queue_reservations.end(); ++it) {
+  for (std::set<rtcore_warp_completion_entry_reservation_key>::const_iterator it =
+           g_rtcore_warp_completion_entry_reservations.begin();
+       it != g_rtcore_warp_completion_entry_reservations.end(); ++it) {
     if (it->owner_hw_sid == owner_hw_sid) {
       count++;
     }
@@ -7986,32 +7986,32 @@ static unsigned rtcore_warp_completion_entry_reservation_count(
   return count;
 }
 
-static bool rtcore_completion_queue_reservation_contains(
+static bool rtcore_warp_completion_entry_reservation_contains(
     unsigned owner_hw_sid, unsigned warp_id,
     unsigned long long static_inst_pc, unsigned issued_active_mask) {
-  const rtcore_completion_queue_reservation_key key =
-      rtcore_make_completion_queue_reservation_key(
+  const rtcore_warp_completion_entry_reservation_key key =
+      rtcore_make_warp_completion_entry_reservation_key(
           owner_hw_sid, warp_id, static_inst_pc, issued_active_mask);
-  return g_rtcore_completion_queue_reservations.find(key) !=
-         g_rtcore_completion_queue_reservations.end();
+  return g_rtcore_warp_completion_entry_reservations.find(key) !=
+         g_rtcore_warp_completion_entry_reservations.end();
 }
 
-static bool rtcore_completion_queue_reservation_insert(
+static bool rtcore_warp_completion_entry_reservation_insert(
     unsigned owner_hw_sid, unsigned warp_id,
     unsigned long long static_inst_pc, unsigned issued_active_mask) {
-  const rtcore_completion_queue_reservation_key key =
-      rtcore_make_completion_queue_reservation_key(
+  const rtcore_warp_completion_entry_reservation_key key =
+      rtcore_make_warp_completion_entry_reservation_key(
           owner_hw_sid, warp_id, static_inst_pc, issued_active_mask);
-  return g_rtcore_completion_queue_reservations.insert(key).second;
+  return g_rtcore_warp_completion_entry_reservations.insert(key).second;
 }
 
-static bool rtcore_completion_queue_reservation_remove(
+static bool rtcore_warp_completion_entry_reservation_remove(
     unsigned owner_hw_sid, unsigned warp_id,
     unsigned long long static_inst_pc, unsigned issued_active_mask) {
-  const rtcore_completion_queue_reservation_key key =
-      rtcore_make_completion_queue_reservation_key(
+  const rtcore_warp_completion_entry_reservation_key key =
+      rtcore_make_warp_completion_entry_reservation_key(
           owner_hw_sid, warp_id, static_inst_pc, issued_active_mask);
-  return g_rtcore_completion_queue_reservations.erase(key) != 0;
+  return g_rtcore_warp_completion_entry_reservations.erase(key) != 0;
 }
 
 unsigned rt_unit::rtcore_synthetic_completion_latency() const {
@@ -8058,10 +8058,10 @@ unsigned rt_unit::rtcore_warp_completion_entry_inflight() const {
   return it->second;
 }
 
-rt_unit::rtcore_completion_queue_state_snapshot
-rt_unit::rtcore_make_completion_queue_state_snapshot(
-    const warp_inst_t &inst, rtcore_completion_queue_action action) const {
-  rtcore_completion_queue_state_snapshot snapshot;
+rt_unit::rtcore_warp_completion_entry_state_snapshot
+rt_unit::rtcore_make_warp_completion_entry_state_snapshot(
+    const warp_inst_t &inst, rtcore_warp_completion_entry_action action) const {
+  rtcore_warp_completion_entry_state_snapshot snapshot;
   snapshot.action = action;
   snapshot.submit = inst.rt_subop == RT_CORE_SUBOP_SUBMIT;
   snapshot.capacity = rtcore_warp_completion_entry_capacity();
@@ -8075,7 +8075,7 @@ rt_unit::rtcore_make_completion_queue_state_snapshot(
   snapshot.issued_active_mask =
       inst.empty() ? 0 : static_cast<unsigned>(
                             inst.get_warp_active_mask().to_ulong());
-  snapshot.has_reservation = rtcore_completion_queue_reservation_contains(
+  snapshot.has_reservation = rtcore_warp_completion_entry_reservation_contains(
       snapshot.owner_hw_sid, snapshot.warp_id,
       snapshot.static_inst_pc, snapshot.issued_active_mask);
   snapshot.live_plus_reserved = snapshot.inflight + snapshot.reserved;
@@ -8087,19 +8087,19 @@ rt_unit::rtcore_make_completion_queue_state_snapshot(
   return snapshot;
 }
 
-void rt_unit::rtcore_apply_completion_queue_state_snapshot(
-    const rtcore_completion_queue_state_snapshot &snapshot) {
+void rt_unit::rtcore_apply_warp_completion_entry_state_snapshot(
+    const rtcore_warp_completion_entry_state_snapshot &snapshot) {
   if (!snapshot.submit) {
     return;
   }
-  if (snapshot.action == RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE) {
+  if (snapshot.action == RTCORE_WARP_COMPLETION_ENTRY_ACTION_ENQUEUE) {
     if (snapshot.has_reservation) {
-      rtcore_completion_queue_reservation_remove(
+      rtcore_warp_completion_entry_reservation_remove(
           snapshot.owner_hw_sid, snapshot.warp_id,
           snapshot.static_inst_pc, snapshot.issued_active_mask);
     }
     g_rtcore_warp_completion_entry_inflight_by_sm[snapshot.owner_hw_sid]++;
-  } else if (snapshot.action == RTCORE_COMPLETION_QUEUE_ACTION_RETIRE) {
+  } else if (snapshot.action == RTCORE_WARP_COMPLETION_ENTRY_ACTION_RETIRE) {
     std::map<unsigned, unsigned>::iterator inflight =
         g_rtcore_warp_completion_entry_inflight_by_sm.find(
             snapshot.owner_hw_sid);
@@ -8110,21 +8110,21 @@ void rt_unit::rtcore_apply_completion_queue_state_snapshot(
   }
 }
 
-bool rt_unit::rtcore_completion_queue_reserve_issue_slot(
+bool rt_unit::rtcore_warp_completion_entry_reserve_issue_slot(
     const warp_inst_t &inst, unsigned warp_id, unsigned owner_hw_sid,
     unsigned long long static_inst_pc, unsigned issued_active_mask,
-    const rtcore_completion_queue_gate_materialized_input_provenance_snapshot
+    const rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot
         &materialized_input_provenance) const {
-  rtcore_completion_queue_state_snapshot snapshot =
-      rtcore_make_completion_queue_state_snapshot(
-          inst, RTCORE_COMPLETION_QUEUE_ACTION_RESERVE);
+  rtcore_warp_completion_entry_state_snapshot snapshot =
+      rtcore_make_warp_completion_entry_state_snapshot(
+          inst, RTCORE_WARP_COMPLETION_ENTRY_ACTION_RESERVE);
   snapshot.owner_hw_sid = owner_hw_sid;
   snapshot.warp_id = warp_id;
   snapshot.static_inst_pc = static_inst_pc;
   snapshot.issued_active_mask = issued_active_mask;
   snapshot.reserved =
       rtcore_warp_completion_entry_reservation_count(snapshot.owner_hw_sid);
-  snapshot.has_reservation = rtcore_completion_queue_reservation_contains(
+  snapshot.has_reservation = rtcore_warp_completion_entry_reservation_contains(
       snapshot.owner_hw_sid, snapshot.warp_id,
       snapshot.static_inst_pc, snapshot.issued_active_mask);
   snapshot.live_plus_reserved = snapshot.inflight + snapshot.reserved;
@@ -8136,7 +8136,7 @@ bool rt_unit::rtcore_completion_queue_reserve_issue_slot(
   if (snapshot.capacity_available) {
     if (snapshot.submit && snapshot.capacity_enabled &&
         !snapshot.has_reservation) {
-      rtcore_completion_queue_reservation_insert(
+      rtcore_warp_completion_entry_reservation_insert(
           snapshot.owner_hw_sid, snapshot.warp_id,
           snapshot.static_inst_pc, snapshot.issued_active_mask);
     }
@@ -8211,26 +8211,26 @@ bool rt_unit::rtcore_completion_queue_reserve_issue_slot(
   return false;
 }
 
-void rt_unit::rtcore_record_completion_queue_enqueue(
+void rt_unit::rtcore_record_warp_completion_entry_enqueue(
     const warp_inst_t &inst) {
-  const rtcore_completion_queue_state_snapshot snapshot =
-      rtcore_make_completion_queue_state_snapshot(
-          inst, RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE);
-  rtcore_apply_completion_queue_state_snapshot(snapshot);
+  const rtcore_warp_completion_entry_state_snapshot snapshot =
+      rtcore_make_warp_completion_entry_state_snapshot(
+          inst, RTCORE_WARP_COMPLETION_ENTRY_ACTION_ENQUEUE);
+  rtcore_apply_warp_completion_entry_state_snapshot(snapshot);
 }
 
-void rt_unit::rtcore_record_completion_queue_retire(const warp_inst_t &inst) {
-  const rtcore_completion_queue_state_snapshot snapshot =
-      rtcore_make_completion_queue_state_snapshot(
-          inst, RTCORE_COMPLETION_QUEUE_ACTION_RETIRE);
-  rtcore_apply_completion_queue_state_snapshot(snapshot);
+void rt_unit::rtcore_record_warp_completion_entry_retire(const warp_inst_t &inst) {
+  const rtcore_warp_completion_entry_state_snapshot snapshot =
+      rtcore_make_warp_completion_entry_state_snapshot(
+          inst, RTCORE_WARP_COMPLETION_ENTRY_ACTION_RETIRE);
+  rtcore_apply_warp_completion_entry_state_snapshot(snapshot);
 }
 
-bool rt_unit::rtcore_completion_queue_has_capacity(
+bool rt_unit::rtcore_warp_completion_entry_has_capacity(
     const warp_inst_t &inst) const {
-  const rtcore_completion_queue_state_snapshot snapshot =
-      rtcore_make_completion_queue_state_snapshot(
-          inst, RTCORE_COMPLETION_QUEUE_ACTION_CAPACITY_CHECK);
+  const rtcore_warp_completion_entry_state_snapshot snapshot =
+      rtcore_make_warp_completion_entry_state_snapshot(
+          inst, RTCORE_WARP_COMPLETION_ENTRY_ACTION_CAPACITY_CHECK);
   if (snapshot.has_reservation) {
     return true;
   }
@@ -8885,11 +8885,11 @@ void rt_unit::enqueue_synthetic_completion(
       rtcore_make_completion_timing_snapshot(event);
   rtcore_apply_completion_timing_snapshot(&event, timing_snapshot);
   const bool new_event =
-      m_synthetic_completion_queue.find(inst.get_uid()) ==
-      m_synthetic_completion_queue.end();
-  m_synthetic_completion_queue[inst.get_uid()] = event;
+      m_synthetic_warp_completion_entries.find(inst.get_uid()) ==
+      m_synthetic_warp_completion_entries.end();
+  m_synthetic_warp_completion_entries[inst.get_uid()] = event;
   if (new_event) {
-    rtcore_record_completion_queue_enqueue(inst);
+    rtcore_record_warp_completion_entry_enqueue(inst);
   }
 }
 
@@ -8899,8 +8899,8 @@ bool rt_unit::synthetic_completion_ready(
     return true;
   }
   std::map<unsigned, rtcore_synthetic_completion_event>::iterator event =
-      m_synthetic_completion_queue.find(inst.get_uid());
-  if (event == m_synthetic_completion_queue.end()) {
+      m_synthetic_warp_completion_entries.find(inst.get_uid());
+  if (event == m_synthetic_warp_completion_entries.end()) {
     return false;
   }
   if (!event->second.adapter_completion_ready) {
@@ -8918,8 +8918,8 @@ bool rt_unit::synthetic_completion_ready(
 
 void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {
   if (inst.rt_subop == RT_CORE_SUBOP_SUBMIT) {
-    rtcore_record_completion_queue_retire(inst);
-    m_synthetic_completion_queue.erase(inst.get_uid());
+    rtcore_record_warp_completion_entry_retire(inst);
+    m_synthetic_warp_completion_entries.erase(inst.get_uid());
   }
 }
 
@@ -8981,9 +8981,9 @@ rt_unit::rtcore_make_replay_release_identity_join_snapshot(
   snapshot.lane_in_range =
       identity_lane_id < inst.warp_size() && identity_lane_id < 32;
   std::map<unsigned, rtcore_synthetic_completion_event>::const_iterator event =
-      m_synthetic_completion_queue.find(inst.get_uid());
+      m_synthetic_warp_completion_entries.find(inst.get_uid());
   snapshot.completion_event_found =
-      event != m_synthetic_completion_queue.end();
+      event != m_synthetic_warp_completion_entries.end();
   if (snapshot.completion_event_found) {
     snapshot.joined_issued_active_mask = event->second.issued_active_mask;
   }
@@ -9709,9 +9709,9 @@ void rt_unit::cycle() {
         synthetic_submit_completion_ready;
     const std::map<unsigned, rtcore_synthetic_completion_event>::const_iterator
         candidate_completion_event =
-            m_synthetic_completion_queue.find(it->second.get_uid());
+            m_synthetic_warp_completion_entries.find(it->second.get_uid());
     const bool candidate_completion_event_found =
-        candidate_completion_event != m_synthetic_completion_queue.end();
+        candidate_completion_event != m_synthetic_warp_completion_entries.end();
     const unsigned candidate_issued_active_mask =
         candidate_completion_event_found
             ? candidate_completion_event->second.issued_active_mask
@@ -9764,8 +9764,8 @@ void rt_unit::cycle() {
           const std::map<unsigned,
                          rtcore_synthetic_completion_event>::const_iterator
               release_event =
-                  m_synthetic_completion_queue.find(it->second.get_uid());
-          if (release_event != m_synthetic_completion_queue.end()) {
+                  m_synthetic_warp_completion_entries.find(it->second.get_uid());
+          if (release_event != m_synthetic_warp_completion_entries.end()) {
             rtcore_synthetic_release_snapshot release_snapshot =
                 rtcore_make_synthetic_release_snapshot(
                     it->second, release_event->second, current_cycle);

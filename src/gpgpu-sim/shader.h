@@ -1527,8 +1527,8 @@ struct rtcore_resident_gate_materialized_input_provenance_snapshot {
       *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
 };
 
-struct rtcore_completion_queue_gate_materialized_input_provenance_snapshot {
-  rtcore_completion_queue_gate_materialized_input_provenance_snapshot()
+struct rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot {
+  rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot()
       : available(false),
         has_provider_materialized_traversal_input_snapshot(false),
         provider_materialized_traversal_input_snapshot_valid(false),
@@ -1603,11 +1603,11 @@ class rt_unit : public pipelined_simd_unit {
             const rtcore_resident_warp_demand_snapshot &snapshot,
             const rtcore_resident_gate_materialized_input_provenance_snapshot
                 &materialized_input_provenance) const;
-        bool rtcore_completion_queue_reserve_issue_slot(
+        bool rtcore_warp_completion_entry_reserve_issue_slot(
             const warp_inst_t &inst, unsigned warp_id,
             unsigned owner_hw_sid, unsigned long long static_inst_pc,
             unsigned issued_active_mask,
-            const rtcore_completion_queue_gate_materialized_input_provenance_snapshot
+            const rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot
                 &materialized_input_provenance) const;
         
     protected:
@@ -1617,18 +1617,18 @@ class rt_unit : public pipelined_simd_unit {
       mem_fetch* process_memory_access_queue(warp_inst_t &inst);
       void schedule_next_warp(warp_inst_t &inst);
       void memory_cycle(warp_inst_t &inst);
-      enum rtcore_completion_queue_action {
-        RTCORE_COMPLETION_QUEUE_ACTION_CAPACITY_CHECK,
-        RTCORE_COMPLETION_QUEUE_ACTION_RESERVE,
-        RTCORE_COMPLETION_QUEUE_ACTION_ENQUEUE,
-        RTCORE_COMPLETION_QUEUE_ACTION_RETIRE
+      enum rtcore_warp_completion_entry_action {
+        RTCORE_WARP_COMPLETION_ENTRY_ACTION_CAPACITY_CHECK,
+        RTCORE_WARP_COMPLETION_ENTRY_ACTION_RESERVE,
+        RTCORE_WARP_COMPLETION_ENTRY_ACTION_ENQUEUE,
+        RTCORE_WARP_COMPLETION_ENTRY_ACTION_RETIRE
       };
       enum rtcore_synthetic_release_action {
         RTCORE_SYNTHETIC_RELEASE_ACTION_RELEASE
       };
-      struct rtcore_completion_queue_state_snapshot {
-        rtcore_completion_queue_state_snapshot()
-            : action(RTCORE_COMPLETION_QUEUE_ACTION_CAPACITY_CHECK),
+      struct rtcore_warp_completion_entry_state_snapshot {
+        rtcore_warp_completion_entry_state_snapshot()
+            : action(RTCORE_WARP_COMPLETION_ENTRY_ACTION_CAPACITY_CHECK),
               submit(false),
               capacity_enabled(false),
               capacity_available(true),
@@ -1643,7 +1643,7 @@ class rt_unit : public pipelined_simd_unit {
               static_inst_pc(0),
               issued_active_mask(0) {}
 
-        rtcore_completion_queue_action action;
+        rtcore_warp_completion_entry_action action;
         bool submit;
         bool capacity_enabled;
         bool capacity_available;
@@ -2055,15 +2055,15 @@ class rt_unit : public pipelined_simd_unit {
       unsigned rtcore_synthetic_completion_latency() const;
       unsigned rtcore_warp_completion_entry_capacity() const;
       unsigned rtcore_warp_completion_entry_inflight() const;
-      rtcore_completion_queue_state_snapshot
-      rtcore_make_completion_queue_state_snapshot(
+      rtcore_warp_completion_entry_state_snapshot
+      rtcore_make_warp_completion_entry_state_snapshot(
           const warp_inst_t &inst,
-          rtcore_completion_queue_action action) const;
-      void rtcore_apply_completion_queue_state_snapshot(
-          const rtcore_completion_queue_state_snapshot &snapshot);
-      void rtcore_record_completion_queue_enqueue(const warp_inst_t &inst);
-      void rtcore_record_completion_queue_retire(const warp_inst_t &inst);
-      bool rtcore_completion_queue_has_capacity(const warp_inst_t &inst) const;
+          rtcore_warp_completion_entry_action action) const;
+      void rtcore_apply_warp_completion_entry_state_snapshot(
+          const rtcore_warp_completion_entry_state_snapshot &snapshot);
+      void rtcore_record_warp_completion_entry_enqueue(const warp_inst_t &inst);
+      void rtcore_record_warp_completion_entry_retire(const warp_inst_t &inst);
+      bool rtcore_warp_completion_entry_has_capacity(const warp_inst_t &inst) const;
       static const char *rtcore_shadow_table_release_skeleton_env_name() {
         return "VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_SHADOW_TABLE_RELEASE_SKELETON";
       }
@@ -2163,7 +2163,7 @@ class rt_unit : public pipelined_simd_unit {
       // {warp id, warp instruction}
       std::map<unsigned, warp_inst_t> m_current_warps;
       std::map<unsigned, rtcore_synthetic_completion_event>
-          m_synthetic_completion_queue;
+          m_synthetic_warp_completion_entries;
       unsigned n_warps;
 
       unsigned cacheline_count;
@@ -3282,10 +3282,10 @@ class shader_core_ctx : public core_t {
       unsigned rt_core_out_pending_warps,
       const rtcore_resident_gate_materialized_input_provenance_snapshot
           &materialized_input_provenance) const;
-  bool rtcore_submit_completion_queue_reserve_issue_slot(
+  bool rtcore_submit_warp_completion_entry_reserve_issue_slot(
       const warp_inst_t &inst, unsigned warp_id,
       unsigned issued_active_mask,
-      const rtcore_completion_queue_gate_materialized_input_provenance_snapshot
+      const rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot
           &materialized_input_provenance) const;
 
   void create_front_pipeline();
