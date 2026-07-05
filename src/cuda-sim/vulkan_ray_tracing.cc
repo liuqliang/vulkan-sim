@@ -5844,7 +5844,7 @@ static bool rtcore_service_replay_scoreboard_handoff_requests_for_owner(
     return ingress_progressed || delivered > 0;
 }
 
-static bool rtcore_wake_waiting_unit_replay_request(
+static bool rtcore_wake_request_state_unit_replay_request(
     unsigned thread_uid, unsigned long long service_cycle)
 {
     std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
@@ -5941,7 +5941,7 @@ static bool rtcore_select_replay_request_state_unit_wake_request_for_owner(
         owner_hw_sid, thread_uid, service_cycle);
 }
 
-static bool rtcore_service_waiting_unit_replay_requests_for_owner(
+static bool rtcore_service_request_state_unit_wake_requests_for_owner(
     unsigned owner_hw_sid, unsigned wake_budget,
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
     unsigned long long service_cycle = 0)
@@ -5957,8 +5957,8 @@ static bool rtcore_service_waiting_unit_replay_requests_for_owner(
             .wake_attempt_count++;
         g_rtcore_replay_v03_hw_unit_state_wake_service_stats
             .request_state_unit_wake_attempt_count++;
-        if (!rtcore_wake_waiting_unit_replay_request(thread_uid,
-                                                     service_cycle)) {
+        if (!rtcore_wake_request_state_unit_replay_request(thread_uid,
+                                                           service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid, service_cycle);
             break;
         }
@@ -5976,7 +5976,7 @@ static bool rtcore_service_waiting_unit_replay_requests_for_owner(
     return progressed;
 }
 
-static bool rtcore_wake_waiting_memory_replay_request(
+static bool rtcore_wake_memory_response_replay_request(
     unsigned thread_uid, unsigned long long service_cycle)
 {
     std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
@@ -6194,7 +6194,7 @@ static bool rtcore_select_replay_request_state_memory_wake_request_for_owner(
         owner_hw_sid, thread_uid, service_cycle);
 }
 
-static bool rtcore_service_waiting_memory_replay_requests_for_owner(
+static bool rtcore_service_memory_response_wake_requests_for_owner(
     unsigned owner_hw_sid, unsigned wake_budget,
     rtcore_replay_service_cycle_identity_snapshot *last_identity = NULL,
     unsigned long long service_cycle = 0)
@@ -6208,8 +6208,8 @@ static bool rtcore_service_waiting_memory_replay_requests_for_owner(
         }
         g_rtcore_replay_v03_hw_memory_outstanding_stats
             .memory_wake_attempt_count++;
-        if (!rtcore_wake_waiting_memory_replay_request(thread_uid,
-                                                       service_cycle)) {
+        if (!rtcore_wake_memory_response_replay_request(thread_uid,
+                                                        service_cycle)) {
             rtcore_route_admitted_replay_request(thread_uid, service_cycle);
             break;
         }
@@ -6225,17 +6225,17 @@ static bool rtcore_service_waiting_memory_replay_requests_for_owner(
     return progressed;
 }
 
-static bool rtcore_service_waiting_memory_replay_requests_for_owner(
+static bool rtcore_service_memory_response_wake_requests_for_owner(
     unsigned owner_hw_sid)
 {
-    return rtcore_service_waiting_memory_replay_requests_for_owner(
+    return rtcore_service_memory_response_wake_requests_for_owner(
         owner_hw_sid, rtcore_replay_memory_wake_budget_config());
 }
 
-static bool rtcore_service_waiting_unit_replay_requests_for_owner(
+static bool rtcore_service_request_state_unit_wake_requests_for_owner(
     unsigned owner_hw_sid)
 {
-    return rtcore_service_waiting_unit_replay_requests_for_owner(
+    return rtcore_service_request_state_unit_wake_requests_for_owner(
         owner_hw_sid, rtcore_replay_unit_wake_budget_config());
 }
 
@@ -6253,13 +6253,13 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
             owner_hw_sid, rtcore_replay_memory_issue_budget_config(),
             &memory_identity, service_cycle);
     const bool memory_wake_progressed =
-        rtcore_service_waiting_memory_replay_requests_for_owner(
+        rtcore_service_memory_response_wake_requests_for_owner(
             owner_hw_sid, rtcore_replay_memory_wake_budget_config(),
             &memory_identity, service_cycle);
     result.memory_progressed =
         memory_issue_progressed || memory_wake_progressed;
     const bool unit_progressed =
-        rtcore_service_waiting_unit_replay_requests_for_owner(
+        rtcore_service_request_state_unit_wake_requests_for_owner(
             owner_hw_sid, rtcore_replay_unit_wake_budget_config(),
             &unit_identity, service_cycle);
     const bool ready_issue_progressed =
