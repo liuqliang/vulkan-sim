@@ -1712,6 +1712,9 @@ class rt_unit : public pipelined_simd_unit {
               warp_completion_entry_enabled(false),
               warp_completion_entry_found(false),
               warp_completion_all_active_lanes_complete(false),
+              warp_completion_scoreboard_handoff_ready(false),
+              warp_completion_scoreboard_handoff_delivered(false),
+              warp_completion_scoreboard_handoff_cycle(0),
               owner_hw_sid(0),
               cycle(0),
               identity_owner_hw_sid(0),
@@ -1746,6 +1749,9 @@ class rt_unit : public pipelined_simd_unit {
         bool warp_completion_entry_enabled;
         bool warp_completion_entry_found;
         bool warp_completion_all_active_lanes_complete;
+        bool warp_completion_scoreboard_handoff_ready;
+        bool warp_completion_scoreboard_handoff_delivered;
+        unsigned long long warp_completion_scoreboard_handoff_cycle;
         unsigned owner_hw_sid;
         unsigned long long cycle;
         unsigned identity_owner_hw_sid;
