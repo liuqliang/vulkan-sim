@@ -798,20 +798,6 @@ struct rtcore_replay_memory_outstanding_entry {
     unsigned long long issue_cycle;
 };
 
-struct rtcore_replay_v03_hw_queue_ownership_stats {
-    unsigned evaluations;
-    unsigned max_owner_local_total_queue_depth;
-    unsigned max_global_total_queue_depth;
-    unsigned max_owner_scan_entry_visit_count;
-    unsigned max_owner_scan_skipped_entry_count;
-};
-
-struct rtcore_replay_v03_hw_queue_ingress_stats {
-    unsigned evaluations;
-    unsigned total_target_queue_push_count;
-    unsigned max_total_target_queue_push_count;
-};
-
 struct rtcore_replay_lane_request_state_capacity_gate_stats {
     unsigned evaluations;
     unsigned admitted_count;
@@ -908,10 +894,6 @@ static rtcore_replay_v03_hw_memory_outstanding_stats
 static std::map<rtcore_replay_memory_outstanding_key,
                 rtcore_replay_memory_outstanding_entry>
     g_rtcore_replay_memory_outstanding_table;
-static rtcore_replay_v03_hw_queue_ownership_stats
-    g_rtcore_replay_v03_hw_queue_ownership_stats;
-static std::map<unsigned, rtcore_replay_v03_hw_queue_ingress_stats>
-    g_rtcore_replay_v03_hw_queue_ingress_stats_by_owner;
 static rtcore_replay_lane_request_state_capacity_gate_stats
     g_rtcore_replay_lane_request_state_capacity_gate_stats;
 static rtcore_replay_memory_unit_request_descriptor_stats
@@ -944,8 +926,6 @@ static unsigned
     g_rtcore_replay_v03_hw_unit_state_wake_service_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_v03_hw_memory_outstanding_stats_logs_emitted =
     0;
-static unsigned g_rtcore_replay_v03_hw_queue_ownership_stats_logs_emitted = 0;
-static unsigned g_rtcore_replay_v03_hw_queue_ingress_stats_logs_emitted = 0;
 static unsigned
     g_rtcore_replay_lane_request_state_capacity_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_compact_trace_overflow_stats_logs_emitted = 0;
@@ -1321,16 +1301,6 @@ static bool rtcore_replay_data_path_access_stats_log_enabled()
     return enabled != 0;
 }
 
-static bool rtcore_replay_v03_hw_queue_ingress_stats_log_enabled()
-{
-    static int enabled = []() {
-        const char *value = getenv(
-            "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_STATS_LOG");
-        return value && value[0] && strcmp(value, "0") != 0;
-    }();
-    return enabled != 0;
-}
-
 static bool rtcore_replay_v03_hw_request_state_scoreboard_stats_log_enabled()
 {
     static int enabled = []() {
@@ -1356,16 +1326,6 @@ static bool rtcore_replay_v03_hw_memory_outstanding_stats_log_enabled()
     static int enabled = []() {
         const char *value = getenv(
             "VULKAN_SIM_RTCORE_REPLAY_V03_HW_MEMORY_OUTSTANDING_STATS_LOG");
-        return value && value[0] && strcmp(value, "0") != 0;
-    }();
-    return enabled != 0;
-}
-
-static bool rtcore_replay_v03_hw_queue_ownership_stats_log_enabled()
-{
-    static int enabled = []() {
-        const char *value = getenv(
-            "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_OWNERSHIP_STATS_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -1534,13 +1494,6 @@ static unsigned rtcore_replay_data_path_access_stats_log_limit()
     return limit;
 }
 
-static unsigned rtcore_replay_v03_hw_queue_ingress_stats_log_limit()
-{
-    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
-        "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_STATS_LOG_LIMIT", 64);
-    return limit;
-}
-
 static unsigned
 rtcore_replay_v03_hw_request_state_scoreboard_stats_log_limit()
 {
@@ -1563,14 +1516,6 @@ static unsigned rtcore_replay_v03_hw_memory_outstanding_stats_log_limit()
 {
     static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_V03_HW_MEMORY_OUTSTANDING_STATS_LOG_LIMIT",
-        64);
-    return limit;
-}
-
-static unsigned rtcore_replay_v03_hw_queue_ownership_stats_log_limit()
-{
-    static unsigned limit = rtcore_replay_service_tick_stats_log_limit_from_env(
-        "VULKAN_SIM_RTCORE_REPLAY_V03_HW_QUEUE_OWNERSHIP_STATS_LOG_LIMIT",
         64);
     return limit;
 }
@@ -1827,23 +1772,6 @@ static void rtcore_update_replay_unsigned_max(unsigned value,
     if (maximum && value > *maximum) {
         *maximum = value;
     }
-}
-
-static rtcore_replay_v03_hw_queue_ingress_stats *
-rtcore_replay_v03_hw_queue_ingress_stats_for_owner(unsigned owner_hw_sid)
-{
-    return &g_rtcore_replay_v03_hw_queue_ingress_stats_by_owner[owner_hw_sid];
-}
-
-static void rtcore_update_replay_v03_hw_queue_ingress_maxima(
-    rtcore_replay_v03_hw_queue_ingress_stats *stats)
-{
-    if (!stats) {
-        return;
-    }
-    rtcore_update_replay_unsigned_max(
-        stats->total_target_queue_push_count,
-        &stats->max_total_target_queue_push_count);
 }
 
 static uint32_t rtcore_pack_compact_trace_fields(
@@ -6992,46 +6920,6 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
     fflush(stdout);
 }
 
-static void rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(
-    unsigned owner_hw_sid, unsigned long long service_cycle)
-{
-    (void)owner_hw_sid;
-    (void)service_cycle;
-}
-
-static void rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(
-    unsigned owner_hw_sid, unsigned long long service_cycle)
-{
-    if (!rtcore_replay_v03_hw_queue_ingress_stats_log_enabled()) {
-        return;
-    }
-    if (g_rtcore_replay_v03_hw_queue_ingress_stats_logs_emitted >=
-        rtcore_replay_v03_hw_queue_ingress_stats_log_limit()) {
-        return;
-    }
-    const auto stats_it =
-        g_rtcore_replay_v03_hw_queue_ingress_stats_by_owner.find(owner_hw_sid);
-    if (stats_it == g_rtcore_replay_v03_hw_queue_ingress_stats_by_owner.end()) {
-        return;
-    }
-    rtcore_replay_v03_hw_queue_ingress_stats &stats = stats_it->second;
-    if (stats.total_target_queue_push_count == 0) {
-        return;
-    }
-
-    stats.evaluations++;
-    g_rtcore_replay_v03_hw_queue_ingress_stats_logs_emitted++;
-    printf("GPGPU-Sim RTCORE_REPLAY_V03_HW_QUEUE_INGRESS_STATS "
-           "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
-           "queue_push_ingress_model=1 owner_local_storage_model=1 "
-           "total_target_queue_push_count=%u evaluations=%u "
-           "max_total_target_queue_push_count=%u\n",
-           owner_hw_sid, service_cycle,
-           stats.total_target_queue_push_count, stats.evaluations,
-           stats.max_total_target_queue_push_count);
-    fflush(stdout);
-}
-
 static void rtcore_publish_replay_service_tick_stats_snapshot()
 {
     g_rtcore_replay_service_tick_stats_snapshot =
@@ -7065,10 +6953,6 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
         owner_hw_sid, service_cycle);
     rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(owner_hw_sid,
                                                             service_cycle);
-    rtcore_maybe_log_replay_v03_hw_queue_ownership_stats(owner_hw_sid,
-                                                          service_cycle);
-    rtcore_maybe_log_replay_v03_hw_queue_ingress_stats(owner_hw_sid,
-                                                        service_cycle);
     rtcore_publish_replay_service_tick_stats_snapshot();
     rtcore_maybe_log_replay_data_path_access_stats(owner_hw_sid, service_cycle);
     rtcore_maybe_log_replay_unit_arbitration_stats(owner_hw_sid);
