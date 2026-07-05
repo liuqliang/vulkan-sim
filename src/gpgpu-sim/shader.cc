@@ -111,23 +111,23 @@ extern "C" bool rtcore_service_replay_cycle_for_sm_with_identity(
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot);
 extern "C" bool
-rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
+rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot,
     rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
-extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
+extern "C" bool rtcore_pop_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
-extern "C" bool rtcore_push_front_v02_lsu_sideband_request_for_sm(
+extern "C" bool rtcore_push_front_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
-extern "C" bool rtcore_push_back_v02_lsu_sideband_request_for_sm(
+extern "C" bool rtcore_push_back_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot);
-extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
+extern "C" unsigned rtcore_count_memory_unit_requests_for_sm(
     unsigned owner_hw_sid);
-extern "C" bool rtcore_record_v02_lsu_sideband_memory_response(
+extern "C" bool rtcore_record_memory_unit_response(
     unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
     unsigned chunk_id, unsigned chunk_count, unsigned response_target,
     unsigned long long response_cycle);
@@ -1575,7 +1575,7 @@ static bool rtcore_requeue_v02_lsu_sideband_request_for_retry(
     const rtcore_replay_cycle_hook_result &result) {
   const rtcore_v02_lsu_sideband_request_snapshot snapshot =
       rtcore_v02_lsu_sideband_snapshot_from_result(result);
-  return rtcore_push_back_v02_lsu_sideband_request_for_sm(
+  return rtcore_push_back_memory_unit_request_for_sm(
       result.lsu_sideband_owner_hw_sid, &snapshot);
 }
 
@@ -1685,7 +1685,7 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
       snapshot.access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE) {
     return;
   }
-  rtcore_record_v02_lsu_sideband_memory_response(
+  rtcore_record_memory_unit_response(
       snapshot.owner_hw_sid, snapshot.rt_request_id, snapshot.memory_op_seq,
       snapshot.chunk_id, snapshot.chunk_count, snapshot.response_target,
       response_cycle);
@@ -2276,7 +2276,7 @@ rtcore_maybe_service_replay_cycle_from_rt_unit(
   rtcore_replay_service_cycle_identity_snapshot identity_snapshot = {};
   rtcore_v02_lsu_sideband_request_snapshot sideband_snapshot = {};
   bool progressed =
-      rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
+      rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
           owner_hw_sid, current_cycle, &service_enabled, &memory_progressed,
           &ready_progressed, &identity_snapshot, &sideband_snapshot);
   result.hook_enabled = true;
@@ -2483,7 +2483,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     const rtcore_v02_lsu_sideband_request_snapshot direct_snapshot =
         rtcore_v02_lsu_sideband_snapshot_from_result(result);
     direct_sideband_requeued =
-        rtcore_push_front_v02_lsu_sideband_request_for_sm(
+        rtcore_push_front_memory_unit_request_for_sm(
             result.owner_hw_sid, &direct_snapshot);
     if (direct_sideband_requeued) {
       g_rtcore_replay_cycle_hook_consumer_stats
@@ -2526,7 +2526,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   unsigned queued_sideband_count_before_drain = 0;
   if (shared_frontend_gate_enabled) {
     queued_sideband_count_before_drain =
-        rtcore_count_v02_lsu_sideband_requests_for_sm(result.owner_hw_sid);
+        rtcore_count_memory_unit_requests_for_sm(result.owner_hw_sid);
     if (queued_sideband_count_before_drain >
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_shared_frontend_max_rt_queue_occupancy) {
@@ -2639,7 +2639,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   unsigned drained_sideband_count = 0;
   rtcore_v02_lsu_sideband_request_snapshot sideband_snapshot = {};
   while (drained_sideband_count < max_sideband_drain_per_cycle &&
-         rtcore_pop_v02_lsu_sideband_request_for_sm(result.owner_hw_sid,
+         rtcore_pop_memory_unit_request_for_sm(result.owner_hw_sid,
                                                     &sideband_snapshot)) {
     const rtcore_replay_cycle_hook_result drained_result =
         rtcore_make_result_with_v02_lsu_sideband_snapshot(result,
@@ -2667,7 +2667,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
         .v02_lsu_sideband_issue_bandwidth_issued_count +=
         sideband_issued_this_cycle;
     const unsigned deferred_count =
-        rtcore_count_v02_lsu_sideband_requests_for_sm(result.owner_hw_sid);
+        rtcore_count_memory_unit_requests_for_sm(result.owner_hw_sid);
     if (deferred_count > 0) {
       g_rtcore_replay_cycle_hook_consumer_stats
           .v02_lsu_sideband_issue_bandwidth_deferred_count += deferred_count;

@@ -8765,7 +8765,7 @@ extern "C" bool rtcore_claim_adapter_completion(
   return accepted;
 }
 
-extern "C" void rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
+extern "C" void rtcore_enqueue_memory_unit_handoff_window_request(
     unsigned owner_hw_sid, unsigned rt_request_id, unsigned lane_id,
     unsigned memory_op_seq, unsigned access_kind,
     unsigned long long byte_address, unsigned chunk_count, bool is_write,
@@ -29642,7 +29642,7 @@ void rtcore_maybe_enqueue_v02_lsu_handoff_window_sideband(
   }
   const unsigned chunk_count =
       rtcore_v02_lsu_handoff_window_lane_slot_chunk_count();
-  rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
+  rtcore_enqueue_memory_unit_handoff_window_request(
       event.warp_metadata.owner_hw_sid, thread != NULL ? thread->get_uid() : 0,
       event.lane_slot_index,
       rtcore_v02_lsu_handoff_memory_op_seq(event.window_generation,
@@ -29661,7 +29661,7 @@ void rtcore_maybe_enqueue_v02_lsu_handoff_publication_store(
   }
   const unsigned chunk_count =
       rtcore_v02_lsu_handoff_window_lane_slot_chunk_count();
-  rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
+  rtcore_enqueue_memory_unit_handoff_window_request(
       event.warp_metadata.owner_hw_sid, thread != NULL ? thread->get_uid() : 0,
       event.lane_slot_index,
       rtcore_v02_lsu_handoff_publication_memory_op_seq(

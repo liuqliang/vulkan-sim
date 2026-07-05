@@ -9508,7 +9508,7 @@ extern "C" bool rtcore_service_replay_cycle_for_sm_with_identity(
 }
 
 extern "C" bool
-rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
+rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot,
@@ -9545,7 +9545,19 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
     return result.tick_result.progressed;
 }
 
-extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
+extern "C" bool
+rtcore_service_replay_cycle_for_sm_with_identity_and_lsu_sideband(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    bool *service_enabled, bool *memory_progressed, bool *ready_progressed,
+    rtcore_replay_service_cycle_identity_snapshot *identity_snapshot,
+    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+{
+    return rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
+        owner_hw_sid, service_cycle, service_enabled, memory_progressed,
+        ready_progressed, identity_snapshot, sideband_snapshot);
+}
+
+extern "C" bool rtcore_pop_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
 {
@@ -9569,7 +9581,15 @@ extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
     return true;
 }
 
-extern "C" bool rtcore_push_front_v02_lsu_sideband_request_for_sm(
+extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
+    unsigned owner_hw_sid,
+    rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+{
+    return rtcore_pop_memory_unit_request_for_sm(owner_hw_sid,
+                                                 sideband_snapshot);
+}
+
+extern "C" bool rtcore_push_front_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
 {
@@ -9581,7 +9601,15 @@ extern "C" bool rtcore_push_front_v02_lsu_sideband_request_for_sm(
     return true;
 }
 
-extern "C" bool rtcore_push_back_v02_lsu_sideband_request_for_sm(
+extern "C" bool rtcore_push_front_v02_lsu_sideband_request_for_sm(
+    unsigned owner_hw_sid,
+    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+{
+    return rtcore_push_front_memory_unit_request_for_sm(owner_hw_sid,
+                                                        sideband_snapshot);
+}
+
+extern "C" bool rtcore_push_back_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
 {
@@ -9593,7 +9621,15 @@ extern "C" bool rtcore_push_back_v02_lsu_sideband_request_for_sm(
     return true;
 }
 
-extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
+extern "C" bool rtcore_push_back_v02_lsu_sideband_request_for_sm(
+    unsigned owner_hw_sid,
+    const rtcore_v02_lsu_sideband_request_snapshot *sideband_snapshot)
+{
+    return rtcore_push_back_memory_unit_request_for_sm(owner_hw_sid,
+                                                       sideband_snapshot);
+}
+
+extern "C" unsigned rtcore_count_memory_unit_requests_for_sm(
     unsigned owner_hw_sid)
 {
     std::map<unsigned,
@@ -9608,7 +9644,13 @@ extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
     return static_cast<unsigned>(queue_it->second.size());
 }
 
-extern "C" void rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
+extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
+    unsigned owner_hw_sid)
+{
+    return rtcore_count_memory_unit_requests_for_sm(owner_hw_sid);
+}
+
+extern "C" void rtcore_enqueue_memory_unit_handoff_window_request(
     unsigned owner_hw_sid, unsigned rt_request_id, unsigned lane_id,
     unsigned memory_op_seq, unsigned access_kind,
     unsigned long long byte_address, unsigned chunk_count, bool is_write,
@@ -9640,12 +9682,33 @@ extern "C" void rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
     }
 }
 
-extern "C" bool rtcore_record_v02_lsu_sideband_memory_response(
+extern "C" void rtcore_enqueue_v02_lsu_handoff_window_sideband_request(
+    unsigned owner_hw_sid, unsigned rt_request_id, unsigned lane_id,
+    unsigned memory_op_seq, unsigned access_kind,
+    unsigned long long byte_address, unsigned chunk_count, bool is_write,
+    unsigned long long issue_cycle)
+{
+    rtcore_enqueue_memory_unit_handoff_window_request(
+        owner_hw_sid, rt_request_id, lane_id, memory_op_seq, access_kind,
+        byte_address, chunk_count, is_write, issue_cycle);
+}
+
+extern "C" bool rtcore_record_memory_unit_response(
     unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
     unsigned chunk_id, unsigned chunk_count, unsigned response_target,
     unsigned long long response_cycle)
 {
     return rtcore_record_v02_lsu_response_wait_chunk(
+        owner_hw_sid, rt_request_id, memory_op_seq, chunk_id, chunk_count,
+        response_target, response_cycle);
+}
+
+extern "C" bool rtcore_record_v02_lsu_sideband_memory_response(
+    unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
+    unsigned chunk_id, unsigned chunk_count, unsigned response_target,
+    unsigned long long response_cycle)
+{
+    return rtcore_record_memory_unit_response(
         owner_hw_sid, rt_request_id, memory_op_seq, chunk_id, chunk_count,
         response_target, response_cycle);
 }
