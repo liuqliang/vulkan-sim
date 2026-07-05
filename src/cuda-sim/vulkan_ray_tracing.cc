@@ -3437,6 +3437,14 @@ static unsigned long long rtcore_replay_v03_hw_ready_bank_cursor_key(
            static_cast<unsigned long long>(unit_state);
 }
 
+static unsigned long long rtcore_replay_v03_hw_memory_wake_bank_cursor_key(
+    unsigned owner_hw_sid)
+{
+    const unsigned memory_wake_cursor_id = 64;
+    return (static_cast<unsigned long long>(owner_hw_sid) << 32) |
+           static_cast<unsigned long long>(memory_wake_cursor_id);
+}
+
 struct rtcore_replay_v03_hw_banked_ready_candidate {
     bool valid;
     unsigned thread_uid;
@@ -8103,13 +8111,18 @@ static bool rtcore_replay_request_state_memory_wake_service_ready(
     return false;
 }
 
-static bool rtcore_select_replay_request_state_memory_wake_request_for_owner(
+static bool rtcore_select_banked_memory_wake_request_for_owner(
     unsigned owner_hw_sid, unsigned *thread_uid,
     unsigned long long service_cycle)
 {
-    bool found = false;
-    unsigned selected_thread_uid = 0;
-    unsigned selected_ready_order = 0;
+    const unsigned bank_count =
+        rtcore_replay_v03_hw_request_state_bank_count_config();
+    if (bank_count == 0) {
+        return false;
+    }
+
+    std::vector<rtcore_replay_v03_hw_banked_ready_candidate> candidates(
+        bank_count);
     for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
              g_rtcore_replay_lane_requests.begin();
          it != g_rtcore_replay_lane_requests.end(); ++it) {
@@ -8119,16 +8132,42 @@ static bool rtcore_select_replay_request_state_memory_wake_request_for_owner(
                 request, service_cycle)) {
             continue;
         }
-        if (!found || request.ready_order < selected_ready_order) {
-            found = true;
-            selected_thread_uid = request.thread_uid;
-            selected_ready_order = request.ready_order;
+        const unsigned bank_id = request.request_state_bank_id % bank_count;
+        rtcore_replay_v03_hw_banked_ready_candidate &candidate =
+            candidates[bank_id];
+        if (!candidate.valid || request.ready_order < candidate.ready_order) {
+            candidate.valid = true;
+            candidate.thread_uid = request.thread_uid;
+            candidate.ready_order = request.ready_order;
         }
     }
-    if (found && thread_uid) {
-        *thread_uid = selected_thread_uid;
+
+    const unsigned long long cursor_key =
+        rtcore_replay_v03_hw_memory_wake_bank_cursor_key(owner_hw_sid);
+    unsigned cursor =
+        g_rtcore_replay_v03_hw_ready_bank_rr_cursor_by_owner_unit[cursor_key] %
+        bank_count;
+    for (unsigned offset = 0; offset < bank_count; ++offset) {
+        const unsigned bank_id = (cursor + offset) % bank_count;
+        if (!candidates[bank_id].valid) {
+            continue;
+        }
+        if (thread_uid) {
+            *thread_uid = candidates[bank_id].thread_uid;
+        }
+        g_rtcore_replay_v03_hw_ready_bank_rr_cursor_by_owner_unit[cursor_key] =
+            (bank_id + 1) % bank_count;
+        return true;
     }
-    return found;
+    return false;
+}
+
+static bool rtcore_select_replay_request_state_memory_wake_request_for_owner(
+    unsigned owner_hw_sid, unsigned *thread_uid,
+    unsigned long long service_cycle)
+{
+    return rtcore_select_banked_memory_wake_request_for_owner(
+        owner_hw_sid, thread_uid, service_cycle);
 }
 
 static unsigned
