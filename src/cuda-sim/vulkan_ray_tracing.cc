@@ -6851,7 +6851,7 @@ static void rtcore_maybe_log_replay_v03_hw_memory_outstanding_stats(
            "owner_hw_sid=%u service_cycle=%llu stats_enabled=1 "
            "memory_unit_internal=1 outstanding_table_model=1 "
            "wait_map_model=1 "
-           "request_state_waiting_memory_model=1 "
+           "request_state_memory_pending_model=1 "
            "memory_ready_bit_issue_model=1 "
            "memory_outstanding_capacity=%u "
            "memory_outstanding_alloc_budget=%u "
