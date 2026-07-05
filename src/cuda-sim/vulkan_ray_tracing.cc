@@ -4982,7 +4982,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "v01_config_primitive_latency_cycles=%u "
            "v01_config_stack_latency_cycles=%u "
            "v01_config_completion_latency_cycles=%u "
-           "v01_config_completion_queue_capacity=%u "
            "v01_contract_node_fetch_resource_memory=%u "
            "v01_contract_primitive_fetch_resource_memory=%u "
            "v01_contract_node_test_resource_node=%u "
@@ -5100,7 +5099,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            rtcore_replay_v01_primitive_latency_cycles_config(),
            rtcore_replay_v01_stack_latency_cycles_config(),
            rtcore_replay_v01_completion_latency_cycles_config(),
-           rtcore_replay_v01_completion_queue_capacity_config(),
            rtcore_replay_v01_contract_node_fetch_resource_memory(),
            rtcore_replay_v01_contract_primitive_fetch_resource_memory(),
            rtcore_replay_v01_contract_node_test_resource_node(),
