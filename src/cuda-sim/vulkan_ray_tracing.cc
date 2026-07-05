@@ -1211,7 +1211,7 @@ static bool rtcore_replay_v01_memory_queue_gate_enabled()
 {
     static int enabled = []() {
         return rtcore_replay_env_enabled_or_model_preset(
-                   "VULKAN_SIM_RTCORE_REPLAY_V01_MEMORY_QUEUE_GATE", true)
+                   "VULKAN_SIM_RTCORE_REPLAY_V01_MEMORY_QUEUE_GATE", false)
                    ? 1
                    : 0;
     }();
