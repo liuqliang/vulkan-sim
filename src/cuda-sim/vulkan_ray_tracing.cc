@@ -1261,11 +1261,11 @@ static bool rtcore_v02_lsu_stack_sideband_enabled()
     return enabled != 0;
 }
 
-static bool rtcore_v02_lsu_memory_client_enabled()
+static bool rtcore_replay_memory_unit_l1d_client_enabled()
 {
     static int enabled = []() {
         const char *value =
-            getenv("VULKAN_SIM_RTCORE_V02_LSU_MEMORY_CLIENT");
+            getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_L1D_CLIENT");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -3862,7 +3862,7 @@ static bool rtcore_v02_lsu_response_wait_manages_stack_load_event(
     unsigned access_kind = RTCORE_V02_LSU_ACCESS_KIND_COUNT;
     return rtcore_v02_lsu_response_wait_gate_enabled() &&
            rtcore_replay_memory_unit_request_offer_enabled() &&
-           rtcore_v02_lsu_memory_client_enabled() &&
+           rtcore_replay_memory_unit_l1d_client_enabled() &&
            rtcore_v02_lsu_stack_sideband_enabled() &&
            rtcore_v02_lsu_stack_sideband_access_for_event(event, &access_kind,
                                                           NULL) &&
@@ -4719,7 +4719,7 @@ static bool rtcore_maybe_arm_v02_lsu_response_wait_gate(
     if (!request || !request->valid ||
         !rtcore_v02_lsu_response_wait_gate_enabled() ||
         !rtcore_replay_memory_unit_request_offer_enabled() ||
-        !rtcore_v02_lsu_memory_client_enabled()) {
+        !rtcore_replay_memory_unit_l1d_client_enabled()) {
         return false;
     }
     if (request->next_event_index >= request->events.size()) {
