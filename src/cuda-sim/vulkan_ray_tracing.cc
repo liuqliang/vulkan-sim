@@ -281,7 +281,7 @@ struct rtcore_v02_lsu_merge_key {
     }
 };
 
-struct rtcore_v02_lsu_fetch_descriptor_shadow_stats {
+struct rtcore_replay_memory_unit_request_descriptor_stats {
     unsigned actual_fetch_event_count;
     unsigned node_fetch_event_count;
     unsigned primitive_fetch_event_count;
@@ -914,10 +914,10 @@ static std::map<unsigned, rtcore_replay_v03_hw_queue_ingress_stats>
     g_rtcore_replay_v03_hw_queue_ingress_stats_by_owner;
 static rtcore_replay_lane_request_state_capacity_gate_stats
     g_rtcore_replay_lane_request_state_capacity_gate_stats;
-static rtcore_v02_lsu_fetch_descriptor_shadow_stats
-    g_rtcore_v02_lsu_fetch_descriptor_shadow_stats;
+static rtcore_replay_memory_unit_request_descriptor_stats
+    g_rtcore_replay_memory_unit_request_descriptor_stats;
 static std::map<rtcore_v02_lsu_merge_key, unsigned>
-    g_rtcore_v02_lsu_fetch_descriptor_shadow_merge_counts;
+    g_rtcore_replay_memory_unit_request_descriptor_merge_counts;
 static rtcore_v02_lsu_response_wait_stats
     g_rtcore_v02_lsu_response_wait_stats;
 static std::map<unsigned,
@@ -962,7 +962,7 @@ static unsigned g_rtcore_replay_memory_contention_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_unit_latency_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_model_summary_stats_logs_emitted = 0;
 static unsigned g_rtcore_v02_lsu_merge_fanout_probe_logs_emitted = 0;
-static unsigned g_rtcore_v02_lsu_fetch_descriptor_shadow_stats_logs_emitted = 0;
+static unsigned g_rtcore_replay_memory_unit_request_descriptor_stats_logs_emitted = 0;
 static unsigned g_rtcore_v02_lsu_response_wait_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_resource_route_stats_logs_emitted = 0;
 static std::map<unsigned, rtcore_replay_model_summary_progress_snapshot>
@@ -1231,11 +1231,11 @@ static bool rtcore_v02_lsu_merge_fanout_probe_log_enabled()
     return enabled != 0;
 }
 
-static bool rtcore_v02_lsu_fetch_descriptor_shadow_log_enabled()
+static bool rtcore_replay_memory_unit_request_descriptor_log_enabled()
 {
     static int enabled = []() {
         const char *value =
-            getenv("VULKAN_SIM_RTCORE_V02_LSU_FETCH_DESCRIPTOR_SHADOW_LOG");
+            getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_REQUEST_DESCRIPTOR_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
@@ -3598,7 +3598,7 @@ rtcore_v02_lsu_make_probe_identity(unsigned owner_hw_sid,
 }
 
 static rtcore_v02_lsu_memory_transaction_identity
-rtcore_v02_lsu_make_fetch_shadow_identity(
+rtcore_replay_make_memory_unit_request_descriptor_identity(
     const rtcore_replay_lane_request &request, unsigned memory_op_seq,
     unsigned chunk_id, unsigned chunk_count, unsigned access_kind,
     unsigned long long byte_address, unsigned long long issue_cycle)
@@ -3629,20 +3629,20 @@ static rtcore_v02_lsu_merge_key rtcore_v02_lsu_merge_key_for_identity(
     return key;
 }
 
-static void rtcore_maybe_log_v02_lsu_fetch_descriptor_shadow_stats(
+static void rtcore_maybe_log_replay_memory_unit_request_descriptor_stats(
     unsigned owner_hw_sid)
 {
-    if (!rtcore_v02_lsu_fetch_descriptor_shadow_log_enabled()) {
+    if (!rtcore_replay_memory_unit_request_descriptor_log_enabled()) {
         return;
     }
-    if (g_rtcore_v02_lsu_fetch_descriptor_shadow_stats_logs_emitted >= 256) {
+    if (g_rtcore_replay_memory_unit_request_descriptor_stats_logs_emitted >= 256) {
         return;
     }
-    g_rtcore_v02_lsu_fetch_descriptor_shadow_stats_logs_emitted++;
+    g_rtcore_replay_memory_unit_request_descriptor_stats_logs_emitted++;
 
-    const rtcore_v02_lsu_fetch_descriptor_shadow_stats &stats =
-        g_rtcore_v02_lsu_fetch_descriptor_shadow_stats;
-    printf("GPGPU-Sim RTCORE_V02_LSU_FETCH_DESCRIPTOR_SHADOW_STATS "
+    const rtcore_replay_memory_unit_request_descriptor_stats &stats =
+        g_rtcore_replay_memory_unit_request_descriptor_stats;
+    printf("GPGPU-Sim RTCORE_REPLAY_MEMORY_UNIT_REQUEST_DESCRIPTOR_STATS "
            "owner_hw_sid=%u path_active=0 request_granule_bytes=%u "
            "descriptor_identity_fields=%u actual_fetch_event_count=%u "
            "node_fetch_event_count=%u primitive_fetch_event_count=%u "
@@ -3699,16 +3699,16 @@ static void rtcore_maybe_log_v02_lsu_response_wait_stats(
     fflush(stdout);
 }
 
-static void rtcore_record_v02_lsu_fetch_descriptor_shadow(
+static void rtcore_record_replay_memory_unit_request_descriptor(
     const rtcore_replay_lane_request &request,
     const rtcore_compact_trace_event &event, unsigned long long service_cycle,
     unsigned chunk_count)
 {
-    const bool descriptor_shadow_log_enabled =
-        rtcore_v02_lsu_fetch_descriptor_shadow_log_enabled();
+    const bool descriptor_log_enabled =
+        rtcore_replay_memory_unit_request_descriptor_log_enabled();
     const bool sideband_offer_enabled =
         rtcore_v02_lsu_sideband_offer_enabled();
-    if (!descriptor_shadow_log_enabled && !sideband_offer_enabled) {
+    if (!descriptor_log_enabled && !sideband_offer_enabled) {
         return;
     }
 
@@ -3729,27 +3729,27 @@ static void rtcore_record_v02_lsu_fetch_descriptor_shadow(
         chunk_count = 1;
     }
     const unsigned long long base_address = event.address_or_ref;
-    if (descriptor_shadow_log_enabled) {
-        g_rtcore_v02_lsu_fetch_descriptor_shadow_stats
+    if (descriptor_log_enabled) {
+        g_rtcore_replay_memory_unit_request_descriptor_stats
             .actual_fetch_event_count++;
         if (is_node_fetch) {
-            g_rtcore_v02_lsu_fetch_descriptor_shadow_stats
+            g_rtcore_replay_memory_unit_request_descriptor_stats
                 .node_fetch_event_count++;
-            g_rtcore_v02_lsu_fetch_descriptor_shadow_stats
+            g_rtcore_replay_memory_unit_request_descriptor_stats
                 .node_descriptor_count += chunk_count;
         } else {
-            g_rtcore_v02_lsu_fetch_descriptor_shadow_stats
+            g_rtcore_replay_memory_unit_request_descriptor_stats
                 .primitive_fetch_event_count++;
-            g_rtcore_v02_lsu_fetch_descriptor_shadow_stats
+            g_rtcore_replay_memory_unit_request_descriptor_stats
                 .primitive_descriptor_count += chunk_count;
         }
-        g_rtcore_v02_lsu_fetch_descriptor_shadow_stats.descriptor_count +=
+        g_rtcore_replay_memory_unit_request_descriptor_stats.descriptor_count +=
             chunk_count;
-        g_rtcore_v02_lsu_fetch_descriptor_shadow_stats.total_chunk_count +=
+        g_rtcore_replay_memory_unit_request_descriptor_stats.total_chunk_count +=
             chunk_count;
         if (chunk_count >
-            g_rtcore_v02_lsu_fetch_descriptor_shadow_stats.max_chunk_count) {
-            g_rtcore_v02_lsu_fetch_descriptor_shadow_stats.max_chunk_count =
+            g_rtcore_replay_memory_unit_request_descriptor_stats.max_chunk_count) {
+            g_rtcore_replay_memory_unit_request_descriptor_stats.max_chunk_count =
                 chunk_count;
         }
     }
@@ -3760,7 +3760,7 @@ static void rtcore_record_v02_lsu_fetch_descriptor_shadow(
             static_cast<unsigned long long>(
                 chunk_id * RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES);
         const rtcore_v02_lsu_memory_transaction_identity identity =
-            rtcore_v02_lsu_make_fetch_shadow_identity(
+            rtcore_replay_make_memory_unit_request_descriptor_identity(
                 request, request.next_event_index, chunk_id, chunk_count,
                 access_kind, chunk_address, service_cycle);
         if (sideband_offer_enabled) {
@@ -3781,29 +3781,29 @@ static void rtcore_record_v02_lsu_fetch_descriptor_shadow(
                 [identity.owner_hw_sid]
                     .push_back(snapshot);
         }
-        if (descriptor_shadow_log_enabled) {
+        if (descriptor_log_enabled) {
             if (identity.response_target ==
                 RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE) {
-                g_rtcore_v02_lsu_fetch_descriptor_shadow_stats
+                g_rtcore_replay_memory_unit_request_descriptor_stats
                     .response_target_rtcore_count++;
             }
             const rtcore_v02_lsu_merge_key key =
                 rtcore_v02_lsu_merge_key_for_identity(identity);
             unsigned &merge_count =
-                g_rtcore_v02_lsu_fetch_descriptor_shadow_merge_counts[key];
+                g_rtcore_replay_memory_unit_request_descriptor_merge_counts[key];
             if (merge_count == 0) {
-                g_rtcore_v02_lsu_fetch_descriptor_shadow_stats
+                g_rtcore_replay_memory_unit_request_descriptor_stats
                     .unique_transaction_count++;
             } else {
-                g_rtcore_v02_lsu_fetch_descriptor_shadow_stats
+                g_rtcore_replay_memory_unit_request_descriptor_stats
                     .same_cycle_merge_candidate_count++;
             }
             merge_count++;
         }
     }
 
-    if (descriptor_shadow_log_enabled) {
-        rtcore_maybe_log_v02_lsu_fetch_descriptor_shadow_stats(
+    if (descriptor_log_enabled) {
+        rtcore_maybe_log_replay_memory_unit_request_descriptor_stats(
             request.owner_hw_sid);
     }
 }
@@ -4750,7 +4750,7 @@ static bool rtcore_maybe_arm_v02_lsu_response_wait_gate(
             return false;
         }
     } else {
-        rtcore_record_v02_lsu_fetch_descriptor_shadow(*request, event,
+        rtcore_record_replay_memory_unit_request_descriptor(*request, event,
                                                       service_cycle,
                                                       chunk_count);
     }
