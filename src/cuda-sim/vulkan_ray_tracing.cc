@@ -963,12 +963,6 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned scoreboard_handoff_delivered_count;
     unsigned scoreboard_handoff_blocked_count;
     unsigned scoreboard_handoff_max_blocked_count;
-    unsigned v01_independent_service_blocked_continue_count;
-    unsigned v01_independent_service_progress_after_block_count;
-    unsigned v01_independent_service_cross_resource_progress_after_block_count;
-    unsigned v01_independent_service_memory_blocked_continue_count;
-    unsigned v01_independent_service_memory_progress_after_block_count;
-    unsigned v01_independent_service_memory_cross_resource_progress_after_block_count;
     unsigned data_path_lane_request_state_identity_accesses;
     unsigned data_path_request_state_accesses;
     unsigned data_path_max_lane_request_state_entries;
@@ -4025,28 +4019,6 @@ static bool rtcore_should_log_replay_model_summary_stats(
 
     rtcore_replay_model_summary_progress_snapshot &last_snapshot =
         g_rtcore_replay_model_summary_progress_snapshots[owner_hw_sid];
-    const unsigned last_independent_service_cross_progress =
-        last_snapshot
-            .v01_independent_service_cross_resource_progress_after_block_count;
-    const unsigned snapshot_independent_service_cross_progress =
-        snapshot
-            .v01_independent_service_cross_resource_progress_after_block_count;
-    const bool independent_service_pressure_changed =
-        last_snapshot.v01_independent_service_blocked_continue_count !=
-            snapshot.v01_independent_service_blocked_continue_count ||
-        last_snapshot.v01_independent_service_progress_after_block_count !=
-            snapshot.v01_independent_service_progress_after_block_count ||
-        last_independent_service_cross_progress !=
-            snapshot_independent_service_cross_progress ||
-        last_snapshot.v01_independent_service_memory_blocked_continue_count !=
-            snapshot.v01_independent_service_memory_blocked_continue_count ||
-        last_snapshot.v01_independent_service_memory_progress_after_block_count !=
-            snapshot
-                .v01_independent_service_memory_progress_after_block_count ||
-        last_snapshot
-                .v01_independent_service_memory_cross_resource_progress_after_block_count !=
-            snapshot
-                .v01_independent_service_memory_cross_resource_progress_after_block_count;
     const bool data_path_pressure_changed =
         last_snapshot.data_path_lane_request_state_identity_accesses !=
             snapshot.data_path_lane_request_state_identity_accesses ||
@@ -4099,7 +4071,7 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.scoreboard_handoff_blocked_count ||
         last_snapshot.scoreboard_handoff_max_blocked_count !=
             snapshot.scoreboard_handoff_max_blocked_count ||
-        independent_service_pressure_changed || data_path_pressure_changed;
+        data_path_pressure_changed;
     if (!changed) {
         return false;
     }
@@ -4596,26 +4568,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
     const unsigned lane_request_state_capacity_max_pending_admissions =
         g_rtcore_replay_lane_request_state_capacity_gate_stats
             .max_pending_admissions;
-    const unsigned v01_independent_service_blocked_continue_count =
-        g_rtcore_replay_v01_independent_service_stats
-            .waiting_unit_blocked_continue_count;
-    const unsigned v01_independent_service_progress_after_block_count =
-        g_rtcore_replay_v01_independent_service_stats
-            .waiting_unit_progress_after_block_count;
-    const unsigned
-        v01_independent_service_cross_resource_progress_after_block_count =
-            g_rtcore_replay_v01_independent_service_stats
-                .waiting_unit_cross_resource_progress_after_block_count;
-    const unsigned v01_independent_service_memory_blocked_continue_count =
-        g_rtcore_replay_v01_independent_service_stats
-            .waiting_memory_blocked_continue_count;
-    const unsigned v01_independent_service_memory_progress_after_block_count =
-        g_rtcore_replay_v01_independent_service_stats
-            .waiting_memory_progress_after_block_count;
-    const unsigned
-        v01_independent_service_memory_cross_resource_progress_after_block_count =
-            g_rtcore_replay_v01_independent_service_stats
-                .waiting_memory_cross_resource_progress_after_block_count;
     rtcore_replay_data_path_access_snapshot data_path_access =
         rtcore_get_replay_data_path_access_snapshot();
     const unsigned data_path_max_lane_request_state_entries =
@@ -4660,20 +4612,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         scoreboard_handoff_blocked_count;
     progress_snapshot.scoreboard_handoff_max_blocked_count =
         scoreboard_handoff_max_blocked_count;
-    progress_snapshot.v01_independent_service_blocked_continue_count =
-        v01_independent_service_blocked_continue_count;
-    progress_snapshot.v01_independent_service_progress_after_block_count =
-        v01_independent_service_progress_after_block_count;
-    progress_snapshot
-        .v01_independent_service_cross_resource_progress_after_block_count =
-        v01_independent_service_cross_resource_progress_after_block_count;
-    progress_snapshot.v01_independent_service_memory_blocked_continue_count =
-        v01_independent_service_memory_blocked_continue_count;
-    progress_snapshot.v01_independent_service_memory_progress_after_block_count =
-        v01_independent_service_memory_progress_after_block_count;
-    progress_snapshot
-        .v01_independent_service_memory_cross_resource_progress_after_block_count =
-        v01_independent_service_memory_cross_resource_progress_after_block_count;
     progress_snapshot.data_path_lane_request_state_identity_accesses =
         data_path_access.lane_request_state_identity_accesses;
     progress_snapshot.data_path_request_state_accesses =
@@ -4770,12 +4708,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "scoreboard_handoff_blocked_count=%u "
            "scoreboard_handoff_max_blocked_count=%u "
            "rtcore_stall_completion_backpressure_blocked_count=%u "
-           "v01_independent_service_blocked_continue_count=%u "
-           "v01_independent_service_progress_after_block_count=%u "
-           "v01_independent_service_cross_resource_progress_after_block_count=%u "
-           "v01_independent_service_memory_blocked_continue_count=%u "
-           "v01_independent_service_memory_progress_after_block_count=%u "
-           "v01_independent_service_memory_cross_resource_progress_after_block_count=%u "
            "data_path_lane_request_state_identity_accesses=%u "
            "data_path_request_state_accesses=%u "
            "data_path_max_lane_request_state_entries=%u "
@@ -4852,12 +4784,6 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            scoreboard_handoff_blocked_count,
            scoreboard_handoff_max_blocked_count,
            scoreboard_handoff_blocked_count,
-           v01_independent_service_blocked_continue_count,
-           v01_independent_service_progress_after_block_count,
-           v01_independent_service_cross_resource_progress_after_block_count,
-           v01_independent_service_memory_blocked_continue_count,
-           v01_independent_service_memory_progress_after_block_count,
-           v01_independent_service_memory_cross_resource_progress_after_block_count,
            data_path_access.lane_request_state_identity_accesses,
            data_path_access.request_state_accesses,
            data_path_max_lane_request_state_entries,
