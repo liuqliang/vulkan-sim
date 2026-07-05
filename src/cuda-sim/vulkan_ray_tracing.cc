@@ -2939,7 +2939,8 @@ struct rtcore_replay_v03_hw_banked_ready_candidate {
 
 static bool rtcore_select_banked_ready_request_for_owner(
     rtcore_replay_lane_request_state unit_state, unsigned owner_hw_sid,
-    unsigned *thread_uid)
+    unsigned *thread_uid, const std::set<unsigned> *excluded_bank_ids,
+    unsigned *selected_bank_id)
 {
     const unsigned bank_count =
         rtcore_replay_v03_hw_request_state_bank_count_config();
@@ -2958,6 +2959,10 @@ static bool rtcore_select_banked_ready_request_for_owner(
             continue;
         }
         const unsigned bank_id = request.request_state_bank_id % bank_count;
+        if (excluded_bank_ids &&
+            excluded_bank_ids->find(bank_id) != excluded_bank_ids->end()) {
+            continue;
+        }
         rtcore_replay_v03_hw_banked_ready_candidate &candidate =
             candidates[bank_id];
         if (!candidate.valid || request.ready_order < candidate.ready_order) {
@@ -2979,6 +2984,9 @@ static bool rtcore_select_banked_ready_request_for_owner(
         }
         if (thread_uid) {
             *thread_uid = candidates[bank_id].thread_uid;
+        }
+        if (selected_bank_id) {
+            *selected_bank_id = bank_id;
         }
         g_rtcore_replay_v03_hw_ready_bank_rr_cursor_by_owner_unit[cursor_key] =
             (bank_id + 1) % bank_count;
@@ -5341,10 +5349,13 @@ static bool rtcore_service_banked_ready_state_with_unit_budget_for_owner(
     unsigned long long service_cycle)
 {
     bool progressed = false;
+    std::set<unsigned> selected_bank_ids;
     while (true) {
         unsigned thread_uid = 0;
+        unsigned selected_bank_id = 0;
         if (!rtcore_select_banked_ready_request_for_owner(
-                unit_state, owner_hw_sid, &thread_uid)) {
+                unit_state, owner_hw_sid, &thread_uid, &selected_bank_ids,
+                &selected_bank_id)) {
             break;
         }
         if (issue_attempts) {
@@ -5363,6 +5374,7 @@ static bool rtcore_service_banked_ready_state_with_unit_budget_for_owner(
             break;
         }
 
+        selected_bank_ids.insert(selected_bank_id);
         if (issued) {
             (*issued)++;
         }
@@ -5385,11 +5397,13 @@ static bool rtcore_service_replay_completion_ingress_requests_for_owner(
     unsigned long long service_cycle)
 {
     bool progressed = false;
+    std::set<unsigned> selected_bank_ids;
     while (true) {
         unsigned thread_uid = 0;
+        unsigned selected_bank_id = 0;
         if (!rtcore_select_banked_ready_request_for_owner(
                 RTCORE_REPLAY_COMPLETION_PENDING, owner_hw_sid,
-                &thread_uid)) {
+                &thread_uid, &selected_bank_ids, &selected_bank_id)) {
             break;
         }
         if (ingress_attempts) {
@@ -5419,6 +5433,7 @@ static bool rtcore_service_replay_completion_ingress_requests_for_owner(
 
         (*ingress_budget)--;
         rtcore_record_replay_lane_completion_entry(request);
+        selected_bank_ids.insert(selected_bank_id);
         rtcore_mark_replay_request_completed(&request, service_cycle);
         if (ingress_issued) {
             (*ingress_issued)++;
@@ -5958,10 +5973,13 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
     if (!issue_budget || !alloc_budget) {
         return false;
     }
+    std::set<unsigned> selected_bank_ids;
     while (*issue_budget > 0 && *alloc_budget > 0) {
         unsigned thread_uid = 0;
+        unsigned selected_bank_id = 0;
         if (!rtcore_select_banked_ready_request_for_owner(
-                RTCORE_REPLAY_ISSUED_MEMORY, owner_hw_sid, &thread_uid)) {
+                RTCORE_REPLAY_ISSUED_MEMORY, owner_hw_sid, &thread_uid,
+                &selected_bank_ids, &selected_bank_id)) {
             break;
         }
         g_rtcore_replay_v03_hw_memory_outstanding_stats
@@ -5981,6 +5999,7 @@ static bool rtcore_service_ready_memory_replay_requests_for_owner_with_budget(
         }
         g_rtcore_replay_v03_hw_memory_outstanding_stats
             .memory_ready_issue_count++;
+        selected_bank_ids.insert(selected_bank_id);
         (*issue_budget)--;
         (*alloc_budget)--;
         progressed = true;
