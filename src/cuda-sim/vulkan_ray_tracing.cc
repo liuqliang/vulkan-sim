@@ -985,13 +985,10 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned v01_issue_state_node_gate_armed_count;
     unsigned v01_issue_state_primitive_gate_armed_count;
     unsigned v01_issue_state_stack_gate_armed_count;
-    unsigned v01_issue_state_completion_gate_armed_count;
     unsigned v01_issue_state_gate_blocked_count;
     unsigned v01_issue_state_gate_woken_count;
-    unsigned v01_issue_state_completion_capacity_blocked_count;
     unsigned v01_issue_state_max_latency_cycles;
     unsigned v01_issue_state_max_blocked_cycles;
-    unsigned v01_issue_state_max_completion_inflight;
     unsigned v01_service_stage_memory_wake_progressed_count;
     unsigned v01_service_stage_unit_wake_progressed_count;
     unsigned v01_service_stage_ready_issue_progressed_count;
@@ -4122,20 +4119,14 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.v01_issue_state_primitive_gate_armed_count ||
         last_snapshot.v01_issue_state_stack_gate_armed_count !=
             snapshot.v01_issue_state_stack_gate_armed_count ||
-        last_snapshot.v01_issue_state_completion_gate_armed_count !=
-            snapshot.v01_issue_state_completion_gate_armed_count ||
         last_snapshot.v01_issue_state_gate_blocked_count !=
             snapshot.v01_issue_state_gate_blocked_count ||
         last_snapshot.v01_issue_state_gate_woken_count !=
             snapshot.v01_issue_state_gate_woken_count ||
-        last_snapshot.v01_issue_state_completion_capacity_blocked_count !=
-            snapshot.v01_issue_state_completion_capacity_blocked_count ||
         last_snapshot.v01_issue_state_max_latency_cycles !=
             snapshot.v01_issue_state_max_latency_cycles ||
         last_snapshot.v01_issue_state_max_blocked_cycles !=
-            snapshot.v01_issue_state_max_blocked_cycles ||
-        last_snapshot.v01_issue_state_max_completion_inflight !=
-            snapshot.v01_issue_state_max_completion_inflight;
+            snapshot.v01_issue_state_max_blocked_cycles;
     const bool v01_service_stage_changed =
         last_snapshot.v01_service_stage_memory_wake_progressed_count !=
             snapshot.v01_service_stage_memory_wake_progressed_count ||
@@ -4782,22 +4773,14 @@ static void rtcore_maybe_log_replay_model_summary_stats(
             .primitive_gate_armed_count;
     const unsigned v01_issue_state_stack_gate_armed_count =
         g_rtcore_replay_v01_issue_state_gate_stats.stack_gate_armed_count;
-    const unsigned v01_issue_state_completion_gate_armed_count =
-        g_rtcore_replay_v01_issue_state_gate_stats
-            .completion_gate_armed_count;
     const unsigned v01_issue_state_gate_blocked_count =
         g_rtcore_replay_v01_issue_state_gate_stats.gate_blocked_count;
     const unsigned v01_issue_state_gate_woken_count =
         g_rtcore_replay_v01_issue_state_gate_stats.gate_woken_count;
-    const unsigned v01_issue_state_completion_capacity_blocked_count =
-        g_rtcore_replay_v01_issue_state_gate_stats
-            .completion_capacity_blocked_count;
     const unsigned v01_issue_state_max_latency_cycles =
         g_rtcore_replay_v01_issue_state_gate_stats.max_latency_cycles;
     const unsigned v01_issue_state_max_blocked_cycles =
         g_rtcore_replay_v01_issue_state_gate_stats.max_blocked_cycles;
-    const unsigned v01_issue_state_max_completion_inflight =
-        g_rtcore_replay_v01_issue_state_gate_stats.max_completion_inflight;
     const unsigned v01_service_stage_memory_wake_progressed_count =
         g_rtcore_replay_service_tick_stats
             .service_stage_memory_wake_progressed_count;
@@ -4918,20 +4901,14 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         v01_issue_state_primitive_gate_armed_count;
     progress_snapshot.v01_issue_state_stack_gate_armed_count =
         v01_issue_state_stack_gate_armed_count;
-    progress_snapshot.v01_issue_state_completion_gate_armed_count =
-        v01_issue_state_completion_gate_armed_count;
     progress_snapshot.v01_issue_state_gate_blocked_count =
         v01_issue_state_gate_blocked_count;
     progress_snapshot.v01_issue_state_gate_woken_count =
         v01_issue_state_gate_woken_count;
-    progress_snapshot.v01_issue_state_completion_capacity_blocked_count =
-        v01_issue_state_completion_capacity_blocked_count;
     progress_snapshot.v01_issue_state_max_latency_cycles =
         v01_issue_state_max_latency_cycles;
     progress_snapshot.v01_issue_state_max_blocked_cycles =
         v01_issue_state_max_blocked_cycles;
-    progress_snapshot.v01_issue_state_max_completion_inflight =
-        v01_issue_state_max_completion_inflight;
     progress_snapshot.v01_service_stage_memory_wake_progressed_count =
         v01_service_stage_memory_wake_progressed_count;
     progress_snapshot.v01_service_stage_unit_wake_progressed_count =
@@ -5097,13 +5074,10 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "v01_issue_state_node_gate_armed_count=%u "
            "v01_issue_state_primitive_gate_armed_count=%u "
            "v01_issue_state_stack_gate_armed_count=%u "
-           "v01_issue_state_completion_gate_armed_count=%u "
            "v01_issue_state_gate_blocked_count=%u "
            "v01_issue_state_gate_woken_count=%u "
-           "v01_issue_state_completion_capacity_blocked_count=%u "
            "v01_issue_state_max_latency_cycles=%u "
            "v01_issue_state_max_blocked_cycles=%u "
-           "v01_issue_state_max_completion_inflight=%u "
            "v01_service_stage_memory_wake_progressed_count=%u "
            "v01_service_stage_unit_wake_progressed_count=%u "
            "v01_service_stage_ready_issue_progressed_count=%u "
@@ -5220,13 +5194,10 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            v01_issue_state_node_gate_armed_count,
            v01_issue_state_primitive_gate_armed_count,
            v01_issue_state_stack_gate_armed_count,
-           v01_issue_state_completion_gate_armed_count,
            v01_issue_state_gate_blocked_count,
            v01_issue_state_gate_woken_count,
-           v01_issue_state_completion_capacity_blocked_count,
            v01_issue_state_max_latency_cycles,
            v01_issue_state_max_blocked_cycles,
-           v01_issue_state_max_completion_inflight,
            v01_service_stage_memory_wake_progressed_count,
            v01_service_stage_unit_wake_progressed_count,
            v01_service_stage_ready_issue_progressed_count,
