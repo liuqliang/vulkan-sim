@@ -5227,7 +5227,7 @@ static void rtcore_record_replay_memory_demand_estimate(
 static bool rtcore_step_admitted_replay_request(unsigned thread_uid,
                                                 unsigned long long service_cycle = 0);
 
-static bool rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+static bool rtcore_service_banked_ready_state_with_unit_budget_for_owner(
     rtcore_replay_lane_request_state unit_state, unsigned owner_hw_sid,
     unsigned *issue_budget, unsigned *issue_attempts, unsigned *issued,
     unsigned *budget_exhausted,
@@ -5568,7 +5568,7 @@ static bool rtcore_service_replay_compute_ready_requests_for_owner(
         return false;
     }
     bool progressed = false;
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
         RTCORE_REPLAY_ISSUED_NODE, owner_hw_sid,
         &budget->node_issue_budget,
         collect_unit_stats
@@ -5581,7 +5581,7 @@ static bool rtcore_service_replay_compute_ready_requests_for_owner(
             ? &g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted
             : NULL,
         last_identity, service_cycle);
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
         RTCORE_REPLAY_ISSUED_PRIMITIVE, owner_hw_sid,
         &budget->primitive_issue_budget,
         collect_unit_stats
@@ -5596,7 +5596,7 @@ static bool rtcore_service_replay_compute_ready_requests_for_owner(
                    .primitive_unit_budget_exhausted
             : NULL,
         last_identity, service_cycle);
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
         RTCORE_REPLAY_ISSUED_STACK, owner_hw_sid,
         &budget->stack_issue_budget,
         collect_unit_stats
@@ -5659,14 +5659,14 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
     unsigned long long service_cycle = 0)
 {
     bool progressed = false;
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
         RTCORE_REPLAY_ISSUED_NODE, owner_hw_sid,
         &budget.node_issue_budget,
         &g_rtcore_replay_unit_arbitration_stats.node_unit_issue_attempts,
         &g_rtcore_replay_unit_arbitration_stats.node_unit_issued,
         &g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted,
         last_identity, service_cycle);
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
         RTCORE_REPLAY_ISSUED_PRIMITIVE, owner_hw_sid,
         &budget.primitive_issue_budget,
         &g_rtcore_replay_unit_arbitration_stats.primitive_unit_issue_attempts,
@@ -5674,7 +5674,7 @@ rtcore_service_replay_ready_requests_with_unit_arbitration_for_owner(
         &g_rtcore_replay_unit_arbitration_stats
              .primitive_unit_budget_exhausted,
         last_identity, service_cycle);
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
         RTCORE_REPLAY_ISSUED_STACK, owner_hw_sid,
         &budget.stack_issue_budget,
         &g_rtcore_replay_unit_arbitration_stats.stack_unit_issue_attempts,
@@ -5699,7 +5699,7 @@ static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
 {
     bool progressed = false;
     const bool collect_unit_stats = rtcore_replay_unit_arbitration_enabled();
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
         RTCORE_REPLAY_ISSUED_NODE, owner_hw_sid,
         &budget.node_issue_budget,
         collect_unit_stats
@@ -5712,7 +5712,7 @@ static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
             ? &g_rtcore_replay_unit_arbitration_stats.node_unit_budget_exhausted
             : NULL,
         last_identity, service_cycle);
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
         RTCORE_REPLAY_ISSUED_PRIMITIVE, owner_hw_sid,
         &budget.primitive_issue_budget,
         collect_unit_stats
@@ -5727,7 +5727,7 @@ static bool rtcore_service_replay_non_completion_ready_requests_for_owner(
                    .primitive_unit_budget_exhausted
             : NULL,
         last_identity, service_cycle);
-    progressed |= rtcore_service_replay_ready_queue_with_unit_budget_for_owner(
+    progressed |= rtcore_service_banked_ready_state_with_unit_budget_for_owner(
         RTCORE_REPLAY_ISSUED_STACK, owner_hw_sid,
         &budget.stack_issue_budget,
         collect_unit_stats
