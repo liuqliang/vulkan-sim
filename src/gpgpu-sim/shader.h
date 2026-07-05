@@ -2105,8 +2105,6 @@ class rt_unit : public pipelined_simd_unit {
           unsigned identity_warp_id, unsigned identity_active_mask,
           unsigned identity_static_inst_uid,
           unsigned long long cycle, warp_inst_t &inst) const;
-      void rtcore_record_replay_release_identity_join_shadow(
-          const rtcore_replay_release_identity_join_snapshot &snapshot) const;
       void rtcore_apply_synthetic_release_snapshot(
           const rtcore_synthetic_release_snapshot &snapshot) const;
       rtcore_shadow_table_release_snapshot
