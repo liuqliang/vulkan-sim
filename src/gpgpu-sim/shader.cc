@@ -341,14 +341,14 @@ static rtcore_replay_cycle_hook_consumer_stats
     g_rtcore_replay_cycle_hook_consumer_stats = {};
 static std::map<unsigned, std::vector<rtcore_memory_unit_request_snapshot> >
     g_rtcore_v02_lsu_pending_memory_requests;
-struct rtcore_v02_lsu_sideband_same_cycle_merge_key {
+struct rtcore_memory_unit_same_cycle_32b_merge_key {
   unsigned owner_hw_sid;
   unsigned long long cycle;
   unsigned long long aligned_32b_addr;
   bool is_write;
 
   bool operator<(
-      const rtcore_v02_lsu_sideband_same_cycle_merge_key &other) const {
+      const rtcore_memory_unit_same_cycle_32b_merge_key &other) const {
     if (owner_hw_sid != other.owner_hw_sid) {
       return owner_hw_sid < other.owner_hw_sid;
     }
@@ -361,8 +361,8 @@ struct rtcore_v02_lsu_sideband_same_cycle_merge_key {
     return is_write < other.is_write;
   }
 };
-static std::map<rtcore_v02_lsu_sideband_same_cycle_merge_key, unsigned>
-    g_rtcore_v02_lsu_same_cycle_merge_uid_by_key;
+static std::map<rtcore_memory_unit_same_cycle_32b_merge_key, unsigned>
+    g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key;
 static std::map<unsigned, bool>
     g_rtcore_v02_lsu_shared_frontend_blocked_by_owner;
 static std::map<unsigned, unsigned long long>
@@ -378,8 +378,8 @@ struct rtcore_v02_lsu_shared_frontend_normal_lsu_observation {
 };
 static std::map<unsigned, rtcore_v02_lsu_shared_frontend_normal_lsu_observation>
     g_rtcore_v02_lsu_shared_frontend_normal_lsu_observation_by_sm;
-static bool g_rtcore_v02_lsu_same_cycle_merge_map_initialized = false;
-static unsigned long long g_rtcore_v02_lsu_same_cycle_merge_map_cycle = 0;
+static bool g_rtcore_memory_unit_same_cycle_32b_merge_map_initialized = false;
+static unsigned long long g_rtcore_memory_unit_same_cycle_32b_merge_map_cycle = 0;
 static unsigned g_rtcore_memory_unit_request_offer_stats_logs_emitted = 0;
 static unsigned g_rtcore_v03_shader_only_ldst_observation_logs_emitted = 0;
 
@@ -684,19 +684,19 @@ static void rtcore_record_v02_lsu_shared_l1d_response_normal_blocked_by_rt() {
       .v02_lsu_shared_l1d_response_normal_blocked_by_rt_count++;
 }
 
-static bool rtcore_v02_lsu_same_cycle_merge_gate_enabled() {
+static bool rtcore_memory_unit_same_cycle_32b_merge_enabled() {
   static int enabled = []() {
     const char *value =
-        getenv("VULKAN_SIM_RTCORE_V02_LSU_SAME_CYCLE_MERGE_GATE");
+        getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_SAME_CYCLE_32B_MERGE");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
 }
 
-static bool rtcore_v02_lsu_same_cycle_merge_stress_enabled() {
+static bool rtcore_memory_unit_same_cycle_32b_merge_stress_enabled() {
   static int enabled = []() {
     const char *value =
-        getenv("VULKAN_SIM_RTCORE_V02_LSU_FORCE_SAME_CYCLE_MERGE_STRESS");
+        getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_FORCE_SAME_CYCLE_32B_MERGE_STRESS");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
@@ -1459,8 +1459,8 @@ static void rtcore_maybe_log_memory_unit_request_offer_stats(
              .v02_lsu_sideband_pending_request_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_max_pending_request_count,
-         rtcore_v02_lsu_same_cycle_merge_gate_enabled() ? 1u : 0u,
-         rtcore_v02_lsu_same_cycle_merge_stress_enabled() ? 1u : 0u,
+         rtcore_memory_unit_same_cycle_32b_merge_enabled() ? 1u : 0u,
+         rtcore_memory_unit_same_cycle_32b_merge_stress_enabled() ? 1u : 0u,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_same_cycle_merge_count,
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -1770,9 +1770,9 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
   return completed_count;
 }
 
-static new_addr_type rtcore_v02_lsu_effective_sideband_addr(
+static new_addr_type rtcore_memory_unit_effective_addr(
     const rtcore_replay_cycle_hook_result &result) {
-  if (!rtcore_v02_lsu_same_cycle_merge_stress_enabled()) {
+  if (!rtcore_memory_unit_same_cycle_32b_merge_stress_enabled()) {
     return static_cast<new_addr_type>(result.lsu_sideband_aligned_32b_addr);
   }
   return static_cast<new_addr_type>(
@@ -1781,30 +1781,30 @@ static new_addr_type rtcore_v02_lsu_effective_sideband_addr(
           0x1000ull);
 }
 
-static void rtcore_v02_lsu_refresh_same_cycle_merge_map(
+static void rtcore_memory_unit_refresh_same_cycle_32b_merge_map(
     unsigned long long cycle) {
-  if (!g_rtcore_v02_lsu_same_cycle_merge_map_initialized ||
-      g_rtcore_v02_lsu_same_cycle_merge_map_cycle != cycle) {
-    g_rtcore_v02_lsu_same_cycle_merge_uid_by_key.clear();
-    g_rtcore_v02_lsu_same_cycle_merge_map_cycle = cycle;
-    g_rtcore_v02_lsu_same_cycle_merge_map_initialized = true;
+  if (!g_rtcore_memory_unit_same_cycle_32b_merge_map_initialized ||
+      g_rtcore_memory_unit_same_cycle_32b_merge_map_cycle != cycle) {
+    g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key.clear();
+    g_rtcore_memory_unit_same_cycle_32b_merge_map_cycle = cycle;
+    g_rtcore_memory_unit_same_cycle_32b_merge_map_initialized = true;
   }
 }
 
-static bool rtcore_try_merge_v02_lsu_sideband_same_cycle(
+static bool rtcore_try_merge_memory_unit_same_cycle_32b(
     const rtcore_replay_cycle_hook_result &result, new_addr_type addr) {
-  if (!rtcore_v02_lsu_same_cycle_merge_gate_enabled()) {
+  if (!rtcore_memory_unit_same_cycle_32b_merge_enabled()) {
     return false;
   }
-  rtcore_v02_lsu_refresh_same_cycle_merge_map(result.cycle);
-  rtcore_v02_lsu_sideband_same_cycle_merge_key key = {};
+  rtcore_memory_unit_refresh_same_cycle_32b_merge_map(result.cycle);
+  rtcore_memory_unit_same_cycle_32b_merge_key key = {};
   key.owner_hw_sid = result.lsu_sideband_owner_hw_sid;
   key.cycle = result.cycle;
   key.aligned_32b_addr = static_cast<unsigned long long>(addr);
   key.is_write = result.lsu_sideband_is_write;
-  std::map<rtcore_v02_lsu_sideband_same_cycle_merge_key, unsigned>::iterator
-      key_it = g_rtcore_v02_lsu_same_cycle_merge_uid_by_key.find(key);
-  if (key_it == g_rtcore_v02_lsu_same_cycle_merge_uid_by_key.end()) {
+  std::map<rtcore_memory_unit_same_cycle_32b_merge_key, unsigned>::iterator
+      key_it = g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key.find(key);
+  if (key_it == g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key.end()) {
     return false;
   }
   std::map<unsigned,
@@ -1812,7 +1812,7 @@ static bool rtcore_try_merge_v02_lsu_sideband_same_cycle(
       pending_it =
           g_rtcore_v02_lsu_pending_memory_requests.find(key_it->second);
   if (pending_it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
-    g_rtcore_v02_lsu_same_cycle_merge_uid_by_key.erase(key_it);
+    g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key.erase(key_it);
     return false;
   }
   pending_it->second.push_back(
@@ -1829,19 +1829,19 @@ static bool rtcore_try_merge_v02_lsu_sideband_same_cycle(
   return true;
 }
 
-static void rtcore_register_v02_lsu_sideband_same_cycle_merge_source(
+static void rtcore_register_memory_unit_same_cycle_32b_merge_source(
     const rtcore_replay_cycle_hook_result &result, new_addr_type addr,
     mem_fetch *mf) {
-  if (!rtcore_v02_lsu_same_cycle_merge_gate_enabled() || mf == NULL) {
+  if (!rtcore_memory_unit_same_cycle_32b_merge_enabled() || mf == NULL) {
     return;
   }
-  rtcore_v02_lsu_refresh_same_cycle_merge_map(result.cycle);
-  rtcore_v02_lsu_sideband_same_cycle_merge_key key = {};
+  rtcore_memory_unit_refresh_same_cycle_32b_merge_map(result.cycle);
+  rtcore_memory_unit_same_cycle_32b_merge_key key = {};
   key.owner_hw_sid = result.lsu_sideband_owner_hw_sid;
   key.cycle = result.cycle;
   key.aligned_32b_addr = static_cast<unsigned long long>(addr);
   key.is_write = result.lsu_sideband_is_write;
-  g_rtcore_v02_lsu_same_cycle_merge_uid_by_key[key] = mf->get_request_uid();
+  g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key[key] = mf->get_request_uid();
 }
 
 static void rtcore_maybe_accept_memory_unit_l1d_client(
@@ -1881,9 +1881,9 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
     return;
   }
 
-  const new_addr_type addr = rtcore_v02_lsu_effective_sideband_addr(result);
+  const new_addr_type addr = rtcore_memory_unit_effective_addr(result);
   const bool is_write = result.lsu_sideband_is_write;
-  if (rtcore_try_merge_v02_lsu_sideband_same_cycle(result, addr)) {
+  if (rtcore_try_merge_memory_unit_same_cycle_32b(result, addr)) {
     return;
   }
 
@@ -1983,7 +1983,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
         .v02_lsu_sideband_cache_write_hit_pending_count++;
     g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()].push_back(
         rtcore_v02_lsu_sideband_snapshot_from_result(result));
-    rtcore_register_v02_lsu_sideband_same_cycle_merge_source(result, addr, mf);
+    rtcore_register_memory_unit_same_cycle_32b_merge_source(result, addr, mf);
     rtcore_v02_lsu_update_sideband_pending_count();
     return;
   }
@@ -2018,7 +2018,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
   }
   g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()].push_back(
       rtcore_v02_lsu_sideband_snapshot_from_result(result));
-  rtcore_register_v02_lsu_sideband_same_cycle_merge_source(result, addr, mf);
+  rtcore_register_memory_unit_same_cycle_32b_merge_source(result, addr, mf);
   rtcore_v02_lsu_update_sideband_pending_count();
 }
 
