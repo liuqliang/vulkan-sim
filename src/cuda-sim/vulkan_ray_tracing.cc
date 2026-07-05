@@ -583,6 +583,14 @@ struct rtcore_replay_issue_budget {
     unsigned warp_completion_ingress_budget;
 };
 
+struct rtcore_replay_scoreboard_result_handoff_stats {
+    unsigned ready_warp_count;
+    unsigned delivered_count;
+    unsigned blocked_count;
+    unsigned max_ready_warp_count;
+    unsigned max_blocked_count;
+};
+
 struct rtcore_replay_service_cycle_identity_snapshot {
     bool valid;
     bool memory_progressed;
@@ -951,6 +959,10 @@ struct rtcore_replay_model_summary_progress_snapshot {
     unsigned lane_request_state_capacity_max_occupancy;
     unsigned lane_request_state_capacity_max_pending_admissions;
     unsigned warp_aggregated_completion_count;
+    unsigned scoreboard_handoff_ready_warp_count;
+    unsigned scoreboard_handoff_delivered_count;
+    unsigned scoreboard_handoff_blocked_count;
+    unsigned scoreboard_handoff_max_blocked_count;
     unsigned v01_independent_service_blocked_continue_count;
     unsigned v01_independent_service_progress_after_block_count;
     unsigned v01_independent_service_cross_resource_progress_after_block_count;
@@ -1046,6 +1058,8 @@ static rtcore_replay_unit_latency_gate_stats
     g_rtcore_replay_unit_latency_gate_stats;
 static rtcore_replay_unit_arbitration_stats
     g_rtcore_replay_unit_arbitration_stats;
+static rtcore_replay_scoreboard_result_handoff_stats
+    g_rtcore_replay_scoreboard_result_handoff_stats;
 static rtcore_replay_data_path_access_stats
     g_rtcore_replay_data_path_access_stats;
 static rtcore_replay_resource_route_stats g_rtcore_replay_resource_route_stats;
@@ -3738,6 +3752,22 @@ static unsigned rtcore_service_completed_warp_entry_handoffs_for_owner(
         budget--;
         delivered++;
     }
+    const unsigned blocked = ready_before > delivered ? ready_before - delivered : 0;
+    g_rtcore_replay_scoreboard_result_handoff_stats.ready_warp_count =
+        ready_before;
+    g_rtcore_replay_scoreboard_result_handoff_stats.delivered_count +=
+        delivered;
+    g_rtcore_replay_scoreboard_result_handoff_stats.blocked_count += blocked;
+    if (ready_before >
+        g_rtcore_replay_scoreboard_result_handoff_stats.max_ready_warp_count) {
+        g_rtcore_replay_scoreboard_result_handoff_stats.max_ready_warp_count =
+            ready_before;
+    }
+    if (blocked >
+        g_rtcore_replay_scoreboard_result_handoff_stats.max_blocked_count) {
+        g_rtcore_replay_scoreboard_result_handoff_stats.max_blocked_count =
+            blocked;
+    }
 
     if (ready_before > 0 || delivered > 0) {
         printf("GPGPU-Sim RTCORE_REPLAY_SCOREBOARD_RESULT_HANDOFF "
@@ -3748,7 +3778,7 @@ static unsigned rtcore_service_completed_warp_entry_handoffs_for_owner(
                "scoreboard_handoff_blocked_count=%u\n",
                owner_hw_sid, service_cycle,
                rtcore_replay_scoreboard_result_handoff_budget_config(),
-               ready_before, delivered, ready_before - delivered);
+               ready_before, delivered, blocked);
         fflush(stdout);
     }
     return delivered;
@@ -4194,6 +4224,14 @@ static bool rtcore_should_log_replay_model_summary_stats(
             snapshot.lane_request_state_capacity_max_pending_admissions ||
         last_snapshot.warp_aggregated_completion_count !=
             snapshot.warp_aggregated_completion_count ||
+        last_snapshot.scoreboard_handoff_ready_warp_count !=
+            snapshot.scoreboard_handoff_ready_warp_count ||
+        last_snapshot.scoreboard_handoff_delivered_count !=
+            snapshot.scoreboard_handoff_delivered_count ||
+        last_snapshot.scoreboard_handoff_blocked_count !=
+            snapshot.scoreboard_handoff_blocked_count ||
+        last_snapshot.scoreboard_handoff_max_blocked_count !=
+            snapshot.scoreboard_handoff_max_blocked_count ||
         independent_service_pressure_changed || data_path_pressure_changed ||
         v01_gate_pressure_changed || v01_service_stage_changed ||
         v01_stage_resource_demand_changed || v01_stage_data_path_gate_changed;
@@ -4647,6 +4685,14 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         rtcore_replay_issue_budget_config();
     const unsigned warp_aggregated_completion_count =
         rtcore_count_replay_model_completed_warp_aggregations(owner_hw_sid);
+    const unsigned scoreboard_handoff_ready_warp_count =
+        g_rtcore_replay_scoreboard_result_handoff_stats.ready_warp_count;
+    const unsigned scoreboard_handoff_delivered_count =
+        g_rtcore_replay_scoreboard_result_handoff_stats.delivered_count;
+    const unsigned scoreboard_handoff_blocked_count =
+        g_rtcore_replay_scoreboard_result_handoff_stats.blocked_count;
+    const unsigned scoreboard_handoff_max_blocked_count =
+        g_rtcore_replay_scoreboard_result_handoff_stats.max_blocked_count;
     const unsigned memory_blocked_events =
         g_rtcore_replay_memory_wake_latency_gate_stats.gate_blocked_count +
         g_rtcore_replay_memory_contention_gate_stats.gate_blocked_count;
@@ -4818,6 +4864,14 @@ static void rtcore_maybe_log_replay_model_summary_stats(
         lane_request_state_capacity_max_pending_admissions;
     progress_snapshot.warp_aggregated_completion_count =
         warp_aggregated_completion_count;
+    progress_snapshot.scoreboard_handoff_ready_warp_count =
+        scoreboard_handoff_ready_warp_count;
+    progress_snapshot.scoreboard_handoff_delivered_count =
+        scoreboard_handoff_delivered_count;
+    progress_snapshot.scoreboard_handoff_blocked_count =
+        scoreboard_handoff_blocked_count;
+    progress_snapshot.scoreboard_handoff_max_blocked_count =
+        scoreboard_handoff_max_blocked_count;
     progress_snapshot.v01_independent_service_blocked_continue_count =
         v01_independent_service_blocked_continue_count;
     progress_snapshot.v01_independent_service_progress_after_block_count =
@@ -5015,6 +5069,12 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "memory_pressure_cycles=%u "
            "dominant_pressure_source=%s dominant_pressure_cycles=%u "
            "warp_aggregated_completion_count=%u "
+           "scoreboard_result_handoff_budget=%u "
+           "scoreboard_handoff_ready_warp_count=%u "
+           "scoreboard_handoff_delivered_count=%u "
+           "scoreboard_handoff_blocked_count=%u "
+           "scoreboard_handoff_max_blocked_count=%u "
+           "rtcore_stall_completion_backpressure_blocked_count=%u "
            "v01_independent_service_blocked_continue_count=%u "
            "v01_independent_service_progress_after_block_count=%u "
            "v01_independent_service_cross_resource_progress_after_block_count=%u "
@@ -5132,6 +5192,12 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            memory_pressure_cycles, dominant_pressure_source,
            dominant_pressure_cycles,
            warp_aggregated_completion_count,
+           rtcore_replay_scoreboard_result_handoff_budget_config(),
+           scoreboard_handoff_ready_warp_count,
+           scoreboard_handoff_delivered_count,
+           scoreboard_handoff_blocked_count,
+           scoreboard_handoff_max_blocked_count,
+           scoreboard_handoff_blocked_count,
            v01_independent_service_blocked_continue_count,
            v01_independent_service_progress_after_block_count,
            v01_independent_service_cross_resource_progress_after_block_count,
