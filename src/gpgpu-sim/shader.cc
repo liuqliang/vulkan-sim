@@ -710,16 +710,16 @@ static bool rtcore_replay_memory_unit_l1d_client_enabled() {
   return enabled != 0;
 }
 
-static bool rtcore_v02_lsu_cache_config_identity_log_enabled() {
+static bool rtcore_memory_unit_cache_config_identity_log_enabled() {
   static int enabled = []() {
     const char *value =
-        getenv("VULKAN_SIM_RTCORE_V02_LSU_CACHE_CONFIG_IDENTITY_LOG");
+        getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_CACHE_CONFIG_IDENTITY_LOG");
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
 }
 
-static void rtcore_maybe_log_v02_lsu_cache_config_identity_stats(
+static void rtcore_maybe_log_memory_unit_cache_config_identity_stats(
     unsigned owner_hw_sid);
 
 static bool rtcore_memory_unit_response_wait_enabled() {
@@ -1469,7 +1469,7 @@ static void rtcore_maybe_log_memory_unit_request_offer_stats(
              .v02_lsu_sideband_same_cycle_real_mem_fetch_saved_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_same_cycle_fanout_wake_count);
-  rtcore_maybe_log_v02_lsu_cache_config_identity_stats(owner_hw_sid);
+  rtcore_maybe_log_memory_unit_cache_config_identity_stats(owner_hw_sid);
   fflush(stdout);
 }
 
@@ -1647,7 +1647,7 @@ static const char *rtcore_v02_lsu_selected_cache_kind_name(unsigned kind) {
 
 static void rtcore_record_v02_lsu_cache_config_identity(
     bool selected_l1d, baseline_cache *cache, unsigned current_mshr_entries) {
-  if (!rtcore_v02_lsu_cache_config_identity_log_enabled() || cache == NULL) {
+  if (!rtcore_memory_unit_cache_config_identity_log_enabled() || cache == NULL) {
     return;
   }
   g_rtcore_replay_cycle_hook_consumer_stats
@@ -1669,16 +1669,16 @@ static void rtcore_record_v02_lsu_cache_config_identity(
   }
 }
 
-static void rtcore_maybe_log_v02_lsu_cache_config_identity_stats(
+static void rtcore_maybe_log_memory_unit_cache_config_identity_stats(
     unsigned owner_hw_sid) {
-  if (!rtcore_v02_lsu_cache_config_identity_log_enabled()) {
+  if (!rtcore_memory_unit_cache_config_identity_log_enabled()) {
     return;
   }
   if (g_rtcore_replay_cycle_hook_consumer_stats
           .v02_lsu_sideband_cache_config_identity_observation_count == 0) {
     return;
   }
-  printf("GPGPU-Sim RTCORE_V02_LSU_CACHE_CONFIG_IDENTITY_STATS "
+  printf("GPGPU-Sim RTCORE_REPLAY_MEMORY_UNIT_CACHE_CONFIG_IDENTITY_STATS "
          "owner_hw_sid=%u cache_config_identity_enabled=1 "
          "selected_cache_kind=%s selected_cache_config_mshr_entries=%u "
          "selected_cache_config_mshr_max_merge=%u "
