@@ -507,7 +507,7 @@ struct rtcore_replay_lane_request {
 static std::map<unsigned, rtcore_replay_lane_request>
     g_rtcore_replay_lane_requests;
 static std::deque<rtcore_replay_lane_request>
-    g_rtcore_replay_request_table_capacity_pending_admissions;
+    g_rtcore_replay_lane_request_state_capacity_pending_admissions;
 static std::map<unsigned long long, unsigned>
     g_rtcore_replay_v03_hw_ready_bank_rr_cursor_by_owner_unit;
 
@@ -909,7 +909,7 @@ struct rtcore_replay_v03_hw_queue_ingress_stats {
     unsigned max_same_cycle_bypass_candidate_delta;
 };
 
-struct rtcore_replay_request_table_capacity_gate_stats {
+struct rtcore_replay_lane_request_state_capacity_gate_stats {
     unsigned evaluations;
     unsigned admitted_count;
     unsigned blocked_count;
@@ -1064,8 +1064,8 @@ static rtcore_replay_v03_hw_queue_ownership_stats
     g_rtcore_replay_v03_hw_queue_ownership_stats;
 static std::map<unsigned, rtcore_replay_v03_hw_queue_ingress_stats>
     g_rtcore_replay_v03_hw_queue_ingress_stats_by_owner;
-static rtcore_replay_request_table_capacity_gate_stats
-    g_rtcore_replay_request_table_capacity_gate_stats;
+static rtcore_replay_lane_request_state_capacity_gate_stats
+    g_rtcore_replay_lane_request_state_capacity_gate_stats;
 static rtcore_v02_lsu_fetch_descriptor_shadow_stats
     g_rtcore_v02_lsu_fetch_descriptor_shadow_stats;
 static std::map<rtcore_v02_lsu_merge_key, unsigned>
@@ -1099,7 +1099,7 @@ static unsigned g_rtcore_replay_v03_hw_memory_outstanding_stats_logs_emitted =
 static unsigned g_rtcore_replay_v03_hw_queue_ownership_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_v03_hw_queue_ingress_stats_logs_emitted = 0;
 static unsigned
-    g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted = 0;
+    g_rtcore_replay_lane_request_state_capacity_gate_stats_logs_emitted = 0;
 static unsigned g_rtcore_compact_trace_overflow_stats_logs_emitted = 0;
 static unsigned g_rtcore_replay_overflow_summary_estimate_stats_logs_emitted =
     0;
@@ -1689,11 +1689,6 @@ static bool rtcore_replay_v03_hw_queue_ownership_stats_log_enabled()
     return enabled != 0;
 }
 
-static bool rtcore_replay_request_table_capacity_gate_enabled()
-{
-    return false;
-}
-
 static bool rtcore_replay_lane_request_state_capacity_gate_enabled()
 {
     static int enabled = []() {
@@ -1702,11 +1697,6 @@ static bool rtcore_replay_lane_request_state_capacity_gate_enabled()
         return value && value[0] && strcmp(value, "0") != 0;
     }();
     return enabled != 0;
-}
-
-static bool rtcore_replay_request_table_capacity_gate_stats_log_enabled()
-{
-    return false;
 }
 
 static bool rtcore_replay_lane_request_state_capacity_gate_stats_log_enabled()
@@ -1941,11 +1931,6 @@ static unsigned rtcore_replay_lane_request_state_capacity_gate_stats_log_limit()
         "VULKAN_SIM_RTCORE_REPLAY_LANE_REQUEST_STATE_CAPACITY_GATE_STATS_LOG_LIMIT",
         64);
     return limit;
-}
-
-static unsigned rtcore_replay_request_table_capacity_config()
-{
-    return 0;
 }
 
 static unsigned rtcore_replay_lane_request_state_capacity_config()
@@ -3098,13 +3083,13 @@ static void rtcore_record_replay_resource_route_stats(
     rtcore_maybe_log_replay_resource_route_stats(request.owner_hw_sid);
 }
 
-static bool rtcore_replay_request_table_capacity_consumes_entry(
+static bool rtcore_replay_lane_request_state_capacity_consumes_entry(
     const rtcore_replay_lane_request &request)
 {
     return request.valid && request.state != RTCORE_REPLAY_COMPLETED;
 }
 
-static unsigned rtcore_count_replay_request_table_occupied_entries_for_owner(
+static unsigned rtcore_count_replay_lane_request_state_occupied_entries_for_owner(
     unsigned owner_hw_sid)
 {
     unsigned occupancy = 0;
@@ -3114,33 +3099,33 @@ static unsigned rtcore_count_replay_request_table_occupied_entries_for_owner(
         rtcore_record_replay_lane_request_state_identity_read();
         const rtcore_replay_lane_request &request = it->second;
         if (request.owner_hw_sid == owner_hw_sid &&
-            rtcore_replay_request_table_capacity_consumes_entry(request)) {
+            rtcore_replay_lane_request_state_capacity_consumes_entry(request)) {
             occupancy++;
         }
     }
     return occupancy;
 }
 
-static void rtcore_update_replay_request_table_capacity_max(
+static void rtcore_update_replay_lane_request_state_capacity_max(
     unsigned occupancy)
 {
     if (occupancy >
-        g_rtcore_replay_request_table_capacity_gate_stats
+        g_rtcore_replay_lane_request_state_capacity_gate_stats
             .max_lane_request_state_occupancy) {
-        g_rtcore_replay_request_table_capacity_gate_stats
+        g_rtcore_replay_lane_request_state_capacity_gate_stats
             .max_lane_request_state_occupancy = occupancy;
     }
 }
 
 static unsigned
-rtcore_count_replay_request_table_capacity_pending_admissions_for_owner(
+rtcore_count_replay_lane_request_state_capacity_pending_admissions_for_owner(
     unsigned owner_hw_sid)
 {
     unsigned pending_admissions = 0;
     for (std::deque<rtcore_replay_lane_request>::const_iterator it =
-             g_rtcore_replay_request_table_capacity_pending_admissions.begin();
+             g_rtcore_replay_lane_request_state_capacity_pending_admissions.begin();
          it !=
-         g_rtcore_replay_request_table_capacity_pending_admissions.end();
+         g_rtcore_replay_lane_request_state_capacity_pending_admissions.end();
          ++it) {
         if (it->owner_hw_sid == owner_hw_sid) {
             pending_admissions++;
@@ -3149,49 +3134,49 @@ rtcore_count_replay_request_table_capacity_pending_admissions_for_owner(
     return pending_admissions;
 }
 
-static void rtcore_update_replay_request_table_capacity_pending_max(
+static void rtcore_update_replay_lane_request_state_capacity_pending_max(
     unsigned pending_admissions)
 {
     if (pending_admissions >
-        g_rtcore_replay_request_table_capacity_gate_stats
+        g_rtcore_replay_lane_request_state_capacity_gate_stats
             .max_pending_admissions) {
-        g_rtcore_replay_request_table_capacity_gate_stats
+        g_rtcore_replay_lane_request_state_capacity_gate_stats
             .max_pending_admissions = pending_admissions;
     }
 }
 
-static void rtcore_queue_replay_request_table_capacity_pending_admission(
+static void rtcore_queue_replay_lane_request_state_capacity_pending_admission(
     const rtcore_replay_lane_request &request)
 {
-    g_rtcore_replay_request_table_capacity_pending_admissions.push_back(
+    g_rtcore_replay_lane_request_state_capacity_pending_admissions.push_back(
         request);
     const unsigned pending_admissions =
-        rtcore_count_replay_request_table_capacity_pending_admissions_for_owner(
+        rtcore_count_replay_lane_request_state_capacity_pending_admissions_for_owner(
             request.owner_hw_sid);
-    g_rtcore_replay_request_table_capacity_gate_stats
+    g_rtcore_replay_lane_request_state_capacity_gate_stats
         .last_pending_admissions = pending_admissions;
-    rtcore_update_replay_request_table_capacity_pending_max(
+    rtcore_update_replay_lane_request_state_capacity_pending_max(
         pending_admissions);
 }
 
-static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
+static void rtcore_maybe_log_replay_lane_request_state_capacity_gate_stats(
     const rtcore_replay_lane_request &request, unsigned occupancy,
     bool capacity_blocked, bool admitted, bool released)
 {
     if (!rtcore_replay_lane_request_state_capacity_gate_stats_log_enabled()) {
         return;
     }
-    if (g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted >=
+    if (g_rtcore_replay_lane_request_state_capacity_gate_stats_logs_emitted >=
         rtcore_replay_lane_request_state_capacity_gate_stats_log_limit()) {
         return;
     }
-    g_rtcore_replay_request_table_capacity_gate_stats_logs_emitted++;
+    g_rtcore_replay_lane_request_state_capacity_gate_stats_logs_emitted++;
     const unsigned pending_admissions =
-        rtcore_count_replay_request_table_capacity_pending_admissions_for_owner(
+        rtcore_count_replay_lane_request_state_capacity_pending_admissions_for_owner(
             request.owner_hw_sid);
-    g_rtcore_replay_request_table_capacity_gate_stats
+    g_rtcore_replay_lane_request_state_capacity_gate_stats
         .last_pending_admissions = pending_admissions;
-    rtcore_update_replay_request_table_capacity_pending_max(
+    rtcore_update_replay_lane_request_state_capacity_pending_max(
         pending_admissions);
 
     printf("GPGPU-Sim RTCORE_REPLAY_LANE_REQUEST_STATE_CAPACITY_GATE "
@@ -3209,38 +3194,38 @@ static void rtcore_maybe_log_replay_request_table_capacity_gate_stats(
            rtcore_replay_lane_request_state_capacity_config(), occupancy,
            capacity_blocked ? 1u : 0u, admitted ? 1u : 0u,
            released ? 1u : 0u,
-           g_rtcore_replay_request_table_capacity_gate_stats.evaluations,
-           g_rtcore_replay_request_table_capacity_gate_stats.admitted_count,
-           g_rtcore_replay_request_table_capacity_gate_stats.blocked_count,
-           g_rtcore_replay_request_table_capacity_gate_stats.released_count,
-           g_rtcore_replay_request_table_capacity_gate_stats
+           g_rtcore_replay_lane_request_state_capacity_gate_stats.evaluations,
+           g_rtcore_replay_lane_request_state_capacity_gate_stats.admitted_count,
+           g_rtcore_replay_lane_request_state_capacity_gate_stats.blocked_count,
+           g_rtcore_replay_lane_request_state_capacity_gate_stats.released_count,
+           g_rtcore_replay_lane_request_state_capacity_gate_stats
                .max_lane_request_state_occupancy,
            pending_admissions,
-           g_rtcore_replay_request_table_capacity_gate_stats
+           g_rtcore_replay_lane_request_state_capacity_gate_stats
                .max_pending_admissions);
     fflush(stdout);
 }
 
-static void rtcore_record_replay_request_table_capacity_admitted(
+static void rtcore_record_replay_lane_request_state_capacity_admitted(
     const rtcore_replay_lane_request &request, unsigned occupancy)
 {
-    g_rtcore_replay_request_table_capacity_gate_stats.evaluations++;
-    g_rtcore_replay_request_table_capacity_gate_stats.admitted_count++;
-    g_rtcore_replay_request_table_capacity_gate_stats.last_occupancy =
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.evaluations++;
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.admitted_count++;
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.last_occupancy =
         occupancy;
-    g_rtcore_replay_request_table_capacity_gate_stats.last_capacity_blocked =
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.last_capacity_blocked =
         0u;
-    g_rtcore_replay_request_table_capacity_gate_stats.last_admitted = 1u;
-    g_rtcore_replay_request_table_capacity_gate_stats.last_released = 0u;
-    rtcore_update_replay_request_table_capacity_max(occupancy);
-    rtcore_maybe_log_replay_request_table_capacity_gate_stats(
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.last_admitted = 1u;
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.last_released = 0u;
+    rtcore_update_replay_lane_request_state_capacity_max(occupancy);
+    rtcore_maybe_log_replay_lane_request_state_capacity_gate_stats(
         request, occupancy, false, true, false);
 }
 
 static void rtcore_refresh_replay_lane_request_ready_bits(
     rtcore_replay_lane_request *request);
 
-static bool rtcore_maybe_block_replay_request_table_capacity_admission(
+static bool rtcore_maybe_block_replay_lane_request_state_capacity_admission(
     const rtcore_replay_lane_request &request)
 {
     if (!request.valid ||
@@ -3254,9 +3239,9 @@ static bool rtcore_maybe_block_replay_request_table_capacity_admission(
     }
 
     const bool consumes_entry =
-        rtcore_replay_request_table_capacity_consumes_entry(request);
+        rtcore_replay_lane_request_state_capacity_consumes_entry(request);
     const unsigned current_occupancy =
-        rtcore_count_replay_request_table_occupied_entries_for_owner(
+        rtcore_count_replay_lane_request_state_occupied_entries_for_owner(
             request.owner_hw_sid);
     const bool capacity_blocked =
         consumes_entry && current_occupancy >= capacity;
@@ -3265,30 +3250,30 @@ static bool rtcore_maybe_block_replay_request_table_capacity_admission(
                          : current_occupancy + (consumes_entry ? 1u : 0u);
 
     if (capacity_blocked) {
-        g_rtcore_replay_request_table_capacity_gate_stats.evaluations++;
-        g_rtcore_replay_request_table_capacity_gate_stats.last_occupancy =
+        g_rtcore_replay_lane_request_state_capacity_gate_stats.evaluations++;
+        g_rtcore_replay_lane_request_state_capacity_gate_stats.last_occupancy =
             resulting_occupancy;
-        g_rtcore_replay_request_table_capacity_gate_stats
+        g_rtcore_replay_lane_request_state_capacity_gate_stats
             .last_capacity_blocked = 1u;
-        g_rtcore_replay_request_table_capacity_gate_stats.last_admitted = 0u;
-        g_rtcore_replay_request_table_capacity_gate_stats.last_released = 0u;
-        rtcore_update_replay_request_table_capacity_max(resulting_occupancy);
-        g_rtcore_replay_request_table_capacity_gate_stats.blocked_count++;
-        rtcore_queue_replay_request_table_capacity_pending_admission(request);
-        rtcore_maybe_log_replay_request_table_capacity_gate_stats(
+        g_rtcore_replay_lane_request_state_capacity_gate_stats.last_admitted = 0u;
+        g_rtcore_replay_lane_request_state_capacity_gate_stats.last_released = 0u;
+        rtcore_update_replay_lane_request_state_capacity_max(resulting_occupancy);
+        g_rtcore_replay_lane_request_state_capacity_gate_stats.blocked_count++;
+        rtcore_queue_replay_lane_request_state_capacity_pending_admission(request);
+        rtcore_maybe_log_replay_lane_request_state_capacity_gate_stats(
             request, resulting_occupancy, true, false, false);
         return true;
     }
 
-    rtcore_record_replay_request_table_capacity_admitted(
+    rtcore_record_replay_lane_request_state_capacity_admitted(
         request, resulting_occupancy);
     return false;
 }
 
-static bool rtcore_try_drain_replay_request_table_capacity_pending_admissions(
+static bool rtcore_try_drain_replay_lane_request_state_capacity_pending_admissions(
     unsigned owner_hw_sid);
 
-static void rtcore_record_replay_request_table_capacity_release(
+static void rtcore_record_replay_lane_request_state_capacity_release(
     const rtcore_replay_lane_request &request, unsigned long long service_cycle = 0)
 {
     (void)service_cycle;
@@ -3303,19 +3288,19 @@ static void rtcore_record_replay_request_table_capacity_release(
     }
 
     const unsigned occupancy =
-        rtcore_count_replay_request_table_occupied_entries_for_owner(
+        rtcore_count_replay_lane_request_state_occupied_entries_for_owner(
             request.owner_hw_sid);
-    g_rtcore_replay_request_table_capacity_gate_stats.evaluations++;
-    g_rtcore_replay_request_table_capacity_gate_stats.released_count++;
-    g_rtcore_replay_request_table_capacity_gate_stats.last_occupancy =
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.evaluations++;
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.released_count++;
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.last_occupancy =
         occupancy;
-    g_rtcore_replay_request_table_capacity_gate_stats.last_capacity_blocked = 0u;
-    g_rtcore_replay_request_table_capacity_gate_stats.last_admitted = 0u;
-    g_rtcore_replay_request_table_capacity_gate_stats.last_released = 1u;
-    rtcore_update_replay_request_table_capacity_max(occupancy);
-    rtcore_maybe_log_replay_request_table_capacity_gate_stats(
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.last_capacity_blocked = 0u;
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.last_admitted = 0u;
+    g_rtcore_replay_lane_request_state_capacity_gate_stats.last_released = 1u;
+    rtcore_update_replay_lane_request_state_capacity_max(occupancy);
+    rtcore_maybe_log_replay_lane_request_state_capacity_gate_stats(
         request, occupancy, false, false, true);
-    (void)rtcore_try_drain_replay_request_table_capacity_pending_admissions(
+    (void)rtcore_try_drain_replay_lane_request_state_capacity_pending_admissions(
         request.owner_hw_sid);
 }
 
@@ -3331,7 +3316,7 @@ static void rtcore_mark_replay_request_completed(
     rtcore_record_replay_request_state_write();
     rtcore_refresh_replay_lane_request_ready_bits(request);
     if (!was_completed) {
-        rtcore_record_replay_request_table_capacity_release(*request,
+        rtcore_record_replay_lane_request_state_capacity_release(*request,
                                                             service_cycle);
     }
 }
@@ -4685,12 +4670,12 @@ static void rtcore_maybe_log_replay_model_summary_stats(
     const unsigned memory_contention_capacity_blocked_count =
         g_rtcore_replay_memory_contention_gate_stats.capacity_blocked_count;
     const unsigned lane_request_state_capacity_blocked_count =
-        g_rtcore_replay_request_table_capacity_gate_stats.blocked_count;
+        g_rtcore_replay_lane_request_state_capacity_gate_stats.blocked_count;
     const unsigned lane_request_state_capacity_max_occupancy =
-        g_rtcore_replay_request_table_capacity_gate_stats
+        g_rtcore_replay_lane_request_state_capacity_gate_stats
             .max_lane_request_state_occupancy;
     const unsigned lane_request_state_capacity_max_pending_admissions =
-        g_rtcore_replay_request_table_capacity_gate_stats
+        g_rtcore_replay_lane_request_state_capacity_gate_stats
             .max_pending_admissions;
     const unsigned v01_independent_service_blocked_continue_count =
         g_rtcore_replay_v01_independent_service_stats
@@ -7201,7 +7186,7 @@ static bool rtcore_service_replay_completion_ingress_requests_for_owner(
 
 static void rtcore_try_service_replay_after_admission(unsigned owner_hw_sid);
 
-static void rtcore_commit_replay_request_table_admission(
+static void rtcore_commit_replay_lane_request_state_admission(
     const rtcore_replay_lane_request &request)
 {
     rtcore_replay_lane_request admitted_request = request;
@@ -7220,7 +7205,7 @@ static void rtcore_commit_replay_request_table_admission(
     rtcore_route_admitted_replay_request(request.thread_uid);
 }
 
-static bool rtcore_try_drain_replay_request_table_capacity_pending_admissions(
+static bool rtcore_try_drain_replay_lane_request_state_capacity_pending_admissions(
     unsigned owner_hw_sid)
 {
     if (!rtcore_replay_lane_request_state_capacity_gate_enabled()) {
@@ -7234,31 +7219,31 @@ static bool rtcore_try_drain_replay_request_table_capacity_pending_admissions(
 
     bool admitted_any = false;
     for (std::deque<rtcore_replay_lane_request>::iterator it =
-             g_rtcore_replay_request_table_capacity_pending_admissions.begin();
+             g_rtcore_replay_lane_request_state_capacity_pending_admissions.begin();
          it !=
-         g_rtcore_replay_request_table_capacity_pending_admissions.end();) {
+         g_rtcore_replay_lane_request_state_capacity_pending_admissions.end();) {
         if (it->owner_hw_sid != owner_hw_sid) {
             ++it;
             continue;
         }
 
         const bool consumes_entry =
-            rtcore_replay_request_table_capacity_consumes_entry(*it);
+            rtcore_replay_lane_request_state_capacity_consumes_entry(*it);
         const unsigned current_occupancy =
-            rtcore_count_replay_request_table_occupied_entries_for_owner(
+            rtcore_count_replay_lane_request_state_occupied_entries_for_owner(
                 owner_hw_sid);
         if (consumes_entry && current_occupancy >= capacity) {
             break;
         }
 
         rtcore_replay_lane_request request = *it;
-        it = g_rtcore_replay_request_table_capacity_pending_admissions.erase(
+        it = g_rtcore_replay_lane_request_state_capacity_pending_admissions.erase(
             it);
         const unsigned resulting_occupancy =
             current_occupancy + (consumes_entry ? 1u : 0u);
-        rtcore_record_replay_request_table_capacity_admitted(
+        rtcore_record_replay_lane_request_state_capacity_admitted(
             request, resulting_occupancy);
-        rtcore_commit_replay_request_table_admission(request);
+        rtcore_commit_replay_lane_request_state_admission(request);
         admitted_any = true;
     }
     return admitted_any;
@@ -7282,11 +7267,11 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
         rtcore_build_replay_lane_request(record);
     rtcore_record_replay_resource_route_stats(request);
     request.ready_order = g_rtcore_next_replay_ready_order++;
-    if (rtcore_maybe_block_replay_request_table_capacity_admission(
+    if (rtcore_maybe_block_replay_lane_request_state_capacity_admission(
             request)) {
         return;
     }
-    rtcore_commit_replay_request_table_admission(request);
+    rtcore_commit_replay_lane_request_state_admission(request);
     rtcore_try_service_replay_after_admission(thread->get_hw_sid());
 }
 
