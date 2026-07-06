@@ -1058,6 +1058,52 @@ static unsigned rtcore_replay_uint_config_or_model_preset(
     return static_cast<unsigned>(parsed);
 }
 
+enum rtcore_continuation_model {
+    RTCORE_CONTINUATION_MODEL_OFF = 0,
+    RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT = 1,
+};
+
+static rtcore_continuation_model rtcore_continuation_model_config()
+{
+    const char *value = getenv("VULKAN_SIM_RTCORE_CONTINUATION_MODEL");
+    if (value == NULL || value[0] == '\0' || strcmp(value, "off") == 0) {
+        return RTCORE_CONTINUATION_MODEL_OFF;
+    }
+    if (strcmp(value, "synthetic_split") == 0) {
+        return RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT;
+    }
+    return RTCORE_CONTINUATION_MODEL_OFF;
+}
+
+static bool rtcore_continuation_model_enabled()
+{
+    return rtcore_continuation_model_config() != RTCORE_CONTINUATION_MODEL_OFF;
+}
+
+static unsigned rtcore_continuation_shader_latency_cycles_config()
+{
+    static unsigned latency = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_CONTINUATION_SHADER_LATENCY_CYCLES", 0, 0,
+        1048576, true);
+    return latency;
+}
+
+static unsigned rtcore_continuation_segment_event_budget_config()
+{
+    static unsigned budget = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_CONTINUATION_SEGMENT_EVENT_BUDGET", 0, 0,
+        1048576, true);
+    return budget;
+}
+
+static unsigned rtcore_continuation_max_resubmits_per_lane_config()
+{
+    static unsigned max_resubmits = rtcore_replay_uint_config_or_model_preset(
+        "VULKAN_SIM_RTCORE_CONTINUATION_MAX_RESUBMITS_PER_LANE", 4, 4,
+        1048576, true);
+    return max_resubmits;
+}
+
 static bool rtcore_bounded_trace_collection_enabled()
 {
     static int enabled = []() {
