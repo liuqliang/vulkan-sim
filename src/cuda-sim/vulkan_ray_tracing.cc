@@ -1168,6 +1168,7 @@ static unsigned rtcore_replay_uint_config_or_model_preset(
 enum rtcore_continuation_model {
     RTCORE_CONTINUATION_MODEL_OFF = 0,
     RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT = 1,
+    RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY = 2,
 };
 
 static rtcore_continuation_model rtcore_continuation_model_config()
@@ -1178,6 +1179,9 @@ static rtcore_continuation_model rtcore_continuation_model_config()
     }
     if (strcmp(value, "synthetic_split") == 0) {
         return RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT;
+    }
+    if (strcmp(value, "oracle_shader_boundary") == 0) {
+        return RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY;
     }
     return RTCORE_CONTINUATION_MODEL_OFF;
 }
@@ -2034,6 +2038,12 @@ rtcore_unpack_compact_trace_resource_class(
 {
     return static_cast<rtcore_compact_trace_resource_class>(
         (event.packed_fields >> 8) & 0xffu);
+}
+
+static unsigned rtcore_unpack_compact_trace_flags(
+    const rtcore_compact_trace_event &event)
+{
+    return event.packed_fields & 0xffu;
 }
 
 static unsigned rtcore_unpack_compact_trace_count(
@@ -6242,25 +6252,12 @@ static void rtcore_initialize_continuation_boundary_state_from_request(
     rtcore_seed_continuation_boundary_state_from_completed_lanes(state);
 }
 
-static bool rtcore_maybe_mark_synthetic_continuation_boundary(
-    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+static bool rtcore_mark_continuation_boundary(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle,
+    const char *boundary_reason)
 {
     if (!request || !request->valid || request->continuation_boundary_pending ||
         !rtcore_continuation_request_has_warp_metadata(*request)) {
-        return false;
-    }
-    if (rtcore_continuation_model_config() !=
-        RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT) {
-        return false;
-    }
-
-    const unsigned segment_budget =
-        rtcore_continuation_segment_event_budget_config();
-    const unsigned max_resubmits =
-        rtcore_continuation_max_resubmits_per_lane_config();
-    if (segment_budget == 0 || max_resubmits == 0 ||
-        request->continuation_depth >= max_resubmits ||
-        request->continuation_segment_event_count < segment_budget) {
         return false;
     }
 
@@ -6296,20 +6293,103 @@ static bool rtcore_maybe_mark_synthetic_continuation_boundary(
            "terminal_mask=0x%08x resume_required_mask=0x%08x "
            "shader_required_mask=0x%08x continuation_depth=%u "
            "next_event_index=%u segment_event_count=%u packet_ready=%u "
-           "service_cycle=%llu\n",
+           "boundary_reason=%s service_cycle=%llu\n",
            request->owner_hw_sid, request->thread_uid, request->lane_id,
            request->warp_uid, request->warp_id, state.active_mask,
            state.boundary_reached_mask, state.terminal_mask,
            state.resume_required_mask, state.shader_required_mask,
            state.continuation_depth, request->next_event_index,
            request->continuation_segment_event_count, packet_ready ? 1u : 0u,
-           service_cycle);
+           boundary_reason ? boundary_reason : "unknown", service_cycle);
     fflush(stdout);
 
     if (packet_ready) {
         rtcore_publish_continuation_return_packet(&state, service_cycle);
     }
     return true;
+}
+
+static bool rtcore_maybe_mark_synthetic_continuation_boundary(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    if (!request || !request->valid || request->continuation_boundary_pending ||
+        !rtcore_continuation_request_has_warp_metadata(*request)) {
+        return false;
+    }
+    if (rtcore_continuation_model_config() !=
+        RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT) {
+        return false;
+    }
+
+    const unsigned segment_budget =
+        rtcore_continuation_segment_event_budget_config();
+    const unsigned max_resubmits =
+        rtcore_continuation_max_resubmits_per_lane_config();
+    if (segment_budget == 0 || max_resubmits == 0 ||
+        request->continuation_depth >= max_resubmits ||
+        request->continuation_segment_event_count < segment_budget) {
+        return false;
+    }
+
+    return rtcore_mark_continuation_boundary(request, service_cycle,
+                                             "synthetic_split");
+}
+
+static const char *rtcore_oracle_shader_boundary_reason_for_event(
+    const rtcore_replay_lane_request &request, unsigned event_index)
+{
+    if (event_index >= request.events.size()) {
+        return NULL;
+    }
+
+    const rtcore_compact_trace_event &event = request.events[event_index];
+    const rtcore_compact_trace_event_type event_type =
+        rtcore_unpack_compact_trace_event_type(event);
+    const unsigned flags = rtcore_unpack_compact_trace_flags(event);
+
+    if (event_type == RTCORE_TRACE_HIT_UPDATE &&
+        (flags & 0xffu) == RTCORE_TRACE_HIT_UPDATE_KIND_ANY_HIT &&
+        request.oracle_anyhit_candidate_count > 0) {
+        return "oracle_anyhit";
+    }
+
+    if (event_type == RTCORE_TRACE_PRIMITIVE_TEST &&
+        (flags & 0x0fu) == RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED &&
+        (flags & 0x20u) != 0 &&
+        request.oracle_requires_intersection_shader) {
+        return "oracle_intersection";
+    }
+
+    return NULL;
+}
+
+static bool rtcore_maybe_mark_oracle_shader_continuation_boundary(
+    rtcore_replay_lane_request *request, unsigned consumed_event_index,
+    unsigned long long service_cycle)
+{
+    if (!request || !request->valid || request->continuation_boundary_pending ||
+        !rtcore_continuation_request_has_warp_metadata(*request)) {
+        return false;
+    }
+    if (rtcore_continuation_model_config() !=
+        RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY) {
+        return false;
+    }
+
+    const unsigned max_resubmits =
+        rtcore_continuation_max_resubmits_per_lane_config();
+    if (max_resubmits == 0 ||
+        request->continuation_depth >= max_resubmits) {
+        return false;
+    }
+
+    const char *reason = rtcore_oracle_shader_boundary_reason_for_event(
+        *request, consumed_event_index);
+    if (!reason) {
+        return false;
+    }
+
+    return rtcore_mark_continuation_boundary(request, service_cycle, reason);
 }
 
 static bool rtcore_replay_advance_lane_request(
@@ -6330,8 +6410,13 @@ static bool rtcore_replay_advance_lane_request(
         return true;
     }
 
+    const unsigned consumed_event_index = request->next_event_index;
     request->next_event_index++;
     request->continuation_segment_event_count++;
+    if (rtcore_maybe_mark_oracle_shader_continuation_boundary(
+            request, consumed_event_index, service_cycle)) {
+        return true;
+    }
     if (request->next_event_index >= request->events.size()) {
         rtcore_prepare_replay_request_completion_ingress(request);
         return true;
