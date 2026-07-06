@@ -435,6 +435,9 @@ struct rtcore_replay_lane_request {
     unsigned stack_event_count;
     unsigned memory_event_count;
     unsigned completion_event_count;
+    bool continuation_boundary_pending;
+    unsigned continuation_depth;
+    unsigned continuation_segment_event_count;
     unsigned ready_order;
     unsigned request_state_bank_id;
     bool ready_node_bit;
@@ -554,7 +557,7 @@ struct rtcore_continuation_warp_boundary_state {
         : valid(false), owner_hw_sid(0), warp_uid(0), warp_id(0),
           active_mask(0), boundary_reached_mask(0), terminal_mask(0),
           resume_required_mask(0), shader_required_mask(0),
-          continuation_depth(0)
+          continuation_depth(0), packet_published(false)
     {
     }
 
@@ -568,6 +571,7 @@ struct rtcore_continuation_warp_boundary_state {
     unsigned resume_required_mask;
     unsigned shader_required_mask;
     unsigned continuation_depth;
+    bool packet_published;
 };
 
 struct rtcore_resident_warp_continuation_state {
@@ -2503,6 +2507,9 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.static_inst_uid = record.static_inst_uid;
     request.next_event_index = 0;
     request.event_count = record.event_count;
+    request.continuation_boundary_pending = false;
+    request.continuation_depth = 0;
+    request.continuation_segment_event_count = 0;
     request.timing_trace_overflowed = record.timing_trace_overflowed;
     request.timing_precision_class = record.timing_precision_class;
     request.overflow_summary_events = record.overflow_summary_events;
@@ -2889,6 +2896,16 @@ static void rtcore_record_replay_lane_request_state_capacity_admitted(
 static void rtcore_refresh_replay_lane_request_ready_bits(
     rtcore_replay_lane_request *request);
 
+static unsigned rtcore_continuation_count_lanes(unsigned mask);
+
+static bool rtcore_mark_resident_warp_continuation_wakeup(
+    const rtcore_continuation_return_packet &packet,
+    unsigned long long service_cycle);
+
+static bool rtcore_publish_continuation_return_packet(
+    rtcore_continuation_warp_boundary_state *state,
+    unsigned long long service_cycle);
+
 static bool rtcore_maybe_block_replay_lane_request_state_capacity_admission(
     const rtcore_replay_lane_request &request,
     unsigned long long service_cycle = 0)
@@ -2997,6 +3014,104 @@ static void rtcore_record_replay_lane_request_state_capacity_release(
         request.owner_hw_sid, service_cycle);
 }
 
+static bool rtcore_continuation_request_has_warp_metadata(
+    const rtcore_replay_lane_request &request)
+{
+    return request.valid && request.has_warp_metadata &&
+           request.active_mask != 0 && request.lane_id < 32;
+}
+
+static unsigned rtcore_continuation_lane_mask(unsigned lane_id)
+{
+    return lane_id < 32 ? (1u << lane_id) : 0u;
+}
+
+static rtcore_replay_warp_completion_entry_key
+rtcore_make_continuation_warp_key(const rtcore_replay_lane_request &request)
+{
+    rtcore_replay_warp_completion_entry_key key = {};
+    key.owner_hw_sid = request.owner_hw_sid;
+    key.warp_uid = request.warp_uid;
+    key.warp_id = request.warp_id;
+    key.active_mask = request.active_mask;
+    return key;
+}
+
+static bool rtcore_continuation_request_matches_boundary_key(
+    const rtcore_replay_lane_request &request,
+    const rtcore_continuation_warp_boundary_state &state)
+{
+    return rtcore_continuation_request_has_warp_metadata(request) &&
+           request.owner_hw_sid == state.owner_hw_sid &&
+           request.warp_uid == state.warp_uid &&
+           request.warp_id == state.warp_id &&
+           request.active_mask == state.active_mask;
+}
+
+static void
+rtcore_seed_continuation_boundary_state_from_completed_lanes(
+    rtcore_continuation_warp_boundary_state *state)
+{
+    if (!state || !state->valid) {
+        return;
+    }
+
+    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+             g_rtcore_replay_lane_requests.begin();
+         it != g_rtcore_replay_lane_requests.end(); ++it) {
+        const rtcore_replay_lane_request &request = it->second;
+        if (!rtcore_continuation_request_matches_boundary_key(request,
+                                                              *state)) {
+            continue;
+        }
+        const unsigned lane_mask =
+            rtcore_continuation_lane_mask(request.lane_id);
+        if ((state->active_mask & lane_mask) == 0) {
+            continue;
+        }
+        if (request.state == RTCORE_REPLAY_COMPLETED) {
+            state->boundary_reached_mask |= lane_mask;
+            state->terminal_mask |= lane_mask;
+        }
+    }
+}
+
+static void rtcore_note_terminal_continuation_boundary(
+    const rtcore_replay_lane_request &request,
+    unsigned long long service_cycle)
+{
+    if (!rtcore_continuation_model_enabled() ||
+        !rtcore_continuation_request_has_warp_metadata(request)) {
+        return;
+    }
+
+    const rtcore_replay_warp_completion_entry_key key =
+        rtcore_make_continuation_warp_key(request);
+    std::map<rtcore_replay_warp_completion_entry_key,
+             rtcore_continuation_warp_boundary_state>::iterator it =
+        g_rtcore_continuation_warp_boundary_states.find(key);
+    if (it == g_rtcore_continuation_warp_boundary_states.end()) {
+        return;
+    }
+
+    rtcore_continuation_warp_boundary_state &state = it->second;
+    if (!state.valid || state.packet_published) {
+        return;
+    }
+    const unsigned lane_mask =
+        rtcore_continuation_lane_mask(request.lane_id);
+    if ((state.active_mask & lane_mask) == 0) {
+        return;
+    }
+
+    state.boundary_reached_mask |= lane_mask;
+    state.terminal_mask |= lane_mask;
+    if ((state.boundary_reached_mask & state.active_mask) ==
+        state.active_mask) {
+        rtcore_publish_continuation_return_packet(&state, service_cycle);
+    }
+}
+
 static void rtcore_mark_replay_request_completed(
     rtcore_replay_lane_request *request, unsigned long long service_cycle = 0)
 {
@@ -3008,6 +3123,7 @@ static void rtcore_mark_replay_request_completed(
     request->state = RTCORE_REPLAY_COMPLETED;
     rtcore_record_replay_request_state_write();
     rtcore_refresh_replay_lane_request_ready_bits(request);
+    rtcore_note_terminal_continuation_boundary(*request, service_cycle);
     if (!was_completed) {
         rtcore_record_replay_lane_request_state_capacity_release(*request,
                                                             service_cycle);
@@ -3067,7 +3183,8 @@ static void rtcore_refresh_replay_lane_request_ready_bits(
     request->ready_memory_bit = false;
     request->ready_result_bit = false;
 
-    if (!request->valid || request->unit_latency_gate_pending) {
+    if (!request->valid || request->continuation_boundary_pending ||
+        request->unit_latency_gate_pending) {
         return;
     }
     if (request->memory_address_gen_latency_gate_pending) {
@@ -3102,7 +3219,8 @@ static bool rtcore_replay_request_ready_for_state(
     const rtcore_replay_lane_request &request,
     rtcore_replay_lane_request_state unit_state)
 {
-    if (!request.valid || request.state != unit_state ||
+    if (!request.valid || request.continuation_boundary_pending ||
+        request.state != unit_state ||
         request.unit_latency_gate_pending) {
         return false;
     }
@@ -6019,11 +6137,166 @@ static void rtcore_prepare_replay_request_completion_ingress(
     rtcore_refresh_replay_lane_request_ready_bits(request);
 }
 
+static const char *rtcore_continuation_packet_kind_name(
+    rtcore_continuation_packet_kind kind)
+{
+    switch (kind) {
+    case RTCORE_CONTINUATION_PACKET_FINAL:
+        return "FINAL";
+    case RTCORE_CONTINUATION_PACKET_CONTINUATION:
+        return "CONTINUATION";
+    }
+    return "UNKNOWN";
+}
+
+static bool rtcore_publish_continuation_return_packet(
+    rtcore_continuation_warp_boundary_state *state,
+    unsigned long long service_cycle)
+{
+    if (!state || !state->valid || state->packet_published) {
+        return false;
+    }
+
+    rtcore_continuation_return_packet packet;
+    packet.valid = true;
+    packet.kind = state->resume_required_mask == 0
+                      ? RTCORE_CONTINUATION_PACKET_FINAL
+                      : RTCORE_CONTINUATION_PACKET_CONTINUATION;
+    packet.owner_hw_sid = state->owner_hw_sid;
+    packet.warp_uid = state->warp_uid;
+    packet.warp_id = state->warp_id;
+    packet.active_mask = state->active_mask;
+    packet.boundary_reached_mask = state->boundary_reached_mask;
+    packet.terminal_mask = state->terminal_mask;
+    packet.resume_required_mask = state->resume_required_mask;
+    packet.shader_required_mask = state->shader_required_mask;
+    packet.continuation_depth = state->continuation_depth;
+    state->packet_published = true;
+
+    g_rtcore_continuation_stats.rtcore_continuation_packet_count++;
+    g_rtcore_continuation_stats.rtcore_continuation_lane_count +=
+        rtcore_continuation_count_lanes(state->boundary_reached_mask &
+                                        state->active_mask);
+
+    printf("GPGPU-Sim RTCORE_CONTINUATION_RETURN_PACKET "
+           "packet_kind=%s owner_hw_sid=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x boundary_reached_mask=0x%08x "
+           "terminal_mask=0x%08x resume_required_mask=0x%08x "
+           "shader_required_mask=0x%08x continuation_depth=%u "
+           "service_cycle=%llu\n",
+           rtcore_continuation_packet_kind_name(packet.kind),
+           packet.owner_hw_sid, packet.warp_uid, packet.warp_id,
+           packet.active_mask, packet.boundary_reached_mask,
+           packet.terminal_mask, packet.resume_required_mask,
+           packet.shader_required_mask, packet.continuation_depth,
+           service_cycle);
+    fflush(stdout);
+
+    if (packet.kind == RTCORE_CONTINUATION_PACKET_CONTINUATION) {
+        rtcore_mark_resident_warp_continuation_wakeup(packet, service_cycle);
+    }
+    return true;
+}
+
+static void rtcore_initialize_continuation_boundary_state_from_request(
+    rtcore_continuation_warp_boundary_state *state,
+    const rtcore_replay_lane_request &request)
+{
+    if (!state) {
+        return;
+    }
+
+    state->valid = true;
+    state->owner_hw_sid = request.owner_hw_sid;
+    state->warp_uid = request.warp_uid;
+    state->warp_id = request.warp_id;
+    state->active_mask = request.active_mask;
+    state->boundary_reached_mask = 0;
+    state->terminal_mask = 0;
+    state->resume_required_mask = 0;
+    state->shader_required_mask = 0;
+    state->continuation_depth = request.continuation_depth + 1;
+    state->packet_published = false;
+    rtcore_seed_continuation_boundary_state_from_completed_lanes(state);
+}
+
+static bool rtcore_maybe_mark_synthetic_continuation_boundary(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    if (!request || !request->valid || request->continuation_boundary_pending ||
+        !rtcore_continuation_request_has_warp_metadata(*request)) {
+        return false;
+    }
+    if (rtcore_continuation_model_config() !=
+        RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT) {
+        return false;
+    }
+
+    const unsigned segment_budget =
+        rtcore_continuation_segment_event_budget_config();
+    const unsigned max_resubmits =
+        rtcore_continuation_max_resubmits_per_lane_config();
+    if (segment_budget == 0 || max_resubmits == 0 ||
+        request->continuation_depth >= max_resubmits ||
+        request->continuation_segment_event_count < segment_budget) {
+        return false;
+    }
+
+    const unsigned lane_mask =
+        rtcore_continuation_lane_mask(request->lane_id);
+    if ((request->active_mask & lane_mask) == 0) {
+        return false;
+    }
+
+    request->continuation_boundary_pending = true;
+    rtcore_record_replay_request_state_write();
+    rtcore_refresh_replay_lane_request_ready_bits(request);
+
+    const rtcore_replay_warp_completion_entry_key key =
+        rtcore_make_continuation_warp_key(*request);
+    rtcore_continuation_warp_boundary_state &state =
+        g_rtcore_continuation_warp_boundary_states[key];
+    if (!state.valid) {
+        rtcore_initialize_continuation_boundary_state_from_request(
+            &state, *request);
+    }
+
+    state.boundary_reached_mask |= lane_mask;
+    state.resume_required_mask |= lane_mask;
+    state.shader_required_mask |= lane_mask;
+    const bool packet_ready =
+        (state.boundary_reached_mask & state.active_mask) ==
+        state.active_mask;
+
+    printf("GPGPU-Sim RTCORE_CONTINUATION_LANE_BOUNDARY "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+           "warp_id=%u active_mask=0x%08x boundary_reached_mask=0x%08x "
+           "terminal_mask=0x%08x resume_required_mask=0x%08x "
+           "shader_required_mask=0x%08x continuation_depth=%u "
+           "next_event_index=%u segment_event_count=%u packet_ready=%u "
+           "service_cycle=%llu\n",
+           request->owner_hw_sid, request->thread_uid, request->lane_id,
+           request->warp_uid, request->warp_id, state.active_mask,
+           state.boundary_reached_mask, state.terminal_mask,
+           state.resume_required_mask, state.shader_required_mask,
+           state.continuation_depth, request->next_event_index,
+           request->continuation_segment_event_count, packet_ready ? 1u : 0u,
+           service_cycle);
+    fflush(stdout);
+
+    if (packet_ready) {
+        rtcore_publish_continuation_return_packet(&state, service_cycle);
+    }
+    return true;
+}
+
 static bool rtcore_replay_advance_lane_request(
     rtcore_replay_lane_request *request, unsigned long long service_cycle = 0)
 {
-    (void)service_cycle;
     if (!request || !request->valid) {
+        return false;
+    }
+    if (request->continuation_boundary_pending) {
         return false;
     }
     if (request->events.empty()) {
@@ -6036,8 +6309,13 @@ static bool rtcore_replay_advance_lane_request(
     }
 
     request->next_event_index++;
+    request->continuation_segment_event_count++;
     if (request->next_event_index >= request->events.size()) {
         rtcore_prepare_replay_request_completion_ingress(request);
+        return true;
+    }
+    if (rtcore_maybe_mark_synthetic_continuation_boundary(request,
+                                                          service_cycle)) {
         return true;
     }
 
@@ -6674,6 +6952,18 @@ rtcore_make_continuation_warp_key(
     return key;
 }
 
+static rtcore_replay_warp_completion_entry_key
+rtcore_make_continuation_warp_key(
+    const rtcore_resident_warp_continuation_state &state)
+{
+    rtcore_replay_warp_completion_entry_key key = {};
+    key.owner_hw_sid = state.owner_hw_sid;
+    key.warp_uid = state.warp_uid;
+    key.warp_id = state.warp_id;
+    key.active_mask = state.active_mask;
+    return key;
+}
+
 static bool rtcore_mark_resident_warp_continuation_wakeup(
     const rtcore_continuation_return_packet &packet,
     unsigned long long service_cycle)
@@ -6723,6 +7013,56 @@ static bool rtcore_mark_resident_warp_continuation_wakeup(
     return true;
 }
 
+static unsigned rtcore_reactivate_resident_warp_continuation_lanes(
+    const rtcore_resident_warp_continuation_state &state,
+    unsigned long long service_cycle)
+{
+    unsigned reactivated = 0;
+    if (!state.valid || state.resume_required_mask == 0) {
+        return reactivated;
+    }
+
+    for (std::map<unsigned, rtcore_replay_lane_request>::iterator it =
+             g_rtcore_replay_lane_requests.begin();
+         it != g_rtcore_replay_lane_requests.end(); ++it) {
+        rtcore_replay_lane_request &request = it->second;
+        if (!rtcore_continuation_request_has_warp_metadata(request) ||
+            request.owner_hw_sid != state.owner_hw_sid ||
+            request.warp_uid != state.warp_uid ||
+            request.warp_id != state.warp_id ||
+            request.active_mask != state.active_mask) {
+            continue;
+        }
+        const unsigned lane_mask =
+            rtcore_continuation_lane_mask(request.lane_id);
+        if ((state.resume_required_mask & lane_mask) == 0 ||
+            !request.continuation_boundary_pending) {
+            continue;
+        }
+
+        request.continuation_boundary_pending = false;
+        request.continuation_depth = state.continuation_depth;
+        request.continuation_segment_event_count = 0;
+        if (request.next_event_index >= request.events.size()) {
+            rtcore_prepare_replay_request_completion_ingress(&request);
+        } else {
+            request.state = rtcore_classify_replay_state(
+                rtcore_unpack_compact_trace_event_type(
+                    request.events[request.next_event_index]));
+            rtcore_record_replay_request_state_write();
+            rtcore_refresh_replay_lane_request_ready_bits(&request);
+        }
+        rtcore_route_admitted_replay_request(request.thread_uid,
+                                             service_cycle);
+        reactivated++;
+    }
+
+    const rtcore_replay_warp_completion_entry_key key =
+        rtcore_make_continuation_warp_key(state);
+    g_rtcore_continuation_warp_boundary_states.erase(key);
+    return reactivated;
+}
+
 static bool rtcore_service_resident_warp_continuation_for_owner(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -6743,9 +7083,12 @@ static bool rtcore_service_resident_warp_continuation_for_owner(
             continue;
         }
 
+        const unsigned reactivated_lane_count =
+            rtcore_reactivate_resident_warp_continuation_lanes(
+                state, service_cycle);
         g_rtcore_continuation_stats.rtcore_modeled_resubmit_count++;
         g_rtcore_continuation_stats.rtcore_modeled_resubmit_lane_count +=
-            rtcore_continuation_count_lanes(state.resume_required_mask);
+            reactivated_lane_count;
         if (state.continuation_depth >
             g_rtcore_continuation_stats.rtcore_continuation_max_depth) {
             g_rtcore_continuation_stats.rtcore_continuation_max_depth =
@@ -6755,11 +7098,12 @@ static bool rtcore_service_resident_warp_continuation_for_owner(
         printf("GPGPU-Sim RTCORE_CONTINUATION_MODELED_RESUBMIT "
                "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
                "resume_required_mask=0x%08x shader_required_mask=0x%08x "
-               "continuation_depth=%u service_cycle=%llu\n",
+               "continuation_depth=%u reactivated_lane_count=%u "
+               "service_cycle=%llu\n",
                state.owner_hw_sid, state.warp_uid, state.warp_id,
                state.active_mask, state.resume_required_mask,
                state.shader_required_mask, state.continuation_depth,
-               service_cycle);
+               reactivated_lane_count, service_cycle);
         fflush(stdout);
         g_rtcore_resident_warp_continuation_states.erase(it);
         return true;
