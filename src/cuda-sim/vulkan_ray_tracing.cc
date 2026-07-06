@@ -1049,6 +1049,8 @@ static rtcore_replay_unit_arbitration_stats
 static rtcore_replay_scoreboard_result_handoff_stats
     g_rtcore_replay_scoreboard_result_handoff_stats;
 static rtcore_continuation_stats g_rtcore_continuation_stats;
+static bool g_rtcore_continuation_final_summary_registered = false;
+static bool g_rtcore_continuation_final_summary_emitted = false;
 static rtcore_replay_data_path_access_stats
     g_rtcore_replay_data_path_access_stats;
 static rtcore_replay_resource_route_stats g_rtcore_replay_resource_route_stats;
@@ -1195,6 +1197,89 @@ static rtcore_continuation_model rtcore_continuation_model_config()
 static bool rtcore_continuation_model_enabled()
 {
     return rtcore_continuation_model_config() != RTCORE_CONTINUATION_MODEL_OFF;
+}
+
+static const char *rtcore_continuation_model_name(rtcore_continuation_model model)
+{
+    switch (model) {
+    case RTCORE_CONTINUATION_MODEL_OFF:
+        return "off";
+    case RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT:
+        return "synthetic_split";
+    case RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY:
+        return "oracle_shader_boundary";
+    }
+    return "unknown";
+}
+
+static bool rtcore_continuation_stats_nonzero()
+{
+    return g_rtcore_continuation_stats.rtcore_continuation_packet_count != 0 ||
+           g_rtcore_continuation_stats.rtcore_continuation_lane_count != 0 ||
+           g_rtcore_continuation_stats.rtcore_continuation_warp_wakeup_count !=
+               0 ||
+           g_rtcore_continuation_stats.rtcore_continuation_wait_cycles != 0 ||
+           g_rtcore_continuation_stats.rtcore_modeled_resubmit_count != 0 ||
+           g_rtcore_continuation_stats.rtcore_modeled_resubmit_lane_count != 0 ||
+           g_rtcore_continuation_stats
+                   .rtcore_continuation_synthetic_boundary_count != 0 ||
+           g_rtcore_continuation_stats
+                   .rtcore_continuation_oracle_anyhit_boundary_count != 0 ||
+           g_rtcore_continuation_stats
+                   .rtcore_continuation_oracle_intersection_boundary_count !=
+               0 ||
+           g_rtcore_continuation_stats.rtcore_continuation_max_depth != 0;
+}
+
+static void rtcore_log_continuation_final_summary()
+{
+    if (g_rtcore_continuation_final_summary_emitted) {
+        return;
+    }
+    g_rtcore_continuation_final_summary_emitted = true;
+
+    const rtcore_continuation_model model = rtcore_continuation_model_config();
+    if (model == RTCORE_CONTINUATION_MODEL_OFF &&
+        !rtcore_continuation_stats_nonzero()) {
+        return;
+    }
+
+    printf("GPGPU-Sim RTCORE_CONTINUATION_FINAL_SUMMARY "
+           "continuation_model=%s "
+           "rtcore_continuation_packet_count=%llu "
+           "rtcore_continuation_lane_count=%llu "
+           "rtcore_continuation_warp_wakeup_count=%llu "
+           "rtcore_continuation_wait_cycles=%llu "
+           "rtcore_modeled_resubmit_count=%llu "
+           "rtcore_modeled_resubmit_lane_count=%llu "
+           "rtcore_continuation_synthetic_boundary_count=%llu "
+           "rtcore_continuation_oracle_anyhit_boundary_count=%llu "
+           "rtcore_continuation_oracle_intersection_boundary_count=%llu "
+           "rtcore_continuation_max_depth=%u\n",
+           rtcore_continuation_model_name(model),
+           g_rtcore_continuation_stats.rtcore_continuation_packet_count,
+           g_rtcore_continuation_stats.rtcore_continuation_lane_count,
+           g_rtcore_continuation_stats.rtcore_continuation_warp_wakeup_count,
+           g_rtcore_continuation_stats.rtcore_continuation_wait_cycles,
+           g_rtcore_continuation_stats.rtcore_modeled_resubmit_count,
+           g_rtcore_continuation_stats.rtcore_modeled_resubmit_lane_count,
+           g_rtcore_continuation_stats
+               .rtcore_continuation_synthetic_boundary_count,
+           g_rtcore_continuation_stats
+               .rtcore_continuation_oracle_anyhit_boundary_count,
+           g_rtcore_continuation_stats
+               .rtcore_continuation_oracle_intersection_boundary_count,
+           g_rtcore_continuation_stats.rtcore_continuation_max_depth);
+    fflush(stdout);
+}
+
+static void rtcore_register_continuation_final_summary()
+{
+    if (g_rtcore_continuation_final_summary_registered) {
+        return;
+    }
+    g_rtcore_continuation_final_summary_registered = true;
+    std::atexit(rtcore_log_continuation_final_summary);
 }
 
 static unsigned rtcore_continuation_shader_latency_cycles_config()
@@ -8095,6 +8180,9 @@ rtcore_service_replay_cycle(unsigned owner_hw_sid, unsigned long long service_cy
     result.owner_hw_sid = owner_hw_sid;
     result.service_cycle = service_cycle;
     result.service_enabled = rtcore_replay_service_tick_enabled();
+    if (rtcore_continuation_model_enabled()) {
+        rtcore_register_continuation_final_summary();
+    }
     if (!result.service_enabled) {
         return result;
     }
