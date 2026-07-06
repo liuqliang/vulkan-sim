@@ -412,6 +412,8 @@ struct rtcore_compact_trace_export_record {
     rtcore_trace_timing_precision_class timing_precision_class;
     unsigned overflow_summary_events;
     rtcore_compact_trace_overflow_summary overflow_summary;
+    unsigned oracle_anyhit_candidate_count;
+    bool oracle_requires_intersection_shader;
     std::vector<rtcore_compact_trace_event> events;
 };
 
@@ -435,6 +437,8 @@ struct rtcore_replay_lane_request {
     unsigned stack_event_count;
     unsigned memory_event_count;
     unsigned completion_event_count;
+    unsigned oracle_anyhit_candidate_count;
+    bool oracle_requires_intersection_shader;
     bool continuation_boundary_pending;
     unsigned continuation_depth;
     unsigned continuation_segment_event_count;
@@ -2178,6 +2182,8 @@ struct rtcore_bounded_trace_collector {
     rtcore_compact_trace_overflow_summary overflow_summary;
     bool has_overflow_summary_event;
     unsigned overflow_summary_event_index;
+    unsigned oracle_anyhit_candidate_count;
+    bool oracle_requires_intersection_shader;
     std::vector<rtcore_compact_trace_event> events;
 
     explicit rtcore_bounded_trace_collector(ptx_thread_info *thread)
@@ -2188,7 +2194,9 @@ struct rtcore_bounded_trace_collector {
           next_event_seq(0), timing_trace_overflowed(false),
           timing_precision_class(RTCORE_TRACE_TIMING_PRECISION_EXACT),
           overflow_summary_events(0), overflow_summary(),
-          has_overflow_summary_event(false), overflow_summary_event_index(0)
+          has_overflow_summary_event(false), overflow_summary_event_index(0),
+          oracle_anyhit_candidate_count(0),
+          oracle_requires_intersection_shader(false)
     {
         if (enabled) {
             if (max_trace_events_per_lane >
@@ -2389,6 +2397,13 @@ struct rtcore_bounded_trace_collector {
                node_events + primitive_events, 0);
     }
 
+    void set_oracle_shader_boundary_reason(unsigned anyhit_candidate_count,
+                                           bool requires_intersection_shader)
+    {
+        oracle_anyhit_candidate_count = anyhit_candidate_count;
+        oracle_requires_intersection_shader = requires_intersection_shader;
+    }
+
     const char *model_name() const { return RTCORE_TRACE_REPLAY_MODEL_NAME; }
 
     rtcore_compact_trace_export_record export_record() const
@@ -2410,6 +2425,9 @@ struct rtcore_bounded_trace_collector {
         record.timing_precision_class = timing_precision_class;
         record.overflow_summary_events = overflow_summary_events;
         record.overflow_summary = overflow_summary;
+        record.oracle_anyhit_candidate_count = oracle_anyhit_candidate_count;
+        record.oracle_requires_intersection_shader =
+            oracle_requires_intersection_shader;
         if (enabled) {
             record.events = events;
         }
@@ -2507,6 +2525,10 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.static_inst_uid = record.static_inst_uid;
     request.next_event_index = 0;
     request.event_count = record.event_count;
+    request.oracle_anyhit_candidate_count =
+        record.oracle_anyhit_candidate_count;
+    request.oracle_requires_intersection_shader =
+        record.oracle_requires_intersection_shader;
     request.continuation_boundary_pending = false;
     request.continuation_depth = 0;
     request.continuation_segment_event_count = 0;
@@ -9453,6 +9475,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.rtcore_primitive_tests = total_primitive_tests;
     rtcore_compact_trace.append_completion_summary(total_nodes_accessed,
                                                    total_primitive_tests);
+    rtcore_compact_trace.set_oracle_shader_boundary_reason(
+        traversal_data.n_all_hits, hit_procedural);
     rtcore_compact_trace_export_record rtcore_trace_export = rtcore_compact_trace.export_record();
     rtcore_publish_compact_trace_export(thread, rtcore_trace_export);
     rtcore_admit_compact_trace_for_replay(thread);
