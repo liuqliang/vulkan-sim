@@ -667,6 +667,9 @@ struct rtcore_continuation_stats {
           rtcore_continuation_wait_cycles(0),
           rtcore_modeled_resubmit_count(0),
           rtcore_modeled_resubmit_lane_count(0),
+          rtcore_continuation_synthetic_boundary_count(0),
+          rtcore_continuation_oracle_anyhit_boundary_count(0),
+          rtcore_continuation_oracle_intersection_boundary_count(0),
           rtcore_continuation_max_depth(0)
     {
     }
@@ -677,6 +680,9 @@ struct rtcore_continuation_stats {
     unsigned long long rtcore_continuation_wait_cycles;
     unsigned long long rtcore_modeled_resubmit_count;
     unsigned long long rtcore_modeled_resubmit_lane_count;
+    unsigned long long rtcore_continuation_synthetic_boundary_count;
+    unsigned long long rtcore_continuation_oracle_anyhit_boundary_count;
+    unsigned long long rtcore_continuation_oracle_intersection_boundary_count;
     unsigned rtcore_continuation_max_depth;
 };
 
@@ -4551,6 +4557,9 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "rtcore_continuation_wait_cycles=%llu "
            "rtcore_modeled_resubmit_count=%llu "
            "rtcore_modeled_resubmit_lane_count=%llu "
+           "rtcore_continuation_synthetic_boundary_count=%llu "
+           "rtcore_continuation_oracle_anyhit_boundary_count=%llu "
+           "rtcore_continuation_oracle_intersection_boundary_count=%llu "
            "rtcore_continuation_max_depth=%u "
            "data_path_lane_request_state_identity_accesses=%u "
            "data_path_request_state_accesses=%u "
@@ -4614,6 +4623,12 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            g_rtcore_continuation_stats.rtcore_continuation_wait_cycles,
            g_rtcore_continuation_stats.rtcore_modeled_resubmit_count,
            g_rtcore_continuation_stats.rtcore_modeled_resubmit_lane_count,
+           g_rtcore_continuation_stats
+               .rtcore_continuation_synthetic_boundary_count,
+           g_rtcore_continuation_stats
+               .rtcore_continuation_oracle_anyhit_boundary_count,
+           g_rtcore_continuation_stats
+               .rtcore_continuation_oracle_intersection_boundary_count,
            g_rtcore_continuation_stats.rtcore_continuation_max_depth,
            data_path_access.lane_request_state_identity_accesses,
            data_path_access.request_state_accesses,
@@ -6252,6 +6267,24 @@ static void rtcore_initialize_continuation_boundary_state_from_request(
     rtcore_seed_continuation_boundary_state_from_completed_lanes(state);
 }
 
+static void rtcore_record_continuation_boundary_reason(
+    const char *boundary_reason)
+{
+    if (!boundary_reason) {
+        return;
+    }
+    if (strcmp(boundary_reason, "synthetic_split") == 0) {
+        g_rtcore_continuation_stats
+            .rtcore_continuation_synthetic_boundary_count++;
+    } else if (strcmp(boundary_reason, "oracle_anyhit") == 0) {
+        g_rtcore_continuation_stats
+            .rtcore_continuation_oracle_anyhit_boundary_count++;
+    } else if (strcmp(boundary_reason, "oracle_intersection") == 0) {
+        g_rtcore_continuation_stats
+            .rtcore_continuation_oracle_intersection_boundary_count++;
+    }
+}
+
 static bool rtcore_mark_continuation_boundary(
     rtcore_replay_lane_request *request, unsigned long long service_cycle,
     const char *boundary_reason)
@@ -6283,6 +6316,7 @@ static bool rtcore_mark_continuation_boundary(
     state.boundary_reached_mask |= lane_mask;
     state.resume_required_mask |= lane_mask;
     state.shader_required_mask |= lane_mask;
+    rtcore_record_continuation_boundary_reason(boundary_reason);
     const bool packet_ready =
         (state.boundary_reached_mask & state.active_mask) ==
         state.active_mask;
