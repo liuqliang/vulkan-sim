@@ -518,6 +518,58 @@ struct rtcore_replay_warp_completion_entry_key {
     }
 };
 
+enum rtcore_continuation_packet_kind {
+    RTCORE_CONTINUATION_PACKET_FINAL = 0,
+    RTCORE_CONTINUATION_PACKET_CONTINUATION = 1,
+};
+
+struct rtcore_continuation_return_packet {
+    rtcore_continuation_return_packet()
+        : valid(false), kind(RTCORE_CONTINUATION_PACKET_FINAL),
+          owner_hw_sid(0), warp_uid(0), warp_id(0), active_mask(0),
+          boundary_reached_mask(0), terminal_mask(0),
+          resume_required_mask(0), shader_required_mask(0), miss_mask(0),
+          closest_hit_mask(0), fault_mask(0), continuation_depth(0)
+    {
+    }
+
+    bool valid;
+    rtcore_continuation_packet_kind kind;
+    unsigned owner_hw_sid;
+    unsigned warp_uid;
+    unsigned warp_id;
+    unsigned active_mask;
+    unsigned boundary_reached_mask;
+    unsigned terminal_mask;
+    unsigned resume_required_mask;
+    unsigned shader_required_mask;
+    unsigned miss_mask;
+    unsigned closest_hit_mask;
+    unsigned fault_mask;
+    unsigned continuation_depth;
+};
+
+struct rtcore_continuation_warp_boundary_state {
+    rtcore_continuation_warp_boundary_state()
+        : valid(false), owner_hw_sid(0), warp_uid(0), warp_id(0),
+          active_mask(0), boundary_reached_mask(0), terminal_mask(0),
+          resume_required_mask(0), shader_required_mask(0),
+          continuation_depth(0)
+    {
+    }
+
+    bool valid;
+    unsigned owner_hw_sid;
+    unsigned warp_uid;
+    unsigned warp_id;
+    unsigned active_mask;
+    unsigned boundary_reached_mask;
+    unsigned terminal_mask;
+    unsigned resume_required_mask;
+    unsigned shader_required_mask;
+    unsigned continuation_depth;
+};
+
 struct rtcore_replay_warp_completion_entry_state {
     bool valid;
     rtcore_replay_warp_completion_entry_key key;
@@ -558,6 +610,9 @@ struct rtcore_replay_warp_completion_entry_snapshot {
 static std::map<rtcore_replay_warp_completion_entry_key,
                 rtcore_replay_warp_completion_entry_state>
     g_rtcore_replay_warp_completion_entries;
+static std::map<rtcore_replay_warp_completion_entry_key,
+                rtcore_continuation_warp_boundary_state>
+    g_rtcore_continuation_warp_boundary_states;
 
 struct rtcore_replay_issue_budget {
     unsigned node_issue_budget;
@@ -572,6 +627,27 @@ struct rtcore_replay_scoreboard_result_handoff_stats {
     unsigned blocked_count;
     unsigned max_ready_warp_count;
     unsigned max_blocked_count;
+};
+
+struct rtcore_continuation_stats {
+    rtcore_continuation_stats()
+        : rtcore_continuation_packet_count(0),
+          rtcore_continuation_lane_count(0),
+          rtcore_continuation_warp_wakeup_count(0),
+          rtcore_continuation_wait_cycles(0),
+          rtcore_modeled_resubmit_count(0),
+          rtcore_modeled_resubmit_lane_count(0),
+          rtcore_continuation_max_depth(0)
+    {
+    }
+
+    unsigned long long rtcore_continuation_packet_count;
+    unsigned long long rtcore_continuation_lane_count;
+    unsigned long long rtcore_continuation_warp_wakeup_count;
+    unsigned long long rtcore_continuation_wait_cycles;
+    unsigned long long rtcore_modeled_resubmit_count;
+    unsigned long long rtcore_modeled_resubmit_lane_count;
+    unsigned rtcore_continuation_max_depth;
 };
 
 struct rtcore_replay_service_cycle_identity_snapshot {
@@ -936,6 +1012,7 @@ static rtcore_replay_unit_arbitration_stats
     g_rtcore_replay_unit_arbitration_stats;
 static rtcore_replay_scoreboard_result_handoff_stats
     g_rtcore_replay_scoreboard_result_handoff_stats;
+static rtcore_continuation_stats g_rtcore_continuation_stats;
 static rtcore_replay_data_path_access_stats
     g_rtcore_replay_data_path_access_stats;
 static rtcore_replay_resource_route_stats g_rtcore_replay_resource_route_stats;
@@ -4296,6 +4373,13 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            "scoreboard_handoff_blocked_count=%u "
            "scoreboard_handoff_max_blocked_count=%u "
            "rtcore_stall_completion_backpressure_blocked_count=%u "
+           "rtcore_continuation_packet_count=%llu "
+           "rtcore_continuation_lane_count=%llu "
+           "rtcore_continuation_warp_wakeup_count=%llu "
+           "rtcore_continuation_wait_cycles=%llu "
+           "rtcore_modeled_resubmit_count=%llu "
+           "rtcore_modeled_resubmit_lane_count=%llu "
+           "rtcore_continuation_max_depth=%u "
            "data_path_lane_request_state_identity_accesses=%u "
            "data_path_request_state_accesses=%u "
            "data_path_max_lane_request_state_entries=%u "
@@ -4352,6 +4436,13 @@ static void rtcore_maybe_log_replay_model_summary_stats(
            scoreboard_handoff_blocked_count,
            scoreboard_handoff_max_blocked_count,
            scoreboard_handoff_blocked_count,
+           g_rtcore_continuation_stats.rtcore_continuation_packet_count,
+           g_rtcore_continuation_stats.rtcore_continuation_lane_count,
+           g_rtcore_continuation_stats.rtcore_continuation_warp_wakeup_count,
+           g_rtcore_continuation_stats.rtcore_continuation_wait_cycles,
+           g_rtcore_continuation_stats.rtcore_modeled_resubmit_count,
+           g_rtcore_continuation_stats.rtcore_modeled_resubmit_lane_count,
+           g_rtcore_continuation_stats.rtcore_continuation_max_depth,
            data_path_access.lane_request_state_identity_accesses,
            data_path_access.request_state_accesses,
            data_path_max_lane_request_state_entries,
