@@ -570,6 +570,25 @@ struct rtcore_continuation_warp_boundary_state {
     unsigned continuation_depth;
 };
 
+struct rtcore_resident_warp_continuation_state {
+    rtcore_resident_warp_continuation_state()
+        : valid(false), owner_hw_sid(0), warp_uid(0), warp_id(0),
+          active_mask(0), resume_required_mask(0), shader_required_mask(0),
+          ready_cycle(0), continuation_depth(0)
+    {
+    }
+
+    bool valid;
+    unsigned owner_hw_sid;
+    unsigned warp_uid;
+    unsigned warp_id;
+    unsigned active_mask;
+    unsigned resume_required_mask;
+    unsigned shader_required_mask;
+    unsigned long long ready_cycle;
+    unsigned continuation_depth;
+};
+
 struct rtcore_replay_warp_completion_entry_state {
     bool valid;
     rtcore_replay_warp_completion_entry_key key;
@@ -613,6 +632,9 @@ static std::map<rtcore_replay_warp_completion_entry_key,
 static std::map<rtcore_replay_warp_completion_entry_key,
                 rtcore_continuation_warp_boundary_state>
     g_rtcore_continuation_warp_boundary_states;
+static std::map<rtcore_replay_warp_completion_entry_key,
+                rtcore_resident_warp_continuation_state>
+    g_rtcore_resident_warp_continuation_states;
 
 struct rtcore_replay_issue_budget {
     unsigned node_issue_budget;
@@ -6630,6 +6652,121 @@ static bool rtcore_service_request_state_unit_wake_requests_for_owner(
         owner_hw_sid, rtcore_replay_unit_wake_budget_config());
 }
 
+static unsigned rtcore_continuation_count_lanes(unsigned mask)
+{
+    unsigned count = 0;
+    while (mask) {
+        count += mask & 1u;
+        mask >>= 1;
+    }
+    return count;
+}
+
+static rtcore_replay_warp_completion_entry_key
+rtcore_make_continuation_warp_key(
+    const rtcore_continuation_return_packet &packet)
+{
+    rtcore_replay_warp_completion_entry_key key = {};
+    key.owner_hw_sid = packet.owner_hw_sid;
+    key.warp_uid = packet.warp_uid;
+    key.warp_id = packet.warp_id;
+    key.active_mask = packet.active_mask;
+    return key;
+}
+
+static bool rtcore_mark_resident_warp_continuation_wakeup(
+    const rtcore_continuation_return_packet &packet,
+    unsigned long long service_cycle)
+{
+    if (!rtcore_continuation_model_enabled() || !packet.valid ||
+        packet.kind != RTCORE_CONTINUATION_PACKET_CONTINUATION) {
+        return false;
+    }
+
+    const rtcore_replay_warp_completion_entry_key key =
+        rtcore_make_continuation_warp_key(packet);
+    if (g_rtcore_continuation_warp_boundary_states.find(key) ==
+        g_rtcore_continuation_warp_boundary_states.end()) {
+        printf("GPGPU-Sim RTCORE_CONTINUATION_WARP_WAKEUP "
+               "wakeup_result=fail_closed owner_hw_sid=%u warp_uid=%u "
+               "warp_id=%u active_mask=0x%08x service_cycle=%llu\n",
+               packet.owner_hw_sid, packet.warp_uid, packet.warp_id,
+               packet.active_mask, service_cycle);
+        fflush(stdout);
+        return false;
+    }
+
+    rtcore_resident_warp_continuation_state &state =
+        g_rtcore_resident_warp_continuation_states[key];
+    state.valid = true;
+    state.owner_hw_sid = packet.owner_hw_sid;
+    state.warp_uid = packet.warp_uid;
+    state.warp_id = packet.warp_id;
+    state.active_mask = packet.active_mask;
+    state.resume_required_mask = packet.resume_required_mask;
+    state.shader_required_mask = packet.shader_required_mask;
+    state.ready_cycle =
+        service_cycle + rtcore_continuation_shader_latency_cycles_config();
+    state.continuation_depth = packet.continuation_depth;
+    g_rtcore_continuation_stats.rtcore_continuation_warp_wakeup_count++;
+
+    printf("GPGPU-Sim RTCORE_CONTINUATION_WARP_WAKEUP "
+           "wakeup_result=matched owner_hw_sid=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x resume_required_mask=0x%08x "
+           "shader_required_mask=0x%08x continuation_depth=%u "
+           "ready_cycle=%llu service_cycle=%llu\n",
+           state.owner_hw_sid, state.warp_uid, state.warp_id,
+           state.active_mask, state.resume_required_mask,
+           state.shader_required_mask, state.continuation_depth,
+           state.ready_cycle, service_cycle);
+    fflush(stdout);
+    return true;
+}
+
+static bool rtcore_service_resident_warp_continuation_for_owner(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    if (!rtcore_continuation_model_enabled()) {
+        return false;
+    }
+
+    for (std::map<rtcore_replay_warp_completion_entry_key,
+                  rtcore_resident_warp_continuation_state>::iterator it =
+             g_rtcore_resident_warp_continuation_states.begin();
+         it != g_rtcore_resident_warp_continuation_states.end(); ++it) {
+        rtcore_resident_warp_continuation_state &state = it->second;
+        if (!state.valid || state.owner_hw_sid != owner_hw_sid) {
+            continue;
+        }
+        if (service_cycle < state.ready_cycle) {
+            g_rtcore_continuation_stats.rtcore_continuation_wait_cycles++;
+            continue;
+        }
+
+        g_rtcore_continuation_stats.rtcore_modeled_resubmit_count++;
+        g_rtcore_continuation_stats.rtcore_modeled_resubmit_lane_count +=
+            rtcore_continuation_count_lanes(state.resume_required_mask);
+        if (state.continuation_depth >
+            g_rtcore_continuation_stats.rtcore_continuation_max_depth) {
+            g_rtcore_continuation_stats.rtcore_continuation_max_depth =
+                state.continuation_depth;
+        }
+
+        printf("GPGPU-Sim RTCORE_CONTINUATION_MODELED_RESUBMIT "
+               "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+               "resume_required_mask=0x%08x shader_required_mask=0x%08x "
+               "continuation_depth=%u service_cycle=%llu\n",
+               state.owner_hw_sid, state.warp_uid, state.warp_id,
+               state.active_mask, state.resume_required_mask,
+               state.shader_required_mask, state.continuation_depth,
+               service_cycle);
+        fflush(stdout);
+        g_rtcore_resident_warp_continuation_states.erase(it);
+        return true;
+    }
+    return false;
+}
+
 static rtcore_replay_service_tick_result
 rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
                                      unsigned long long service_cycle = 0)
@@ -6639,6 +6776,7 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
     rtcore_replay_service_cycle_identity_snapshot unit_identity = {};
     rtcore_replay_service_cycle_identity_snapshot ready_identity = {};
     rtcore_replay_service_cycle_identity_snapshot scoreboard_handoff_identity = {};
+    rtcore_replay_service_cycle_identity_snapshot continuation_identity = {};
     const bool lane_state_admission_progressed =
         rtcore_try_drain_replay_lane_request_state_capacity_pending_admissions(
             owner_hw_sid, service_cycle);
@@ -6664,15 +6802,26 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
         rtcore_service_replay_scoreboard_handoff_requests_for_owner(
             owner_hw_sid, rtcore_replay_issue_budget_config(),
             &scoreboard_handoff_identity, service_cycle);
+    const bool continuation_progressed =
+        rtcore_service_resident_warp_continuation_for_owner(owner_hw_sid,
+                                                            service_cycle);
+    if (continuation_progressed) {
+        continuation_identity.valid = true;
+        continuation_identity.ready_progressed = true;
+        continuation_identity.owner_hw_sid = owner_hw_sid;
+    }
     result.unit_wake_progressed = unit_progressed;
     result.ready_issue_progressed = ready_issue_progressed;
     result.scoreboard_handoff_progressed = scoreboard_handoff_progressed;
     result.ready_progressed =
         lane_state_admission_progressed || unit_progressed ||
-        ready_issue_progressed || scoreboard_handoff_progressed;
+        ready_issue_progressed || scoreboard_handoff_progressed ||
+        continuation_progressed;
     result.progressed = result.memory_progressed || result.ready_progressed;
     if (scoreboard_handoff_progressed) {
         result.last_progress_identity = scoreboard_handoff_identity;
+    } else if (continuation_progressed) {
+        result.last_progress_identity = continuation_identity;
     } else if (ready_issue_progressed) {
         result.last_progress_identity = ready_identity;
     } else if (unit_progressed) {
