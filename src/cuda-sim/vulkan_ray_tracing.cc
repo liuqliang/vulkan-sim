@@ -7701,6 +7701,8 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
     unsigned continuation_lane_mask, unsigned unsupported_reason_mask,
     unsigned handoff_resume_group_valid_mask, unsigned next_active_mask,
     unsigned final_like_mask, unsigned missing_resume_handoff_mask,
+    unsigned handoff_result_consume_mask,
+    unsigned resume_handoff_publish_mask,
     bool pre_submit_guard_passed,
     unsigned long long shader_side_decision_cycle)
 {
@@ -7720,6 +7722,7 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
     const bool can_enqueue = rtcore_continuation_model_enabled() &&
                              bridge_enabled && pre_submit_guard_passed &&
                              next_active_mask != 0 &&
+                             resume_handoff_publish_mask == next_active_mask &&
                              missing_resume_handoff_mask == 0 &&
                              boundary_found;
     const char *bridge_action = "disabled_observe_only";
@@ -7732,6 +7735,8 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
     } else if (!pre_submit_guard_passed ||
                missing_resume_handoff_mask != 0) {
         bridge_action = "pre_submit_guard_failed";
+    } else if (resume_handoff_publish_mask != next_active_mask) {
+        bridge_action = "resume_handoff_publish_incomplete";
     } else if (next_active_mask == 0) {
         bridge_action = "no_resubmit_lanes";
     } else if (!boundary_found) {
@@ -7765,6 +7770,8 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
            "handoff_resume_group_valid_mask=0x%08x "
            "next_active_mask=0x%08x final_like_mask=0x%08x "
            "missing_resume_handoff_mask=0x%08x boundary_state_found=%u "
+           "handoff_result_consume_mask=0x%08x "
+           "resume_handoff_publish_mask=0x%08x "
            "bridge_action=%s actual_resubmit_state_enqueued=%u "
            "shader_side_decision_cycle=%llu\n",
            owner_hw_sid, warp_uid, warp_id, active_mask,
@@ -7773,6 +7780,7 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
            terminal_lane_mask, continuation_lane_mask, unsupported_reason_mask,
            handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
            missing_resume_handoff_mask, boundary_found ? 1u : 0u,
+           handoff_result_consume_mask, resume_handoff_publish_mask,
            bridge_action, actual_resubmit_state_enqueued ? 1u : 0u,
            shader_side_decision_cycle);
     fflush(stdout);

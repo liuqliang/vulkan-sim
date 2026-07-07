@@ -187,6 +187,8 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
     unsigned continuation_lane_mask, unsigned unsupported_reason_mask,
     unsigned handoff_resume_group_valid_mask, unsigned next_active_mask,
     unsigned final_like_mask, unsigned missing_resume_handoff_mask,
+    unsigned handoff_result_consume_mask,
+    unsigned resume_handoff_publish_mask,
     bool pre_submit_guard_passed,
     unsigned long long shader_side_decision_cycle);
 
@@ -9124,12 +9126,19 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
       completion_valid_mask & ~issued_active_mask;
   const bool pre_submit_guard_passed =
       missing_resume_handoff_mask == 0 && masked_off_lane_consume_mask == 0;
+  const unsigned handoff_result_consume_mask = completion_visible_mask;
+  const unsigned resume_handoff_publish_mask =
+      pre_submit_guard_passed ? next_active_mask : 0;
 
   event->shader_continuation_loop_decision_logged = true;
   event->shader_continuation_next_active_mask = next_active_mask;
   event->shader_continuation_final_like_mask = final_like_mask;
   event->shader_continuation_missing_resume_handoff_mask =
       missing_resume_handoff_mask;
+  event->shader_continuation_handoff_consume_mask =
+      handoff_result_consume_mask;
+  event->shader_continuation_resume_handoff_publish_mask =
+      resume_handoff_publish_mask;
   event->shader_continuation_decision_cycle = current_cycle;
 
   g_rtcore_scoreboard_visible_wake_stats.shader_continuation_decision_count++;
@@ -9146,7 +9155,8 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
       packet_schema_version, completion_visible_mask, terminal_lane_mask,
       continuation_lane_mask, unsupported_reason_mask,
       handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
-      missing_resume_handoff_mask, pre_submit_guard_passed, current_cycle);
+      missing_resume_handoff_mask, handoff_result_consume_mask,
+      resume_handoff_publish_mask, pre_submit_guard_passed, current_cycle);
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_LOOP_DECISION "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
@@ -9156,6 +9166,8 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "handoff_resume_group_valid_mask=0x%08x "
          "next_active_mask=0x%08x final_like_mask=0x%08x "
          "missing_resume_handoff_mask=0x%08x "
+         "shader_continuation_handoff_consume_mask=0x%08x "
+         "shader_continuation_resume_handoff_publish_mask=0x%08x "
          "masked_off_lane_consume_mask=0x%08x "
          "pre_submit_guard_passed=%u actual_resubmit_issued=0 "
          "shader_continuation_bridge_enqueued=%u "
@@ -9164,9 +9176,10 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          packet_schema_version, completion_visible_mask, terminal_lane_mask,
          continuation_lane_mask, unsupported_reason_mask,
          handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
-         missing_resume_handoff_mask, masked_off_lane_consume_mask,
-         pre_submit_guard_passed ? 1u : 0u, bridge_enqueued ? 1u : 0u,
-         current_cycle);
+         missing_resume_handoff_mask, handoff_result_consume_mask,
+         resume_handoff_publish_mask, masked_off_lane_consume_mask,
+         pre_submit_guard_passed ? 1u : 0u,
+         bridge_enqueued ? 1u : 0u, current_cycle);
   fflush(stdout);
 }
 
@@ -9226,6 +9239,8 @@ void rt_unit::enqueue_synthetic_completion(
   event.shader_continuation_next_active_mask = 0;
   event.shader_continuation_final_like_mask = 0;
   event.shader_continuation_missing_resume_handoff_mask = 0;
+  event.shader_continuation_handoff_consume_mask = 0;
+  event.shader_continuation_resume_handoff_publish_mask = 0;
   event.shader_continuation_decision_cycle = 0;
   claim_adapter_completion_for_issue(&event);
   rtcore_completion_timing_snapshot timing_snapshot =

@@ -1702,6 +1702,8 @@ class rt_unit : public pipelined_simd_unit {
 	        unsigned shader_continuation_next_active_mask;
 	        unsigned shader_continuation_final_like_mask;
 	        unsigned shader_continuation_missing_resume_handoff_mask;
+	        unsigned shader_continuation_handoff_consume_mask;
+	        unsigned shader_continuation_resume_handoff_publish_mask;
 	        unsigned long long shader_continuation_decision_cycle;
 	      };
       struct rtcore_replay_release_identity_join_snapshot {
