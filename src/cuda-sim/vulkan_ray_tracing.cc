@@ -7929,12 +7929,18 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
         g_rtcore_continuation_warp_boundary_states.find(key);
     const bool boundary_found =
         boundary_it != g_rtcore_continuation_warp_boundary_states.end();
-    const bool can_enqueue = rtcore_continuation_model_enabled() &&
-                             bridge_enabled && pre_submit_guard_passed &&
-                             next_active_mask != 0 &&
-                             resume_handoff_publish_mask == next_active_mask &&
-                             missing_resume_handoff_mask == 0 &&
-                             boundary_found;
+    const bool common_enqueue_guard =
+        rtcore_continuation_model_enabled() && bridge_enabled &&
+        pre_submit_guard_passed &&
+        resume_handoff_publish_mask == next_active_mask &&
+        missing_resume_handoff_mask == 0 && boundary_found;
+    const bool can_enqueue_reactivation =
+        common_enqueue_guard && next_active_mask != 0;
+    const bool can_enqueue_release_only =
+        common_enqueue_guard && next_active_mask == 0 &&
+        continuation_lane_mask != 0;
+    const bool can_enqueue =
+        can_enqueue_reactivation || can_enqueue_release_only;
     const char *bridge_action = "disabled_observe_only";
     bool actual_resubmit_state_enqueued = false;
 
@@ -7968,7 +7974,9 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
         state.continuation_depth = boundary_it->second.continuation_depth;
         g_rtcore_continuation_stats.rtcore_continuation_warp_wakeup_count++;
         actual_resubmit_state_enqueued = true;
-        bridge_action = "enqueued_reactivation";
+        bridge_action = can_enqueue_reactivation
+                            ? "enqueued_reactivation"
+                            : "enqueued_release_only_reconciliation";
     }
 
     printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_RESUBMIT_BRIDGE "
@@ -8081,7 +8089,7 @@ static unsigned rtcore_reactivate_resident_warp_continuation_lanes(
     unsigned long long service_cycle)
 {
     unsigned reactivated = 0;
-    if (!state.valid || state.resume_required_mask == 0) {
+    if (!state.valid) {
         return reactivated;
     }
 
@@ -8164,24 +8172,36 @@ static bool rtcore_service_resident_warp_continuation_for_owner(
         const unsigned reactivated_lane_count =
             rtcore_reactivate_resident_warp_continuation_lanes(
                 state, service_cycle);
-        g_rtcore_continuation_stats.rtcore_modeled_resubmit_count++;
-        g_rtcore_continuation_stats.rtcore_modeled_resubmit_lane_count +=
-            reactivated_lane_count;
         if (state.continuation_depth >
             g_rtcore_continuation_stats.rtcore_continuation_max_depth) {
             g_rtcore_continuation_stats.rtcore_continuation_max_depth =
                 state.continuation_depth;
         }
 
-        printf("GPGPU-Sim RTCORE_CONTINUATION_MODELED_RESUBMIT "
-               "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
-               "resume_required_mask=0x%08x shader_required_mask=0x%08x "
-               "continuation_depth=%u reactivated_lane_count=%u "
-               "service_cycle=%llu\n",
-               state.owner_hw_sid, state.warp_uid, state.warp_id,
-               state.active_mask, state.resume_required_mask,
-               state.shader_required_mask, state.continuation_depth,
-               reactivated_lane_count, service_cycle);
+        if (reactivated_lane_count != 0) {
+            g_rtcore_continuation_stats.rtcore_modeled_resubmit_count++;
+            g_rtcore_continuation_stats.rtcore_modeled_resubmit_lane_count +=
+                reactivated_lane_count;
+            printf("GPGPU-Sim RTCORE_CONTINUATION_MODELED_RESUBMIT "
+                   "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                   "active_mask=0x%08x resume_required_mask=0x%08x "
+                   "shader_required_mask=0x%08x continuation_depth=%u "
+                   "reactivated_lane_count=%u service_cycle=%llu\n",
+                   state.owner_hw_sid, state.warp_uid, state.warp_id,
+                   state.active_mask, state.resume_required_mask,
+                   state.shader_required_mask, state.continuation_depth,
+                   reactivated_lane_count, service_cycle);
+        } else {
+            printf("GPGPU-Sim RTCORE_CONTINUATION_RECONCILE_ONLY "
+                   "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                   "active_mask=0x%08x next_active_mask=0x%08x "
+                   "shader_required_mask=0x%08x continuation_depth=%u "
+                   "service_cycle=%llu\n",
+                   state.owner_hw_sid, state.warp_uid, state.warp_id,
+                   state.active_mask, state.resume_required_mask,
+                   state.shader_required_mask, state.continuation_depth,
+                   service_cycle);
+        }
         fflush(stdout);
         g_rtcore_resident_warp_continuation_states.erase(it);
         return true;
