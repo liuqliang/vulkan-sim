@@ -7635,6 +7635,27 @@ rtcore_make_continuation_warp_key(
     return key;
 }
 
+static bool rtcore_shader_continuation_bridge_scoreboard_packet_ready(
+    const rtcore_continuation_return_packet &packet)
+{
+    const rtcore_replay_warp_completion_entry_key key =
+        rtcore_make_continuation_warp_key(packet);
+    std::map<rtcore_replay_warp_completion_entry_key,
+             rtcore_replay_warp_completion_entry_state>::iterator it =
+        g_rtcore_replay_warp_completion_entries.find(key);
+    if (it == g_rtcore_replay_warp_completion_entries.end()) {
+        return false;
+    }
+
+    rtcore_update_replay_warp_completion_entry_state(&it->second);
+    const unsigned resume_mask =
+        packet.resume_required_mask & packet.active_mask;
+    return it->second.valid && it->second.all_active_lanes_complete &&
+           (it->second.continuation_lane_mask & resume_mask) == resume_mask &&
+           (it->second.handoff_resume_group_valid_mask & resume_mask) ==
+               resume_mask;
+}
+
 static bool rtcore_mark_resident_warp_continuation_wakeup(
     const rtcore_continuation_return_packet &packet,
     unsigned long long service_cycle)
@@ -7644,14 +7665,23 @@ static bool rtcore_mark_resident_warp_continuation_wakeup(
         return false;
     }
     if (rtcore_shader_continuation_resubmit_bridge_enabled()) {
+        if (rtcore_shader_continuation_bridge_scoreboard_packet_ready(packet)) {
+            printf("GPGPU-Sim RTCORE_CONTINUATION_WARP_WAKEUP "
+                   "wakeup_result=deferred_to_shadercore_bridge "
+                   "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                   "active_mask=0x%08x service_cycle=%llu\n",
+                   packet.owner_hw_sid, packet.warp_uid, packet.warp_id,
+                   packet.active_mask, service_cycle);
+            fflush(stdout);
+            return false;
+        }
         printf("GPGPU-Sim RTCORE_CONTINUATION_WARP_WAKEUP "
-               "wakeup_result=deferred_to_shadercore_bridge owner_hw_sid=%u "
-               "warp_uid=%u warp_id=%u active_mask=0x%08x "
+               "wakeup_result=bridge_gate_fallback_internal_wakeup "
+               "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
                "service_cycle=%llu\n",
                packet.owner_hw_sid, packet.warp_uid, packet.warp_id,
                packet.active_mask, service_cycle);
         fflush(stdout);
-        return false;
     }
 
     const rtcore_replay_warp_completion_entry_key key =
