@@ -1698,6 +1698,11 @@ class rt_unit : public pipelined_simd_unit {
 	        bool scoreboard_packet_acquired;
 	        unsigned long long waiting_rtcore_enqueue_cycle;
 	        unsigned long long scoreboard_wakeup_cycle;
+	        bool shader_continuation_loop_decision_logged;
+	        unsigned shader_continuation_next_active_mask;
+	        unsigned shader_continuation_final_like_mask;
+	        unsigned shader_continuation_missing_resume_handoff_mask;
+	        unsigned long long shader_continuation_decision_cycle;
 	      };
       struct rtcore_replay_release_identity_join_snapshot {
         rtcore_replay_release_identity_join_snapshot()
@@ -2129,6 +2134,13 @@ class rt_unit : public pipelined_simd_unit {
 	          const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
 	          unsigned packet_schema_version, unsigned completion_valid_mask,
 	          unsigned terminal_lane_mask, unsigned continuation_lane_mask,
+	          unsigned long long current_cycle) const;
+	      void rtcore_record_shader_continuation_loop_decision(
+	          const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
+	          unsigned packet_schema_version, unsigned completion_valid_mask,
+	          unsigned terminal_lane_mask, unsigned continuation_lane_mask,
+	          unsigned unsupported_reason_mask,
+	          unsigned handoff_resume_group_valid_mask,
 	          unsigned long long current_cycle) const;
 	      void rtcore_apply_synthetic_release_snapshot(
 	          const rtcore_synthetic_release_snapshot &snapshot) const;

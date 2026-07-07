@@ -951,6 +951,9 @@ struct rtcore_scoreboard_visible_wake_stats {
   unsigned long long waiting_rtcore_count;
   unsigned long long completion_ready_but_scoreboard_blocked_count;
   unsigned long long resident_warp_wakeup_count;
+  unsigned long long shader_continuation_decision_count;
+  unsigned long long shader_continuation_resubmit_candidate_count;
+  unsigned long long shader_continuation_pre_submit_blocked_count;
   unsigned long long waiting_rtcore_cycle_total;
   unsigned long long max_waiting_rtcore_cycles;
 };
@@ -9085,6 +9088,71 @@ void rt_unit::rtcore_record_resident_warp_wakeup(
   fflush(stdout);
 }
 
+void rt_unit::rtcore_record_shader_continuation_loop_decision(
+    const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
+    unsigned packet_schema_version, unsigned completion_valid_mask,
+    unsigned terminal_lane_mask, unsigned continuation_lane_mask,
+    unsigned unsupported_reason_mask, unsigned handoff_resume_group_valid_mask,
+    unsigned long long current_cycle) const {
+  if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT || event == NULL ||
+      event->shader_continuation_loop_decision_logged) {
+    return;
+  }
+
+  const unsigned issued_active_mask = event->issued_active_mask;
+  const unsigned completion_visible_mask =
+      issued_active_mask & completion_valid_mask;
+  const unsigned continuation_candidate_mask =
+      completion_visible_mask & continuation_lane_mask &
+      ~unsupported_reason_mask;
+  const unsigned missing_resume_handoff_mask =
+      continuation_candidate_mask & ~handoff_resume_group_valid_mask;
+  const unsigned next_active_mask =
+      continuation_candidate_mask & handoff_resume_group_valid_mask;
+  const unsigned final_like_mask =
+      completion_visible_mask & terminal_lane_mask & ~next_active_mask;
+  const unsigned masked_off_lane_consume_mask =
+      completion_valid_mask & ~issued_active_mask;
+  const bool pre_submit_guard_passed =
+      missing_resume_handoff_mask == 0 && masked_off_lane_consume_mask == 0;
+
+  event->shader_continuation_loop_decision_logged = true;
+  event->shader_continuation_next_active_mask = next_active_mask;
+  event->shader_continuation_final_like_mask = final_like_mask;
+  event->shader_continuation_missing_resume_handoff_mask =
+      missing_resume_handoff_mask;
+  event->shader_continuation_decision_cycle = current_cycle;
+
+  g_rtcore_scoreboard_visible_wake_stats.shader_continuation_decision_count++;
+  if (next_active_mask != 0) {
+    g_rtcore_scoreboard_visible_wake_stats
+        .shader_continuation_resubmit_candidate_count++;
+  }
+  if (!pre_submit_guard_passed) {
+    g_rtcore_scoreboard_visible_wake_stats
+        .shader_continuation_pre_submit_blocked_count++;
+  }
+
+  printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_LOOP_DECISION "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "packet_schema_version=%u completion_visible_mask=0x%08x "
+         "terminal_lane_mask=0x%08x continuation_lane_mask=0x%08x "
+         "unsupported_reason_mask=0x%08x "
+         "handoff_resume_group_valid_mask=0x%08x "
+         "next_active_mask=0x%08x final_like_mask=0x%08x "
+         "missing_resume_handoff_mask=0x%08x "
+         "masked_off_lane_consume_mask=0x%08x "
+         "pre_submit_guard_passed=%u actual_resubmit_issued=0 "
+         "shader_side_decision_cycle=%llu\n",
+         m_sid, event->warp_uid, event->warp_id, issued_active_mask,
+         packet_schema_version, completion_visible_mask, terminal_lane_mask,
+         continuation_lane_mask, unsupported_reason_mask,
+         handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
+         missing_resume_handoff_mask, masked_off_lane_consume_mask,
+         pre_submit_guard_passed ? 1u : 0u, current_cycle);
+  fflush(stdout);
+}
+
 void rt_unit::enqueue_synthetic_completion(
     const warp_inst_t &inst, unsigned long long current_cycle) {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
@@ -9137,6 +9205,11 @@ void rt_unit::enqueue_synthetic_completion(
   event.scoreboard_packet_acquired = false;
   event.waiting_rtcore_enqueue_cycle = current_cycle;
   event.scoreboard_wakeup_cycle = 0;
+  event.shader_continuation_loop_decision_logged = false;
+  event.shader_continuation_next_active_mask = 0;
+  event.shader_continuation_final_like_mask = 0;
+  event.shader_continuation_missing_resume_handoff_mask = 0;
+  event.shader_continuation_decision_cycle = 0;
   claim_adapter_completion_for_issue(&event);
   rtcore_completion_timing_snapshot timing_snapshot =
       rtcore_make_completion_timing_snapshot(event);
@@ -10058,6 +10131,15 @@ void rt_unit::cycle() {
 	                candidate_completion.lane_completion_valid_mask,
 	                candidate_completion.terminal_lane_mask,
 	                candidate_completion.continuation_lane_mask, current_cycle);
+	            rtcore_record_shader_continuation_loop_decision(
+	                it->second, &release_event->second,
+	                candidate_completion.packet_schema_version,
+	                candidate_completion.lane_completion_valid_mask,
+	                candidate_completion.terminal_lane_mask,
+	                candidate_completion.continuation_lane_mask,
+	                candidate_completion.unsupported_reason_mask,
+	                candidate_completion.handoff_resume_group_valid_mask,
+	                current_cycle);
 	            rtcore_synthetic_release_snapshot release_snapshot =
 	                rtcore_make_synthetic_release_snapshot(
 	                    it->second, release_event->second, current_cycle);
