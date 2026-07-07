@@ -31,6 +31,7 @@
 #include <deque>
 #include <float.h>
 #include <limits.h>
+#include <map>
 #include <set>
 #include <stdlib.h>
 #include <string.h>
@@ -353,6 +354,110 @@ static bool rtcore_replay_cycle_hook_enabled() {
                          : 0;
   }
   return cached_enabled != 0;
+}
+
+struct rtcore_shader_continuation_dispatcher_pending_key {
+  unsigned owner_hw_sid;
+  unsigned warp_id;
+
+  bool operator<(
+      const rtcore_shader_continuation_dispatcher_pending_key &other) const {
+    if (owner_hw_sid != other.owner_hw_sid) {
+      return owner_hw_sid < other.owner_hw_sid;
+    }
+    return warp_id < other.warp_id;
+  }
+};
+
+struct rtcore_shader_continuation_dispatcher_pending_entry {
+  rtcore_shader_continuation_dispatcher_pending_entry()
+      : valid(false),
+        warp_uid(0),
+        warp_id(0),
+        active_mask(0),
+        target_shader_id_ready_mask(0),
+        candidate_mask(0),
+        enqueue_cycle(0) {}
+
+  bool valid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned active_mask;
+  unsigned target_shader_id_ready_mask;
+  unsigned candidate_mask;
+  unsigned long long enqueue_cycle;
+};
+
+static std::map<rtcore_shader_continuation_dispatcher_pending_key,
+                rtcore_shader_continuation_dispatcher_pending_entry>
+    g_rtcore_shader_continuation_dispatcher_pending;
+
+static void rtcore_enqueue_shader_continuation_dispatcher_pending(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned target_shader_id_ready_mask,
+    unsigned candidate_mask, unsigned long long enqueue_cycle) {
+  if (candidate_mask == 0) {
+    return;
+  }
+
+  rtcore_shader_continuation_dispatcher_pending_key key;
+  key.owner_hw_sid = owner_hw_sid;
+  key.warp_id = warp_id;
+
+  rtcore_shader_continuation_dispatcher_pending_entry entry;
+  entry.valid = true;
+  entry.warp_uid = warp_uid;
+  entry.warp_id = warp_id;
+  entry.active_mask = active_mask;
+  entry.target_shader_id_ready_mask = target_shader_id_ready_mask;
+  entry.candidate_mask = candidate_mask;
+  entry.enqueue_cycle = enqueue_cycle;
+
+  g_rtcore_shader_continuation_dispatcher_pending[key] = entry;
+}
+
+static void rtcore_record_shader_continuation_dispatcher_issue_site_preflight(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned dynamic_warp_id,
+    const warp_inst_t *pI, const active_mask_t &scheduler_active_mask,
+    unsigned long long current_cycle) {
+  rtcore_shader_continuation_dispatcher_pending_key key;
+  key.owner_hw_sid = owner_hw_sid;
+  key.warp_id = warp_id;
+
+  std::map<rtcore_shader_continuation_dispatcher_pending_key,
+           rtcore_shader_continuation_dispatcher_pending_entry>::iterator it =
+      g_rtcore_shader_continuation_dispatcher_pending.find(key);
+  if (it == g_rtcore_shader_continuation_dispatcher_pending.end() ||
+      !it->second.valid) {
+    return;
+  }
+
+  const rtcore_shader_continuation_dispatcher_pending_entry entry = it->second;
+  g_rtcore_shader_continuation_dispatcher_pending.erase(it);
+
+  const unsigned scheduler_mask =
+      static_cast<unsigned>(scheduler_active_mask.to_ulong());
+  const unsigned visible_candidate_mask = entry.candidate_mask & scheduler_mask;
+  const char *status =
+      visible_candidate_mask != 0 ? "pending_visible_at_shadercore_issue"
+                                  : "pending_mask_mismatch";
+  const unsigned long long static_inst_pc =
+      pI != NULL ? static_cast<unsigned long long>(pI->pc) : 0ull;
+
+  printf("GPGPU-Sim "
+         "RTCORE_SHADER_CONTINUATION_DISPATCHER_ISSUE_SITE_PREFLIGHT "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u dynamic_warp_id=%u "
+         "active_mask=0x%08x scheduler_active_mask=0x%08x "
+         "target_shader_id_ready_mask=0x%08x candidate_mask=0x%08x "
+         "visible_candidate_mask=0x%08x static_inst_pc=0x%llx "
+         "dispatcher_issue_site_pending_found=%u "
+         "shadercore_issue_site_preflight_consumed=1 "
+         "dispatcher_issue_site_status=%s enqueue_cycle=%llu "
+         "shadercore_issue_cycle=%llu\n",
+         owner_hw_sid, entry.warp_uid, entry.warp_id, dynamic_warp_id,
+         entry.active_mask, scheduler_mask, entry.target_shader_id_ready_mask,
+         entry.candidate_mask, visible_candidate_mask, static_inst_pc, 1u,
+         status, entry.enqueue_cycle, current_cycle);
 }
 
 struct rtcore_replay_cycle_hook_result {
@@ -5088,6 +5193,11 @@ void scheduler_unit::cycle() {
 
             const active_mask_t &active_mask =
                 m_shader->get_active_mask(warp_id, pI);
+            rtcore_record_shader_continuation_dispatcher_issue_site_preflight(
+                m_shader->get_sid(), warp_id, (*iter)->get_dynamic_warp_id(),
+                pI, active_mask,
+                m_shader->m_gpu->gpu_sim_cycle +
+                    m_shader->m_gpu->gpu_tot_sim_cycle);
 
             assert(warp(warp_id).inst_in_pipeline());
 
@@ -9087,6 +9197,11 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
                         ? "blocked_not_shadercore_issue_site"
                         : (invoked_mask != 0 ? "invoked_callshader"
                                              : "failed_callshader")));
+  if (direct_enabled && !unsafe_rtunit_call_enabled && candidate_mask != 0) {
+    rtcore_enqueue_shader_continuation_dispatcher_pending(
+        owner_hw_sid, warp_uid, warp_id, active_mask,
+        target_shader_id_ready_mask, candidate_mask, current_cycle);
+  }
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_DIRECT_CALLSHADER_ACTION "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
