@@ -8701,6 +8701,60 @@ static unsigned rtcore_shader_continuation_raw_fact_ready_mask(
   return mask;
 }
 
+static unsigned rtcore_shader_continuation_hit_record_selector_ready_mask(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned target_reason_mask) {
+  const unsigned required =
+      RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID |
+      RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID |
+      RTCORE_HANDOFF_RAW_FACT_INSTANCE_SBT_CONTRIBUTION_VALID;
+  unsigned mask = 0;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((target_reason_mask & lane_mask) == 0) {
+      continue;
+    }
+    if ((snapshot.handoff_hit_w15[lane] & required) == required) {
+      mask |= lane_mask;
+    }
+  }
+  return mask;
+}
+
+static unsigned rtcore_shader_continuation_hit_record_selector_key(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned lane) {
+  return snapshot.handoff_hit_w14[lane] +
+         snapshot.handoff_hit_w12[lane] * snapshot.handoff_hit_w9[lane] +
+         snapshot.handoff_hit_w8[lane];
+}
+
+static unsigned rtcore_shader_continuation_hit_record_selector_cohort_count(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned hit_record_selector_ready_mask) {
+  unsigned selector_keys[32] = {};
+  unsigned selector_key_count = 0;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((hit_record_selector_ready_mask & lane_mask) == 0) {
+      continue;
+    }
+    const unsigned key =
+        rtcore_shader_continuation_hit_record_selector_key(snapshot, lane);
+    bool seen = false;
+    for (unsigned index = 0; index < selector_key_count; ++index) {
+      if (selector_keys[index] == key) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen && selector_key_count < 32) {
+      selector_keys[selector_key_count++] = key;
+    }
+  }
+  return selector_key_count;
+}
+
 rt_unit::rtcore_completion_timing_snapshot
 rt_unit::rtcore_make_completion_timing_snapshot(
     const rtcore_synthetic_completion_event &event) const {
@@ -9315,6 +9369,8 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
     unsigned raw_fact_ray_sbt_inputs_ready_mask,
     unsigned raw_fact_geometry_primitive_ready_mask,
     unsigned raw_fact_instance_sbt_contribution_ready_mask,
+    unsigned raw_fact_hit_record_selector_formula_ready_mask,
+    unsigned raw_fact_hit_record_selector_formula_cohort_count,
     unsigned long long current_cycle) const {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT || event == NULL ||
       event->shader_continuation_loop_decision_logged) {
@@ -9492,6 +9548,8 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "target_selector_missing_hit_mask=0x%08x "
          "target_selector_fallback_reason_mask=0x%08x "
          "target_selector_cohort_count=%u "
+         "target_hit_record_selector_formula_ready_mask=0x%08x "
+         "target_hit_record_selector_formula_cohort_count=%u "
          "compatibility_target_resolution=selector_summary_only "
          "shader_side_decision_cycle=%llu\n",
          m_sid, event->warp_uid, event->warp_id, issued_active_mask,
@@ -9502,7 +9560,9 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          target_selector_missing_dispatch_mask,
          target_selector_missing_hit_mask,
          target_selector_fallback_reason_mask,
-         target_selector_cohort_count, current_cycle);
+         target_selector_cohort_count,
+         raw_fact_hit_record_selector_formula_ready_mask,
+         raw_fact_hit_record_selector_formula_cohort_count, current_cycle);
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_RAW_FACT_SUFFICIENCY_AUDIT "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
@@ -9512,6 +9572,8 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "raw_fact_ray_sbt_inputs_ready_mask=0x%08x "
          "raw_fact_geometry_primitive_ready_mask=0x%08x "
          "raw_fact_instance_sbt_contribution_ready_mask=0x%08x "
+         "raw_fact_hit_record_selector_formula_ready_mask=0x%08x "
+         "raw_fact_hit_record_selector_formula_cohort_count=%u "
          "raw_fact_sbt_region_metadata_ready_mask=0x%08x "
          "raw_fact_record_selector_ready_mask=0x%08x "
          "raw_fact_resolved_target_ready_mask=0x%08x "
@@ -9524,6 +9586,8 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          raw_fact_ray_sbt_inputs_ready_mask,
          raw_fact_geometry_primitive_ready_mask,
          raw_fact_instance_sbt_contribution_ready_mask,
+         raw_fact_hit_record_selector_formula_ready_mask,
+         raw_fact_hit_record_selector_formula_cohort_count,
          raw_fact_sbt_region_metadata_ready_mask,
          raw_fact_record_selector_ready_mask,
          raw_fact_resolved_target_ready_mask,
@@ -10583,6 +10647,14 @@ void rt_unit::cycle() {
 	                rtcore_shader_continuation_raw_fact_ready_mask(
 	                    candidate_completion, target_reason_mask,
 	                    RTCORE_HANDOFF_RAW_FACT_INSTANCE_SBT_CONTRIBUTION_VALID);
+	            const unsigned raw_fact_hit_record_selector_formula_ready_mask =
+	                rtcore_shader_continuation_hit_record_selector_ready_mask(
+	                    candidate_completion, target_reason_mask);
+	            const unsigned
+	                raw_fact_hit_record_selector_formula_cohort_count =
+	                    rtcore_shader_continuation_hit_record_selector_cohort_count(
+	                        candidate_completion,
+	                        raw_fact_hit_record_selector_formula_ready_mask);
 	            rtcore_record_shader_continuation_loop_decision(
 	                it->second, &release_event->second,
 	                candidate_completion.packet_schema_version,
@@ -10602,6 +10674,8 @@ void rt_unit::cycle() {
 	                raw_fact_ray_sbt_inputs_ready_mask,
 	                raw_fact_geometry_primitive_ready_mask,
 	                raw_fact_instance_sbt_contribution_ready_mask,
+	                raw_fact_hit_record_selector_formula_ready_mask,
+	                raw_fact_hit_record_selector_formula_cohort_count,
 	                current_cycle);
 	            rtcore_synthetic_release_snapshot release_snapshot =
 	                rtcore_make_synthetic_release_snapshot(
