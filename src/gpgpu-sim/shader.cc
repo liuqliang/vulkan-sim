@@ -252,6 +252,18 @@ static bool rtcore_shader_continuation_direct_callshader_unsafe_rtunit_call_enab
   return enabled != 0;
 }
 
+static bool rtcore_shader_continuation_issue_site_callshader_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_SHADER_CONTINUATION_ISSUE_SITE_CALLSHADER");
+    if (value == NULL || *value == '\0') {
+      return 0;
+    }
+    return strcmp(value, "0") != 0 ? 1 : 0;
+  }();
+  return enabled != 0;
+}
+
 static unsigned rtcore_shader_continuation_uint_config(const char *name,
                                                        unsigned default_value) {
   const char *value = getenv(name);
@@ -458,6 +470,37 @@ static void rtcore_record_shader_continuation_dispatcher_issue_site_preflight(
          entry.active_mask, scheduler_mask, entry.target_shader_id_ready_mask,
          entry.candidate_mask, visible_candidate_mask, static_inst_pc, 1u,
          status, entry.enqueue_cycle, current_cycle);
+
+  const bool issue_site_callshader_enabled =
+      rtcore_shader_continuation_issue_site_callshader_enabled();
+  const bool pseudo_op_ready = false;
+  const char *callshader_action =
+      !issue_site_callshader_enabled
+          ? "disabled_observe_only"
+          : (visible_candidate_mask == 0
+                 ? "no_visible_candidate"
+                 : (!pseudo_op_ready
+                        ? "blocked_requires_pseudo_op_control_transfer"
+                        : "invoked_callshader"));
+  const unsigned callshader_lane_mask =
+      issue_site_callshader_enabled ? visible_candidate_mask : 0u;
+  printf("GPGPU-Sim "
+         "RTCORE_SHADER_CONTINUATION_DISPATCHER_ISSUE_SITE_ACTION "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u dynamic_warp_id=%u "
+         "active_mask=0x%08x scheduler_active_mask=0x%08x "
+         "dispatcher_issue_site_callshader_enabled=%u "
+         "dispatcher_issue_site_pseudo_op_ready=%u "
+         "target_shader_id_ready_mask=0x%08x candidate_mask=0x%08x "
+         "visible_candidate_mask=0x%08x "
+         "dispatcher_issue_site_callshader_action=%s "
+         "dispatcher_issue_site_callshader_lane_mask=0x%08x "
+         "static_inst_pc=0x%llx shadercore_issue_cycle=%llu\n",
+         owner_hw_sid, entry.warp_uid, entry.warp_id, dynamic_warp_id,
+         entry.active_mask, scheduler_mask,
+         issue_site_callshader_enabled ? 1u : 0u, pseudo_op_ready ? 1u : 0u,
+         entry.target_shader_id_ready_mask, entry.candidate_mask,
+         visible_candidate_mask, callshader_action, callshader_lane_mask,
+         static_inst_pc, current_cycle);
 }
 
 struct rtcore_replay_cycle_hook_result {
