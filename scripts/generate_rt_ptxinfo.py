@@ -37,7 +37,7 @@ import subprocess
 
 inputfile = sys.argv[1]
 
-RT_HARD_OPS = ["rt_submit", "rt_retire_context"]
+RT_HARD_OPS = ["rt_publish_trace_context", "rt_submit", "rt_retire_context"]
 
 
 def ptx_mov_opcode(ptx_type):
@@ -75,7 +75,10 @@ def write_rt_hard_op_placeholder(output, op_name, operands, symbol_table):
         return False
 
     output.write("// ptxinfo placeholder for " + op_name + "\n")
-    if op_name == "rt_submit" and len(operands) > 0:
+    if op_name == "rt_publish_trace_context":
+        for operand in operands:
+            write_self_assignment(output, operand, symbol_table)
+    elif op_name == "rt_submit" and len(operands) > 0:
         write_zero_assignment(output, operands[0], symbol_table)
         for operand in operands[1:]:
             write_self_assignment(output, operand, symbol_table)
