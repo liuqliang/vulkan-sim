@@ -553,8 +553,23 @@ struct rtcore_continuation_return_packet {
           closest_hit_mask(0), fault_mask(0), continuation_depth(0),
           reason_oracle_anyhit_mask(0), reason_oracle_intersection_mask(0),
           reason_synthetic_split_mask(0), reason_final_mask(0),
-          reason_unsupported_mask(0)
+          reason_unsupported_mask(0), handoff_dispatch_group_valid_mask(0),
+          handoff_hit_group_valid_mask(0)
     {
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            handoff_dispatch_w4[lane] = 0;
+            handoff_dispatch_w5[lane] = 0;
+            handoff_dispatch_w6[lane] = 0;
+            handoff_dispatch_w7[lane] = 0;
+            handoff_hit_w8[lane] = 0;
+            handoff_hit_w9[lane] = 0;
+            handoff_hit_w10[lane] = 0;
+            handoff_hit_w11[lane] = 0;
+            handoff_hit_w12[lane] = 0;
+            handoff_hit_w13[lane] = 0;
+            handoff_hit_w14[lane] = 0;
+            handoff_hit_w15[lane] = 0;
+        }
     }
 
     bool valid;
@@ -576,6 +591,20 @@ struct rtcore_continuation_return_packet {
     unsigned reason_synthetic_split_mask;
     unsigned reason_final_mask;
     unsigned reason_unsupported_mask;
+    unsigned handoff_dispatch_group_valid_mask;
+    unsigned handoff_hit_group_valid_mask;
+    unsigned handoff_dispatch_w4[32];
+    unsigned handoff_dispatch_w5[32];
+    unsigned handoff_dispatch_w6[32];
+    unsigned handoff_dispatch_w7[32];
+    unsigned handoff_hit_w8[32];
+    unsigned handoff_hit_w9[32];
+    unsigned handoff_hit_w10[32];
+    unsigned handoff_hit_w11[32];
+    unsigned handoff_hit_w12[32];
+    unsigned handoff_hit_w13[32];
+    unsigned handoff_hit_w14[32];
+    unsigned handoff_hit_w15[32];
 };
 
 struct rtcore_continuation_warp_boundary_state {
@@ -3892,6 +3921,51 @@ rtcore_make_replay_continuation_packet_lane_fact(
     return fact;
 }
 
+static void rtcore_populate_continuation_packet_handoff_summaries(
+    rtcore_continuation_return_packet *packet,
+    const rtcore_continuation_warp_boundary_state &state)
+{
+    if (!packet || !packet->valid) {
+        return;
+    }
+
+    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+             g_rtcore_replay_lane_requests.begin();
+         it != g_rtcore_replay_lane_requests.end(); ++it) {
+        const rtcore_replay_lane_request &request = it->second;
+        if (!rtcore_continuation_request_matches_boundary_key(request,
+                                                              state)) {
+            continue;
+        }
+        const unsigned lane = request.lane_id;
+        const unsigned lane_mask = rtcore_continuation_lane_mask(lane);
+        if ((packet->boundary_reached_mask & lane_mask) == 0) {
+            continue;
+        }
+
+        const rtcore_replay_continuation_packet_lane_fact packet_fact =
+            rtcore_make_replay_continuation_packet_lane_fact(request);
+        if (packet_fact.dispatch_group_valid) {
+            packet->handoff_dispatch_group_valid_mask |= lane_mask;
+        }
+        if (packet_fact.hit_group_valid) {
+            packet->handoff_hit_group_valid_mask |= lane_mask;
+        }
+        packet->handoff_dispatch_w4[lane] = packet_fact.dispatch_w4;
+        packet->handoff_dispatch_w5[lane] = packet_fact.dispatch_w5;
+        packet->handoff_dispatch_w6[lane] = packet_fact.dispatch_w6;
+        packet->handoff_dispatch_w7[lane] = packet_fact.dispatch_w7;
+        packet->handoff_hit_w8[lane] = packet_fact.hit_w8;
+        packet->handoff_hit_w9[lane] = packet_fact.hit_w9;
+        packet->handoff_hit_w10[lane] = packet_fact.hit_w10;
+        packet->handoff_hit_w11[lane] = packet_fact.hit_w11;
+        packet->handoff_hit_w12[lane] = packet_fact.hit_w12;
+        packet->handoff_hit_w13[lane] = packet_fact.hit_w13;
+        packet->handoff_hit_w14[lane] = packet_fact.hit_w14;
+        packet->handoff_hit_w15[lane] = packet_fact.hit_w15;
+    }
+}
+
 static unsigned rtcore_replay_warp_completion_reason_mask(
     const rtcore_replay_warp_completion_entry_state &state, unsigned reason)
 {
@@ -4133,9 +4207,12 @@ static bool rtcore_publish_scoreboard_visible_continuation_packet(
     state.unsupported_reason_mask =
         (state.unsupported_reason_mask & ~completion_mask) |
         unsupported_mask;
-    state.handoff_dispatch_group_valid_mask &=
-        ~completion_mask;
-    state.handoff_hit_group_valid_mask &= ~completion_mask;
+    state.handoff_dispatch_group_valid_mask =
+        (state.handoff_dispatch_group_valid_mask & ~completion_mask) |
+        (packet.handoff_dispatch_group_valid_mask & completion_mask);
+    state.handoff_hit_group_valid_mask =
+        (state.handoff_hit_group_valid_mask & ~completion_mask) |
+        (packet.handoff_hit_group_valid_mask & completion_mask);
     state.handoff_resume_group_valid_mask =
         (state.handoff_resume_group_valid_mask & ~completion_mask) |
         resume_group_valid_mask;
@@ -4181,18 +4258,18 @@ static bool rtcore_publish_scoreboard_visible_continuation_packet(
         state.handoff_event_header_w3[lane] =
             (window_tag & 0xffu) | ((packet.owner_hw_sid & 0xffu) << 8) |
             ((packet.warp_id & 0xffu) << 16);
-        state.handoff_dispatch_w4[lane] = 0;
-        state.handoff_dispatch_w5[lane] = packet.warp_uid;
-        state.handoff_dispatch_w6[lane] = packet.warp_id;
-        state.handoff_dispatch_w7[lane] = packet.active_mask;
-        state.handoff_hit_w8[lane] = packet.reason_oracle_anyhit_mask;
-        state.handoff_hit_w9[lane] = packet.reason_oracle_intersection_mask;
-        state.handoff_hit_w10[lane] = packet.reason_synthetic_split_mask;
-        state.handoff_hit_w11[lane] = packet.reason_final_mask;
-        state.handoff_hit_w12[lane] = packet.reason_unsupported_mask;
-        state.handoff_hit_w13[lane] = packet.boundary_reached_mask;
-        state.handoff_hit_w14[lane] = packet.terminal_mask;
-        state.handoff_hit_w15[lane] = packet.resume_required_mask;
+        state.handoff_dispatch_w4[lane] = packet.handoff_dispatch_w4[lane];
+        state.handoff_dispatch_w5[lane] = packet.handoff_dispatch_w5[lane];
+        state.handoff_dispatch_w6[lane] = packet.handoff_dispatch_w6[lane];
+        state.handoff_dispatch_w7[lane] = packet.handoff_dispatch_w7[lane];
+        state.handoff_hit_w8[lane] = packet.handoff_hit_w8[lane];
+        state.handoff_hit_w9[lane] = packet.handoff_hit_w9[lane];
+        state.handoff_hit_w10[lane] = packet.handoff_hit_w10[lane];
+        state.handoff_hit_w11[lane] = packet.handoff_hit_w11[lane];
+        state.handoff_hit_w12[lane] = packet.handoff_hit_w12[lane];
+        state.handoff_hit_w13[lane] = packet.handoff_hit_w13[lane];
+        state.handoff_hit_w14[lane] = packet.handoff_hit_w14[lane];
+        state.handoff_hit_w15[lane] = packet.handoff_hit_w15[lane];
         state.handoff_resume_w16[lane] = reason;
         state.handoff_resume_w17[lane] = flags;
         state.handoff_resume_w18[lane] = completion_seq;
@@ -6904,6 +6981,7 @@ static bool rtcore_publish_continuation_return_packet(
     packet.reason_synthetic_split_mask = state->reason_synthetic_split_mask;
     packet.reason_final_mask = state->reason_final_mask;
     packet.reason_unsupported_mask = state->reason_unsupported_mask;
+    rtcore_populate_continuation_packet_handoff_summaries(&packet, *state);
     state->packet_published = true;
 
     g_rtcore_continuation_stats.rtcore_continuation_packet_count++;
@@ -6935,7 +7013,9 @@ static bool rtcore_publish_continuation_return_packet(
     rtcore_log_replay_continuation_packet_schema(
         "continuation_return_packet", packet.owner_hw_sid, packet.warp_uid,
         packet.warp_id, packet.active_mask, packet.boundary_reached_mask,
-        packet.terminal_mask, packet.resume_required_mask, 0, 0,
+        packet.terminal_mask, packet.resume_required_mask,
+        packet.handoff_dispatch_group_valid_mask,
+        packet.handoff_hit_group_valid_mask,
         packet.resume_required_mask, packet.reason_oracle_anyhit_mask,
         packet.reason_oracle_intersection_mask,
         packet.reason_synthetic_split_mask, packet.reason_final_mask,
