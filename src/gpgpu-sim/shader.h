@@ -2146,6 +2146,11 @@ class rt_unit : public pipelined_simd_unit {
 	          unsigned reason_oracle_anyhit_mask,
 	          unsigned reason_oracle_intersection_mask,
 	          unsigned reason_synthetic_split_mask,
+	          unsigned target_selector_ready_mask,
+	          unsigned target_selector_missing_dispatch_mask,
+	          unsigned target_selector_missing_hit_mask,
+	          unsigned target_selector_fallback_reason_mask,
+	          unsigned target_selector_cohort_count,
 	          unsigned long long current_cycle) const;
 	      void rtcore_apply_synthetic_release_snapshot(
 	          const rtcore_synthetic_release_snapshot &snapshot) const;
