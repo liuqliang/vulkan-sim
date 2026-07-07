@@ -9331,6 +9331,19 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
       rtcore_shader_continuation_dispatcher_cohort_count(
           reason_oracle_anyhit_mask, reason_oracle_intersection_mask,
           reason_synthetic_split_mask);
+  const unsigned target_reason_mask =
+      reason_oracle_anyhit_mask | reason_oracle_intersection_mask |
+      reason_synthetic_split_mask;
+  const unsigned raw_fact_ray_sbt_inputs_ready_mask = 0;
+  const unsigned raw_fact_geometry_primitive_ready_mask = 0;
+  const unsigned raw_fact_instance_sbt_contribution_ready_mask = 0;
+  const unsigned raw_fact_sbt_region_metadata_ready_mask = target_reason_mask;
+  const unsigned raw_fact_record_selector_ready_mask =
+      target_selector_ready_mask;
+  const unsigned raw_fact_resolved_target_ready_mask = 0;
+  const unsigned raw_fact_sufficient_mask = 0;
+  const unsigned raw_fact_missing_mask =
+      target_reason_mask & ~raw_fact_sufficient_mask;
   const unsigned shader_continuation_handoff_load_cycles =
       handoff_consume_lane_count *
       rtcore_shader_continuation_handoff_load_cost();
@@ -9465,6 +9478,32 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          target_selector_missing_hit_mask,
          target_selector_fallback_reason_mask,
          target_selector_cohort_count, current_cycle);
+
+  printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_RAW_FACT_SUFFICIENCY_AUDIT "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "raw_fact_source=custom_handoff_facts "
+         "compatibility_metadata_producer=vulkan_sim "
+         "raw_fact_required_mask=0x%08x "
+         "raw_fact_ray_sbt_inputs_ready_mask=0x%08x "
+         "raw_fact_geometry_primitive_ready_mask=0x%08x "
+         "raw_fact_instance_sbt_contribution_ready_mask=0x%08x "
+         "raw_fact_sbt_region_metadata_ready_mask=0x%08x "
+         "raw_fact_record_selector_ready_mask=0x%08x "
+         "raw_fact_resolved_target_ready_mask=0x%08x "
+         "raw_fact_sufficient_mask=0x%08x "
+         "raw_fact_missing_mask=0x%08x "
+         "raw_fact_audit_status=raw_facts_incomplete_compatibility_bridge_required "
+         "shader_side_decision_cycle=%llu\n",
+         m_sid, event->warp_uid, event->warp_id, issued_active_mask,
+         target_reason_mask,
+         raw_fact_ray_sbt_inputs_ready_mask,
+         raw_fact_geometry_primitive_ready_mask,
+         raw_fact_instance_sbt_contribution_ready_mask,
+         raw_fact_sbt_region_metadata_ready_mask,
+         raw_fact_record_selector_ready_mask,
+         raw_fact_resolved_target_ready_mask,
+         raw_fact_sufficient_mask,
+         raw_fact_missing_mask, current_cycle);
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_LOOP_DECISION "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
