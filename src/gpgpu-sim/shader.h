@@ -2153,6 +2153,7 @@ class rt_unit : public pipelined_simd_unit {
 	          unsigned target_selector_cohort_count,
 	          unsigned raw_fact_ray_sbt_inputs_ready_mask,
 	          unsigned raw_fact_geometry_primitive_ready_mask,
+	          unsigned raw_fact_instance_sbt_contribution_ready_mask,
 	          unsigned long long current_cycle) const;
 	      void rtcore_apply_synthetic_release_snapshot(
 	          const rtcore_synthetic_release_snapshot &snapshot) const;

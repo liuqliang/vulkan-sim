@@ -438,6 +438,8 @@ struct rtcore_compact_trace_export_record {
     unsigned closest_hit_geometry_index;
     unsigned closest_hit_primitive_index;
     unsigned closest_hit_instance_index;
+    bool instance_sbt_contribution_valid;
+    unsigned instance_sbt_contribution;
     std::vector<rtcore_compact_trace_event> events;
 };
 
@@ -473,6 +475,8 @@ struct rtcore_replay_lane_request {
     unsigned closest_hit_geometry_index;
     unsigned closest_hit_primitive_index;
     unsigned closest_hit_instance_index;
+    bool instance_sbt_contribution_valid;
+    unsigned instance_sbt_contribution;
     bool continuation_boundary_pending;
     unsigned continuation_depth;
     unsigned continuation_segment_event_count;
@@ -531,6 +535,7 @@ static std::deque<rtcore_replay_lane_request>
 
 static const unsigned RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID = 0x1u;
 static const unsigned RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID = 0x2u;
+static const unsigned RTCORE_HANDOFF_RAW_FACT_INSTANCE_SBT_CONTRIBUTION_VALID = 0x4u;
 
 struct rtcore_replay_lane_state_init_bandwidth_owner_cycle {
     bool valid;
@@ -2812,6 +2817,9 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.closest_hit_geometry_index = record.closest_hit_geometry_index;
     request.closest_hit_primitive_index = record.closest_hit_primitive_index;
     request.closest_hit_instance_index = record.closest_hit_instance_index;
+    request.instance_sbt_contribution_valid =
+        record.instance_sbt_contribution_valid;
+    request.instance_sbt_contribution = record.instance_sbt_contribution;
     request.continuation_boundary_pending = false;
     request.continuation_depth = 0;
     request.continuation_segment_event_count = 0;
@@ -3942,13 +3950,16 @@ rtcore_make_replay_continuation_packet_lane_fact(
         (request.ray_flags & 0xffffu) | ((request.cull_mask & 0xffffu) << 16);
     fact.hit_w12 = request.closest_hit_geometry_index;
     fact.hit_w13 = request.closest_hit_primitive_index;
-    fact.hit_w14 = request.closest_hit_instance_index;
+    fact.hit_w14 = request.instance_sbt_contribution;
     fact.hit_w15 =
         (request.ray_sbt_inputs_valid
              ? RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID
              : 0u) |
         (request.hit_geometry_summary_valid
              ? RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID
+             : 0u) |
+        (request.instance_sbt_contribution_valid
+             ? RTCORE_HANDOFF_RAW_FACT_INSTANCE_SBT_CONTRIBUTION_VALID
              : 0u);
 
     fact.resume_w16 = fact.reason;
@@ -9968,6 +9979,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     Traversal_data traversal_data;
 
     traversal_data.n_all_hits = 0;
+    traversal_data.hit_geometry = false;
+    traversal_data.closest_hit.hitGroupIndex = -1;
     traversal_data.ray_world_direction = direction;
     traversal_data.ray_world_origin = origin;
     traversal_data.sbtRecordOffset = sbtRecordOffset;
@@ -10672,6 +10685,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         traversal_data.closest_hit.geometry_index = closest_leaf.LeafDescriptor.GeometryIndex;
         traversal_data.closest_hit.primitive_index = closest_leaf.PrimitiveIndex0;
         traversal_data.closest_hit.instance_index = closest_instanceLeaf.InstanceID;
+        traversal_data.closest_hit.hitGroupIndex =
+            closest_instanceLeaf.InstanceContributionToHitGroupIndex;
         float3 intersection_point = ray.get_origin() + make_float3(ray.get_direction().x * min_thit, ray.get_direction().y * min_thit, ray.get_direction().z * min_thit);
         float3 rayatinter = ray.at(min_thit);
         // assert(intersection_point.x == ray.at(min_thit).x && intersection_point.y == ray.at(min_thit).y && intersection_point.z == ray.at(min_thit).z);
@@ -10767,6 +10782,12 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         traversal_data.closest_hit.primitive_index;
     rtcore_trace_export.closest_hit_instance_index =
         traversal_data.closest_hit.instance_index;
+    rtcore_trace_export.instance_sbt_contribution_valid =
+        traversal_data.hit_geometry;
+    rtcore_trace_export.instance_sbt_contribution =
+        traversal_data.hit_geometry
+            ? (unsigned)traversal_data.closest_hit.hitGroupIndex
+            : 0u;
     rtcore_publish_compact_trace_export(thread, rtcore_trace_export);
     rtcore_admit_compact_trace_for_replay(thread);
     mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);
