@@ -8830,6 +8830,65 @@ static unsigned rtcore_shader_continuation_compat_target_shader_id_cohort_count(
   return shader_id_count;
 }
 
+static void rtcore_record_shader_continuation_target_shader_id_cohorts(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, const kernel_info_t *kernel,
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned target_shader_id_ready_mask, unsigned reason_oracle_anyhit_mask,
+    unsigned reason_oracle_intersection_mask,
+    unsigned long long current_cycle) {
+  const unsigned target_shader_record_component = 1;
+  unsigned shader_ids[32] = {};
+  unsigned lane_masks[32] = {};
+  unsigned shader_id_count = 0;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((target_shader_id_ready_mask & lane_mask) == 0) {
+      continue;
+    }
+    const unsigned shader_id =
+        rtcore_shader_continuation_compat_target_shader_id_key(
+            kernel, snapshot, lane, reason_oracle_anyhit_mask,
+            reason_oracle_intersection_mask);
+    if (shader_id == UINT_MAX) {
+      continue;
+    }
+    unsigned cohort_index = shader_id_count;
+    bool seen = false;
+    for (unsigned index = 0; index < shader_id_count; ++index) {
+      if (shader_ids[index] == shader_id) {
+        cohort_index = index;
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) {
+      if (shader_id_count >= 32) {
+        continue;
+      }
+      shader_ids[shader_id_count] = shader_id;
+      lane_masks[shader_id_count] = 0;
+      cohort_index = shader_id_count++;
+    }
+    lane_masks[cohort_index] |= lane_mask;
+  }
+
+  for (unsigned index = 0; index < shader_id_count; ++index) {
+    printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_TARGET_SHADER_ID_COHORT "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+           "target_shader_id_cohort_index=%u "
+           "target_shader_id_lane_mask=0x%08x "
+           "target_shader_id=%u "
+           "target_shader_record_component=%u "
+           "target_resolution_metadata_producer=vulkan_sim_compatibility "
+           "compatibility_target_resolution=sbt_metadata_lookup "
+           "shader_side_decision_cycle=%llu\n",
+           owner_hw_sid, warp_uid, warp_id, active_mask, index,
+           lane_masks[index], shader_ids[index],
+           target_shader_record_component, current_cycle);
+  }
+}
+
 rt_unit::rtcore_completion_timing_snapshot
 rt_unit::rtcore_make_completion_timing_snapshot(
     const rtcore_synthetic_completion_event &event) const {
@@ -10757,6 +10816,14 @@ void rt_unit::cycle() {
 	                    target_shader_id_ready_mask,
 	                    reason_oracle_anyhit_mask,
 	                    reason_oracle_intersection_mask);
+	            rtcore_record_shader_continuation_target_shader_id_cohorts(
+	                m_sid, release_event->second.warp_uid,
+	                release_event->second.warp_id,
+	                release_event->second.issued_active_mask,
+	                compat_kernel, candidate_completion,
+	                target_shader_id_ready_mask,
+	                reason_oracle_anyhit_mask,
+	                reason_oracle_intersection_mask, current_cycle);
 	            rtcore_record_shader_continuation_loop_decision(
 	                it->second, &release_event->second,
 	                candidate_completion.packet_schema_version,
