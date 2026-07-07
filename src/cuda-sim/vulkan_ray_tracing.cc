@@ -1305,6 +1305,19 @@ static bool rtcore_continuation_model_enabled()
     return rtcore_continuation_model_config() != RTCORE_CONTINUATION_MODEL_OFF;
 }
 
+static bool rtcore_shader_continuation_resubmit_bridge_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_SHADER_CONTINUATION_RESUBMIT_BRIDGE");
+        if (!value || value[0] == '\0') {
+            return 0;
+        }
+        return strcmp(value, "0") != 0 ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+
 static const char *rtcore_continuation_model_name(rtcore_continuation_model model)
 {
     switch (model) {
@@ -7630,6 +7643,16 @@ static bool rtcore_mark_resident_warp_continuation_wakeup(
         packet.kind != RTCORE_CONTINUATION_PACKET_CONTINUATION) {
         return false;
     }
+    if (rtcore_shader_continuation_resubmit_bridge_enabled()) {
+        printf("GPGPU-Sim RTCORE_CONTINUATION_WARP_WAKEUP "
+               "wakeup_result=deferred_to_shadercore_bridge owner_hw_sid=%u "
+               "warp_uid=%u warp_id=%u active_mask=0x%08x "
+               "service_cycle=%llu\n",
+               packet.owner_hw_sid, packet.warp_uid, packet.warp_id,
+               packet.active_mask, service_cycle);
+        fflush(stdout);
+        return false;
+    }
 
     const rtcore_replay_warp_completion_entry_key key =
         rtcore_make_continuation_warp_key(packet);
@@ -7669,6 +7692,91 @@ static bool rtcore_mark_resident_warp_continuation_wakeup(
            state.ready_cycle, service_cycle);
     fflush(stdout);
     return true;
+}
+
+extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned packet_schema_version,
+    unsigned completion_visible_mask, unsigned terminal_lane_mask,
+    unsigned continuation_lane_mask, unsigned unsupported_reason_mask,
+    unsigned handoff_resume_group_valid_mask, unsigned next_active_mask,
+    unsigned final_like_mask, unsigned missing_resume_handoff_mask,
+    bool pre_submit_guard_passed,
+    unsigned long long shader_side_decision_cycle)
+{
+    const bool bridge_enabled =
+        rtcore_shader_continuation_resubmit_bridge_enabled();
+    rtcore_replay_warp_completion_entry_key key = {};
+    key.owner_hw_sid = owner_hw_sid;
+    key.warp_uid = warp_uid;
+    key.warp_id = warp_id;
+    key.active_mask = active_mask;
+
+    std::map<rtcore_replay_warp_completion_entry_key,
+             rtcore_continuation_warp_boundary_state>::iterator boundary_it =
+        g_rtcore_continuation_warp_boundary_states.find(key);
+    const bool boundary_found =
+        boundary_it != g_rtcore_continuation_warp_boundary_states.end();
+    const bool can_enqueue = rtcore_continuation_model_enabled() &&
+                             bridge_enabled && pre_submit_guard_passed &&
+                             next_active_mask != 0 &&
+                             missing_resume_handoff_mask == 0 &&
+                             boundary_found;
+    const char *bridge_action = "disabled_observe_only";
+    bool actual_resubmit_state_enqueued = false;
+
+    if (!bridge_enabled) {
+        bridge_action = "disabled_observe_only";
+    } else if (!rtcore_continuation_model_enabled()) {
+        bridge_action = "continuation_model_off";
+    } else if (!pre_submit_guard_passed ||
+               missing_resume_handoff_mask != 0) {
+        bridge_action = "pre_submit_guard_failed";
+    } else if (next_active_mask == 0) {
+        bridge_action = "no_resubmit_lanes";
+    } else if (!boundary_found) {
+        bridge_action = "fail_closed_missing_boundary_state";
+    }
+
+    if (can_enqueue) {
+        rtcore_resident_warp_continuation_state &state =
+            g_rtcore_resident_warp_continuation_states[key];
+        state.valid = true;
+        state.owner_hw_sid = owner_hw_sid;
+        state.warp_uid = warp_uid;
+        state.warp_id = warp_id;
+        state.active_mask = active_mask;
+        state.resume_required_mask = next_active_mask;
+        state.shader_required_mask = continuation_lane_mask;
+        state.ready_cycle = shader_side_decision_cycle +
+                            rtcore_continuation_shader_latency_cycles_config();
+        state.continuation_depth = boundary_it->second.continuation_depth;
+        g_rtcore_continuation_stats.rtcore_continuation_warp_wakeup_count++;
+        actual_resubmit_state_enqueued = true;
+        bridge_action = "enqueued_reactivation";
+    }
+
+    printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_RESUBMIT_BRIDGE "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+           "packet_schema_version=%u bridge_enabled=%u "
+           "pre_submit_guard_passed=%u completion_visible_mask=0x%08x "
+           "terminal_lane_mask=0x%08x continuation_lane_mask=0x%08x "
+           "unsupported_reason_mask=0x%08x "
+           "handoff_resume_group_valid_mask=0x%08x "
+           "next_active_mask=0x%08x final_like_mask=0x%08x "
+           "missing_resume_handoff_mask=0x%08x boundary_state_found=%u "
+           "bridge_action=%s actual_resubmit_state_enqueued=%u "
+           "shader_side_decision_cycle=%llu\n",
+           owner_hw_sid, warp_uid, warp_id, active_mask,
+           packet_schema_version, bridge_enabled ? 1u : 0u,
+           pre_submit_guard_passed ? 1u : 0u, completion_visible_mask,
+           terminal_lane_mask, continuation_lane_mask, unsupported_reason_mask,
+           handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
+           missing_resume_handoff_mask, boundary_found ? 1u : 0u,
+           bridge_action, actual_resubmit_state_enqueued ? 1u : 0u,
+           shader_side_decision_cycle);
+    fflush(stdout);
+    return actual_resubmit_state_enqueued;
 }
 
 static unsigned rtcore_reactivate_resident_warp_continuation_lanes(

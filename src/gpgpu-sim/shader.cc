@@ -180,6 +180,15 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask,
     rtcore_replay_warp_completion_entry_snapshot *snapshot);
+extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned packet_schema_version,
+    unsigned completion_visible_mask, unsigned terminal_lane_mask,
+    unsigned continuation_lane_mask, unsigned unsupported_reason_mask,
+    unsigned handoff_resume_group_valid_mask, unsigned next_active_mask,
+    unsigned final_like_mask, unsigned missing_resume_handoff_mask,
+    bool pre_submit_guard_passed,
+    unsigned long long shader_side_decision_cycle);
 
 namespace {
 
@@ -9132,6 +9141,12 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
     g_rtcore_scoreboard_visible_wake_stats
         .shader_continuation_pre_submit_blocked_count++;
   }
+  const bool bridge_enqueued = rtcore_record_shader_continuation_resubmit_decision(
+      m_sid, event->warp_uid, event->warp_id, issued_active_mask,
+      packet_schema_version, completion_visible_mask, terminal_lane_mask,
+      continuation_lane_mask, unsupported_reason_mask,
+      handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
+      missing_resume_handoff_mask, pre_submit_guard_passed, current_cycle);
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_LOOP_DECISION "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
@@ -9143,13 +9158,15 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "missing_resume_handoff_mask=0x%08x "
          "masked_off_lane_consume_mask=0x%08x "
          "pre_submit_guard_passed=%u actual_resubmit_issued=0 "
+         "shader_continuation_bridge_enqueued=%u "
          "shader_side_decision_cycle=%llu\n",
          m_sid, event->warp_uid, event->warp_id, issued_active_mask,
          packet_schema_version, completion_visible_mask, terminal_lane_mask,
          continuation_lane_mask, unsupported_reason_mask,
          handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
          missing_resume_handoff_mask, masked_off_lane_consume_mask,
-         pre_submit_guard_passed ? 1u : 0u, current_cycle);
+         pre_submit_guard_passed ? 1u : 0u, bridge_enqueued ? 1u : 0u,
+         current_cycle);
   fflush(stdout);
 }
 
