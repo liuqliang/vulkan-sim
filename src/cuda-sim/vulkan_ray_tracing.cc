@@ -428,6 +428,16 @@ struct rtcore_compact_trace_export_record {
     rtcore_compact_trace_overflow_summary overflow_summary;
     unsigned oracle_anyhit_candidate_count;
     bool oracle_requires_intersection_shader;
+    bool ray_sbt_inputs_valid;
+    unsigned sbt_record_offset;
+    unsigned sbt_record_stride;
+    unsigned miss_index;
+    unsigned ray_flags;
+    unsigned cull_mask;
+    bool hit_geometry_summary_valid;
+    unsigned closest_hit_geometry_index;
+    unsigned closest_hit_primitive_index;
+    unsigned closest_hit_instance_index;
     std::vector<rtcore_compact_trace_event> events;
 };
 
@@ -453,6 +463,16 @@ struct rtcore_replay_lane_request {
     unsigned completion_event_count;
     unsigned oracle_anyhit_candidate_count;
     bool oracle_requires_intersection_shader;
+    bool ray_sbt_inputs_valid;
+    unsigned sbt_record_offset;
+    unsigned sbt_record_stride;
+    unsigned miss_index;
+    unsigned ray_flags;
+    unsigned cull_mask;
+    bool hit_geometry_summary_valid;
+    unsigned closest_hit_geometry_index;
+    unsigned closest_hit_primitive_index;
+    unsigned closest_hit_instance_index;
     bool continuation_boundary_pending;
     unsigned continuation_depth;
     unsigned continuation_segment_event_count;
@@ -508,6 +528,10 @@ static std::map<unsigned, rtcore_replay_lane_request>
     g_rtcore_replay_lane_requests;
 static std::deque<rtcore_replay_lane_request>
     g_rtcore_replay_lane_request_state_capacity_pending_admissions;
+
+static const unsigned RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID = 0x1u;
+static const unsigned RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID = 0x2u;
+
 struct rtcore_replay_lane_state_init_bandwidth_owner_cycle {
     bool valid;
     unsigned long long service_cycle;
@@ -2778,6 +2802,16 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
         record.oracle_anyhit_candidate_count;
     request.oracle_requires_intersection_shader =
         record.oracle_requires_intersection_shader;
+    request.ray_sbt_inputs_valid = record.ray_sbt_inputs_valid;
+    request.sbt_record_offset = record.sbt_record_offset;
+    request.sbt_record_stride = record.sbt_record_stride;
+    request.miss_index = record.miss_index;
+    request.ray_flags = record.ray_flags;
+    request.cull_mask = record.cull_mask;
+    request.hit_geometry_summary_valid = record.hit_geometry_summary_valid;
+    request.closest_hit_geometry_index = record.closest_hit_geometry_index;
+    request.closest_hit_primitive_index = record.closest_hit_primitive_index;
+    request.closest_hit_instance_index = record.closest_hit_instance_index;
     request.continuation_boundary_pending = false;
     request.continuation_depth = 0;
     request.continuation_segment_event_count = 0;
@@ -3901,14 +3935,21 @@ rtcore_make_replay_continuation_packet_lane_fact(
         (request.oracle_anyhit_candidate_count & 0xffffu) |
         (request.oracle_requires_intersection_shader ? 0x80000000u : 0u);
 
-    fact.hit_w8 = request.node_event_count;
-    fact.hit_w9 = request.primitive_event_count;
-    fact.hit_w10 = request.stack_event_count;
-    fact.hit_w11 = request.memory_event_count;
-    fact.hit_w12 = request.completion_event_count;
-    fact.hit_w13 = request.event_count;
-    fact.hit_w14 = request.overflow_summary_events;
-    fact.hit_w15 = static_cast<unsigned>(request.timing_precision_class);
+    fact.hit_w8 = request.sbt_record_offset;
+    fact.hit_w9 = request.sbt_record_stride;
+    fact.hit_w10 = request.miss_index;
+    fact.hit_w11 =
+        (request.ray_flags & 0xffffu) | ((request.cull_mask & 0xffffu) << 16);
+    fact.hit_w12 = request.closest_hit_geometry_index;
+    fact.hit_w13 = request.closest_hit_primitive_index;
+    fact.hit_w14 = request.closest_hit_instance_index;
+    fact.hit_w15 =
+        (request.ray_sbt_inputs_valid
+             ? RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID
+             : 0u) |
+        (request.hit_geometry_summary_valid
+             ? RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID
+             : 0u);
 
     fact.resume_w16 = fact.reason;
     fact.resume_w17 = fact.flags;
@@ -10712,6 +10753,20 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     rtcore_compact_trace.set_oracle_shader_boundary_reason(
         traversal_data.n_all_hits, hit_procedural);
     rtcore_compact_trace_export_record rtcore_trace_export = rtcore_compact_trace.export_record();
+    rtcore_trace_export.ray_sbt_inputs_valid = true;
+    rtcore_trace_export.sbt_record_offset = traversal_data.sbtRecordOffset;
+    rtcore_trace_export.sbt_record_stride = traversal_data.sbtRecordStride;
+    rtcore_trace_export.miss_index = traversal_data.missIndex;
+    rtcore_trace_export.ray_flags = traversal_data.rayFlags;
+    rtcore_trace_export.cull_mask = traversal_data.cullMask;
+    rtcore_trace_export.hit_geometry_summary_valid =
+        traversal_data.hit_geometry;
+    rtcore_trace_export.closest_hit_geometry_index =
+        traversal_data.closest_hit.geometry_index;
+    rtcore_trace_export.closest_hit_primitive_index =
+        traversal_data.closest_hit.primitive_index;
+    rtcore_trace_export.closest_hit_instance_index =
+        traversal_data.closest_hit.instance_index;
     rtcore_publish_compact_trace_export(thread, rtcore_trace_export);
     rtcore_admit_compact_trace_for_replay(thread);
     mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);

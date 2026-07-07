@@ -8566,6 +8566,8 @@ static const unsigned RTCORE_SHADER_CONTINUATION_REASON_ORACLE_ANYHIT = 2;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_ORACLE_INTERSECTION = 3;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_SYNTHETIC_SPLIT = 4;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED = 15;
+static const unsigned RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID = 0x1u;
+static const unsigned RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID = 0x2u;
 
 static unsigned rtcore_shader_continuation_reason_mask(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
@@ -8679,6 +8681,23 @@ static unsigned rtcore_shader_continuation_target_selector_cohort_count(
     fallback_cohort_count++;
   }
   return selector_key_count + fallback_cohort_count;
+}
+
+static unsigned rtcore_shader_continuation_raw_fact_ready_mask(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned target_reason_mask,
+    unsigned raw_fact_flag) {
+  unsigned mask = 0;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((target_reason_mask & lane_mask) == 0) {
+      continue;
+    }
+    if ((snapshot.handoff_hit_w15[lane] & raw_fact_flag) != 0) {
+      mask |= lane_mask;
+    }
+  }
+  return mask;
 }
 
 rt_unit::rtcore_completion_timing_snapshot
@@ -9292,6 +9311,8 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
     unsigned target_selector_missing_hit_mask,
     unsigned target_selector_fallback_reason_mask,
     unsigned target_selector_cohort_count,
+    unsigned raw_fact_ray_sbt_inputs_ready_mask,
+    unsigned raw_fact_geometry_primitive_ready_mask,
     unsigned long long current_cycle) const {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT || event == NULL ||
       event->shader_continuation_loop_decision_logged) {
@@ -9334,14 +9355,17 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
   const unsigned target_reason_mask =
       reason_oracle_anyhit_mask | reason_oracle_intersection_mask |
       reason_synthetic_split_mask;
-  const unsigned raw_fact_ray_sbt_inputs_ready_mask = 0;
-  const unsigned raw_fact_geometry_primitive_ready_mask = 0;
   const unsigned raw_fact_instance_sbt_contribution_ready_mask = 0;
   const unsigned raw_fact_sbt_region_metadata_ready_mask = target_reason_mask;
   const unsigned raw_fact_record_selector_ready_mask =
       target_selector_ready_mask;
   const unsigned raw_fact_resolved_target_ready_mask = 0;
-  const unsigned raw_fact_sufficient_mask = 0;
+  const unsigned raw_fact_sufficient_mask =
+      target_reason_mask & raw_fact_ray_sbt_inputs_ready_mask &
+      raw_fact_geometry_primitive_ready_mask &
+      raw_fact_instance_sbt_contribution_ready_mask &
+      raw_fact_record_selector_ready_mask &
+      raw_fact_resolved_target_ready_mask;
   const unsigned raw_fact_missing_mask =
       target_reason_mask & ~raw_fact_sufficient_mask;
   const unsigned shader_continuation_handoff_load_cycles =
@@ -10546,6 +10570,14 @@ void rt_unit::cycle() {
 	                    reason_oracle_anyhit_mask,
 	                    reason_oracle_intersection_mask,
 	                    reason_synthetic_split_mask);
+	            const unsigned raw_fact_ray_sbt_inputs_ready_mask =
+	                rtcore_shader_continuation_raw_fact_ready_mask(
+	                    candidate_completion, target_reason_mask,
+	                    RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID);
+	            const unsigned raw_fact_geometry_primitive_ready_mask =
+	                rtcore_shader_continuation_raw_fact_ready_mask(
+	                    candidate_completion, target_reason_mask,
+	                    RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID);
 	            rtcore_record_shader_continuation_loop_decision(
 	                it->second, &release_event->second,
 	                candidate_completion.packet_schema_version,
@@ -10562,6 +10594,8 @@ void rt_unit::cycle() {
 	                target_selector_missing_hit_mask,
 	                target_selector_fallback_reason_mask,
 	                target_selector_cohort_count,
+	                raw_fact_ray_sbt_inputs_ready_mask,
+	                raw_fact_geometry_primitive_ready_mask,
 	                current_cycle);
 	            rtcore_synthetic_release_snapshot release_snapshot =
 	                rtcore_make_synthetic_release_snapshot(
