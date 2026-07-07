@@ -11427,6 +11427,27 @@ void VulkanRayTracing::callAnyHitShader(const ptx_instruction *pI, ptx_thread_in
     callShader(pI, thread, entry);
 }
 
+function_info *VulkanRayTracing::rtcoreResolveCompatibilityShaderFunction(
+    uint32_t shaderID) {
+    if (shaderID >= shaders.size()) {
+        return NULL;
+    }
+    gpgpu_context *ctx = GPGPU_Context();
+    if (ctx == NULL) {
+        return NULL;
+    }
+    CUctx_st *context = GPGPUSim_Context(ctx);
+    if (context == NULL) {
+        return NULL;
+    }
+    return context->get_kernel(shaders[shaderID].function_name);
+}
+
+extern "C" function_info *rtcore_resolve_compatibility_shader_function(
+    unsigned shaderID) {
+    return VulkanRayTracing::rtcoreResolveCompatibilityShaderFunction(shaderID);
+}
+
 void VulkanRayTracing::callShader(const ptx_instruction *pI, ptx_thread_info *thread, function_info *target_func) {
     static unsigned call_uid_next = 1;
 
