@@ -2143,6 +2143,9 @@ class rt_unit : public pipelined_simd_unit {
 	          unsigned terminal_lane_mask, unsigned continuation_lane_mask,
 	          unsigned unsupported_reason_mask,
 	          unsigned handoff_resume_group_valid_mask,
+	          unsigned reason_oracle_anyhit_mask,
+	          unsigned reason_oracle_intersection_mask,
+	          unsigned reason_synthetic_split_mask,
 	          unsigned long long current_cycle) const;
 	      void rtcore_apply_synthetic_release_snapshot(
 	          const rtcore_synthetic_release_snapshot &snapshot) const;

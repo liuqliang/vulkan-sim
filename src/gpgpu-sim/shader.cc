@@ -8561,6 +8561,45 @@ static unsigned rtcore_count_active_mask_lanes(unsigned active_mask) {
   return count;
 }
 
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_FINAL = 1;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_ORACLE_ANYHIT = 2;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_ORACLE_INTERSECTION = 3;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_SYNTHETIC_SPLIT = 4;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED = 15;
+
+static unsigned rtcore_shader_continuation_reason_mask(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned reason) {
+  unsigned mask = 0;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((snapshot.lane_completion_valid_mask & lane_mask) == 0) {
+      continue;
+    }
+    if (snapshot.lane_completion_reason[lane] == reason) {
+      mask |= lane_mask;
+    }
+  }
+  return mask;
+}
+
+static unsigned rtcore_shader_continuation_dispatcher_cohort_count(
+    unsigned reason_oracle_anyhit_mask,
+    unsigned reason_oracle_intersection_mask,
+    unsigned reason_synthetic_split_mask) {
+  unsigned count = 0;
+  if (reason_oracle_intersection_mask != 0) {
+    count++;
+  }
+  if (reason_oracle_anyhit_mask != 0) {
+    count++;
+  }
+  if (reason_synthetic_split_mask != 0) {
+    count++;
+  }
+  return count;
+}
+
 rt_unit::rtcore_completion_timing_snapshot
 rt_unit::rtcore_make_completion_timing_snapshot(
     const rtcore_synthetic_completion_event &event) const {
@@ -9164,6 +9203,9 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
     unsigned packet_schema_version, unsigned completion_valid_mask,
     unsigned terminal_lane_mask, unsigned continuation_lane_mask,
     unsigned unsupported_reason_mask, unsigned handoff_resume_group_valid_mask,
+    unsigned reason_oracle_anyhit_mask,
+    unsigned reason_oracle_intersection_mask,
+    unsigned reason_synthetic_split_mask,
     unsigned long long current_cycle) const {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT || event == NULL ||
       event->shader_continuation_loop_decision_logged) {
@@ -9199,6 +9241,10 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
   const unsigned resume_publish_lane_count =
       rtcore_count_active_mask_lanes(resume_handoff_publish_mask);
   const bool dispatcher_candidate = continuation_candidate_mask != 0;
+  const unsigned dispatcher_cohort_count =
+      rtcore_shader_continuation_dispatcher_cohort_count(
+          reason_oracle_anyhit_mask, reason_oracle_intersection_mask,
+          reason_synthetic_split_mask);
   const unsigned shader_continuation_handoff_load_cycles =
       handoff_consume_lane_count *
       rtcore_shader_continuation_handoff_load_cost();
@@ -9282,6 +9328,31 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          shader_continuation_total_cycles,
          g_rtcore_scoreboard_visible_wake_stats.shader_continuation_cycle_total,
          current_cycle);
+
+  printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_DISPATCHER_COHORT_SUMMARY "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "dispatcher_source=custom_handoff_facts "
+         "completion_visible_mask=0x%08x continuation_candidate_mask=0x%08x "
+         "dispatcher_reason_intersection_mask=0x%08x "
+         "dispatcher_reason_anyhit_mask=0x%08x "
+         "dispatcher_reason_synthetic_split_mask=0x%08x "
+         "dispatcher_reason_final_mask=0x%08x "
+         "dispatcher_reason_unsupported_mask=0x%08x "
+         "dispatcher_handoff_resume_group_valid_mask=0x%08x "
+         "dispatcher_next_active_mask=0x%08x "
+         "dispatcher_cohort_count=%u "
+         "compatibility_target_resolution=deferred "
+         "shader_side_decision_cycle=%llu\n",
+         m_sid, event->warp_uid, event->warp_id, issued_active_mask,
+         completion_visible_mask, continuation_candidate_mask,
+         reason_oracle_intersection_mask,
+         reason_oracle_anyhit_mask,
+         reason_synthetic_split_mask,
+         terminal_lane_mask,
+         unsupported_reason_mask,
+         handoff_resume_group_valid_mask,
+         next_active_mask,
+         dispatcher_cohort_count, current_cycle);
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_LOOP_DECISION "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
@@ -10290,6 +10361,18 @@ void rt_unit::cycle() {
 	                candidate_completion.lane_completion_valid_mask,
 	                candidate_completion.terminal_lane_mask,
 	                candidate_completion.continuation_lane_mask, current_cycle);
+	            const unsigned reason_oracle_anyhit_mask =
+	                rtcore_shader_continuation_reason_mask(
+	                    candidate_completion,
+	                    RTCORE_SHADER_CONTINUATION_REASON_ORACLE_ANYHIT);
+	            const unsigned reason_oracle_intersection_mask =
+	                rtcore_shader_continuation_reason_mask(
+	                    candidate_completion,
+	                    RTCORE_SHADER_CONTINUATION_REASON_ORACLE_INTERSECTION);
+	            const unsigned reason_synthetic_split_mask =
+	                rtcore_shader_continuation_reason_mask(
+	                    candidate_completion,
+	                    RTCORE_SHADER_CONTINUATION_REASON_SYNTHETIC_SPLIT);
 	            rtcore_record_shader_continuation_loop_decision(
 	                it->second, &release_event->second,
 	                candidate_completion.packet_schema_version,
@@ -10298,6 +10381,9 @@ void rt_unit::cycle() {
 	                candidate_completion.continuation_lane_mask,
 	                candidate_completion.unsupported_reason_mask,
 	                candidate_completion.handoff_resume_group_valid_mask,
+	                reason_oracle_anyhit_mask,
+	                reason_oracle_intersection_mask,
+	                reason_synthetic_split_mask,
 	                current_cycle);
 	            rtcore_synthetic_release_snapshot release_snapshot =
 	                rtcore_make_synthetic_release_snapshot(
