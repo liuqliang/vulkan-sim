@@ -221,6 +221,49 @@ static bool rtcore_shader_continuation_force_no_resubmit_enabled() {
   return enabled != 0;
 }
 
+static unsigned rtcore_shader_continuation_uint_config(const char *name,
+                                                       unsigned default_value) {
+  const char *value = getenv(name);
+  if (value == NULL || *value == '\0') {
+    return default_value;
+  }
+
+  char *end = NULL;
+  const unsigned long parsed = strtoul(value, &end, 10);
+  if (end == value || *end != '\0') {
+    return default_value;
+  }
+  if (parsed > UINT_MAX) {
+    return UINT_MAX;
+  }
+  return (unsigned)parsed;
+}
+
+static unsigned rtcore_shader_continuation_base_cost() {
+  return rtcore_shader_continuation_uint_config(
+      "VULKAN_SIM_RTCORE_SHADER_CONTINUATION_BASE_COST", 1);
+}
+
+static unsigned rtcore_shader_continuation_handoff_load_cost() {
+  return rtcore_shader_continuation_uint_config(
+      "VULKAN_SIM_RTCORE_SHADER_CONTINUATION_HANDOFF_LOAD_COST", 1);
+}
+
+static unsigned rtcore_shader_continuation_resume_publish_cost() {
+  return rtcore_shader_continuation_uint_config(
+      "VULKAN_SIM_RTCORE_SHADER_CONTINUATION_RESUME_PUBLISH_COST", 1);
+}
+
+static unsigned rtcore_shader_continuation_sbt_metadata_cost() {
+  return rtcore_shader_continuation_uint_config(
+      "VULKAN_SIM_RTCORE_SHADER_CONTINUATION_SBT_METADATA_COST", 4);
+}
+
+static unsigned rtcore_shader_continuation_dispatch_call_cost() {
+  return rtcore_shader_continuation_uint_config(
+      "VULKAN_SIM_RTCORE_SHADER_CONTINUATION_DISPATCH_CALL_COST", 8);
+}
+
 static bool rtcore_replay_env_enabled_or_model_preset(const char *name,
                                                       bool preset_enabled) {
   const char *value = getenv(name);
@@ -977,6 +1020,11 @@ struct rtcore_scoreboard_visible_wake_stats {
   unsigned long long shader_continuation_decision_count;
   unsigned long long shader_continuation_resubmit_candidate_count;
   unsigned long long shader_continuation_pre_submit_blocked_count;
+  unsigned long long shader_continuation_cycle_total;
+  unsigned long long shader_continuation_handoff_load_cycle_total;
+  unsigned long long shader_continuation_resume_publish_cycle_total;
+  unsigned long long shader_continuation_sbt_metadata_cycle_total;
+  unsigned long long shader_continuation_dispatch_call_cycle_total;
   unsigned long long waiting_rtcore_cycle_total;
   unsigned long long max_waiting_rtcore_cycles;
 };
@@ -9146,6 +9194,28 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
   const unsigned handoff_result_consume_mask = completion_visible_mask;
   const unsigned resume_handoff_publish_mask =
       pre_submit_guard_passed ? next_active_mask : 0;
+  const unsigned handoff_consume_lane_count =
+      rtcore_count_active_mask_lanes(handoff_result_consume_mask);
+  const unsigned resume_publish_lane_count =
+      rtcore_count_active_mask_lanes(resume_handoff_publish_mask);
+  const bool dispatcher_candidate = continuation_candidate_mask != 0;
+  const unsigned shader_continuation_handoff_load_cycles =
+      handoff_consume_lane_count *
+      rtcore_shader_continuation_handoff_load_cost();
+  const unsigned shader_continuation_resume_publish_cycles =
+      resume_publish_lane_count *
+      rtcore_shader_continuation_resume_publish_cost();
+  const unsigned shader_continuation_sbt_metadata_cycles =
+      dispatcher_candidate ? rtcore_shader_continuation_sbt_metadata_cost() : 0;
+  const unsigned shader_continuation_dispatch_call_cycles =
+      dispatcher_candidate ? rtcore_shader_continuation_dispatch_call_cost()
+                           : 0;
+  const unsigned shader_continuation_total_cycles =
+      rtcore_shader_continuation_base_cost() +
+      shader_continuation_handoff_load_cycles +
+      shader_continuation_resume_publish_cycles +
+      shader_continuation_sbt_metadata_cycles +
+      shader_continuation_dispatch_call_cycles;
 
   event->shader_continuation_loop_decision_logged = true;
   event->shader_continuation_next_active_mask = next_active_mask;
@@ -9159,6 +9229,20 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
   event->shader_continuation_decision_cycle = current_cycle;
 
   g_rtcore_scoreboard_visible_wake_stats.shader_continuation_decision_count++;
+  g_rtcore_scoreboard_visible_wake_stats.shader_continuation_cycle_total +=
+      shader_continuation_total_cycles;
+  g_rtcore_scoreboard_visible_wake_stats
+      .shader_continuation_handoff_load_cycle_total +=
+      shader_continuation_handoff_load_cycles;
+  g_rtcore_scoreboard_visible_wake_stats
+      .shader_continuation_resume_publish_cycle_total +=
+      shader_continuation_resume_publish_cycles;
+  g_rtcore_scoreboard_visible_wake_stats
+      .shader_continuation_sbt_metadata_cycle_total +=
+      shader_continuation_sbt_metadata_cycles;
+  g_rtcore_scoreboard_visible_wake_stats
+      .shader_continuation_dispatch_call_cycle_total +=
+      shader_continuation_dispatch_call_cycles;
   if (next_active_mask != 0) {
     g_rtcore_scoreboard_visible_wake_stats
         .shader_continuation_resubmit_candidate_count++;
@@ -9174,6 +9258,30 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
       handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
       missing_resume_handoff_mask, handoff_result_consume_mask,
       resume_handoff_publish_mask, pre_submit_guard_passed, current_cycle);
+
+  printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_COST "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "completion_visible_mask=0x%08x continuation_candidate_mask=0x%08x "
+         "next_active_mask=0x%08x handoff_consume_lane_count=%u "
+         "resume_publish_lane_count=%u "
+         "shader_continuation_handoff_load_cycles=%u "
+         "shader_continuation_resume_publish_cycles=%u "
+         "shader_continuation_sbt_metadata_cycles=%u "
+         "shader_continuation_dispatch_call_cycles=%u "
+         "shader_continuation_total_cycles=%u "
+         "shader_continuation_cycle_total=%llu "
+         "shader_side_decision_cycle=%llu\n",
+         m_sid, event->warp_uid, event->warp_id, issued_active_mask,
+         completion_visible_mask, continuation_candidate_mask,
+         next_active_mask, handoff_consume_lane_count,
+         resume_publish_lane_count,
+         shader_continuation_handoff_load_cycles,
+         shader_continuation_resume_publish_cycles,
+         shader_continuation_sbt_metadata_cycles,
+         shader_continuation_dispatch_call_cycles,
+         shader_continuation_total_cycles,
+         g_rtcore_scoreboard_visible_wake_stats.shader_continuation_cycle_total,
+         current_cycle);
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_LOOP_DECISION "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
