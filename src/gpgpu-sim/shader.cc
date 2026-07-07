@@ -8755,6 +8755,81 @@ static unsigned rtcore_shader_continuation_hit_record_selector_cohort_count(
   return selector_key_count;
 }
 
+static unsigned rtcore_shader_continuation_compat_target_shader_id_key(
+    const kernel_info_t *kernel,
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned lane, unsigned reason_oracle_anyhit_mask,
+    unsigned reason_oracle_intersection_mask) {
+  const unsigned lane_mask = 1u << lane;
+  if (kernel == NULL || kernel->vulkan_metadata.hit_sbt == NULL) {
+    return UINT_MAX;
+  }
+  if (((reason_oracle_anyhit_mask | reason_oracle_intersection_mask) &
+       lane_mask) == 0) {
+    return UINT_MAX;
+  }
+
+  const unsigned hit_record_selector =
+      rtcore_shader_continuation_hit_record_selector_key(snapshot, lane);
+  const unsigned shader_record_component = 1;
+  const uint32_t *hit_sbt =
+      reinterpret_cast<const uint32_t *>(kernel->vulkan_metadata.hit_sbt);
+  return hit_sbt[hit_record_selector * 8 + shader_record_component];
+}
+
+static unsigned rtcore_shader_continuation_compat_target_shader_id_ready_mask(
+    const kernel_info_t *kernel,
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned hit_record_selector_ready_mask,
+    unsigned reason_oracle_anyhit_mask,
+    unsigned reason_oracle_intersection_mask) {
+  unsigned mask = 0;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((hit_record_selector_ready_mask & lane_mask) == 0) {
+      continue;
+    }
+    const unsigned shader_id =
+        rtcore_shader_continuation_compat_target_shader_id_key(
+            kernel, snapshot, lane, reason_oracle_anyhit_mask,
+            reason_oracle_intersection_mask);
+    if (shader_id != UINT_MAX) {
+      mask |= lane_mask;
+    }
+  }
+  return mask;
+}
+
+static unsigned rtcore_shader_continuation_compat_target_shader_id_cohort_count(
+    const kernel_info_t *kernel,
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned target_shader_id_ready_mask, unsigned reason_oracle_anyhit_mask,
+    unsigned reason_oracle_intersection_mask) {
+  unsigned shader_ids[32] = {};
+  unsigned shader_id_count = 0;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((target_shader_id_ready_mask & lane_mask) == 0) {
+      continue;
+    }
+    const unsigned shader_id =
+        rtcore_shader_continuation_compat_target_shader_id_key(
+            kernel, snapshot, lane, reason_oracle_anyhit_mask,
+            reason_oracle_intersection_mask);
+    bool seen = false;
+    for (unsigned index = 0; index < shader_id_count; ++index) {
+      if (shader_ids[index] == shader_id) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen && shader_id_count < 32) {
+      shader_ids[shader_id_count++] = shader_id;
+    }
+  }
+  return shader_id_count;
+}
+
 rt_unit::rtcore_completion_timing_snapshot
 rt_unit::rtcore_make_completion_timing_snapshot(
     const rtcore_synthetic_completion_event &event) const {
@@ -9371,6 +9446,9 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
     unsigned raw_fact_instance_sbt_contribution_ready_mask,
     unsigned raw_fact_hit_record_selector_formula_ready_mask,
     unsigned raw_fact_hit_record_selector_formula_cohort_count,
+    unsigned target_shader_id_ready_mask,
+    unsigned target_shader_id_lookup_miss_mask,
+    unsigned target_shader_id_cohort_count,
     unsigned long long current_cycle) const {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT || event == NULL ||
       event->shader_continuation_loop_decision_logged) {
@@ -9421,8 +9499,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
       target_reason_mask & raw_fact_ray_sbt_inputs_ready_mask &
       raw_fact_geometry_primitive_ready_mask &
       raw_fact_instance_sbt_contribution_ready_mask &
-      raw_fact_record_selector_ready_mask &
-      raw_fact_resolved_target_ready_mask;
+      raw_fact_record_selector_ready_mask;
   const unsigned raw_fact_missing_mask =
       target_reason_mask & ~raw_fact_sufficient_mask;
   const unsigned shader_continuation_handoff_load_cycles =
@@ -9539,7 +9616,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "target_resolution_source=compatibility_selector_summary_bridge "
          "target_resolution_input_source=custom_handoff_facts "
          "target_resolution_metadata_producer=vulkan_sim_compatibility "
-         "target_resolution_resolved=0 "
+         "target_resolution_resolved=%u "
          "target_reason_intersection_mask=0x%08x "
          "target_reason_anyhit_mask=0x%08x "
          "target_reason_synthetic_split_mask=0x%08x "
@@ -9550,9 +9627,13 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "target_selector_cohort_count=%u "
          "target_hit_record_selector_formula_ready_mask=0x%08x "
          "target_hit_record_selector_formula_cohort_count=%u "
-         "compatibility_target_resolution=selector_summary_only "
+         "target_shader_id_ready_mask=0x%08x "
+         "target_shader_id_lookup_miss_mask=0x%08x "
+         "target_shader_id_cohort_count=%u "
+         "compatibility_target_resolution=sbt_metadata_lookup "
          "shader_side_decision_cycle=%llu\n",
          m_sid, event->warp_uid, event->warp_id, issued_active_mask,
+         target_shader_id_ready_mask != 0 ? 1 : 0,
          reason_oracle_intersection_mask,
          reason_oracle_anyhit_mask,
          reason_synthetic_split_mask,
@@ -9562,7 +9643,10 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          target_selector_fallback_reason_mask,
          target_selector_cohort_count,
          raw_fact_hit_record_selector_formula_ready_mask,
-         raw_fact_hit_record_selector_formula_cohort_count, current_cycle);
+         raw_fact_hit_record_selector_formula_cohort_count,
+         target_shader_id_ready_mask,
+         target_shader_id_lookup_miss_mask,
+         target_shader_id_cohort_count, current_cycle);
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_RAW_FACT_SUFFICIENCY_AUDIT "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
@@ -9577,6 +9661,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "raw_fact_sbt_region_metadata_ready_mask=0x%08x "
          "raw_fact_record_selector_ready_mask=0x%08x "
          "raw_fact_resolved_target_ready_mask=0x%08x "
+         "compatibility_resolved_target_ready_mask=0x%08x "
          "raw_fact_sufficient_mask=0x%08x "
          "raw_fact_missing_mask=0x%08x "
          "raw_fact_audit_status=raw_facts_incomplete_compatibility_bridge_required "
@@ -9591,6 +9676,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          raw_fact_sbt_region_metadata_ready_mask,
          raw_fact_record_selector_ready_mask,
          raw_fact_resolved_target_ready_mask,
+         target_shader_id_ready_mask,
          raw_fact_sufficient_mask,
          raw_fact_missing_mask, current_cycle);
 
@@ -10655,6 +10741,22 @@ void rt_unit::cycle() {
 	                    rtcore_shader_continuation_hit_record_selector_cohort_count(
 	                        candidate_completion,
 	                        raw_fact_hit_record_selector_formula_ready_mask);
+	            const kernel_info_t *compat_kernel =
+	                m_core != NULL ? m_core->get_kernel() : NULL;
+	            const unsigned target_shader_id_ready_mask =
+	                rtcore_shader_continuation_compat_target_shader_id_ready_mask(
+	                    compat_kernel, candidate_completion,
+	                    raw_fact_hit_record_selector_formula_ready_mask,
+	                    reason_oracle_anyhit_mask,
+	                    reason_oracle_intersection_mask);
+	            const unsigned target_shader_id_lookup_miss_mask =
+	                target_reason_mask & ~target_shader_id_ready_mask;
+	            const unsigned target_shader_id_cohort_count =
+	                rtcore_shader_continuation_compat_target_shader_id_cohort_count(
+	                    compat_kernel, candidate_completion,
+	                    target_shader_id_ready_mask,
+	                    reason_oracle_anyhit_mask,
+	                    reason_oracle_intersection_mask);
 	            rtcore_record_shader_continuation_loop_decision(
 	                it->second, &release_event->second,
 	                candidate_completion.packet_schema_version,
@@ -10676,6 +10778,9 @@ void rt_unit::cycle() {
 	                raw_fact_instance_sbt_contribution_ready_mask,
 	                raw_fact_hit_record_selector_formula_ready_mask,
 	                raw_fact_hit_record_selector_formula_cohort_count,
+	                target_shader_id_ready_mask,
+	                target_shader_id_lookup_miss_mask,
+	                target_shader_id_cohort_count,
 	                current_cycle);
 	            rtcore_synthetic_release_snapshot release_snapshot =
 	                rtcore_make_synthetic_release_snapshot(
