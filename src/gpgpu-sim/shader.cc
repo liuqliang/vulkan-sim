@@ -946,6 +946,18 @@ struct rtcore_replay_release_gate_stats {
 
 static rtcore_replay_release_gate_stats g_rtcore_replay_release_gate_stats = {};
 
+struct rtcore_scoreboard_visible_wake_stats {
+  unsigned long long pending_ownership_count;
+  unsigned long long waiting_rtcore_count;
+  unsigned long long completion_ready_but_scoreboard_blocked_count;
+  unsigned long long resident_warp_wakeup_count;
+  unsigned long long waiting_rtcore_cycle_total;
+  unsigned long long max_waiting_rtcore_cycles;
+};
+
+static rtcore_scoreboard_visible_wake_stats
+    g_rtcore_scoreboard_visible_wake_stats = {};
+
 static void rtcore_maybe_log_replay_release_gate_aggregate_stats(
     const rtcore_replay_cycle_hook_result &result, bool aggregate_event) {
   if (!aggregate_event ||
@@ -8982,6 +8994,97 @@ bool rt_unit::claim_adapter_completion_for_issue(
   return event->adapter_completion_ready;
 }
 
+void rt_unit::rtcore_record_submit_pending_ownership(
+    const warp_inst_t &inst, const rtcore_synthetic_completion_event &event,
+    unsigned long long current_cycle) const {
+  if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
+    return;
+  }
+
+  g_rtcore_scoreboard_visible_wake_stats.pending_ownership_count++;
+  g_rtcore_scoreboard_visible_wake_stats.waiting_rtcore_count++;
+
+  printf("GPGPU-Sim RTCORE_SUBMIT_PENDING_OWNERSHIP "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u static_inst_pc=0x%llx "
+         "issued_active_mask=0x%08x scoreboard_pending_ownership=1 "
+         "waiting_rtcore_enqueue_cycle=%llu current_cycle=%llu\n",
+         m_sid, event.warp_uid, event.warp_id, inst.pc,
+         event.issued_active_mask, event.waiting_rtcore_enqueue_cycle,
+         current_cycle);
+  printf("GPGPU-Sim RTCORE_RESIDENT_WARP_WAITING_RTCORE "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "resident_warp_state=waiting_rtcore "
+         "counts_resident_warp_occupancy=1 consumes_shader_issue_slot=0 "
+         "scoreboard_pending_ownership=1 enqueue_cycle=%llu\n",
+         m_sid, event.warp_uid, event.warp_id, event.issued_active_mask,
+         event.waiting_rtcore_enqueue_cycle);
+  fflush(stdout);
+}
+
+void rt_unit::rtcore_record_completion_ready_but_scoreboard_blocked(
+    const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
+    unsigned packet_schema_version, unsigned completion_valid_mask,
+    unsigned terminal_lane_mask, unsigned continuation_lane_mask,
+    unsigned long long current_cycle) {
+  if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT || event == NULL ||
+      event->scoreboard_blocked_logged) {
+    return;
+  }
+
+  event->scoreboard_blocked_logged = true;
+  g_rtcore_scoreboard_visible_wake_stats
+      .completion_ready_but_scoreboard_blocked_count++;
+
+  printf("GPGPU-Sim RTCORE_COMPLETION_READY_BUT_SCOREBOARD_BLOCKED "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "packet_schema_version=%u completion_valid_mask=0x%08x "
+         "terminal_lane_mask=0x%08x continuation_lane_mask=0x%08x "
+         "completion_ready_but_scoreboard_blocked=1 "
+         "memory_response_path_blocked=0 current_cycle=%llu\n",
+         m_sid, event->warp_uid, event->warp_id, event->issued_active_mask,
+         packet_schema_version, completion_valid_mask, terminal_lane_mask,
+         continuation_lane_mask, current_cycle);
+  fflush(stdout);
+}
+
+void rt_unit::rtcore_record_resident_warp_wakeup(
+    const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
+    unsigned packet_schema_version, unsigned completion_valid_mask,
+    unsigned terminal_lane_mask, unsigned continuation_lane_mask,
+    unsigned long long current_cycle) const {
+  if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT || event == NULL ||
+      event->scoreboard_packet_acquired) {
+    return;
+  }
+
+  event->scoreboard_packet_acquired = true;
+  event->waiting_rtcore_pending = false;
+  event->scoreboard_wakeup_cycle = current_cycle;
+  const unsigned long long wait_cycles =
+      current_cycle >= event->waiting_rtcore_enqueue_cycle
+          ? current_cycle - event->waiting_rtcore_enqueue_cycle
+          : 0;
+  g_rtcore_scoreboard_visible_wake_stats.resident_warp_wakeup_count++;
+  g_rtcore_scoreboard_visible_wake_stats.waiting_rtcore_cycle_total +=
+      wait_cycles;
+  if (wait_cycles >
+      g_rtcore_scoreboard_visible_wake_stats.max_waiting_rtcore_cycles) {
+    g_rtcore_scoreboard_visible_wake_stats.max_waiting_rtcore_cycles =
+        wait_cycles;
+  }
+
+  printf("GPGPU-Sim RTCORE_RESIDENT_WARP_WAKEUP "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "packet_schema_version=%u completion_valid_mask=0x%08x "
+         "terminal_lane_mask=0x%08x continuation_lane_mask=0x%08x "
+         "scoreboard_packet_acquired=1 resident_warp_state=ready "
+         "waiting_rtcore_cycles=%llu wakeup_cycle=%llu\n",
+         m_sid, event->warp_uid, event->warp_id, event->issued_active_mask,
+         packet_schema_version, completion_valid_mask, terminal_lane_mask,
+         continuation_lane_mask, wait_cycles, current_cycle);
+  fflush(stdout);
+}
+
 void rt_unit::enqueue_synthetic_completion(
     const warp_inst_t &inst, unsigned long long current_cycle) {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
@@ -9029,6 +9132,11 @@ void rt_unit::enqueue_synthetic_completion(
   event.adapter_completion_issue_mask_match = false;
   event.adapter_completion_issued_lanes_complete = false;
   event.enqueue_cycle = current_cycle;
+  event.waiting_rtcore_pending = true;
+  event.scoreboard_blocked_logged = false;
+  event.scoreboard_packet_acquired = false;
+  event.waiting_rtcore_enqueue_cycle = current_cycle;
+  event.scoreboard_wakeup_cycle = 0;
   claim_adapter_completion_for_issue(&event);
   rtcore_completion_timing_snapshot timing_snapshot =
       rtcore_make_completion_timing_snapshot(event);
@@ -9040,6 +9148,7 @@ void rt_unit::enqueue_synthetic_completion(
   if (new_event) {
     rtcore_record_warp_completion_entry_enqueue(inst);
   }
+  rtcore_record_submit_pending_ownership(inst, event, current_cycle);
 }
 
 bool rt_unit::synthetic_completion_ready(
@@ -9877,6 +9986,25 @@ void rt_unit::cycle() {
           it->second.warp_id(), candidate_issued_active_mask,
           &candidate_completion);
     }
+    const bool completion_ready_but_scoreboard_blocked =
+        synthetic_submit_release_candidate &&
+        candidate_completion_event_found &&
+        candidate_completion.enabled && candidate_completion.found &&
+        candidate_completion.all_active_lanes_complete &&
+        !candidate_completion.scoreboard_handoff_delivered;
+    if (completion_ready_but_scoreboard_blocked) {
+      std::map<unsigned, rtcore_synthetic_completion_event>::iterator
+          blocked_event =
+              m_synthetic_warp_completion_entries.find(it->second.get_uid());
+      if (blocked_event != m_synthetic_warp_completion_entries.end()) {
+        rtcore_record_completion_ready_but_scoreboard_blocked(
+            it->second, &blocked_event->second,
+            candidate_completion.packet_schema_version,
+            candidate_completion.lane_completion_valid_mask,
+            candidate_completion.terminal_lane_mask,
+            candidate_completion.continuation_lane_mask, current_cycle);
+      }
+    }
     const bool candidate_scoreboard_handoff_release_allowed =
         synthetic_submit_release_candidate &&
         candidate_completion_event_found &&
@@ -9913,21 +10041,26 @@ void rt_unit::cycle() {
         activation_enabled, activation_blocked,
         candidate_release_gate_blocked_cycles);
     // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
-    if (gated_synthetic_submit_completion_ready &&
-        it->second.rt_mem_accesses_empty() &&
-        it->second.rt_intersection_delay_done() &&
-        !it->second.has_pending_writes()) {
-      RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid, it->second.warp_id(), it->first);
-      if (m_operand_collector->writeback(it->second)) {
-        if (it->second.rt_subop == RT_CORE_SUBOP_SUBMIT) {
-          const std::map<unsigned,
-                         rtcore_synthetic_completion_event>::const_iterator
-              release_event =
-                  m_synthetic_warp_completion_entries.find(it->second.get_uid());
-          if (release_event != m_synthetic_warp_completion_entries.end()) {
-            rtcore_synthetic_release_snapshot release_snapshot =
-                rtcore_make_synthetic_release_snapshot(
-                    it->second, release_event->second, current_cycle);
+	    if (gated_synthetic_submit_completion_ready &&
+	        it->second.rt_mem_accesses_empty() &&
+	        it->second.rt_intersection_delay_done() &&
+	        !it->second.has_pending_writes()) {
+	      RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid, it->second.warp_id(), it->first);
+	      if (m_operand_collector->writeback(it->second)) {
+	        if (it->second.rt_subop == RT_CORE_SUBOP_SUBMIT) {
+	          std::map<unsigned, rtcore_synthetic_completion_event>::iterator
+	              release_event =
+	                  m_synthetic_warp_completion_entries.find(it->second.get_uid());
+	          if (release_event != m_synthetic_warp_completion_entries.end()) {
+	            rtcore_record_resident_warp_wakeup(
+	                it->second, &release_event->second,
+	                candidate_completion.packet_schema_version,
+	                candidate_completion.lane_completion_valid_mask,
+	                candidate_completion.terminal_lane_mask,
+	                candidate_completion.continuation_lane_mask, current_cycle);
+	            rtcore_synthetic_release_snapshot release_snapshot =
+	                rtcore_make_synthetic_release_snapshot(
+	                    it->second, release_event->second, current_cycle);
             rtcore_apply_synthetic_release_snapshot(release_snapshot);
           }
         }

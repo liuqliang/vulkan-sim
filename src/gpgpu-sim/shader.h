@@ -1690,10 +1690,15 @@ class rt_unit : public pipelined_simd_unit {
             *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
         bool provider_backend_input_authority_pre_call_guard_required;
         bool provider_backend_input_authority_pre_call_guard_ready;
-        unsigned long long enqueue_cycle;
-        unsigned long long ready_cycle;
-        unsigned completion_latency;
-      };
+	        unsigned long long enqueue_cycle;
+	        unsigned long long ready_cycle;
+	        unsigned completion_latency;
+	        bool waiting_rtcore_pending;
+	        bool scoreboard_blocked_logged;
+	        bool scoreboard_packet_acquired;
+	        unsigned long long waiting_rtcore_enqueue_cycle;
+	        unsigned long long scoreboard_wakeup_cycle;
+	      };
       struct rtcore_replay_release_identity_join_snapshot {
         rtcore_replay_release_identity_join_snapshot()
             : enabled(false),
@@ -2102,17 +2107,31 @@ class rt_unit : public pipelined_simd_unit {
           const warp_inst_t &inst,
           const rtcore_synthetic_completion_event &event,
           unsigned long long current_cycle) const;
-      rtcore_replay_release_identity_join_snapshot
-      rtcore_make_replay_release_identity_join_snapshot(
-          bool identity_valid, bool progressed, bool memory_progressed,
-          bool ready_progressed, unsigned identity_owner_hw_sid,
-          unsigned identity_thread_uid, unsigned identity_lane_id,
-          bool identity_has_warp_metadata, unsigned identity_warp_uid,
-          unsigned identity_warp_id, unsigned identity_active_mask,
-          unsigned identity_static_inst_uid,
-          unsigned long long cycle, warp_inst_t &inst) const;
-      void rtcore_apply_synthetic_release_snapshot(
-          const rtcore_synthetic_release_snapshot &snapshot) const;
+	      rtcore_replay_release_identity_join_snapshot
+	      rtcore_make_replay_release_identity_join_snapshot(
+	          bool identity_valid, bool progressed, bool memory_progressed,
+	          bool ready_progressed, unsigned identity_owner_hw_sid,
+	          unsigned identity_thread_uid, unsigned identity_lane_id,
+	          bool identity_has_warp_metadata, unsigned identity_warp_uid,
+	          unsigned identity_warp_id, unsigned identity_active_mask,
+	          unsigned identity_static_inst_uid,
+	          unsigned long long cycle, warp_inst_t &inst) const;
+	      void rtcore_record_submit_pending_ownership(
+	          const warp_inst_t &inst,
+	          const rtcore_synthetic_completion_event &event,
+	          unsigned long long current_cycle) const;
+	      void rtcore_record_completion_ready_but_scoreboard_blocked(
+	          const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
+	          unsigned packet_schema_version, unsigned completion_valid_mask,
+	          unsigned terminal_lane_mask, unsigned continuation_lane_mask,
+	          unsigned long long current_cycle);
+	      void rtcore_record_resident_warp_wakeup(
+	          const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
+	          unsigned packet_schema_version, unsigned completion_valid_mask,
+	          unsigned terminal_lane_mask, unsigned continuation_lane_mask,
+	          unsigned long long current_cycle) const;
+	      void rtcore_apply_synthetic_release_snapshot(
+	          const rtcore_synthetic_release_snapshot &snapshot) const;
       rtcore_shadow_table_release_snapshot
       rtcore_make_shadow_table_release_snapshot(
           const rtcore_synthetic_release_snapshot &release_snapshot) const;
