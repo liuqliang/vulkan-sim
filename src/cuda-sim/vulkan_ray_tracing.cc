@@ -11448,6 +11448,16 @@ extern "C" function_info *rtcore_resolve_compatibility_shader_function(
     return VulkanRayTracing::rtcoreResolveCompatibilityShaderFunction(shaderID);
 }
 
+extern "C" int rtcore_call_compatibility_shader_function(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    function_info *target_func) {
+    if (pI == NULL || thread == NULL || target_func == NULL) {
+        return 0;
+    }
+    VulkanRayTracing::callShader(pI, thread, target_func);
+    return 1;
+}
+
 void VulkanRayTracing::callShader(const ptx_instruction *pI, ptx_thread_info *thread, function_info *target_func) {
     static unsigned call_uid_next = 1;
 

@@ -58,6 +58,9 @@
 
 extern "C" function_info *rtcore_resolve_compatibility_shader_function(
     unsigned shaderID);
+extern "C" int rtcore_call_compatibility_shader_function(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    function_info *target_func);
 
 struct rtcore_replay_service_cycle_identity_snapshot {
   bool valid;
@@ -216,6 +219,30 @@ static bool rtcore_shader_continuation_force_no_resubmit_enabled() {
   static int enabled = []() {
     const char *value =
         getenv("VULKAN_SIM_RTCORE_SHADER_CONTINUATION_FORCE_NO_RESUBMIT");
+    if (value == NULL || *value == '\0') {
+      return 0;
+    }
+    return strcmp(value, "0") != 0 ? 1 : 0;
+  }();
+  return enabled != 0;
+}
+
+static bool rtcore_shader_continuation_direct_callshader_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_SHADER_CONTINUATION_DIRECT_CALLSHADER");
+    if (value == NULL || *value == '\0') {
+      return 0;
+    }
+    return strcmp(value, "0") != 0 ? 1 : 0;
+  }();
+  return enabled != 0;
+}
+
+static bool rtcore_shader_continuation_direct_callshader_unsafe_rtunit_call_enabled() {
+  static int enabled = []() {
+    const char *value = getenv(
+        "VULKAN_SIM_RTCORE_SHADER_CONTINUATION_DIRECT_CALLSHADER_UNSAFE_RTUNIT_CALL");
     if (value == NULL || *value == '\0') {
       return 0;
     }
@@ -8979,6 +9006,110 @@ static void rtcore_record_shader_continuation_callshader_context_preflight(
          current_cycle);
 }
 
+static void rtcore_record_shader_continuation_direct_callshader_action(
+    const shader_core_ctx *core, const warp_inst_t &inst, unsigned owner_hw_sid,
+    unsigned warp_uid, unsigned warp_id, unsigned active_mask,
+    const kernel_info_t *kernel,
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned target_shader_id_ready_mask, unsigned reason_oracle_anyhit_mask,
+    unsigned reason_oracle_intersection_mask,
+    unsigned long long current_cycle) {
+  const bool direct_enabled =
+      rtcore_shader_continuation_direct_callshader_enabled();
+  const bool unsafe_rtunit_call_enabled =
+      rtcore_shader_continuation_direct_callshader_unsafe_rtunit_call_enabled();
+  unsigned candidate_mask = 0;
+  unsigned invoked_mask = 0;
+  unsigned missing_thread_mask = 0;
+  unsigned missing_instruction_pointer_mask = 0;
+  unsigned missing_target_function_mask = 0;
+  unsigned failed_invocation_mask = 0;
+
+  shader_core_ctx *mutable_core = const_cast<shader_core_ctx *>(core);
+  ptx_thread_info **thread_info =
+      mutable_core != NULL ? mutable_core->get_thread_info() : NULL;
+  const unsigned warp_size =
+      mutable_core != NULL ? mutable_core->get_warp_size() : 32;
+
+  for (unsigned lane = 0; lane < 32 && lane < warp_size; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((target_shader_id_ready_mask & lane_mask) == 0) {
+      continue;
+    }
+
+    ptx_thread_info *thread = NULL;
+    if (thread_info != NULL) {
+      const unsigned hw_tid = warp_id * warp_size + lane;
+      thread = thread_info[hw_tid];
+    }
+    if (thread == NULL) {
+      missing_thread_mask |= lane_mask;
+      continue;
+    }
+
+    const ptx_instruction *pI = thread->get_inst(inst.pc);
+    if (pI == NULL) {
+      missing_instruction_pointer_mask |= lane_mask;
+      continue;
+    }
+
+    const unsigned shader_id =
+        rtcore_shader_continuation_compat_target_shader_id_key(
+            kernel, snapshot, lane, reason_oracle_anyhit_mask,
+            reason_oracle_intersection_mask);
+    function_info *target_func =
+        shader_id != UINT_MAX
+            ? rtcore_resolve_compatibility_shader_function(shader_id)
+            : NULL;
+    if (target_func == NULL) {
+      missing_target_function_mask |= lane_mask;
+      continue;
+    }
+
+    candidate_mask |= lane_mask;
+    if (!direct_enabled || !unsafe_rtunit_call_enabled) {
+      continue;
+    }
+
+    if (rtcore_call_compatibility_shader_function(pI, thread, target_func)) {
+      invoked_mask |= lane_mask;
+    } else {
+      failed_invocation_mask |= lane_mask;
+    }
+  }
+
+  const char *action =
+      !direct_enabled
+          ? "disabled_observe_only"
+          : (candidate_mask == 0
+                 ? "no_ready_context"
+                 : (!unsafe_rtunit_call_enabled
+                        ? "blocked_not_shadercore_issue_site"
+                        : (invoked_mask != 0 ? "invoked_callshader"
+                                             : "failed_callshader")));
+
+  printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_DIRECT_CALLSHADER_ACTION "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "direct_callshader_enabled=%u "
+         "direct_callshader_unsafe_rtunit_call=%u "
+         "direct_callshader_target_shader_id_ready_mask=0x%08x "
+         "direct_callshader_action=%s "
+         "direct_callshader_candidate_mask=0x%08x "
+         "direct_callshader_lane_mask=0x%08x "
+         "direct_callshader_missing_thread_mask=0x%08x "
+         "direct_callshader_missing_instruction_pointer_mask=0x%08x "
+         "direct_callshader_missing_target_function_mask=0x%08x "
+         "direct_callshader_failed_invocation_mask=0x%08x "
+         "cohort_backend_invocation=per_thread_backend_under_cohort "
+         "shader_side_decision_cycle=%llu\n",
+         owner_hw_sid, warp_uid, warp_id, active_mask, direct_enabled ? 1u : 0u,
+         unsafe_rtunit_call_enabled ? 1u : 0u,
+         target_shader_id_ready_mask, action, candidate_mask, invoked_mask,
+         missing_thread_mask, missing_instruction_pointer_mask,
+         missing_target_function_mask, failed_invocation_mask,
+         current_cycle);
+}
+
 rt_unit::rtcore_completion_timing_snapshot
 rt_unit::rtcore_make_completion_timing_snapshot(
     const rtcore_synthetic_completion_event &event) const {
@@ -10915,6 +11046,14 @@ void rt_unit::cycle() {
 	                reason_oracle_anyhit_mask,
 	                reason_oracle_intersection_mask, current_cycle);
 	            rtcore_record_shader_continuation_callshader_context_preflight(
+	                m_core, it->second, m_sid, release_event->second.warp_uid,
+	                release_event->second.warp_id,
+	                release_event->second.issued_active_mask,
+	                compat_kernel, candidate_completion,
+	                target_shader_id_ready_mask,
+	                reason_oracle_anyhit_mask,
+	                reason_oracle_intersection_mask, current_cycle);
+	            rtcore_record_shader_continuation_direct_callshader_action(
 	                m_core, it->second, m_sid, release_event->second.warp_uid,
 	                release_event->second.warp_id,
 	                release_event->second.issued_active_mask,
