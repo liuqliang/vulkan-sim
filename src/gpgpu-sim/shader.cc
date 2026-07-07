@@ -209,6 +209,18 @@ static bool rtcore_replay_model_preset_simple_enabled() {
   return enabled != 0;
 }
 
+static bool rtcore_shader_continuation_force_no_resubmit_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_SHADER_CONTINUATION_FORCE_NO_RESUBMIT");
+    if (value == NULL || *value == '\0') {
+      return 0;
+    }
+    return strcmp(value, "0") != 0 ? 1 : 0;
+  }();
+  return enabled != 0;
+}
+
 static bool rtcore_replay_env_enabled_or_model_preset(const char *name,
                                                       bool preset_enabled) {
   const char *value = getenv(name);
@@ -9118,8 +9130,13 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
       ~unsupported_reason_mask;
   const unsigned missing_resume_handoff_mask =
       continuation_candidate_mask & ~handoff_resume_group_valid_mask;
-  const unsigned next_active_mask =
+  const unsigned raw_next_active_mask =
       continuation_candidate_mask & handoff_resume_group_valid_mask;
+  const bool shader_continuation_forced_no_resubmit =
+      rtcore_shader_continuation_force_no_resubmit_enabled() &&
+      raw_next_active_mask != 0;
+  const unsigned next_active_mask =
+      shader_continuation_forced_no_resubmit ? 0 : raw_next_active_mask;
   const unsigned final_like_mask =
       completion_visible_mask & terminal_lane_mask & ~next_active_mask;
   const unsigned masked_off_lane_consume_mask =
@@ -9169,6 +9186,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "shader_continuation_handoff_consume_mask=0x%08x "
          "shader_continuation_resume_handoff_publish_mask=0x%08x "
          "masked_off_lane_consume_mask=0x%08x "
+         "shader_continuation_forced_no_resubmit=%u "
          "pre_submit_guard_passed=%u actual_resubmit_issued=0 "
          "shader_continuation_bridge_enqueued=%u "
          "shader_side_decision_cycle=%llu\n",
@@ -9178,6 +9196,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
          missing_resume_handoff_mask, handoff_result_consume_mask,
          resume_handoff_publish_mask, masked_off_lane_consume_mask,
+         shader_continuation_forced_no_resubmit ? 1u : 0u,
          pre_submit_guard_passed ? 1u : 0u,
          bridge_enqueued ? 1u : 0u, current_cycle);
   fflush(stdout);
