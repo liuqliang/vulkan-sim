@@ -62,6 +62,14 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
                       void *miss_sbt,
                       void *hit_sbt,
                       void *callable_sbt,
+                      uint64_t raygen_sbt_stride,
+                      uint64_t raygen_sbt_size,
+                      uint64_t miss_sbt_stride,
+                      uint64_t miss_sbt_size,
+                      uint64_t hit_sbt_stride,
+                      uint64_t hit_sbt_size,
+                      uint64_t callable_sbt_stride,
+                      uint64_t callable_sbt_size,
                       bool is_indirect,
                       uint32_t launch_width,
                       uint32_t launch_height,
@@ -69,8 +77,14 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
                       uint64_t launch_size_addr)
 {
     VulkanRayTracing::invoke_gpgpusim();
-    VulkanRayTracing::vkCmdTraceRaysKHR(raygen_sbt, miss_sbt, hit_sbt, callable_sbt,
-            is_indirect, launch_width, launch_height, launch_depth, launch_size_addr);
+    VulkanRayTracing::vkCmdTraceRaysKHR(
+            raygen_sbt, miss_sbt, hit_sbt, callable_sbt,
+            raygen_sbt_stride, raygen_sbt_size,
+            miss_sbt_stride, miss_sbt_size,
+            hit_sbt_stride, hit_sbt_size,
+            callable_sbt_stride, callable_sbt_size,
+            is_indirect, launch_width, launch_height, launch_depth,
+            launch_size_addr);
 }
 
 extern "C" void gpgpusim_setDescriptor(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type)
@@ -103,6 +117,14 @@ extern void gpgpusim_vkCmdTraceRaysKHR_cpp(
                       void *miss_sbt,
                       void *hit_sbt,
                       void *callable_sbt,
+                      uint64_t raygen_sbt_stride,
+                      uint64_t raygen_sbt_size,
+                      uint64_t miss_sbt_stride,
+                      uint64_t miss_sbt_size,
+                      uint64_t hit_sbt_stride,
+                      uint64_t hit_sbt_size,
+                      uint64_t callable_sbt_stride,
+                      uint64_t callable_sbt_size,
                       bool is_indirect,
                       uint32_t launch_width,
                       uint32_t launch_height,
@@ -110,8 +132,14 @@ extern void gpgpusim_vkCmdTraceRaysKHR_cpp(
                       uint64_t launch_size_addr)
 {
     VulkanRayTracing::invoke_gpgpusim();
-    VulkanRayTracing::vkCmdTraceRaysKHR(raygen_sbt, miss_sbt, hit_sbt, callable_sbt,
-            is_indirect, launch_width, launch_height, launch_depth, launch_size_addr);
+    VulkanRayTracing::vkCmdTraceRaysKHR(
+            raygen_sbt, miss_sbt, hit_sbt, callable_sbt,
+            raygen_sbt_stride, raygen_sbt_size,
+            miss_sbt_stride, miss_sbt_size,
+            hit_sbt_stride, hit_sbt_size,
+            callable_sbt_stride, callable_sbt_size,
+            is_indirect, launch_width, launch_height, launch_depth,
+            launch_size_addr);
 }
 
 extern void gpgpusim_setDescriptorSet_cpp(void *set)

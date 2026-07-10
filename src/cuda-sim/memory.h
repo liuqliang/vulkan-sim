@@ -101,6 +101,10 @@ class memory_space {
   virtual void write_only(mem_addr_t index, mem_addr_t offset, size_t length,
                           const void *data) = 0;
   virtual void read(mem_addr_t addr, size_t length, void *data) const = 0;
+  virtual void write_simulator_backing(mem_addr_t addr, size_t length,
+                                       const void *data) = 0;
+  virtual void read_simulator_backing(mem_addr_t addr, size_t length,
+                                      void *data) const = 0;
   virtual void print(const char *format, FILE *fout) const = 0;
   virtual void set_watch(addr_t addr, unsigned watchpoint) = 0;
   virtual void bind_vulkan_buffer(void* bufferAddr, unsigned bufferSize, void* devPtr) = 0;
@@ -116,12 +120,17 @@ class memory_space_impl : public memory_space {
   virtual void write_only(mem_addr_t index, mem_addr_t offset, size_t length,
                           const void *data);
   virtual void read(mem_addr_t addr, size_t length, void *data) const;
+  virtual void write_simulator_backing(mem_addr_t addr, size_t length,
+                                       const void *data);
+  virtual void read_simulator_backing(mem_addr_t addr, size_t length,
+                                      void *data) const;
   virtual void print(const char *format, FILE *fout) const;
 
   virtual void set_watch(addr_t addr, unsigned watchpoint);
   virtual void bind_vulkan_buffer(void* bufferAddr, unsigned bufferSize, void* devPtr);
 
  private:
+  bool simulator_backing_contains(mem_addr_t addr, size_t length) const;
   void read_single_block(mem_addr_t blk_idx, mem_addr_t addr, size_t length,
                          void *data) const;
   void* find_vulkan_buffer(mem_addr_t addr) const;

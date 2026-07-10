@@ -27,6 +27,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "memory.h"
+#include <algorithm>
 #include <stdlib.h>
 #include "../../libcuda/gpgpu_context.h"
 #include "../debug.h"
@@ -55,11 +56,49 @@ void memory_space_impl<BSIZE>::write_only(mem_addr_t offset, mem_addr_t index,
 }
 
 template <unsigned BSIZE>
+void memory_space_impl<BSIZE>::write_simulator_backing(
+    mem_addr_t addr, size_t length, const void *data) {
+  size_t nbytes_remain = length;
+  size_t src_offset = 0;
+  mem_addr_t current_addr = addr;
+  while (nbytes_remain > 0) {
+    const unsigned offset = current_addr & (BSIZE - 1);
+    const mem_addr_t page = current_addr >> m_log2_block_size;
+    const size_t tx_bytes =
+        std::min((size_t)nbytes_remain, (size_t)BSIZE - offset);
+    m_data[page].write(offset, tx_bytes,
+                       &((const unsigned char *)data)[src_offset]);
+    src_offset += tx_bytes;
+    current_addr += tx_bytes;
+    nbytes_remain -= tx_bytes;
+  }
+}
+
+template <unsigned BSIZE>
+bool memory_space_impl<BSIZE>::simulator_backing_contains(
+    mem_addr_t addr, size_t length) const {
+  if (length == 0) {
+    return true;
+  }
+  const mem_addr_t first_page = addr >> m_log2_block_size;
+  const mem_addr_t last_page =
+      (addr + static_cast<mem_addr_t>(length - 1)) >> m_log2_block_size;
+  for (mem_addr_t page = first_page; page <= last_page; ++page) {
+    if (m_data.find(page) == m_data.end()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+template <unsigned BSIZE>
 void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
                                      const void *data,
                                      class ptx_thread_info *thd,
                                      const ptx_instruction *pI) {
-  if(!use_external_launcher) {
+  const bool use_simulator_backing =
+      use_external_launcher || simulator_backing_contains(addr, length);
+  if (!use_simulator_backing) {
     void* vulkan_addr = find_vulkan_buffer(addr);
 
     if (vulkan_addr) {
@@ -71,38 +110,7 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
     }
   }
   else {
-    mem_addr_t index = addr >> m_log2_block_size;
-
-    if ((addr + length) <= (index + 1) * BSIZE) {
-      // fast route for intra-block access
-      unsigned offset = addr & (BSIZE - 1);
-      unsigned nbytes = length;
-      m_data[index].write(offset, nbytes, (const unsigned char *)data);
-    } else {
-      // slow route for inter-block access
-      unsigned nbytes_remain = length;
-      unsigned src_offset = 0;
-      mem_addr_t current_addr = addr;
-
-      while (nbytes_remain > 0) {
-        unsigned offset = current_addr & (BSIZE - 1);
-        mem_addr_t page = current_addr >> m_log2_block_size;
-        mem_addr_t access_limit = offset + nbytes_remain;
-        if (access_limit > BSIZE) {
-          access_limit = BSIZE;
-        }
-
-        size_t tx_bytes = access_limit - offset;
-        m_data[page].write(offset, tx_bytes,
-                          &((const unsigned char *)data)[src_offset]);
-
-        // advance pointers
-        src_offset += tx_bytes;
-        current_addr += tx_bytes;
-        nbytes_remain -= tx_bytes;
-      }
-      assert(nbytes_remain == 0);
-    }
+    write_simulator_backing(addr, length, data);
     if (!m_watchpoints.empty()) {
       std::map<unsigned, mem_addr_t>::iterator i;
       for (i = m_watchpoints.begin(); i != m_watchpoints.end(); i++) {
@@ -162,7 +170,9 @@ void* memory_space_impl<BSIZE>::find_vulkan_buffer(mem_addr_t addr) const {
 template <unsigned BSIZE>
 void memory_space_impl<BSIZE>::read(mem_addr_t addr, size_t length,
                                     void *data) const {
-  if(!use_external_launcher) {
+  const bool use_simulator_backing =
+      use_external_launcher || simulator_backing_contains(addr, length);
+  if (!use_simulator_backing) {
     void* vulkan_addr = find_vulkan_buffer(addr);
 
     if (vulkan_addr) {
@@ -174,35 +184,26 @@ void memory_space_impl<BSIZE>::read(mem_addr_t addr, size_t length,
     }
   }
   else {
-    mem_addr_t index = addr >> m_log2_block_size;
-    if ((addr + length) <= (index + 1) * BSIZE) {
-      // fast route for intra-block access
-      read_single_block(index, addr, length, data);
-    } else {
-      // slow route for inter-block access
-      unsigned nbytes_remain = length;
-      unsigned dst_offset = 0;
-      mem_addr_t current_addr = addr;
+    read_simulator_backing(addr, length, data);
+  }
+}
 
-      while (nbytes_remain > 0) {
-        unsigned offset = current_addr & (BSIZE - 1);
-        mem_addr_t page = current_addr >> m_log2_block_size;
-        mem_addr_t access_limit = offset + nbytes_remain;
-        if (access_limit > BSIZE) {
-          access_limit = BSIZE;
-        }
-
-        size_t tx_bytes = access_limit - offset;
-        read_single_block(page, current_addr, tx_bytes,
-                          &((unsigned char *)data)[dst_offset]);
-
-        // advance pointers
-        dst_offset += tx_bytes;
-        current_addr += tx_bytes;
-        nbytes_remain -= tx_bytes;
-      }
-      assert(nbytes_remain == 0);
-    }
+template <unsigned BSIZE>
+void memory_space_impl<BSIZE>::read_simulator_backing(
+    mem_addr_t addr, size_t length, void *data) const {
+  size_t nbytes_remain = length;
+  size_t dst_offset = 0;
+  mem_addr_t current_addr = addr;
+  while (nbytes_remain > 0) {
+    const unsigned offset = current_addr & (BSIZE - 1);
+    const mem_addr_t page = current_addr >> m_log2_block_size;
+    const size_t tx_bytes =
+        std::min((size_t)nbytes_remain, (size_t)BSIZE - offset);
+    read_single_block(page, current_addr, tx_bytes,
+                      &((unsigned char *)data)[dst_offset]);
+    dst_offset += tx_bytes;
+    current_addr += tx_bytes;
+    nbytes_remain -= tx_bytes;
   }
 }
 

@@ -7157,6 +7157,426 @@ struct rtcore_trace_invocation_publication_source_shadow {
   uint32_t miss_index;
 };
 
+enum rtcore_v03_compact_context_word {
+  RTCORE_CONTEXT_W_HEADER = 0,
+  RTCORE_CONTEXT_W_RESERVED_PREFIX = 1,
+  RTCORE_CONTEXT_W_AS_REF_LO = 2,
+  RTCORE_CONTEXT_W_AS_REF_HI = 3,
+  RTCORE_CONTEXT_W_RAY_ORIGIN_X = 4,
+  RTCORE_CONTEXT_W_RAY_ORIGIN_Y = 5,
+  RTCORE_CONTEXT_W_RAY_ORIGIN_Z = 6,
+  RTCORE_CONTEXT_W_RAY_TMIN = 7,
+  RTCORE_CONTEXT_W_RAY_DIRECTION_X = 8,
+  RTCORE_CONTEXT_W_RAY_DIRECTION_Y = 9,
+  RTCORE_CONTEXT_W_RAY_DIRECTION_Z = 10,
+  RTCORE_CONTEXT_W_RAY_TMAX = 11,
+  RTCORE_CONTEXT_W_RAY_FLAGS = 12,
+  RTCORE_CONTEXT_W_CULL_MASK = 13,
+  RTCORE_CONTEXT_W_SBT_OFFSET = 14,
+  RTCORE_CONTEXT_W_SBT_STRIDE = 15,
+  RTCORE_CONTEXT_W_MISS_INDEX = 16,
+  RTCORE_CONTEXT_W_RESERVED_TRACE = 17,
+  RTCORE_CONTEXT_W_SBT_HIT_BASE_LO = 18,
+  RTCORE_CONTEXT_W_SBT_HIT_BASE_HI = 19,
+  RTCORE_CONTEXT_W_SBT_HIT_STRIDE = 20,
+  RTCORE_CONTEXT_W_SBT_HIT_SIZE = 21,
+  RTCORE_CONTEXT_W_SBT_MISS_BASE_LO = 22,
+  RTCORE_CONTEXT_W_SBT_MISS_BASE_HI = 23,
+  RTCORE_CONTEXT_W_SBT_MISS_STRIDE = 24,
+  RTCORE_CONTEXT_W_SBT_MISS_SIZE = 25,
+  RTCORE_CONTEXT_W_SBT_CALLABLE_BASE_LO = 26,
+  RTCORE_CONTEXT_W_SBT_CALLABLE_BASE_HI = 27,
+  RTCORE_CONTEXT_W_SBT_CALLABLE_STRIDE = 28,
+  RTCORE_CONTEXT_W_SBT_CALLABLE_SIZE = 29,
+  RTCORE_CONTEXT_W_PIPELINE_PROFILE = 30,
+  RTCORE_CONTEXT_W_BVH_FORMAT_PROFILE = 31,
+  RTCORE_CONTEXT_W_PAYLOAD_BEGIN = 32,
+  RTCORE_CONTEXT_W_HIT_STATE_BEGIN = 48,
+  RTCORE_CONTEXT_WORD_COUNT = 80,
+};
+
+enum rtcore_v03_compact_context_profile {
+  RTCORE_CONTEXT_STATE_READY_FOR_SUBMIT = 0x01,
+  RTCORE_CONTEXT_LAYOUT_V03_COMPACT_320B = 0x01,
+  RTCORE_CONTEXT_VALID_TRACE_INPUT = 0x01,
+  RTCORE_PIPELINE_PROFILE_V03_CUSTOM_SYNC = 0x01,
+  RTCORE_PIPELINE_PROFILE_VULKAN_SIM_COMPAT = 0x02,
+  RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 0x01,
+};
+
+const uint64_t RTCORE_MAX_CONTEXTS_PER_TRACE_SITE = 1ull << 18;
+const uint64_t RTCORE_MAX_TRACE_SITES = 8;
+const uint32_t RTCORE_MAX_LAUNCH_WIDTH = 512;
+const uint32_t RTCORE_MAX_LAUNCH_HEIGHT = 512;
+const uint64_t RTCORE_MAX_CONTEXTS_TOTAL =
+    RTCORE_MAX_TRACE_SITES * RTCORE_MAX_CONTEXTS_PER_TRACE_SITE;
+const uint64_t RTCORE_MAX_HANDOFF_WINDOWS_TOTAL =
+    RTCORE_MAX_CONTEXTS_TOTAL / 32;
+
+struct rtcore_v03_compact_context_image {
+  uint32_t words[RTCORE_CONTEXT_WORD_COUNT];
+};
+
+static_assert(sizeof(rtcore_v03_compact_context_image) == 0x140,
+              "V0.3 compact context must be 320 bytes");
+
+struct rtcore_v03_compact_context_decoded {
+  rtcore_v03_compact_context_decoded()
+      : valid(false),
+        context_state(0),
+        recursion_depth(0),
+        context_layout_version(0),
+        valid_flags(0),
+        as_handle_or_traversable_ref(0),
+        ray_tmin(0.0f),
+        ray_tmax(0.0f),
+        ray_flags(0),
+        cull_mask(0),
+        sbt_offset(0),
+        sbt_stride(0),
+        miss_index(0),
+        sbt_hit_base(0),
+        sbt_hit_stride(0),
+        sbt_hit_size(0),
+        sbt_miss_base(0),
+        sbt_miss_stride(0),
+        sbt_miss_size(0),
+        sbt_callable_base(0),
+        sbt_callable_stride(0),
+        sbt_callable_size(0),
+        pipeline_profile_id(0),
+        bvh_format_profile_id(0) {
+    memset(&ray_origin, 0, sizeof(ray_origin));
+    memset(&ray_direction, 0, sizeof(ray_direction));
+  }
+
+  bool valid;
+  uint32_t context_state;
+  uint32_t recursion_depth;
+  uint32_t context_layout_version;
+  uint32_t valid_flags;
+  uint64_t as_handle_or_traversable_ref;
+  float3 ray_origin;
+  float3 ray_direction;
+  float ray_tmin;
+  float ray_tmax;
+  uint32_t ray_flags;
+  uint32_t cull_mask;
+  uint32_t sbt_offset;
+  uint32_t sbt_stride;
+  uint32_t miss_index;
+  uint64_t sbt_hit_base;
+  uint32_t sbt_hit_stride;
+  uint32_t sbt_hit_size;
+  uint64_t sbt_miss_base;
+  uint32_t sbt_miss_stride;
+  uint32_t sbt_miss_size;
+  uint64_t sbt_callable_base;
+  uint32_t sbt_callable_stride;
+  uint32_t sbt_callable_size;
+  uint32_t pipeline_profile_id;
+  uint32_t bvh_format_profile_id;
+};
+
+static uint32_t rtcore_context_float_to_u32(float value) {
+  uint32_t word = 0;
+  memcpy(&word, &value, sizeof(word));
+  return word;
+}
+
+static float rtcore_context_u32_to_float(uint32_t word) {
+  float value = 0.0f;
+  memcpy(&value, &word, sizeof(value));
+  return value;
+}
+
+static uint64_t rtcore_context_u64(uint32_t lo, uint32_t hi) {
+  return (uint64_t)lo | ((uint64_t)hi << 32);
+}
+
+static void rtcore_context_store_u64(rtcore_v03_compact_context_image *image,
+                                     unsigned lo_word, uint64_t value) {
+  image->words[lo_word] = (uint32_t)value;
+  image->words[lo_word + 1] = (uint32_t)(value >> 32);
+}
+
+static const char *rtcore_v03_context_test_mutation() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_TEST_CONTEXT_IMAGE_MUTATION");
+  return value == NULL ? "" : value;
+}
+
+static void rtcore_apply_v03_context_test_mutation(
+    rtcore_v03_compact_context_image *image) {
+  const char *mode = rtcore_v03_context_test_mutation();
+  if (strcmp(mode, "invalid_layout") == 0) {
+    image->words[RTCORE_CONTEXT_W_HEADER] &= ~(0xffu << 16);
+  } else if (strcmp(mode, "missing_trace_valid") == 0) {
+    image->words[RTCORE_CONTEXT_W_HEADER] &= ~(0xffu << 24);
+  } else if (strcmp(mode, "invalid_pipeline_profile") == 0) {
+    image->words[RTCORE_CONTEXT_W_PIPELINE_PROFILE] = 0;
+  } else if (strcmp(mode, "invalid_bvh_profile") == 0) {
+    image->words[RTCORE_CONTEXT_W_BVH_FORMAT_PROFILE] = 0;
+  } else if (strcmp(mode, "mutate_ray_tmin") == 0) {
+    const float ray_tmin = rtcore_context_u32_to_float(
+        image->words[RTCORE_CONTEXT_W_RAY_TMIN]);
+    image->words[RTCORE_CONTEXT_W_RAY_TMIN] =
+        rtcore_context_float_to_u32(ray_tmin + 0.25f);
+  } else if (strcmp(mode, "mutate_sbt_offset") == 0) {
+    image->words[RTCORE_CONTEXT_W_SBT_OFFSET] += 1;
+  } else if (strcmp(mode, "mutate_sbt_hit_stride") == 0) {
+    image->words[RTCORE_CONTEXT_W_SBT_HIT_STRIDE] += 32;
+  }
+}
+
+static bool rtcore_context_sbt_region_valid(uint64_t base, uint32_t stride,
+                                            uint32_t size) {
+  if (base == 0) {
+    return stride == 0 && size == 0;
+  }
+  return stride != 0 && size != 0 && size >= stride;
+}
+
+static bool rtcore_publish_v03_compact_context_image(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    unsigned long long context_ptr, uint64_t top_level_as,
+    uint32_t ray_flags, uint32_t cull_mask, uint32_t sbt_record_offset,
+    uint32_t sbt_record_stride, uint32_t miss_index, float3 ray_origin,
+    float ray_tmin, float3 ray_direction, float ray_tmax) {
+  if (thread == NULL || context_ptr == 0 || (context_ptr % 64) != 0) {
+    return false;
+  }
+
+  const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+  const uint64_t launch_context_count =
+      (uint64_t)metadata.launch_width * metadata.launch_height *
+      metadata.launch_depth;
+  if (launch_context_count == 0 ||
+      launch_context_count > RTCORE_MAX_CONTEXTS_PER_TRACE_SITE ||
+      metadata.launch_width > RTCORE_MAX_LAUNCH_WIDTH ||
+      metadata.launch_height > RTCORE_MAX_LAUNCH_HEIGHT ||
+      metadata.launch_depth != 1) {
+    return false;
+  }
+  if (metadata.hit_sbt_stride > 0xffffffffull ||
+      metadata.hit_sbt_size > 0xffffffffull ||
+      metadata.miss_sbt_stride > 0xffffffffull ||
+      metadata.miss_sbt_size > 0xffffffffull ||
+      metadata.callable_sbt_stride > 0xffffffffull ||
+      metadata.callable_sbt_size > 0xffffffffull) {
+    return false;
+  }
+
+  rtcore_v03_compact_context_image image;
+  memset(&image, 0, sizeof(image));
+  image.words[RTCORE_CONTEXT_W_HEADER] =
+      RTCORE_CONTEXT_STATE_READY_FOR_SUBMIT |
+      (RTCORE_CONTEXT_LAYOUT_V03_COMPACT_320B << 16) |
+      (RTCORE_CONTEXT_VALID_TRACE_INPUT << 24);
+  rtcore_context_store_u64(&image, RTCORE_CONTEXT_W_AS_REF_LO,
+                           top_level_as);
+  image.words[RTCORE_CONTEXT_W_RAY_ORIGIN_X] =
+      rtcore_context_float_to_u32(ray_origin.x);
+  image.words[RTCORE_CONTEXT_W_RAY_ORIGIN_Y] =
+      rtcore_context_float_to_u32(ray_origin.y);
+  image.words[RTCORE_CONTEXT_W_RAY_ORIGIN_Z] =
+      rtcore_context_float_to_u32(ray_origin.z);
+  image.words[RTCORE_CONTEXT_W_RAY_TMIN] =
+      rtcore_context_float_to_u32(ray_tmin);
+  image.words[RTCORE_CONTEXT_W_RAY_DIRECTION_X] =
+      rtcore_context_float_to_u32(ray_direction.x);
+  image.words[RTCORE_CONTEXT_W_RAY_DIRECTION_Y] =
+      rtcore_context_float_to_u32(ray_direction.y);
+  image.words[RTCORE_CONTEXT_W_RAY_DIRECTION_Z] =
+      rtcore_context_float_to_u32(ray_direction.z);
+  image.words[RTCORE_CONTEXT_W_RAY_TMAX] =
+      rtcore_context_float_to_u32(ray_tmax);
+  image.words[RTCORE_CONTEXT_W_RAY_FLAGS] = ray_flags;
+  image.words[RTCORE_CONTEXT_W_CULL_MASK] = cull_mask;
+  image.words[RTCORE_CONTEXT_W_SBT_OFFSET] = sbt_record_offset;
+  image.words[RTCORE_CONTEXT_W_SBT_STRIDE] = sbt_record_stride;
+  image.words[RTCORE_CONTEXT_W_MISS_INDEX] = miss_index;
+  rtcore_context_store_u64(
+      &image, RTCORE_CONTEXT_W_SBT_HIT_BASE_LO,
+      (uint64_t)(uintptr_t)metadata.hit_sbt);
+  image.words[RTCORE_CONTEXT_W_SBT_HIT_STRIDE] =
+      (uint32_t)metadata.hit_sbt_stride;
+  image.words[RTCORE_CONTEXT_W_SBT_HIT_SIZE] =
+      (uint32_t)metadata.hit_sbt_size;
+  rtcore_context_store_u64(
+      &image, RTCORE_CONTEXT_W_SBT_MISS_BASE_LO,
+      (uint64_t)(uintptr_t)metadata.miss_sbt);
+  image.words[RTCORE_CONTEXT_W_SBT_MISS_STRIDE] =
+      (uint32_t)metadata.miss_sbt_stride;
+  image.words[RTCORE_CONTEXT_W_SBT_MISS_SIZE] =
+      (uint32_t)metadata.miss_sbt_size;
+  rtcore_context_store_u64(
+      &image, RTCORE_CONTEXT_W_SBT_CALLABLE_BASE_LO,
+      (uint64_t)(uintptr_t)metadata.callable_sbt);
+  image.words[RTCORE_CONTEXT_W_SBT_CALLABLE_STRIDE] =
+      (uint32_t)metadata.callable_sbt_stride;
+  image.words[RTCORE_CONTEXT_W_SBT_CALLABLE_SIZE] =
+      (uint32_t)metadata.callable_sbt_size;
+  image.words[RTCORE_CONTEXT_W_PIPELINE_PROFILE] =
+      RTCORE_PIPELINE_PROFILE_V03_CUSTOM_SYNC;
+  image.words[RTCORE_CONTEXT_W_BVH_FORMAT_PROFILE] =
+      RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  rtcore_apply_v03_context_test_mutation(&image);
+
+  memory_space *memory = thread->get_global_memory();
+  memory->write_simulator_backing((mem_addr_t)context_ptr, sizeof(image),
+                                  &image);
+  if (strcmp(rtcore_v03_context_test_mutation(),
+             "mutate_ray_tmin_via_global_store") == 0) {
+    const float mutated_tmin = ray_tmin + 0.25f;
+    memory->write((mem_addr_t)context_ptr +
+                      RTCORE_CONTEXT_W_RAY_TMIN * sizeof(uint32_t),
+                  sizeof(mutated_tmin), &mutated_tmin, thread, pI);
+  }
+  printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT "
+         "compact-context-publication (%s:%u), "
+         "source=context_abi_byte_image, context_ptr=0x%llx, "
+         "context_bytes=%zu, context_layout_version=%u, valid_flags=0x%02x, "
+         "as_ref=0x%llx, sbt_hit_base=0x%llx, sbt_hit_stride=%u, "
+         "sbt_hit_size=%u, sbt_miss_base=0x%llx, sbt_miss_stride=%u, "
+         "sbt_miss_size=%u, pipeline_profile_id=%u, "
+         "bvh_format_profile_id=%u, mutation=%s\n",
+         pI->source_file(), pI->source_line(), context_ptr, sizeof(image),
+         (image.words[RTCORE_CONTEXT_W_HEADER] >> 16) & 0xffu,
+         (image.words[RTCORE_CONTEXT_W_HEADER] >> 24) & 0xffu,
+         (unsigned long long)top_level_as,
+         (unsigned long long)(uintptr_t)metadata.hit_sbt,
+         (uint32_t)metadata.hit_sbt_stride,
+         (uint32_t)metadata.hit_sbt_size,
+         (unsigned long long)(uintptr_t)metadata.miss_sbt,
+         (uint32_t)metadata.miss_sbt_stride,
+         (uint32_t)metadata.miss_sbt_size,
+         image.words[RTCORE_CONTEXT_W_PIPELINE_PROFILE],
+         image.words[RTCORE_CONTEXT_W_BVH_FORMAT_PROFILE],
+         rtcore_v03_context_test_mutation());
+  fflush(stdout);
+  return true;
+}
+
+static bool rtcore_decode_v03_compact_context_image(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    unsigned long long context_ptr,
+    rtcore_v03_compact_context_decoded *decoded) {
+  if (thread == NULL || decoded == NULL || context_ptr == 0 ||
+      (context_ptr % 64) != 0) {
+    return false;
+  }
+
+  rtcore_v03_compact_context_image image;
+  memset(&image, 0, sizeof(image));
+  thread->get_global_memory()->read_simulator_backing(
+      (mem_addr_t)context_ptr, sizeof(image), &image);
+  const uint32_t header = image.words[RTCORE_CONTEXT_W_HEADER];
+  decoded->context_state = header & 0xffu;
+  decoded->recursion_depth = (header >> 8) & 0xffu;
+  decoded->context_layout_version = (header >> 16) & 0xffu;
+  decoded->valid_flags = (header >> 24) & 0xffu;
+  decoded->as_handle_or_traversable_ref = rtcore_context_u64(
+      image.words[RTCORE_CONTEXT_W_AS_REF_LO],
+      image.words[RTCORE_CONTEXT_W_AS_REF_HI]);
+  decoded->ray_origin.x = rtcore_context_u32_to_float(
+      image.words[RTCORE_CONTEXT_W_RAY_ORIGIN_X]);
+  decoded->ray_origin.y = rtcore_context_u32_to_float(
+      image.words[RTCORE_CONTEXT_W_RAY_ORIGIN_Y]);
+  decoded->ray_origin.z = rtcore_context_u32_to_float(
+      image.words[RTCORE_CONTEXT_W_RAY_ORIGIN_Z]);
+  decoded->ray_tmin = rtcore_context_u32_to_float(
+      image.words[RTCORE_CONTEXT_W_RAY_TMIN]);
+  decoded->ray_direction.x = rtcore_context_u32_to_float(
+      image.words[RTCORE_CONTEXT_W_RAY_DIRECTION_X]);
+  decoded->ray_direction.y = rtcore_context_u32_to_float(
+      image.words[RTCORE_CONTEXT_W_RAY_DIRECTION_Y]);
+  decoded->ray_direction.z = rtcore_context_u32_to_float(
+      image.words[RTCORE_CONTEXT_W_RAY_DIRECTION_Z]);
+  decoded->ray_tmax = rtcore_context_u32_to_float(
+      image.words[RTCORE_CONTEXT_W_RAY_TMAX]);
+  decoded->ray_flags = image.words[RTCORE_CONTEXT_W_RAY_FLAGS];
+  decoded->cull_mask = image.words[RTCORE_CONTEXT_W_CULL_MASK];
+  decoded->sbt_offset = image.words[RTCORE_CONTEXT_W_SBT_OFFSET];
+  decoded->sbt_stride = image.words[RTCORE_CONTEXT_W_SBT_STRIDE];
+  decoded->miss_index = image.words[RTCORE_CONTEXT_W_MISS_INDEX];
+  decoded->sbt_hit_base = rtcore_context_u64(
+      image.words[RTCORE_CONTEXT_W_SBT_HIT_BASE_LO],
+      image.words[RTCORE_CONTEXT_W_SBT_HIT_BASE_HI]);
+  decoded->sbt_hit_stride = image.words[RTCORE_CONTEXT_W_SBT_HIT_STRIDE];
+  decoded->sbt_hit_size = image.words[RTCORE_CONTEXT_W_SBT_HIT_SIZE];
+  decoded->sbt_miss_base = rtcore_context_u64(
+      image.words[RTCORE_CONTEXT_W_SBT_MISS_BASE_LO],
+      image.words[RTCORE_CONTEXT_W_SBT_MISS_BASE_HI]);
+  decoded->sbt_miss_stride = image.words[RTCORE_CONTEXT_W_SBT_MISS_STRIDE];
+  decoded->sbt_miss_size = image.words[RTCORE_CONTEXT_W_SBT_MISS_SIZE];
+  decoded->sbt_callable_base = rtcore_context_u64(
+      image.words[RTCORE_CONTEXT_W_SBT_CALLABLE_BASE_LO],
+      image.words[RTCORE_CONTEXT_W_SBT_CALLABLE_BASE_HI]);
+  decoded->sbt_callable_stride =
+      image.words[RTCORE_CONTEXT_W_SBT_CALLABLE_STRIDE];
+  decoded->sbt_callable_size =
+      image.words[RTCORE_CONTEXT_W_SBT_CALLABLE_SIZE];
+  decoded->pipeline_profile_id =
+      image.words[RTCORE_CONTEXT_W_PIPELINE_PROFILE];
+  decoded->bvh_format_profile_id =
+      image.words[RTCORE_CONTEXT_W_BVH_FORMAT_PROFILE];
+
+  const bool header_valid =
+      decoded->context_state == RTCORE_CONTEXT_STATE_READY_FOR_SUBMIT &&
+      decoded->context_layout_version ==
+          RTCORE_CONTEXT_LAYOUT_V03_COMPACT_320B &&
+      (decoded->valid_flags & RTCORE_CONTEXT_VALID_TRACE_INPUT) != 0 &&
+      (decoded->valid_flags & ~0x07u) == 0 &&
+      image.words[RTCORE_CONTEXT_W_RESERVED_PREFIX] == 0;
+  const bool trace_input_valid =
+      decoded->as_handle_or_traversable_ref != 0 &&
+      image.words[RTCORE_CONTEXT_W_RESERVED_TRACE] == 0 &&
+      (decoded->cull_mask & 0xffffff00u) == 0;
+  const bool sbt_valid =
+      rtcore_context_sbt_region_valid(decoded->sbt_hit_base,
+                                      decoded->sbt_hit_stride,
+                                      decoded->sbt_hit_size) &&
+      rtcore_context_sbt_region_valid(decoded->sbt_miss_base,
+                                      decoded->sbt_miss_stride,
+                                      decoded->sbt_miss_size) &&
+      rtcore_context_sbt_region_valid(decoded->sbt_callable_base,
+                                      decoded->sbt_callable_stride,
+                                      decoded->sbt_callable_size);
+  const bool profile_valid =
+      decoded->pipeline_profile_id ==
+          RTCORE_PIPELINE_PROFILE_V03_CUSTOM_SYNC &&
+      decoded->bvh_format_profile_id ==
+          RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT;
+  decoded->valid = header_valid && trace_input_valid && sbt_valid &&
+                   profile_valid;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT compact-context-decode (%s:%u), "
+         "source=context_abi_byte_image, context_ptr=0x%llx, valid=%u, "
+         "header_valid=%u, trace_input_valid=%u, sbt_valid=%u, "
+         "profile_valid=%u, context_state=%u, context_layout_version=%u, "
+         "valid_flags=0x%02x, as_ref=0x%llx, ray_tmin=%g, ray_tmax=%g, "
+         "ray_flags=%u, cull_mask=%u, sbt_offset=%u, sbt_stride=%u, "
+         "miss_index=%u, sbt_hit_base=0x%llx, sbt_hit_stride=%u, "
+         "sbt_hit_size=%u, sbt_miss_base=0x%llx, sbt_miss_stride=%u, "
+         "sbt_miss_size=%u, pipeline_profile_id=%u, "
+         "bvh_format_profile_id=%u\n",
+         pI->source_file(), pI->source_line(), context_ptr,
+         decoded->valid ? 1 : 0, header_valid ? 1 : 0,
+         trace_input_valid ? 1 : 0, sbt_valid ? 1 : 0,
+         profile_valid ? 1 : 0, decoded->context_state,
+         decoded->context_layout_version, decoded->valid_flags,
+         (unsigned long long)decoded->as_handle_or_traversable_ref,
+         decoded->ray_tmin, decoded->ray_tmax, decoded->ray_flags,
+         decoded->cull_mask, decoded->sbt_offset, decoded->sbt_stride,
+         decoded->miss_index, (unsigned long long)decoded->sbt_hit_base,
+         decoded->sbt_hit_stride, decoded->sbt_hit_size,
+         (unsigned long long)decoded->sbt_miss_base,
+         decoded->sbt_miss_stride, decoded->sbt_miss_size,
+         decoded->pipeline_profile_id, decoded->bvh_format_profile_id);
+  fflush(stdout);
+  return decoded->valid;
+}
+
 static std::map<ptx_thread_info *,
                 rtcore_trace_invocation_publication_source_shadow>
     g_rtcore_trace_invocation_publication_source_shadow;
@@ -7638,12 +8058,20 @@ void rt_publish_trace_context_impl(const ptx_instruction *pI, ptx_thread_info *t
   float3 ray_origin = {originX_data.f32, originY_data.f32, originZ_data.f32};
   float3 ray_direction = {directionX_data.f32, directionY_data.f32,
                           directionZ_data.f32};
-  rtcore_publish_trace_context_publication_source_shadow(
-      pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
-      (uint64_t)topLevelAS_data.u64, rayFlags_data.u32, cullMask_data.u32,
-      sbtRecordOffset_data.u32, sbtRecordStride_data.u32,
-      missIndex_data.u32, ray_origin, Tmin_data.f32, ray_direction,
-      Tmax_data.f32);
+  if (!rtcore_publish_v03_compact_context_image(
+          pI, thread, context_ptr_data.u64,
+          (uint64_t)topLevelAS_data.u64, rayFlags_data.u32,
+          cullMask_data.u32, sbtRecordOffset_data.u32,
+          sbtRecordStride_data.u32, missIndex_data.u32, ray_origin,
+          Tmin_data.f32, ray_direction, Tmax_data.f32)) {
+    printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
+           "reason=COMPACT_CONTEXT_PUBLICATION_FAILED, "
+           "context_ptr=0x%llx, handoff_window_base=0x%llx\n",
+           pI->source_file(), pI->source_line(), context_ptr_data.u64,
+           handoff_window_base_data.u64);
+    fflush(stdout);
+    inst_not_implemented(pI);
+  }
 }
 
 void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -8799,7 +9227,7 @@ const unsigned RTCORE_HIT_RESULT_IGNORE_HIT = 0x03;
 const unsigned RTCORE_HIT_RESULT_REPORTED_INTERSECTION = 0x04;
 const unsigned RTCORE_COMPLETION_VALID = 1u << 31;
 const unsigned RTCORE_MAX_LANES_PER_WARP = 32;
-const unsigned RTCORE_CONTEXT_BYTES_PER_LANE = 0x280;
+const unsigned RTCORE_CONTEXT_BYTES_PER_LANE = 0x140;
 const unsigned RTCORE_CONTEXT_BYTES_PER_FULL_WARP =
     RTCORE_MAX_LANES_PER_WARP * RTCORE_CONTEXT_BYTES_PER_LANE;
 const unsigned RTCORE_HANDOFF_WINDOW_WORDS_PER_LANE = 32;
@@ -8821,12 +9249,12 @@ const unsigned RTCORE_TRAVERSAL_STACK_ENTRIES_PER_EXECUTION_PARTITION =
     RTCORE_MAX_LANES_PER_WARP *
     RTCORE_TRAVERSAL_STACK_ENTRIES_PER_ACTIVE_LANE;
 const unsigned RTCORE_WINDOW_STATE_COMPLETE = 3;
-const unsigned long long RTCORE_SHARED_HANDOFF_WINDOW_BASE = 0x20000000ull;
-const unsigned long long RTCORE_SHARED_HANDOFF_WINDOW_BYTES = 0x10000000ull;
+const unsigned long long RTCORE_SHARED_HANDOFF_WINDOW_BASE = 0x40000000ull;
+const unsigned long long RTCORE_SHARED_HANDOFF_WINDOW_BYTES = 0x20000000ull;
 const unsigned long long RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BASE =
-    0x30000000ull;
+    0x60000000ull;
 const unsigned long long RTCORE_LOCAL_PRIVATE_HANDOFF_WINDOW_BYTES =
-    0x10000000ull;
+    0x20000000ull;
 const unsigned long long RTCORE_DRIVER_RUNTIME_DEFAULT_CONTEXT_BASE =
     0x10000000ull;
 const unsigned long long RTCORE_DRIVER_RUNTIME_DEFAULT_HANDOFF_WINDOW_BASE =
@@ -9659,7 +10087,8 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
           (unsigned)(context_lane_index % record.capacity_lane_slots);
       record.context_window_index =
           context_lane_index / record.capacity_lane_slots;
-      record.context_window_index_valid = true;
+      record.context_window_index_valid =
+          context_lane_index < RTCORE_MAX_CONTEXTS_TOTAL;
     }
   }
 
@@ -9674,7 +10103,8 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
     if (record.handoff_matches) {
       record.handoff_window_index =
           handoff_offset / record.handoff_allocation_bytes;
-      record.handoff_window_index_valid = true;
+      record.handoff_window_index_valid =
+          record.handoff_window_index < RTCORE_MAX_HANDOFF_WINDOWS_TOTAL;
     }
   }
 
@@ -9692,6 +10122,7 @@ rtcore_make_runtime_context_window_allocation_record_from_bridge(
                  record.has_context_base &&
                  record.has_handoff_base && record.context_matches &&
                  record.handoff_matches && record.indices_match &&
+                 record.context_lane_slot_index == record.lane_slot_index &&
                  record.owner_generation_source_record.valid &&
                  record.owner_generation != 0;
   rtcore_apply_launch_allocation_owner_generation_source_fault(&record);
@@ -13092,11 +13523,11 @@ static bool rtcore_replay_provider_decoded_abi_authority_complete(
          request.has_replay_ray_flags_cull_mask &&
          request.has_replay_launch_context_input &&
          strcmp(request.replay_ray_origin_direction_tmin_tmax_authority,
-                "compiler_driver_publication") == 0 &&
+                "abi_decoded") == 0 &&
          strcmp(request.replay_ray_flags_cull_mask_authority,
-                "compiler_driver_publication") == 0 &&
+                "abi_decoded") == 0 &&
          strcmp(request.replay_launch_context_input_authority,
-                "compiler_driver_publication") == 0 &&
+                "abi_decoded") == 0 &&
          strcmp(request.replay_context_window_authority, "driver_runtime") ==
              0 &&
          request.replay_context_window_bound_to_provider_decoded_abi;
@@ -13206,7 +13637,7 @@ static const char *rtcore_decoded_input_field_owner_class_name(
     case RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME:
       return "driver_runtime";
     case RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION:
-      return "compiler_driver_publication";
+      return "abi_decoded";
     case RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY:
       return "simulator_proxy";
     case RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE:
@@ -13223,7 +13654,7 @@ static const char *rtcore_decoded_input_field_source_label(
     case RTCORE_DECODED_INPUT_OWNER_DRIVER_RUNTIME:
       return "driver_runtime";
     case RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION:
-      return "compiler_driver_publication_sideband";
+      return "context_abi_byte_image";
     case RTCORE_DECODED_INPUT_OWNER_SIMULATOR_PROXY:
       return "simulator_proxy";
     case RTCORE_DECODED_INPUT_OWNER_DRIVER_AS_RESOLVE_TABLE:
@@ -13330,6 +13761,10 @@ static bool rtcore_decoded_input_fields_all_owned_with_lifetime(
     rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner,
     bool has_launch_context_input,
     rtcore_decoded_input_field_owner_class launch_context_input_owner,
+    bool has_sbt_dispatch_input,
+    rtcore_decoded_input_field_owner_class sbt_dispatch_input_owner,
+    bool has_pipeline_profile,
+    rtcore_decoded_input_field_owner_class pipeline_profile_owner,
     bool has_traversable_root_proxy,
     rtcore_decoded_input_field_owner_class traversable_root_proxy_owner,
     bool has_bvh_format_profile,
@@ -13343,6 +13778,12 @@ static bool rtcore_decoded_input_fields_all_owned_with_lifetime(
          has_launch_context_input &&
          rtcore_decoded_input_field_owner_has_lifetime(
              launch_context_input_owner) &&
+         has_sbt_dispatch_input &&
+         rtcore_decoded_input_field_owner_has_lifetime(
+             sbt_dispatch_input_owner) &&
+         has_pipeline_profile &&
+         rtcore_decoded_input_field_owner_has_lifetime(
+             pipeline_profile_owner) &&
          has_traversable_root_proxy &&
          rtcore_decoded_input_field_owner_has_lifetime(
              traversable_root_proxy_owner) &&
@@ -13391,6 +13832,20 @@ struct rtcore_provider_payload_consumed_input_view {
         ray_tmax(0.0f),
         has_launch_context_input(false),
         launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        has_sbt_dispatch_input(false),
+        sbt_dispatch_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        sbt_hit_base(0),
+        sbt_hit_stride(0),
+        sbt_hit_size(0),
+        sbt_miss_base(0),
+        sbt_miss_stride(0),
+        sbt_miss_size(0),
+        sbt_callable_base(0),
+        sbt_callable_stride(0),
+        sbt_callable_size(0),
+        has_pipeline_profile(false),
+        pipeline_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        pipeline_profile_id(0),
         bridge_trace_replay_top_level_as(0),
         sbt_record_offset(0),
         sbt_record_stride(0),
@@ -13508,6 +13963,20 @@ struct rtcore_provider_payload_consumed_input_view {
   float ray_tmax;
   bool has_launch_context_input;
   rtcore_decoded_input_field_owner_class launch_context_input_owner;
+  bool has_sbt_dispatch_input;
+  rtcore_decoded_input_field_owner_class sbt_dispatch_input_owner;
+  uint64_t sbt_hit_base;
+  uint32_t sbt_hit_stride;
+  uint32_t sbt_hit_size;
+  uint64_t sbt_miss_base;
+  uint32_t sbt_miss_stride;
+  uint32_t sbt_miss_size;
+  uint64_t sbt_callable_base;
+  uint32_t sbt_callable_stride;
+  uint32_t sbt_callable_size;
+  bool has_pipeline_profile;
+  rtcore_decoded_input_field_owner_class pipeline_profile_owner;
+  uint32_t pipeline_profile_id;
   uint64_t bridge_trace_replay_top_level_as;
   uint32_t sbt_record_offset;
   uint32_t sbt_record_stride;
@@ -17794,6 +18263,26 @@ static void rtcore_log_custom_backend_provider_payload_consumed_input_snapshot(
       result.provider_payload_backend_input_snapshot;
   const bool actual_abi_evidence_for_proxy_fields =
       rtcore_provider_payload_actual_abi_evidence_for_proxy_fields(view);
+  printf("GPGPU-Sim PTX: RT_SUBMIT context-abi-provider-input=1, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "has_sbt_dispatch_input=%u, sbt_dispatch_input_owner=%s, "
+         "sbt_hit_base=0x%llx, sbt_hit_stride=%u, sbt_hit_size=%u, "
+         "sbt_miss_base=0x%llx, sbt_miss_stride=%u, sbt_miss_size=%u, "
+         "sbt_callable_base=0x%llx, sbt_callable_stride=%u, "
+         "sbt_callable_size=%u, has_pipeline_profile=%u, "
+         "pipeline_profile_owner=%s, pipeline_profile_id=%u\n",
+         result.context_ptr, result.handoff_window_base,
+         view.has_sbt_dispatch_input ? 1 : 0,
+         rtcore_decoded_input_field_source_label(
+             view.sbt_dispatch_input_owner),
+         (unsigned long long)view.sbt_hit_base, view.sbt_hit_stride,
+         view.sbt_hit_size, (unsigned long long)view.sbt_miss_base,
+         view.sbt_miss_stride, view.sbt_miss_size,
+         (unsigned long long)view.sbt_callable_base,
+         view.sbt_callable_stride, view.sbt_callable_size,
+         view.has_pipeline_profile ? 1 : 0,
+         rtcore_decoded_input_field_source_label(view.pipeline_profile_owner),
+         view.pipeline_profile_id);
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "custom-rtcore-backend-provider-payload-consumed-input, "
          "provider=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -20976,12 +21465,16 @@ struct rtcore_input_provenance_registry_owned_fields {
       : has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
         has_launch_context_input(false),
+        has_sbt_dispatch_input(false),
+        has_pipeline_profile(false),
         has_traversable_root_proxy(false),
         has_bvh_format_profile(false) {}
 
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
   bool has_launch_context_input;
+  bool has_sbt_dispatch_input;
+  bool has_pipeline_profile;
   bool has_traversable_root_proxy;
   bool has_bvh_format_profile;
 };
@@ -21156,6 +21649,8 @@ rtcore_make_required_input_provenance_registry_owned_fields() {
   required.has_ray_origin_direction_tmin_tmax = true;
   required.has_ray_flags_cull_mask = true;
   required.has_launch_context_input = true;
+  required.has_sbt_dispatch_input = true;
+  required.has_pipeline_profile = true;
   required.has_traversable_root_proxy = true;
   required.has_bvh_format_profile = true;
   return required;
@@ -21170,6 +21665,10 @@ static bool rtcore_input_provenance_registry_owned_fields_cover_required_inputs(
           observed.has_ray_flags_cull_mask) &&
          (!required.has_launch_context_input ||
           observed.has_launch_context_input) &&
+         (!required.has_sbt_dispatch_input ||
+          observed.has_sbt_dispatch_input) &&
+         (!required.has_pipeline_profile ||
+          observed.has_pipeline_profile) &&
          (!required.has_traversable_root_proxy ||
           observed.has_traversable_root_proxy) &&
          (!required.has_bvh_format_profile ||
@@ -21333,6 +21832,20 @@ struct rtcore_provider_facing_registry_payload_shadow {
         ray_tmax(0.0f),
         has_launch_context_input(false),
         launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        has_sbt_dispatch_input(false),
+        sbt_dispatch_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        sbt_hit_base(0),
+        sbt_hit_stride(0),
+        sbt_hit_size(0),
+        sbt_miss_base(0),
+        sbt_miss_stride(0),
+        sbt_miss_size(0),
+        sbt_callable_base(0),
+        sbt_callable_stride(0),
+        sbt_callable_size(0),
+        has_pipeline_profile(false),
+        pipeline_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        pipeline_profile_id(0),
         bridge_trace_replay_top_level_as(0),
         sbt_record_offset(0),
         sbt_record_stride(0),
@@ -21456,6 +21969,20 @@ struct rtcore_provider_facing_registry_payload_shadow {
   float ray_tmax;
   bool has_launch_context_input;
   rtcore_decoded_input_field_owner_class launch_context_input_owner;
+  bool has_sbt_dispatch_input;
+  rtcore_decoded_input_field_owner_class sbt_dispatch_input_owner;
+  uint64_t sbt_hit_base;
+  uint32_t sbt_hit_stride;
+  uint32_t sbt_hit_size;
+  uint64_t sbt_miss_base;
+  uint32_t sbt_miss_stride;
+  uint32_t sbt_miss_size;
+  uint64_t sbt_callable_base;
+  uint32_t sbt_callable_stride;
+  uint32_t sbt_callable_size;
+  bool has_pipeline_profile;
+  rtcore_decoded_input_field_owner_class pipeline_profile_owner;
+  uint32_t pipeline_profile_id;
   uint64_t bridge_trace_replay_top_level_as;
   uint32_t sbt_record_offset;
   uint32_t sbt_record_stride;
@@ -21585,6 +22112,8 @@ struct rtcore_provider_facing_registry_payload_admission_mirror {
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
         has_launch_context_input(false),
+        has_sbt_dispatch_input(false),
+        has_pipeline_profile(false),
         has_traversable_root_proxy(false),
         has_bvh_format_profile(false),
         bvh_format_version(0),
@@ -21598,6 +22127,8 @@ struct rtcore_provider_facing_registry_payload_admission_mirror {
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
   bool has_launch_context_input;
+  bool has_sbt_dispatch_input;
+  bool has_pipeline_profile;
   bool has_traversable_root_proxy;
   bool has_bvh_format_profile;
   uint32_t bvh_format_version;
@@ -22023,6 +22554,8 @@ static bool rtcore_provider_payload_shadow_has_complete_field_coverage(
   return registry_payload_shadow->has_ray_origin_direction_tmin_tmax &&
          registry_payload_shadow->has_ray_flags_cull_mask &&
          registry_payload_shadow->has_launch_context_input &&
+         registry_payload_shadow->has_sbt_dispatch_input &&
+         registry_payload_shadow->has_pipeline_profile &&
          registry_payload_shadow->has_traversable_root_proxy &&
          registry_payload_shadow->has_bvh_format_profile;
 }
@@ -22589,6 +23122,24 @@ rtcore_make_provider_payload_consumed_input_view(
       registry_payload_shadow->has_launch_context_input;
   view.launch_context_input_owner =
       registry_payload_shadow->launch_context_input_owner;
+  view.has_sbt_dispatch_input =
+      registry_payload_shadow->has_sbt_dispatch_input;
+  view.sbt_dispatch_input_owner =
+      registry_payload_shadow->sbt_dispatch_input_owner;
+  view.sbt_hit_base = registry_payload_shadow->sbt_hit_base;
+  view.sbt_hit_stride = registry_payload_shadow->sbt_hit_stride;
+  view.sbt_hit_size = registry_payload_shadow->sbt_hit_size;
+  view.sbt_miss_base = registry_payload_shadow->sbt_miss_base;
+  view.sbt_miss_stride = registry_payload_shadow->sbt_miss_stride;
+  view.sbt_miss_size = registry_payload_shadow->sbt_miss_size;
+  view.sbt_callable_base = registry_payload_shadow->sbt_callable_base;
+  view.sbt_callable_stride = registry_payload_shadow->sbt_callable_stride;
+  view.sbt_callable_size = registry_payload_shadow->sbt_callable_size;
+  view.has_pipeline_profile =
+      registry_payload_shadow->has_pipeline_profile;
+  view.pipeline_profile_owner =
+      registry_payload_shadow->pipeline_profile_owner;
+  view.pipeline_profile_id = registry_payload_shadow->pipeline_profile_id;
   view.bridge_trace_replay_top_level_as =
       registry_payload_shadow->bridge_trace_replay_top_level_as;
   view.sbt_record_offset = registry_payload_shadow->sbt_record_offset;
@@ -22867,6 +23418,8 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
         shadow.has_ray_origin_direction_tmin_tmax;
     mirror.has_ray_flags_cull_mask = shadow.has_ray_flags_cull_mask;
     mirror.has_launch_context_input = shadow.has_launch_context_input;
+    mirror.has_sbt_dispatch_input = shadow.has_sbt_dispatch_input;
+    mirror.has_pipeline_profile = shadow.has_pipeline_profile;
     mirror.has_traversable_root_proxy = shadow.has_traversable_root_proxy;
     mirror.has_bvh_format_profile = shadow.has_bvh_format_profile;
     mirror.bvh_format_version = shadow.bvh_format_version;
@@ -22890,7 +23443,8 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          "provider_payload_consumption_enabled=%u, "
          "provider_admission_mirror_consumes_traversal_behavior=0, "
          "has_ray_origin_direction_tmin_tmax=%u, has_ray_flags_cull_mask=%u, "
-         "has_launch_context_input=%u, has_traversable_root_proxy=%u, "
+         "has_launch_context_input=%u, has_sbt_dispatch_input=%u, "
+         "has_pipeline_profile=%u, has_traversable_root_proxy=%u, "
          "has_bvh_format_profile=%u, bvh_format_version=%u\n",
          rtcore_traversal_source_provider_name(descriptor.provider),
          descriptor.context_ptr, descriptor.handoff_window_base,
@@ -22904,6 +23458,8 @@ static void rtcore_log_provider_facing_registry_payload_admission_mirror(
          mirror.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          mirror.has_ray_flags_cull_mask ? 1 : 0,
          mirror.has_launch_context_input ? 1 : 0,
+         mirror.has_sbt_dispatch_input ? 1 : 0,
+         mirror.has_pipeline_profile ? 1 : 0,
          mirror.has_traversable_root_proxy ? 1 : 0,
          mirror.has_bvh_format_profile ? 1 : 0,
          mirror.bvh_format_version);
@@ -23037,8 +23593,6 @@ static void rtcore_log_provider_payload_consumption_preflight_record(
   fflush(stdout);
 }
 
-static const uint32_t RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT = 1;
-
 struct rtcore_decoded_traversal_input_snapshot {
   rtcore_decoded_traversal_input_snapshot()
       : valid(false),
@@ -23058,6 +23612,20 @@ struct rtcore_decoded_traversal_input_snapshot {
         ray_flags_cull_mask_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
         has_launch_context_input(false),
         launch_context_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        has_sbt_dispatch_input(false),
+        sbt_dispatch_input_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        sbt_hit_base(0),
+        sbt_hit_stride(0),
+        sbt_hit_size(0),
+        sbt_miss_base(0),
+        sbt_miss_stride(0),
+        sbt_miss_size(0),
+        sbt_callable_base(0),
+        sbt_callable_stride(0),
+        sbt_callable_size(0),
+        has_pipeline_profile(false),
+        pipeline_profile_owner(RTCORE_DECODED_INPUT_OWNER_FORBIDDEN),
+        pipeline_profile_id(0),
         ray_flags(0),
         cull_mask(0),
         bridge_trace_replay_top_level_as(0),
@@ -23087,6 +23655,20 @@ struct rtcore_decoded_traversal_input_snapshot {
   rtcore_decoded_input_field_owner_class ray_flags_cull_mask_owner;
   bool has_launch_context_input;
   rtcore_decoded_input_field_owner_class launch_context_input_owner;
+  bool has_sbt_dispatch_input;
+  rtcore_decoded_input_field_owner_class sbt_dispatch_input_owner;
+  uint64_t sbt_hit_base;
+  uint32_t sbt_hit_stride;
+  uint32_t sbt_hit_size;
+  uint64_t sbt_miss_base;
+  uint32_t sbt_miss_stride;
+  uint32_t sbt_miss_size;
+  uint64_t sbt_callable_base;
+  uint32_t sbt_callable_stride;
+  uint32_t sbt_callable_size;
+  bool has_pipeline_profile;
+  rtcore_decoded_input_field_owner_class pipeline_profile_owner;
+  uint32_t pipeline_profile_id;
   float3 ray_origin;
   float3 ray_direction;
   uint32_t ray_flags;
@@ -23115,7 +23697,8 @@ rtcore_make_decoded_traversal_input_snapshot(
 static rtcore_decoded_input_field_owner_class
 rtcore_decoded_input_owner_from_publication_source(const char *source) {
   if (source != NULL &&
-      strcmp(source, "compiler_driver_publication_sideband") == 0) {
+      (strcmp(source, "compiler_driver_publication_sideband") == 0 ||
+       strcmp(source, "context_abi_byte_image") == 0)) {
     return RTCORE_DECODED_INPUT_OWNER_COMPILER_DRIVER_PUBLICATION;
   }
   if (source != NULL &&
@@ -23133,6 +23716,8 @@ static bool rtcore_decoded_input_snapshot_all_fields_owned_with_lifetime(
       snapshot.ray_origin_direction_tmin_tmax_owner,
       snapshot.has_ray_flags_cull_mask, snapshot.ray_flags_cull_mask_owner,
       snapshot.has_launch_context_input, snapshot.launch_context_input_owner,
+      snapshot.has_sbt_dispatch_input, snapshot.sbt_dispatch_input_owner,
+      snapshot.has_pipeline_profile, snapshot.pipeline_profile_owner,
       snapshot.has_traversable_root_proxy,
       snapshot.traversable_root_proxy_owner, snapshot.has_bvh_format_version,
       snapshot.bvh_format_profile_owner);
@@ -23431,8 +24016,18 @@ static rtcore_pre_provider_traversal_data_snapshot
 rtcore_make_pre_provider_traversal_data_snapshot(
     const rtcore_traversal_source_request &request) {
   rtcore_pre_provider_traversal_data_snapshot snapshot;
+  const bool mutate_legacy_sideband = rtcore_env_flag_enabled(
+      "VULKAN_SIM_RTCORE_TEST_LEGACY_SIDEBAND_RAY_TMIN");
   if (request.thread == NULL || request.thread->RT_thread_data == NULL ||
       request.thread->RT_thread_data->traversal_data.empty()) {
+    if (mutate_legacy_sideband) {
+      snapshot.valid = true;
+      snapshot.traversal_snapshot.Tmin = 0.501f;
+      printf("GPGPU-Sim PTX: RT_SUBMIT test-legacy-sideband-ray-tmin, "
+             "mutated_ray_tmin=%f, synthetic_pre_provider_snapshot=1\n",
+             snapshot.traversal_snapshot.Tmin);
+      fflush(stdout);
+    }
     return snapshot;
   }
 
@@ -23442,6 +24037,13 @@ rtcore_make_pre_provider_traversal_data_snapshot(
   mem->read((mem_addr_t)device_traversal_data,
             sizeof(snapshot.traversal_snapshot),
             &snapshot.traversal_snapshot);
+  if (mutate_legacy_sideband) {
+    snapshot.traversal_snapshot.Tmin = 0.501f;
+    printf("GPGPU-Sim PTX: RT_SUBMIT test-legacy-sideband-ray-tmin, "
+           "mutated_ray_tmin=%f\n",
+           snapshot.traversal_snapshot.Tmin);
+    fflush(stdout);
+  }
   snapshot.valid = true;
   return snapshot;
 }
@@ -23461,12 +24063,26 @@ struct rtcore_launch_context_input_publication_record {
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
         has_launch_context_input(false),
+        has_sbt_dispatch_input(false),
+        has_pipeline_profile(false),
+        has_bvh_format_profile(false),
         ray_flags(0),
         cull_mask(0),
         bridge_trace_replay_top_level_as(0),
         sbt_record_offset(0),
         sbt_record_stride(0),
         miss_index(0),
+        sbt_hit_base(0),
+        sbt_hit_stride(0),
+        sbt_hit_size(0),
+        sbt_miss_base(0),
+        sbt_miss_stride(0),
+        sbt_miss_size(0),
+        sbt_callable_base(0),
+        sbt_callable_stride(0),
+        sbt_callable_size(0),
+        pipeline_profile_id(0),
+        bvh_format_profile_id(0),
         ray_tmin(0.0f),
         ray_tmax(0.0f) {
     memset(&ray_origin, 0, sizeof(ray_origin));
@@ -23487,6 +24103,9 @@ struct rtcore_launch_context_input_publication_record {
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
   bool has_launch_context_input;
+  bool has_sbt_dispatch_input;
+  bool has_pipeline_profile;
+  bool has_bvh_format_profile;
   float3 ray_origin;
   float3 ray_direction;
   uint32_t ray_flags;
@@ -23495,6 +24114,17 @@ struct rtcore_launch_context_input_publication_record {
   uint32_t sbt_record_offset;
   uint32_t sbt_record_stride;
   uint32_t miss_index;
+  uint64_t sbt_hit_base;
+  uint32_t sbt_hit_stride;
+  uint32_t sbt_hit_size;
+  uint64_t sbt_miss_base;
+  uint32_t sbt_miss_stride;
+  uint32_t sbt_miss_size;
+  uint64_t sbt_callable_base;
+  uint32_t sbt_callable_stride;
+  uint32_t sbt_callable_size;
+  uint32_t pipeline_profile_id;
+  uint32_t bvh_format_profile_id;
   float ray_tmin;
   float ray_tmax;
 };
@@ -23623,11 +24253,56 @@ rtcore_make_launch_context_input_publication_record(
     return record;
   }
 
-  if (rtcore_trace_invocation_publication_source_enabled() ||
-      rtcore_compiler_driver_publication_source_enabled()) {
-    record.source = rtcore_compiler_driver_publication_source_enabled()
-                        ? "compiler_driver_publication_sideband"
-                        : "trace_invocation_publication_source_shadow";
+  if (rtcore_compiler_driver_publication_source_enabled()) {
+    record.source = "context_abi_byte_image";
+    record.source_owner_tuple_match = true;
+    record.has_source_context_window_key = true;
+    record.source_context_window_match = true;
+    rtcore_v03_compact_context_decoded decoded;
+    if (!rtcore_decode_v03_compact_context_image(
+            request.pI, request.thread, request.context_ptr, &decoded)) {
+      return record;
+    }
+    record.ray_origin = decoded.ray_origin;
+    record.ray_direction = decoded.ray_direction;
+    record.ray_tmin = decoded.ray_tmin;
+    record.ray_tmax = decoded.ray_tmax;
+    record.has_ray_origin_direction_tmin_tmax = true;
+    record.ray_flags = decoded.ray_flags;
+    record.cull_mask = decoded.cull_mask;
+    record.has_ray_flags_cull_mask = true;
+    record.bridge_trace_replay_top_level_as =
+        decoded.as_handle_or_traversable_ref;
+    record.sbt_record_offset = decoded.sbt_offset;
+    record.sbt_record_stride = decoded.sbt_stride;
+    record.miss_index = decoded.miss_index;
+    record.has_launch_context_input = true;
+    record.sbt_hit_base = decoded.sbt_hit_base;
+    record.sbt_hit_stride = decoded.sbt_hit_stride;
+    record.sbt_hit_size = decoded.sbt_hit_size;
+    record.sbt_miss_base = decoded.sbt_miss_base;
+    record.sbt_miss_stride = decoded.sbt_miss_stride;
+    record.sbt_miss_size = decoded.sbt_miss_size;
+    record.sbt_callable_base = decoded.sbt_callable_base;
+    record.sbt_callable_stride = decoded.sbt_callable_stride;
+    record.sbt_callable_size = decoded.sbt_callable_size;
+    record.has_sbt_dispatch_input = true;
+    record.pipeline_profile_id = decoded.pipeline_profile_id;
+    record.bvh_format_profile_id = decoded.bvh_format_profile_id;
+    record.has_pipeline_profile = true;
+    record.has_bvh_format_profile = true;
+    rtcore_apply_launch_context_input_publication_failpoint(request.pI, &record);
+    record.valid = record.has_ray_origin_direction_tmin_tmax &&
+                   record.has_ray_flags_cull_mask &&
+                   record.has_launch_context_input &&
+                   record.has_sbt_dispatch_input &&
+                   record.has_pipeline_profile &&
+                   record.has_bvh_format_profile;
+    return record;
+  }
+
+  if (rtcore_trace_invocation_publication_source_enabled()) {
+    record.source = "trace_invocation_publication_source_shadow";
     rtcore_trace_invocation_publication_source_shadow source_shadow;
     if (!rtcore_consume_trace_invocation_publication_source_shadow(
             request.thread, &source_shadow)) {
@@ -23707,6 +24382,8 @@ static bool rtcore_launch_context_input_publication_record_is_complete(
     const rtcore_launch_context_input_publication_record &record) {
   return record.valid && record.has_ray_origin_direction_tmin_tmax &&
          record.has_ray_flags_cull_mask && record.has_launch_context_input &&
+         record.has_sbt_dispatch_input && record.has_pipeline_profile &&
+         record.has_bvh_format_profile &&
          record.owner_seq_snapshot.valid && record.source_context_window_match &&
          rtcore_compiler_driver_sideband_requires_context_window_key(record);
 }
@@ -23719,16 +24396,26 @@ static void rtcore_log_launch_context_input_publication_record(
   }
   printf("GPGPU-Sim PTX: RT_SUBMIT "
          "launch-context-input-publication-bridge (%s:%u), "
-         "source=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "source=%s, context_abi_decoded=%u, provider_input_ready=%u, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, valid=%u, "
          "source_publication_seq=%llu, source_owner_tuple_match=%u, "
          "has_source_context_window_key=%u, "
          "source_context_window_match=%u, "
          "has_ray_origin_direction_tmin_tmax=%u, "
          "has_ray_flags_cull_mask=%u, has_launch_context_input=%u, "
+         "has_sbt_dispatch_input=%u, has_pipeline_profile=%u, "
+         "has_bvh_format_profile=%u, "
          "ray_flags=%u, cull_mask=%u, bridge_trace_replay_top_level_as=0x%llx, "
-         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u\n",
+         "sbt_record_offset=%u, sbt_record_stride=%u, miss_index=%u, "
+         "sbt_hit_base=0x%llx, sbt_hit_stride=%u, sbt_hit_size=%u, "
+         "sbt_miss_base=0x%llx, sbt_miss_stride=%u, sbt_miss_size=%u, "
+         "pipeline_profile_id=%u, bvh_format_profile_id=%u\n",
          pI->source_file(), pI->source_line(), record.source,
+         strcmp(record.source, "context_abi_byte_image") == 0 ? 1 : 0,
+         rtcore_launch_context_input_publication_record_is_complete(record)
+             ? 1
+             : 0,
          record.context_ptr, record.handoff_window_base,
          record.lane_slot_index, record.valid ? 1 : 0,
          record.source_publication_seq,
@@ -23737,11 +24424,18 @@ static void rtcore_log_launch_context_input_publication_record(
          record.source_context_window_match ? 1 : 0,
          record.has_ray_origin_direction_tmin_tmax ? 1 : 0,
          record.has_ray_flags_cull_mask ? 1 : 0,
-         record.has_launch_context_input ? 1 : 0, record.ray_flags,
+         record.has_launch_context_input ? 1 : 0,
+         record.has_sbt_dispatch_input ? 1 : 0,
+         record.has_pipeline_profile ? 1 : 0,
+         record.has_bvh_format_profile ? 1 : 0, record.ray_flags,
          record.cull_mask,
          (unsigned long long)record.bridge_trace_replay_top_level_as,
          record.sbt_record_offset, record.sbt_record_stride,
-         record.miss_index);
+         record.miss_index, (unsigned long long)record.sbt_hit_base,
+         record.sbt_hit_stride, record.sbt_hit_size,
+         (unsigned long long)record.sbt_miss_base,
+         record.sbt_miss_stride, record.sbt_miss_size,
+         record.pipeline_profile_id, record.bvh_format_profile_id);
   fflush(stdout);
 }
 
@@ -23807,6 +24501,25 @@ rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
   decoded_input_snapshot->has_launch_context_input =
       record.has_launch_context_input;
   decoded_input_snapshot->launch_context_input_owner = publication_owner;
+  decoded_input_snapshot->has_sbt_dispatch_input =
+      record.has_sbt_dispatch_input;
+  decoded_input_snapshot->sbt_dispatch_input_owner = publication_owner;
+  decoded_input_snapshot->sbt_hit_base = record.sbt_hit_base;
+  decoded_input_snapshot->sbt_hit_stride = record.sbt_hit_stride;
+  decoded_input_snapshot->sbt_hit_size = record.sbt_hit_size;
+  decoded_input_snapshot->sbt_miss_base = record.sbt_miss_base;
+  decoded_input_snapshot->sbt_miss_stride = record.sbt_miss_stride;
+  decoded_input_snapshot->sbt_miss_size = record.sbt_miss_size;
+  decoded_input_snapshot->sbt_callable_base = record.sbt_callable_base;
+  decoded_input_snapshot->sbt_callable_stride = record.sbt_callable_stride;
+  decoded_input_snapshot->sbt_callable_size = record.sbt_callable_size;
+  decoded_input_snapshot->has_pipeline_profile = record.has_pipeline_profile;
+  decoded_input_snapshot->pipeline_profile_owner = publication_owner;
+  decoded_input_snapshot->pipeline_profile_id = record.pipeline_profile_id;
+  decoded_input_snapshot->has_bvh_format_version =
+      record.has_bvh_format_profile;
+  decoded_input_snapshot->bvh_format_profile_owner = publication_owner;
+  decoded_input_snapshot->bvh_format_version = record.bvh_format_profile_id;
 }
 
 static const char *rtcore_runtime_as_proxy_registry_source_label() {
@@ -28385,9 +29098,9 @@ rtcore_make_default_compiler_driver_publication_route_record(
   }
 
   const bool compiler_driver_source =
-      strcmp(record.route_source, "compiler_driver_publication_sideband") == 0;
+      strcmp(record.route_source, "context_abi_byte_image") == 0;
   record.compiler_fields_source =
-      compiler_driver_source ? "compiler_driver_publication_sideband"
+      compiler_driver_source ? "context_abi_byte_image"
                              : "unexpected_source";
   record.runtime_context_window_source = "driver_runtime";
   record.proxy_delegation_source = rtcore_proxy_delegation_source_label();
@@ -28645,6 +29358,8 @@ struct rtcore_pre_provider_decoded_input_publication_map {
         has_ray_origin_direction_tmin_tmax(false),
         has_ray_flags_cull_mask(false),
         has_launch_context_input(false),
+        has_sbt_dispatch_input(false),
+        has_pipeline_profile(false),
         has_traversable_root_proxy(false),
         has_bvh_format_profile(false) {}
 
@@ -28655,6 +29370,8 @@ struct rtcore_pre_provider_decoded_input_publication_map {
   bool has_ray_origin_direction_tmin_tmax;
   bool has_ray_flags_cull_mask;
   bool has_launch_context_input;
+  bool has_sbt_dispatch_input;
+  bool has_pipeline_profile;
   bool has_traversable_root_proxy;
   bool has_bvh_format_profile;
 };
@@ -28677,6 +29394,10 @@ rtcore_make_pre_provider_decoded_input_publication_map(
       decoded_input_snapshot.has_ray_flags_cull_mask;
   publication_map.has_launch_context_input =
       decoded_input_snapshot.has_launch_context_input;
+  publication_map.has_sbt_dispatch_input =
+      decoded_input_snapshot.has_sbt_dispatch_input;
+  publication_map.has_pipeline_profile =
+      decoded_input_snapshot.has_pipeline_profile;
   publication_map.has_traversable_root_proxy =
       decoded_input_snapshot.has_traversable_root_proxy;
   publication_map.has_bvh_format_profile =
@@ -28701,6 +29422,10 @@ rtcore_bind_input_provenance_registry_publication_to_pre_provider_decoded_input_
       publication_map.has_ray_flags_cull_mask;
   entry.owned_fields.has_launch_context_input =
       publication_map.has_launch_context_input;
+  entry.owned_fields.has_sbt_dispatch_input =
+      publication_map.has_sbt_dispatch_input;
+  entry.owned_fields.has_pipeline_profile =
+      publication_map.has_pipeline_profile;
   entry.owned_fields.has_traversable_root_proxy =
       publication_map.has_traversable_root_proxy;
   entry.owned_fields.has_bvh_format_profile =
@@ -28774,6 +29499,20 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
       shadow.has_launch_context_input
           ? decoded_input_snapshot.launch_context_input_owner
           : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+  shadow.has_sbt_dispatch_input =
+      decoded_input_snapshot.has_sbt_dispatch_input &&
+      publication_snapshot.entry.owned_fields.has_sbt_dispatch_input;
+  shadow.sbt_dispatch_input_owner =
+      shadow.has_sbt_dispatch_input
+          ? decoded_input_snapshot.sbt_dispatch_input_owner
+          : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
+  shadow.has_pipeline_profile =
+      decoded_input_snapshot.has_pipeline_profile &&
+      publication_snapshot.entry.owned_fields.has_pipeline_profile;
+  shadow.pipeline_profile_owner =
+      shadow.has_pipeline_profile
+          ? decoded_input_snapshot.pipeline_profile_owner
+          : RTCORE_DECODED_INPUT_OWNER_FORBIDDEN;
   shadow.has_traversable_root_proxy =
       decoded_input_snapshot.has_traversable_root_proxy &&
       publication_snapshot.entry.owned_fields.has_traversable_root_proxy;
@@ -28799,6 +29538,16 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
   shadow.sbt_record_offset = decoded_input_snapshot.sbt_record_offset;
   shadow.sbt_record_stride = decoded_input_snapshot.sbt_record_stride;
   shadow.miss_index = decoded_input_snapshot.miss_index;
+  shadow.sbt_hit_base = decoded_input_snapshot.sbt_hit_base;
+  shadow.sbt_hit_stride = decoded_input_snapshot.sbt_hit_stride;
+  shadow.sbt_hit_size = decoded_input_snapshot.sbt_hit_size;
+  shadow.sbt_miss_base = decoded_input_snapshot.sbt_miss_base;
+  shadow.sbt_miss_stride = decoded_input_snapshot.sbt_miss_stride;
+  shadow.sbt_miss_size = decoded_input_snapshot.sbt_miss_size;
+  shadow.sbt_callable_base = decoded_input_snapshot.sbt_callable_base;
+  shadow.sbt_callable_stride = decoded_input_snapshot.sbt_callable_stride;
+  shadow.sbt_callable_size = decoded_input_snapshot.sbt_callable_size;
+  shadow.pipeline_profile_id = decoded_input_snapshot.pipeline_profile_id;
   shadow.traversable_proxy_id = decoded_input_snapshot.traversable_proxy_id;
   shadow.root_proxy_id = decoded_input_snapshot.root_proxy_id;
   shadow.bvh_format_version = decoded_input_snapshot.bvh_format_version;
@@ -29107,6 +29856,8 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
   shadow.valid = shadow.has_ray_origin_direction_tmin_tmax &&
                  shadow.has_ray_flags_cull_mask &&
                  shadow.has_launch_context_input &&
+                 shadow.has_sbt_dispatch_input &&
+                 shadow.has_pipeline_profile &&
                  shadow.has_traversable_root_proxy &&
                  shadow.has_bvh_format_profile;
   shadow.provider_consumed_input_fields_all_owned_with_lifetime =
@@ -29115,6 +29866,8 @@ rtcore_make_provider_facing_registry_payload_shadow_after_read_gate(
           shadow.ray_origin_direction_tmin_tmax_owner,
           shadow.has_ray_flags_cull_mask, shadow.ray_flags_cull_mask_owner,
           shadow.has_launch_context_input, shadow.launch_context_input_owner,
+          shadow.has_sbt_dispatch_input, shadow.sbt_dispatch_input_owner,
+          shadow.has_pipeline_profile, shadow.pipeline_profile_owner,
           shadow.has_traversable_root_proxy,
           shadow.traversable_root_proxy_owner,
           shadow.has_bvh_format_profile, shadow.bvh_format_profile_owner) &&
@@ -30363,6 +31116,10 @@ bool rtcore_build_traversal_completion_event(
   if (launch_context_input_publication_record.publication_enabled) {
     rtcore_log_launch_context_input_publication_record(
         pI, launch_context_input_publication_record);
+    if (rtcore_fail_closed_on_launch_context_input_publication_record(
+            pI, launch_context_input_publication_record)) {
+      return false;
+    }
     if (rtcore_launch_context_input_publication_record_is_complete(
             launch_context_input_publication_record)) {
       rtcore_apply_launch_context_input_publication_record_to_decoded_snapshot(
@@ -30391,7 +31148,8 @@ bool rtcore_build_traversal_completion_event(
       rtcore_bvh_format_profile_object_bridge_snapshot
           bvh_format_profile_object_bridge_snapshot =
               rtcore_make_bvh_format_profile_object_bridge_snapshot(
-                  RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT);
+                  launch_context_input_publication_record
+                      .bvh_format_profile_id);
       rtcore_apply_bvh_format_profile_object_bridge_failpoint(
           pI, source_request, &bvh_format_profile_object_bridge_snapshot);
       rtcore_log_bvh_format_profile_object_bridge_snapshot(
@@ -30845,6 +31603,15 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t handoff_window_base_data = thread->get_operand_value(
       handoff_window_base, handoff_window_base, B64_TYPE, thread, 1);
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
+  if (lane_slot_index == 0 && rtcore_env_flag_enabled(
+                                  "VULKAN_SIM_RTCORE_TEST_CONTEXT_LANE_ALIAS")) {
+    context_ptr_data.u64 += RTCORE_CONTEXT_BYTES_PER_LANE;
+    printf("GPGPU-Sim PTX: RT_SUBMIT test-context-lane-alias "
+           "(%s:%u), context_ptr=0x%llx, lane_slot_index=%u\n",
+           pI->source_file(), pI->source_line(),
+           (unsigned long long)context_ptr_data.u64, lane_slot_index);
+    fflush(stdout);
+  }
 
   if (rtcore_fail_closed_on_invalid_driver_runtime_handle_scaffold(
           pI, context_ptr_data.u64, handoff_window_base_data.u64,
@@ -30888,6 +31655,27 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
+  const rtcore_runtime_context_window_allocation_record allocation_record =
+      rtcore_make_runtime_context_window_allocation_record(
+          context_ptr_data.u64, handoff_window_base_data.u64, lane_slot_index);
+  if (rtcore_compiler_driver_publication_source_enabled()) {
+    rtcore_v03_compact_context_decoded admission_context;
+    if (!rtcore_decode_v03_compact_context_image(
+            pI, thread, context_ptr_data.u64, &admission_context)) {
+      printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+             "reason=COMPACT_CONTEXT_ADMISSION_INVALID, "
+             "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+             "lane_slot_index=%u, lifetime_mutated=0\n",
+             pI->source_file(), pI->source_line(),
+             (unsigned long long)context_ptr_data.u64,
+             (unsigned long long)handoff_window_base_data.u64,
+             lane_slot_index);
+      fflush(stdout);
+      inst_not_implemented(pI);
+      return;
+    }
+  }
+
   const rtcore_symbolic_resource_profile resource_profile =
       rtcore_get_symbolic_resource_profile();
   rtcore_log_symbolic_resource_profile_once(resource_profile);
@@ -30926,9 +31714,6 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
-  const rtcore_runtime_context_window_allocation_record allocation_record =
-      rtcore_make_runtime_context_window_allocation_record(
-          context_ptr_data.u64, handoff_window_base_data.u64, lane_slot_index);
   bool lifetime_record_created = false;
   const rtcore_launch_allocation_lifetime_record *lifetime_record =
       rtcore_get_or_create_launch_allocation_lifetime_record(
@@ -31540,6 +32325,27 @@ void get_warp_hitgroup_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
 }
 
+static uint32_t rtcore_require_instruction_compat_sbt_shader_id(
+    const ptx_instruction *pI, const vulkan_kernel_metadata &metadata,
+    uint32_t hit_group_index, uint32_t component_index) {
+  uint32_t shader_id = 0;
+  if (VulkanRayTracing::rtcoreLoadCompatibilitySbtShaderId(
+          metadata.hit_sbt, metadata.hit_sbt_stride, metadata.hit_sbt_size,
+          hit_group_index, component_index, &shader_id)) {
+    return shader_id;
+  }
+  printf("GPGPU-Sim PTX: compatibility SBT instruction fail-closed "
+         "(%s:%u), region=hit, base=%p, stride=%llu, size=%llu, "
+         "record_index=%u, component_index=%u\n",
+         pI->source_file(), pI->source_line(), metadata.hit_sbt,
+         (unsigned long long)metadata.hit_sbt_stride,
+         (unsigned long long)metadata.hit_sbt_size, hit_group_index,
+         component_index);
+  fflush(stdout);
+  inst_not_implemented(pI);
+  return 0;
+}
+
 void get_closest_hit_shaderID_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   static uint32_t last_counter = 0;
   static uint32_t last_warp_hitgroup = -1;
@@ -31553,13 +32359,16 @@ void get_closest_hit_shaderID_impl(const ptx_instruction *pI, ptx_thread_info *t
   VkGeometryTypeKHR geometryType;
   mem->read(&(traversal_data->closest_hit.geometryType), sizeof(traversal_data->closest_hit.geometryType), &geometryType);
 
-  if(geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR)
-    data.u32 = *((uint32_t *)(thread->get_kernel().vulkan_metadata.hit_sbt));
-  else {
+  const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+  if(geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR) {
+    data.u32 = rtcore_require_instruction_compat_sbt_shader_id(
+        pI, metadata, 0, 0);
+  } else {
     int32_t hitGroupIndex;
     mem->read(&(traversal_data->closest_hit.hitGroupIndex), sizeof(traversal_data->closest_hit.hitGroupIndex), &hitGroupIndex);
 
-    data.u32 = *((uint32_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex);
+    data.u32 = rtcore_require_instruction_compat_sbt_shader_id(
+        pI, metadata, (uint32_t)hitGroupIndex, 0);
   }
   
   thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
@@ -31580,7 +32389,8 @@ void get_intersection_shaderID_impl(const ptx_instruction *pI, ptx_thread_info *
   warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
   uint32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
 
-  data.u32 = *((uint32_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex + 1);
+  data.u32 = rtcore_require_instruction_compat_sbt_shader_id(
+      pI, thread->get_kernel().vulkan_metadata, hitGroupIndex, 1);
   
   thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
 }
@@ -31601,7 +32411,8 @@ void get_anyhit_shaderID_impl(const ptx_instruction *pI, ptx_thread_info *thread
   uint32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
 
   // TODO: Adjust this for situations with both intersection and anyhit shaders
-  data.u32 = *((uint32_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex + 1);
+  data.u32 = rtcore_require_instruction_compat_sbt_shader_id(
+      pI, thread->get_kernel().vulkan_metadata, hitGroupIndex, 1);
   VSIM_DPRINTF("shader %d\n", data.u32);
   
   thread->set_operand_value(dst, data, U32_TYPE, thread, pI);

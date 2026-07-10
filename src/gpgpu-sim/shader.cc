@@ -8859,6 +8859,36 @@ static unsigned rtcore_shader_continuation_hit_record_selector_cohort_count(
   return selector_key_count;
 }
 
+static unsigned rtcore_shader_continuation_compat_sbt_shader_id(
+    const kernel_info_t *kernel, unsigned hit_record_selector,
+    unsigned shader_record_component) {
+  if (kernel == NULL || kernel->vulkan_metadata.hit_sbt == NULL ||
+      kernel->vulkan_metadata.hit_sbt_stride == 0 ||
+      kernel->vulkan_metadata.hit_sbt_size == 0) {
+    return UINT_MAX;
+  }
+  const uint64_t stride = kernel->vulkan_metadata.hit_sbt_stride;
+  const uint64_t size = kernel->vulkan_metadata.hit_sbt_size;
+  const uint64_t component_offset =
+      static_cast<uint64_t>(shader_record_component) * sizeof(uint32_t);
+  if (component_offset + sizeof(uint32_t) > stride ||
+      hit_record_selector > UINT64_MAX / stride) {
+    return UINT_MAX;
+  }
+  const uint64_t record_offset =
+      static_cast<uint64_t>(hit_record_selector) * stride;
+  if (record_offset > size || component_offset > size - record_offset ||
+      sizeof(uint32_t) > size - record_offset - component_offset) {
+    return UINT_MAX;
+  }
+  uint32_t shader_id = UINT_MAX;
+  memcpy(&shader_id,
+         static_cast<const uint8_t *>(kernel->vulkan_metadata.hit_sbt) +
+             record_offset + component_offset,
+         sizeof(shader_id));
+  return shader_id;
+}
+
 static unsigned rtcore_shader_continuation_compat_target_shader_id_key(
     const kernel_info_t *kernel,
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
@@ -8876,9 +8906,8 @@ static unsigned rtcore_shader_continuation_compat_target_shader_id_key(
   const unsigned hit_record_selector =
       rtcore_shader_continuation_hit_record_selector_key(snapshot, lane);
   const unsigned shader_record_component = 1;
-  const uint32_t *hit_sbt =
-      reinterpret_cast<const uint32_t *>(kernel->vulkan_metadata.hit_sbt);
-  return hit_sbt[hit_record_selector * 8 + shader_record_component];
+  return rtcore_shader_continuation_compat_sbt_shader_id(
+      kernel, hit_record_selector, shader_record_component);
 }
 
 static unsigned rtcore_shader_continuation_compat_target_shader_id_ready_mask(

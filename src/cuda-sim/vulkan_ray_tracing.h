@@ -311,12 +311,24 @@ public:
                       void *miss_sbt,
                       void *hit_sbt,
                       void *callable_sbt,
+                      uint64_t raygen_sbt_stride,
+                      uint64_t raygen_sbt_size,
+                      uint64_t miss_sbt_stride,
+                      uint64_t miss_sbt_size,
+                      uint64_t hit_sbt_stride,
+                      uint64_t hit_sbt_size,
+                      uint64_t callable_sbt_stride,
+                      uint64_t callable_sbt_size,
                       bool is_indirect,
                       uint32_t launch_width,
                       uint32_t launch_height,
                       uint32_t launch_depth,
                       uint64_t launch_size_addr);
     static function_info* rtcoreResolveCompatibilityShaderFunction(uint32_t shaderID);
+    static bool rtcoreLoadCompatibilitySbtShaderId(
+        const void *base, uint64_t stride, uint64_t size,
+        uint32_t record_index, uint32_t component_index,
+        uint32_t *shader_id);
     static void callShader(const ptx_instruction *pI, ptx_thread_info *thread, function_info *target_func);
     static void callMissShader(const ptx_instruction *pI, ptx_thread_info *thread);
     static void callClosestHitShader(const ptx_instruction *pI, ptx_thread_info *thread);

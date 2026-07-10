@@ -10928,6 +10928,14 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
                       void *miss_sbt,
                       void *hit_sbt,
                       void *callable_sbt,
+                      uint64_t raygen_sbt_stride,
+                      uint64_t raygen_sbt_size,
+                      uint64_t miss_sbt_stride,
+                      uint64_t miss_sbt_size,
+                      uint64_t hit_sbt_stride,
+                      uint64_t hit_sbt_size,
+                      uint64_t callable_sbt_stride,
+                      uint64_t callable_sbt_size,
                       bool is_indirect,
                       uint32_t launch_width,
                       uint32_t launch_height,
@@ -11066,6 +11074,14 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     grid->vulkan_metadata.miss_sbt = miss_sbt;
     grid->vulkan_metadata.hit_sbt = hit_sbt;
     grid->vulkan_metadata.callable_sbt = callable_sbt;
+    grid->vulkan_metadata.raygen_sbt_stride = raygen_sbt_stride;
+    grid->vulkan_metadata.raygen_sbt_size = raygen_sbt_size;
+    grid->vulkan_metadata.miss_sbt_stride = miss_sbt_stride;
+    grid->vulkan_metadata.miss_sbt_size = miss_sbt_size;
+    grid->vulkan_metadata.hit_sbt_stride = hit_sbt_stride;
+    grid->vulkan_metadata.hit_sbt_size = hit_sbt_size;
+    grid->vulkan_metadata.callable_sbt_stride = callable_sbt_stride;
+    grid->vulkan_metadata.callable_sbt_size = callable_sbt_size;
     grid->vulkan_metadata.launch_width = launch_width;
     grid->vulkan_metadata.launch_height = launch_height;
     grid->vulkan_metadata.launch_depth = launch_depth;
@@ -11104,6 +11120,55 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     // }
 }
 
+bool VulkanRayTracing::rtcoreLoadCompatibilitySbtShaderId(
+    const void *base, uint64_t stride, uint64_t size, uint32_t record_index,
+    uint32_t component_index, uint32_t *shader_id) {
+    if (getenv("VULKAN_SIM_RTCORE_TEST_COMPAT_SBT_BOUNDS") != NULL) {
+        size = 1;
+    }
+    if (base == NULL || shader_id == NULL || stride == 0 || size == 0) {
+        return false;
+    }
+    const uint64_t component_offset =
+        static_cast<uint64_t>(component_index) * sizeof(uint32_t);
+    if (component_offset + sizeof(uint32_t) > stride ||
+        record_index > UINT64_MAX / stride) {
+        return false;
+    }
+    const uint64_t record_offset = static_cast<uint64_t>(record_index) * stride;
+    if (record_offset > size || component_offset > size - record_offset ||
+        sizeof(uint32_t) > size - record_offset - component_offset) {
+        return false;
+    }
+    memcpy(shader_id,
+           static_cast<const uint8_t *>(base) + record_offset +
+               component_offset,
+           sizeof(*shader_id));
+    if (getenv("VULKAN_SIM_RTCORE_TEST_COMPAT_SBT_SHADER_ID_OOB") != NULL) {
+        *shader_id = shaders.size();
+    }
+    return *shader_id < shaders.size();
+}
+
+static bool rtcore_require_compat_sbt_shader_id(
+    const ptx_instruction *pI, const char *region_name, const void *base,
+    uint64_t stride, uint64_t size, uint32_t record_index,
+    uint32_t component_index, uint32_t *shader_id) {
+    if (VulkanRayTracing::rtcoreLoadCompatibilitySbtShaderId(
+            base, stride, size, record_index, component_index, shader_id)) {
+        return true;
+    }
+    printf("GPGPU-Sim PTX: compatibility SBT fail-closed (%s:%u), "
+           "region=%s, base=%p, stride=%llu, size=%llu, "
+           "record_index=%u, component_index=%u\n",
+           pI->source_file(), pI->source_line(), region_name, base,
+           (unsigned long long)stride, (unsigned long long)size,
+           record_index, component_index);
+    fflush(stdout);
+    abort();
+    return false;
+}
+
 void VulkanRayTracing::callMissShader(const ptx_instruction *pI, ptx_thread_info *thread) {
     gpgpu_context *ctx;
     ctx = GPGPU_Context();
@@ -11125,7 +11190,13 @@ void VulkanRayTracing::callMissShader(const ptx_instruction *pI, ptx_thread_info
     uint32_t missIndex;
     mem->read(&(traversal_data->missIndex), sizeof(traversal_data->missIndex), &missIndex);
 
-    uint32_t shaderID = *((uint32_t *)(thread->get_kernel().vulkan_metadata.miss_sbt) + 8 * missIndex);
+    const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+    uint32_t shaderID = 0;
+    if (!rtcore_require_compat_sbt_shader_id(
+            pI, "miss", metadata.miss_sbt, metadata.miss_sbt_stride,
+            metadata.miss_sbt_size, missIndex, 0, &shaderID)) {
+        return;
+    }
     VSIM_DPRINTF("gpgpusim: Calling Miss Shader at ID %d\n", shaderID);
 
     shader_stage_info miss_shader = shaders[shaderID];
@@ -11157,7 +11228,13 @@ void VulkanRayTracing::callClosestHitShader(const ptx_instruction *pI, ptx_threa
 
     shader_stage_info closesthit_shader;
     if(geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR) {
-        uint32_t shaderID = *((uint32_t *)(thread->get_kernel().vulkan_metadata.hit_sbt));
+        const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+        uint32_t shaderID = 0;
+        if (!rtcore_require_compat_sbt_shader_id(
+                pI, "hit", metadata.hit_sbt, metadata.hit_sbt_stride,
+                metadata.hit_sbt_size, 0, 0, &shaderID)) {
+            return;
+        }
         closesthit_shader = shaders[shaderID];
         VSIM_DPRINTF("gpgpusim: Calling Closest Hit Shader at ID %d\n", shaderID);
 
@@ -11165,7 +11242,13 @@ void VulkanRayTracing::callClosestHitShader(const ptx_instruction *pI, ptx_threa
     else {
         int32_t hitGroupIndex;
         mem->read(&(traversal_data->closest_hit.hitGroupIndex), sizeof(traversal_data->closest_hit.hitGroupIndex), &hitGroupIndex);
-        uint32_t shaderID = *((uint32_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex);
+        const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+        uint32_t shaderID = 0;
+        if (!rtcore_require_compat_sbt_shader_id(
+                pI, "hit", metadata.hit_sbt, metadata.hit_sbt_stride,
+                metadata.hit_sbt_size, hitGroupIndex, 0, &shaderID)) {
+            return;
+        }
         closesthit_shader = shaders[shaderID];
         VSIM_DPRINTF("gpgpusim: Calling Closest Hit Shader at ID %d\n", shaderID);
     }
@@ -11190,7 +11273,14 @@ void VulkanRayTracing::callIntersectionShader(const ptx_instruction *pI, ptx_thr
     warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
     uint32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
 
-    shader_stage_info intersection_shader = shaders[*((uint32_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex + 1)];
+    const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+    uint32_t shaderID = 0;
+    if (!rtcore_require_compat_sbt_shader_id(
+            pI, "hit", metadata.hit_sbt, metadata.hit_sbt_stride,
+            metadata.hit_sbt_size, hitGroupIndex, 1, &shaderID)) {
+        return;
+    }
+    shader_stage_info intersection_shader = shaders[shaderID];
     function_info *entry = context->get_kernel(intersection_shader.function_name);
     callShader(pI, thread, entry);
 }
@@ -11218,7 +11308,14 @@ void VulkanRayTracing::callAnyHitShader(const ptx_instruction *pI, ptx_thread_in
     warp_intersection_table* table = VulkanRayTracing::anyhit_table[thread->get_ctaid().x][thread->get_ctaid().y];
     uint32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
 
-    shader_stage_info anyhit_shader = shaders[*((uint32_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex + 1)];
+    const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+    uint32_t shaderID = 0;
+    if (!rtcore_require_compat_sbt_shader_id(
+            pI, "hit", metadata.hit_sbt, metadata.hit_sbt_stride,
+            metadata.hit_sbt_size, hitGroupIndex, 1, &shaderID)) {
+        return;
+    }
+    shader_stage_info anyhit_shader = shaders[shaderID];
     function_info *entry = context->get_kernel(anyhit_shader.function_name);
     callShader(pI, thread, entry);
 }

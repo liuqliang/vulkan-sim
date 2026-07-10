@@ -365,6 +365,14 @@ typedef struct vulkan_kernel_metadata {
   void *miss_sbt;
   void *hit_sbt;
   void *callable_sbt;
+  uint64_t raygen_sbt_stride;
+  uint64_t raygen_sbt_size;
+  uint64_t miss_sbt_stride;
+  uint64_t miss_sbt_size;
+  uint64_t hit_sbt_stride;
+  uint64_t hit_sbt_size;
+  uint64_t callable_sbt_stride;
+  uint64_t callable_sbt_size;
   uint32_t launch_width;
   uint32_t launch_height;
   uint32_t launch_depth;
