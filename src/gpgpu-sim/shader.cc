@@ -8886,6 +8886,9 @@ static unsigned rtcore_shader_continuation_compat_sbt_shader_id(
          static_cast<const uint8_t *>(kernel->vulkan_metadata.hit_sbt) +
              record_offset + component_offset,
          sizeof(shader_id));
+  if (rtcore_resolve_compatibility_shader_function(shader_id) == NULL) {
+    return UINT_MAX;
+  }
   return shader_id;
 }
 

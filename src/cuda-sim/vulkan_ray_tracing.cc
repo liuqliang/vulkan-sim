@@ -11007,18 +11007,34 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
 
-    unsigned long shaderId = *(uint64_t*)raygen_sbt;
-    int index = 0;
-    for (int i = 0; i < shaders.size(); i++) {
-        if (shaders[i].ID == 0){
-            index = i;
-            break;
-        }
+    uint32_t shaderId = 0;
+    if (!rtcoreLoadCompatibilitySbtShaderId(
+            raygen_sbt, raygen_sbt_stride, raygen_sbt_size, 0, 0,
+            &shaderId)) {
+        printf("GPGPU-Sim PTX: compatibility SBT fail-closed, "
+               "region=raygen, base=%p, stride=%llu, size=%llu\n",
+               raygen_sbt, (unsigned long long)raygen_sbt_stride,
+               (unsigned long long)raygen_sbt_size);
+        fflush(stdout);
+        abort();
     }
     ctx->func_sim->g_total_shaders = shaders.size();
 
-    shader_stage_info raygen_shader = shaders[index];
-    function_info *entry = context->get_kernel(raygen_shader.function_name);
+    const shader_stage_info *raygen_shader = NULL;
+    for (size_t index = 0; index < shaders.size(); ++index) {
+        if (shaders[index].ID == shaderId &&
+            shaders[index].type == MESA_SHADER_RAYGEN) {
+            raygen_shader = &shaders[index];
+            break;
+        }
+    }
+    if (raygen_shader == NULL) {
+        printf("GPGPU-Sim PTX: compatibility SBT fail-closed, "
+               "region=raygen, shader_id=%u\n", shaderId);
+        fflush(stdout);
+        abort();
+    }
+    function_info *entry = context->get_kernel(raygen_shader->function_name);
     // printf("################ number of args = %d\n", entry->num_args());
 
     if (entry->is_pdom_set()) {
@@ -11069,7 +11085,7 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
     //   raygen_shader.function_name, args, dim3(4, 128, 1), dim3(32, 1, 1), context);
     kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
-      raygen_shader.function_name, args, gridDim, blockDim, context);
+      raygen_shader->function_name, args, gridDim, blockDim, context);
     grid->vulkan_metadata.raygen_sbt = raygen_sbt;
     grid->vulkan_metadata.miss_sbt = miss_sbt;
     grid->vulkan_metadata.hit_sbt = hit_sbt;

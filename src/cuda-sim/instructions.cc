@@ -7305,6 +7305,12 @@ static const char *rtcore_v03_context_test_mutation() {
   return value == NULL ? "" : value;
 }
 
+namespace {
+static bool rtcore_publication_context_window_matches_lane(
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    ptx_thread_info *thread);
+}
+
 static void rtcore_apply_v03_context_test_mutation(
     rtcore_v03_compact_context_image *image) {
   const char *mode = rtcore_v03_context_test_mutation();
@@ -7338,11 +7344,14 @@ static bool rtcore_context_sbt_region_valid(uint64_t base, uint32_t stride,
 
 static bool rtcore_publish_v03_compact_context_image(
     const ptx_instruction *pI, ptx_thread_info *thread,
-    unsigned long long context_ptr, uint64_t top_level_as,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    uint64_t top_level_as,
     uint32_t ray_flags, uint32_t cull_mask, uint32_t sbt_record_offset,
     uint32_t sbt_record_stride, uint32_t miss_index, float3 ray_origin,
     float ray_tmin, float3 ray_direction, float ray_tmax) {
-  if (thread == NULL || context_ptr == 0 || (context_ptr % 64) != 0) {
+  if (thread == NULL || context_ptr == 0 || (context_ptr % 64) != 0 ||
+      !rtcore_publication_context_window_matches_lane(
+          context_ptr, handoff_window_base, thread)) {
     return false;
   }
 
@@ -7998,6 +8007,16 @@ void rt_publish_trace_context_impl(const ptx_instruction *pI, ptx_thread_info *t
   const operand_info &handoff_window_base = pI->operand_lookup(1);
   ptx_reg_t handoff_window_base_data = thread->get_operand_value(
       handoff_window_base, handoff_window_base, B64_TYPE, thread, 1);
+  if ((thread->get_hw_tid() % 32) == 0 &&
+      rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_TEST_CONTEXT_LANE_ALIAS")) {
+    context_ptr_data.u64 += sizeof(rtcore_v03_compact_context_image);
+    printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT "
+           "test-context-lane-alias (%s:%u), context_ptr=0x%llx, "
+           "lane_slot_index=0\n",
+           pI->source_file(), pI->source_line(),
+           (unsigned long long)context_ptr_data.u64);
+    fflush(stdout);
+  }
 
   const operand_info &topLevelAS = pI->operand_lookup(2);
   ptx_reg_t topLevelAS_data =
@@ -8059,7 +8078,7 @@ void rt_publish_trace_context_impl(const ptx_instruction *pI, ptx_thread_info *t
   float3 ray_direction = {directionX_data.f32, directionY_data.f32,
                           directionZ_data.f32};
   if (!rtcore_publish_v03_compact_context_image(
-          pI, thread, context_ptr_data.u64,
+          pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
           (uint64_t)topLevelAS_data.u64, rayFlags_data.u32,
           cullMask_data.u32, sbtRecordOffset_data.u32,
           sbtRecordStride_data.u32, missIndex_data.u32, ray_origin,
@@ -11021,6 +11040,20 @@ bool g_rtcore_symbolic_resource_profile_logged = false;
 
 unsigned rtcore_lane_slot_index(ptx_thread_info *thread) {
   return thread->get_hw_tid() % RTCORE_MAX_LANES_PER_WARP;
+}
+
+static bool rtcore_publication_context_window_matches_lane(
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    ptx_thread_info *thread) {
+  if (thread == NULL) {
+    return false;
+  }
+  const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
+  const rtcore_runtime_context_window_allocation_record allocation_record =
+      rtcore_make_runtime_context_window_allocation_record(
+          context_ptr, handoff_window_base, lane_slot_index);
+  return rtcore_runtime_context_window_allocation_record_is_accepted(
+      allocation_record);
 }
 
 unsigned rtcore_handoff_lane_slot_byte_offset(unsigned lane_slot_index) {
