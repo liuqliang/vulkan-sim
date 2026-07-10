@@ -97,39 +97,12 @@ struct rtcore_replay_warp_completion_entry_snapshot {
   unsigned terminal_lane_mask;
   unsigned continuation_lane_mask;
   unsigned unsupported_reason_mask;
-  unsigned handoff_dispatch_group_valid_mask;
-  unsigned handoff_hit_group_valid_mask;
-  unsigned handoff_resume_group_valid_mask;
+  unsigned handoff_selector_valid_mask;
+  unsigned handoff_candidate_valid_mask;
+  unsigned handoff_software_return_valid_mask;
   unsigned lane_completion_reason[32];
-  unsigned lane_completion_flags[32];
-  unsigned lane_completion_seq[32];
-  unsigned lane_resume_seq[32];
-  unsigned lane_window_tag[32];
   unsigned lane_continuation_depth[32];
-  unsigned handoff_event_header_w0[32];
-  unsigned handoff_event_header_w1[32];
-  unsigned handoff_event_header_w2[32];
-  unsigned handoff_event_header_w3[32];
-  unsigned handoff_dispatch_w4[32];
-  unsigned handoff_dispatch_w5[32];
-  unsigned handoff_dispatch_w6[32];
-  unsigned handoff_dispatch_w7[32];
-  unsigned handoff_hit_w8[32];
-  unsigned handoff_hit_w9[32];
-  unsigned handoff_hit_w10[32];
-  unsigned handoff_hit_w11[32];
-  unsigned handoff_hit_w12[32];
-  unsigned handoff_hit_w13[32];
-  unsigned handoff_hit_w14[32];
-  unsigned handoff_hit_w15[32];
-  unsigned handoff_resume_w16[32];
-  unsigned handoff_resume_w17[32];
-  unsigned handoff_resume_w18[32];
-  unsigned handoff_resume_w19[32];
-  unsigned handoff_resume_w20[32];
-  unsigned handoff_resume_w21[32];
-  unsigned handoff_resume_w22[32];
-  unsigned handoff_resume_w23[32];
+  unsigned handoff_words[32][32];
   bool scoreboard_handoff_ready;
   bool scoreboard_handoff_delivered;
   unsigned long long scoreboard_handoff_cycle;
@@ -192,7 +165,7 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
     unsigned active_mask, unsigned packet_schema_version,
     unsigned completion_visible_mask, unsigned terminal_lane_mask,
     unsigned continuation_lane_mask, unsigned unsupported_reason_mask,
-    unsigned handoff_resume_group_valid_mask, unsigned next_active_mask,
+    unsigned handoff_software_return_valid_mask, unsigned next_active_mask,
     unsigned final_like_mask, unsigned missing_resume_handoff_mask,
     unsigned handoff_result_consume_mask,
     unsigned resume_handoff_publish_mask,
@@ -8749,9 +8722,6 @@ static const unsigned RTCORE_SHADER_CONTINUATION_REASON_ORACLE_ANYHIT = 2;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_ORACLE_INTERSECTION = 3;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_SYNTHETIC_SPLIT = 4;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED = 15;
-static const unsigned RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID = 0x1u;
-static const unsigned RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID = 0x2u;
-static const unsigned RTCORE_HANDOFF_RAW_FACT_INSTANCE_SBT_CONTRIBUTION_VALID = 0x4u;
 
 static unsigned rtcore_shader_continuation_reason_mask(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
@@ -8796,30 +8766,10 @@ static unsigned rtcore_shader_continuation_target_selector_key(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
     unsigned lane) {
   unsigned key = snapshot.lane_completion_reason[lane];
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_dispatch_w4[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_dispatch_w5[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_dispatch_w6[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_dispatch_w7[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_hit_w8[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_hit_w9[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_hit_w10[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_hit_w11[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_hit_w12[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_hit_w13[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_hit_w14[lane]);
-  key = rtcore_shader_continuation_mix_selector_word(
-      key, snapshot.handoff_hit_w15[lane]);
+  for (unsigned word = 1; word <= 12; ++word) {
+    key = rtcore_shader_continuation_mix_selector_word(
+        key, snapshot.handoff_words[lane][word]);
+  }
   return key;
 }
 
@@ -8867,49 +8817,20 @@ static unsigned rtcore_shader_continuation_target_selector_cohort_count(
   return selector_key_count + fallback_cohort_count;
 }
 
-static unsigned rtcore_shader_continuation_raw_fact_ready_mask(
-    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
-    unsigned target_reason_mask,
-    unsigned raw_fact_flag) {
-  unsigned mask = 0;
-  for (unsigned lane = 0; lane < 32; ++lane) {
-    const unsigned lane_mask = 1u << lane;
-    if ((target_reason_mask & lane_mask) == 0) {
-      continue;
-    }
-    if ((snapshot.handoff_hit_w15[lane] & raw_fact_flag) != 0) {
-      mask |= lane_mask;
-    }
-  }
-  return mask;
-}
-
 static unsigned rtcore_shader_continuation_hit_record_selector_ready_mask(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
     unsigned target_reason_mask) {
-  const unsigned required =
-      RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID |
-      RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID |
-      RTCORE_HANDOFF_RAW_FACT_INSTANCE_SBT_CONTRIBUTION_VALID;
-  unsigned mask = 0;
-  for (unsigned lane = 0; lane < 32; ++lane) {
-    const unsigned lane_mask = 1u << lane;
-    if ((target_reason_mask & lane_mask) == 0) {
-      continue;
-    }
-    if ((snapshot.handoff_hit_w15[lane] & required) == required) {
-      mask |= lane_mask;
-    }
-  }
-  return mask;
+  return target_reason_mask & snapshot.handoff_selector_valid_mask &
+         snapshot.handoff_candidate_valid_mask;
 }
 
 static unsigned rtcore_shader_continuation_hit_record_selector_key(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
     unsigned lane) {
-  return snapshot.handoff_hit_w14[lane] +
-         snapshot.handoff_hit_w12[lane] * snapshot.handoff_hit_w9[lane] +
-         snapshot.handoff_hit_w8[lane];
+  return snapshot.handoff_words[lane][3] +
+         snapshot.handoff_words[lane][4] *
+             snapshot.handoff_words[lane][2] +
+         snapshot.handoff_words[lane][1];
 }
 
 static unsigned rtcore_shader_continuation_hit_record_selector_cohort_count(
@@ -9870,7 +9791,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
     const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
     unsigned packet_schema_version, unsigned completion_valid_mask,
     unsigned terminal_lane_mask, unsigned continuation_lane_mask,
-    unsigned unsupported_reason_mask, unsigned handoff_resume_group_valid_mask,
+    unsigned unsupported_reason_mask, unsigned handoff_software_return_valid_mask,
     unsigned reason_oracle_anyhit_mask,
     unsigned reason_oracle_intersection_mask,
     unsigned reason_synthetic_split_mask,
@@ -9900,9 +9821,9 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
       completion_visible_mask & continuation_lane_mask &
       ~unsupported_reason_mask;
   const unsigned missing_resume_handoff_mask =
-      continuation_candidate_mask & ~handoff_resume_group_valid_mask;
+      continuation_candidate_mask & ~handoff_software_return_valid_mask;
   const unsigned raw_next_active_mask =
-      continuation_candidate_mask & handoff_resume_group_valid_mask;
+      continuation_candidate_mask & handoff_software_return_valid_mask;
   const bool shader_continuation_forced_no_resubmit =
       rtcore_shader_continuation_force_no_resubmit_enabled() &&
       raw_next_active_mask != 0;
@@ -9996,7 +9917,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
       m_sid, event->warp_uid, event->warp_id, issued_active_mask,
       packet_schema_version, completion_visible_mask, terminal_lane_mask,
       continuation_lane_mask, unsupported_reason_mask,
-      handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
+      handoff_software_return_valid_mask, next_active_mask, final_like_mask,
       missing_resume_handoff_mask, handoff_result_consume_mask,
       resume_handoff_publish_mask, pre_submit_guard_passed, current_cycle);
 
@@ -10033,7 +9954,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "dispatcher_reason_synthetic_split_mask=0x%08x "
          "dispatcher_reason_final_mask=0x%08x "
          "dispatcher_reason_unsupported_mask=0x%08x "
-         "dispatcher_handoff_resume_group_valid_mask=0x%08x "
+         "dispatcher_handoff_software_return_valid_mask=0x%08x "
          "dispatcher_next_active_mask=0x%08x "
          "dispatcher_cohort_count=%u "
          "compatibility_target_resolution=deferred "
@@ -10045,7 +9966,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          reason_synthetic_split_mask,
          terminal_lane_mask,
          unsupported_reason_mask,
-         handoff_resume_group_valid_mask,
+         handoff_software_return_valid_mask,
          next_active_mask,
          dispatcher_cohort_count, current_cycle);
 
@@ -10123,7 +10044,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "packet_schema_version=%u completion_visible_mask=0x%08x "
          "terminal_lane_mask=0x%08x continuation_lane_mask=0x%08x "
          "unsupported_reason_mask=0x%08x "
-         "handoff_resume_group_valid_mask=0x%08x "
+         "handoff_software_return_valid_mask=0x%08x "
          "next_active_mask=0x%08x final_like_mask=0x%08x "
          "missing_resume_handoff_mask=0x%08x "
          "shader_continuation_handoff_consume_mask=0x%08x "
@@ -10136,7 +10057,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          m_sid, event->warp_uid, event->warp_id, issued_active_mask,
          packet_schema_version, completion_visible_mask, terminal_lane_mask,
          continuation_lane_mask, unsupported_reason_mask,
-         handoff_resume_group_valid_mask, next_active_mask, final_like_mask,
+         handoff_software_return_valid_mask, next_active_mask, final_like_mask,
          missing_resume_handoff_mask, handoff_result_consume_mask,
          resume_handoff_publish_mask, masked_off_lane_consume_mask,
          shader_continuation_forced_no_resubmit ? 1u : 0u,
@@ -11143,14 +11064,14 @@ void rt_unit::cycle() {
 	                reason_synthetic_split_mask;
 	            const unsigned target_selector_ready_mask =
 	                target_reason_mask &
-	                candidate_completion.handoff_dispatch_group_valid_mask &
-	                candidate_completion.handoff_hit_group_valid_mask;
+	                candidate_completion.handoff_selector_valid_mask &
+	                candidate_completion.handoff_candidate_valid_mask;
 	            const unsigned target_selector_missing_dispatch_mask =
 	                target_reason_mask &
-	                ~candidate_completion.handoff_dispatch_group_valid_mask;
+	                ~candidate_completion.handoff_selector_valid_mask;
 	            const unsigned target_selector_missing_hit_mask =
 	                target_reason_mask &
-	                ~candidate_completion.handoff_hit_group_valid_mask;
+	                ~candidate_completion.handoff_candidate_valid_mask;
 	            const unsigned target_selector_fallback_reason_mask =
 	                target_reason_mask & ~target_selector_ready_mask;
 	            const unsigned target_selector_cohort_count =
@@ -11160,17 +11081,14 @@ void rt_unit::cycle() {
 	                    reason_oracle_intersection_mask,
 	                    reason_synthetic_split_mask);
 	            const unsigned raw_fact_ray_sbt_inputs_ready_mask =
-	                rtcore_shader_continuation_raw_fact_ready_mask(
-	                    candidate_completion, target_reason_mask,
-	                    RTCORE_HANDOFF_RAW_FACT_RAY_SBT_INPUTS_VALID);
+	                target_reason_mask &
+	                candidate_completion.handoff_selector_valid_mask;
 	            const unsigned raw_fact_geometry_primitive_ready_mask =
-	                rtcore_shader_continuation_raw_fact_ready_mask(
-	                    candidate_completion, target_reason_mask,
-	                    RTCORE_HANDOFF_RAW_FACT_HIT_GEOMETRY_SUMMARY_VALID);
+	                target_reason_mask &
+	                candidate_completion.handoff_candidate_valid_mask;
 	            const unsigned raw_fact_instance_sbt_contribution_ready_mask =
-	                rtcore_shader_continuation_raw_fact_ready_mask(
-	                    candidate_completion, target_reason_mask,
-	                    RTCORE_HANDOFF_RAW_FACT_INSTANCE_SBT_CONTRIBUTION_VALID);
+	                target_reason_mask &
+	                candidate_completion.handoff_selector_valid_mask;
 	            const unsigned raw_fact_hit_record_selector_formula_ready_mask =
 	                rtcore_shader_continuation_hit_record_selector_ready_mask(
 	                    candidate_completion, target_reason_mask);
@@ -11226,7 +11144,7 @@ void rt_unit::cycle() {
 	                candidate_completion.terminal_lane_mask,
 	                candidate_completion.continuation_lane_mask,
 	                candidate_completion.unsupported_reason_mask,
-	                candidate_completion.handoff_resume_group_valid_mask,
+	                candidate_completion.handoff_software_return_valid_mask,
 	                reason_oracle_anyhit_mask,
 	                reason_oracle_intersection_mask,
 	                reason_synthetic_split_mask,

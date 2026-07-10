@@ -28,6 +28,7 @@ typedef struct variable_decleration_entry{
 
 typedef struct Hit_data{
     VkGeometryTypeKHR geometryType;
+    uint32_t hit_kind;
     float world_min_thit;
     uint32_t geometry_index;
     uint32_t primitive_index;

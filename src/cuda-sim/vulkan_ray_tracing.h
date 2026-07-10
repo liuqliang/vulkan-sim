@@ -272,7 +272,9 @@ public:
     static IntersectionTableType intersectionTableType;
 
 private:
-    static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
+    static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2,
+                                     Ray ray_properties, float* thit,
+                                     bool* counter_clockwise_facing);
     static float3 Barycentric(float3 p, float3 a, float3 b, float3 c);
     static std::vector<shader_stage_info> shaders;
 
