@@ -293,6 +293,10 @@ public:
                        float Tmin,
                        float3 direction,
                        float Tmax,
+                       uint32_t context_layout_version,
+                       uint32_t context_valid_flags,
+                       uint32_t pipeline_profile_id,
+                       uint32_t bvh_format_profile_id,
                        int payload,
                        const ptx_instruction *pI,
                        ptx_thread_info *thread);

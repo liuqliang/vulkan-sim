@@ -93,6 +93,11 @@ struct rtcore_replay_warp_completion_entry_snapshot {
   unsigned result_data_slot[32];
   unsigned lane_status[32];
   unsigned packet_schema_version;
+  unsigned context_profile_valid_mask;
+  unsigned reported_attribute_metadata_valid_mask;
+  unsigned inline_payload_location_valid_mask;
+  unsigned inline_payload_base_word;
+  unsigned max_inline_attribute_words;
   unsigned lane_completion_valid_mask;
   unsigned terminal_lane_mask;
   unsigned continuation_lane_mask;
@@ -102,6 +107,10 @@ struct rtcore_replay_warp_completion_entry_snapshot {
   unsigned handoff_software_return_valid_mask;
   unsigned lane_completion_reason[32];
   unsigned lane_continuation_depth[32];
+  unsigned context_layout_version[32];
+  unsigned context_valid_flags[32];
+  unsigned pipeline_profile_id[32];
+  unsigned bvh_format_profile_id[32];
   unsigned handoff_words[32][32];
   bool scoreboard_handoff_ready;
   bool scoreboard_handoff_delivered;
@@ -160,6 +169,9 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask,
     rtcore_replay_warp_completion_entry_snapshot *snapshot);
+extern "C" bool rtcore_release_replay_warp_completion_entry(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask);
 extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask, unsigned packet_schema_version,
@@ -8717,11 +8729,233 @@ static unsigned rtcore_count_active_mask_lanes(unsigned active_mask) {
   return count;
 }
 
-static const unsigned RTCORE_SHADER_CONTINUATION_REASON_FINAL = 1;
-static const unsigned RTCORE_SHADER_CONTINUATION_REASON_ORACLE_ANYHIT = 2;
-static const unsigned RTCORE_SHADER_CONTINUATION_REASON_ORACLE_INTERSECTION = 3;
-static const unsigned RTCORE_SHADER_CONTINUATION_REASON_SYNTHETIC_SPLIT = 4;
-static const unsigned RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED = 15;
+static const unsigned RTCORE_REPLAY_COMPLETION_PACKET_SCHEMA_VERSION = 3;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_MISS = 1;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY = 2;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED = 3;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED =
+    4;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_TRACE_DONE_NO_SHADER =
+    5;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_FAULT = 6;
+static const unsigned RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED = 7;
+static const unsigned RTCORE_V03_CONTEXT_LAYOUT_VERSION = 1;
+static const unsigned RTCORE_V03_CONTEXT_TRACE_INPUT_VALID = 1;
+static const unsigned RTCORE_V03_PIPELINE_PROFILE_ID = 1;
+static const unsigned RTCORE_V03_BVH_FORMAT_PROFILE_ID = 1;
+static const unsigned RTCORE_V03_INLINE_PAYLOAD_BASE_WORD = 16;
+static const unsigned RTCORE_V03_MAX_INLINE_ATTRIBUTE_WORDS = 4;
+
+static void rtcore_set_completion_packet_failure_reason(
+    const char **failure_reason, const char *reason) {
+  if (failure_reason != NULL) {
+    *failure_reason = reason;
+  }
+}
+
+static bool rtcore_validate_replay_completion_packet(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned expected_owner_hw_sid, unsigned expected_warp_uid,
+    unsigned expected_warp_id, unsigned expected_active_mask,
+    const char **failure_reason) {
+  if (failure_reason != NULL) {
+    *failure_reason = NULL;
+  }
+  if (snapshot.owner_hw_sid != expected_owner_hw_sid ||
+      snapshot.warp_uid != expected_warp_uid ||
+      snapshot.warp_id != expected_warp_id ||
+      snapshot.active_mask != expected_active_mask) {
+    rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                "packet_key_mismatch");
+    return false;
+  }
+  if (snapshot.packet_schema_version !=
+      RTCORE_REPLAY_COMPLETION_PACKET_SCHEMA_VERSION) {
+    rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                "packet_schema_mismatch");
+    return false;
+  }
+  if (expected_active_mask == 0 ||
+      snapshot.lane_completion_valid_mask != expected_active_mask ||
+      snapshot.completed_lane_mask != expected_active_mask ||
+      snapshot.result_valid_mask != expected_active_mask ||
+      snapshot.admitted_lane_mask != expected_active_mask) {
+    rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                "packet_completion_mask");
+    return false;
+  }
+  if ((snapshot.terminal_lane_mask & snapshot.continuation_lane_mask) != 0 ||
+      (snapshot.terminal_lane_mask | snapshot.continuation_lane_mask) !=
+          expected_active_mask ||
+      snapshot.unsupported_reason_mask != 0) {
+    rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                "packet_reason_masks");
+    return false;
+  }
+  if (snapshot.context_profile_valid_mask != expected_active_mask) {
+    rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                "packet_profile_mask");
+    return false;
+  }
+  const unsigned packet_side_masks =
+      snapshot.handoff_selector_valid_mask |
+      snapshot.handoff_candidate_valid_mask |
+      snapshot.handoff_software_return_valid_mask |
+      snapshot.reported_attribute_metadata_valid_mask |
+      snapshot.inline_payload_location_valid_mask;
+  if ((packet_side_masks & ~expected_active_mask) != 0 ||
+      (snapshot.inline_payload_location_valid_mask &
+       ~snapshot.reported_attribute_metadata_valid_mask) != 0 ||
+      snapshot.inline_payload_base_word !=
+          RTCORE_V03_INLINE_PAYLOAD_BASE_WORD ||
+      snapshot.max_inline_attribute_words !=
+          RTCORE_V03_MAX_INLINE_ATTRIBUTE_WORDS) {
+    rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                "packet_handoff_masks");
+    return false;
+  }
+
+  unsigned selector_required_mask = 0;
+  unsigned candidate_required_mask = 0;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((expected_active_mask & lane_mask) == 0) {
+      continue;
+    }
+    const unsigned reason = snapshot.lane_completion_reason[lane];
+    if (reason == RTCORE_SHADER_CONTINUATION_REASON_MISS ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED) {
+      selector_required_mask |= lane_mask;
+    }
+    if (reason == RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED) {
+      candidate_required_mask |= lane_mask;
+    }
+  }
+  if (snapshot.handoff_selector_valid_mask != selector_required_mask ||
+      snapshot.handoff_candidate_valid_mask != candidate_required_mask) {
+    rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                "packet_dependent_facts");
+    return false;
+  }
+  if ((snapshot.handoff_software_return_valid_mask &
+       ~snapshot.continuation_lane_mask) != 0) {
+    rtcore_set_completion_packet_failure_reason(
+        failure_reason, "packet_software_return_mask");
+    return false;
+  }
+
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((expected_active_mask & lane_mask) == 0) {
+      continue;
+    }
+    const unsigned v_result = snapshot.result_data_slot[lane];
+    const unsigned reason = v_result & 0xffu;
+    if ((v_result & 0x80000000u) == 0 ||
+        (v_result & 0x7fffff00u) != 0 || reason == 0 || reason > 7 ||
+        snapshot.lane_completion_reason[lane] != reason) {
+      rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                  "packet_v_result");
+      return false;
+    }
+    if (snapshot.context_layout_version[lane] !=
+            RTCORE_V03_CONTEXT_LAYOUT_VERSION ||
+        (snapshot.context_valid_flags[lane] &
+         RTCORE_V03_CONTEXT_TRACE_INPUT_VALID) == 0 ||
+        (snapshot.context_valid_flags[lane] & ~0x07u) != 0 ||
+        snapshot.pipeline_profile_id[lane] !=
+            RTCORE_V03_PIPELINE_PROFILE_ID ||
+        snapshot.bvh_format_profile_id[lane] !=
+            RTCORE_V03_BVH_FORMAT_PROFILE_ID) {
+      rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                  "packet_context_profile");
+      return false;
+    }
+
+    const bool terminal_reason =
+        reason == RTCORE_SHADER_CONTINUATION_REASON_MISS ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_TRACE_DONE_NO_SHADER;
+    const bool continuation_reason =
+        reason == RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED;
+    if ((terminal_reason !=
+         ((snapshot.terminal_lane_mask & lane_mask) != 0)) ||
+        (continuation_reason !=
+         ((snapshot.continuation_lane_mask & lane_mask) != 0)) ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_FAULT ||
+        reason == RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED) {
+      rtcore_set_completion_packet_failure_reason(failure_reason,
+                                                  "packet_reason_class");
+      return false;
+    }
+    if ((snapshot.reported_attribute_metadata_valid_mask & lane_mask) != 0) {
+      const unsigned metadata = snapshot.handoff_words[lane][15];
+      const unsigned word_count = (metadata >> 8) & 0xffu;
+      const unsigned base_word = (metadata >> 16) & 0xffu;
+      const unsigned format = (metadata >> 24) & 0xffu;
+      if (reason != RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED ||
+          (snapshot.handoff_software_return_valid_mask & lane_mask) == 0 ||
+          word_count == 0 ||
+          word_count > snapshot.max_inline_attribute_words ||
+          base_word != snapshot.inline_payload_base_word || format != 2 ||
+          (snapshot.inline_payload_location_valid_mask & lane_mask) == 0) {
+        rtcore_set_completion_packet_failure_reason(
+            failure_reason, "packet_reported_attribute_metadata");
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static void rtcore_apply_replay_completion_packet_test_corruption(
+    rtcore_replay_warp_completion_entry_snapshot *snapshot) {
+  const char *mode = getenv("VULKAN_SIM_RTCORE_TEST_PACKET_CORRUPTION");
+  if (snapshot == NULL || mode == NULL || *mode == '\0') {
+    return;
+  }
+  unsigned active_lane = 0;
+  while (active_lane < 32 &&
+         (snapshot->active_mask & (1u << active_lane)) == 0) {
+    active_lane++;
+  }
+  if (strcmp(mode, "key") == 0) {
+    snapshot->warp_uid++;
+  } else if (strcmp(mode, "mask") == 0) {
+    snapshot->lane_completion_valid_mask ^=
+        active_lane < 32 ? (1u << active_lane) : 1u;
+  } else if (strcmp(mode, "schema") == 0) {
+    snapshot->packet_schema_version = 0;
+  } else if (strcmp(mode, "layout") == 0) {
+    if (active_lane < 32) {
+      snapshot->context_layout_version[active_lane] = 0;
+    }
+  } else if (strcmp(mode, "profile") == 0) {
+    if (active_lane < 32) {
+      snapshot->pipeline_profile_id[active_lane] = 0;
+    }
+  } else if (strcmp(mode, "reason") == 0) {
+    if (active_lane < 32) {
+      snapshot->result_data_slot[active_lane] = 0x80000000u | 0xffu;
+    }
+  } else if (strcmp(mode, "software_return") == 0) {
+    unsigned terminal_lane = active_lane;
+    for (unsigned lane = 0; lane < 32; ++lane) {
+      if ((snapshot->terminal_lane_mask & (1u << lane)) != 0) {
+        terminal_lane = lane;
+        break;
+      }
+    }
+    if (terminal_lane < 32) {
+      snapshot->handoff_software_return_valid_mask |= 1u << terminal_lane;
+    }
+  }
+}
 
 static unsigned rtcore_shader_continuation_reason_mask(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
@@ -10197,6 +10431,13 @@ bool rt_unit::synthetic_completion_ready(
 void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {
   if (inst.rt_subop == RT_CORE_SUBOP_SUBMIT) {
     rtcore_record_warp_completion_entry_retire(inst);
+    std::map<unsigned, rtcore_synthetic_completion_event>::const_iterator event =
+        m_synthetic_warp_completion_entries.find(inst.get_uid());
+    if (event != m_synthetic_warp_completion_entries.end()) {
+      rtcore_release_replay_warp_completion_entry(
+          m_sid, inst.get_uid(), inst.warp_id(),
+          event->second.issued_active_mask);
+    }
     m_synthetic_warp_completion_entries.erase(inst.get_uid());
   }
 }
@@ -11005,6 +11246,27 @@ void rt_unit::cycle() {
       rtcore_query_replay_warp_completion_entry(m_sid, it->second.get_uid(),
           it->second.warp_id(), candidate_issued_active_mask,
           &candidate_completion);
+      if (candidate_completion.enabled && candidate_completion.found &&
+          candidate_completion.all_active_lanes_complete) {
+        rtcore_apply_replay_completion_packet_test_corruption(
+            &candidate_completion);
+        const char *packet_failure_reason = NULL;
+        if (!rtcore_validate_replay_completion_packet(
+                candidate_completion, m_sid, it->second.get_uid(),
+                it->second.warp_id(), candidate_issued_active_mask,
+                &packet_failure_reason)) {
+          fprintf(stderr,
+                  "GPGPU-Sim RTCORE_REPLAY_COMPLETION_PACKET_INVALID "
+                  "reason=%s owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                  "active_mask=0x%08x\n",
+                  packet_failure_reason != NULL ? packet_failure_reason
+                                                : "unknown",
+                  m_sid, it->second.get_uid(), it->second.warp_id(),
+                  candidate_issued_active_mask);
+          fflush(stderr);
+          abort();
+        }
+      }
     }
     const bool completion_ready_but_scoreboard_blocked =
         synthetic_submit_release_candidate &&
@@ -11081,15 +11343,12 @@ void rt_unit::cycle() {
 	            const unsigned reason_oracle_anyhit_mask =
 	                rtcore_shader_continuation_reason_mask(
 	                    candidate_completion,
-	                    RTCORE_SHADER_CONTINUATION_REASON_ORACLE_ANYHIT);
+	                    RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED);
 	            const unsigned reason_oracle_intersection_mask =
 	                rtcore_shader_continuation_reason_mask(
 	                    candidate_completion,
-	                    RTCORE_SHADER_CONTINUATION_REASON_ORACLE_INTERSECTION);
-	            const unsigned reason_synthetic_split_mask =
-	                rtcore_shader_continuation_reason_mask(
-	                    candidate_completion,
-	                    RTCORE_SHADER_CONTINUATION_REASON_SYNTHETIC_SPLIT);
+	                    RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED);
+	            const unsigned reason_synthetic_split_mask = 0;
 	            const unsigned target_reason_mask =
 	                reason_oracle_anyhit_mask |
 	                reason_oracle_intersection_mask |

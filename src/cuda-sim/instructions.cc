@@ -8205,6 +8205,10 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                    Tmin,
                    ray_direction,
                    Tmax,
+                   0,
+                   0,
+                   0,
+                   0,
                    NULL,
                    pI,
                    thread);
@@ -8461,9 +8465,6 @@ struct rtcore_pending_traversal_completion {
         handoff_window_base(0),
         result_word(0),
         window_generation(0),
-        completion_seq_low(0),
-        resume_seq_low(0),
-        window_tag(0),
         reason(0),
         provider_backend_input_pending_completion_annotation() {
     memset(&traversal_snapshot, 0, sizeof(traversal_snapshot));
@@ -8481,9 +8482,6 @@ struct rtcore_pending_traversal_completion {
   unsigned long long handoff_window_base;
   unsigned result_word;
   unsigned window_generation;
-  unsigned completion_seq_low;
-  unsigned resume_seq_low;
-  unsigned window_tag;
   unsigned reason;
   Traversal_data traversal_snapshot;
   rtcore_traversal_completion_provider_backend_input_annotation
@@ -11132,15 +11130,6 @@ unsigned rtcore_peek_next_synthetic_window_generation(
 void rtcore_commit_synthetic_window_generation(
     const rtcore_synthetic_handoff_key &key, unsigned window_generation) {
   g_rtcore_synthetic_window_generations[key] = window_generation;
-}
-
-unsigned rtcore_synthetic_completion_seq_for_generation(
-    unsigned generation) {
-  return generation & 0xffffu;
-}
-
-unsigned rtcore_synthetic_window_tag_for_generation(unsigned generation) {
-  return generation & 0xffu;
 }
 
 unsigned rtcore_resource_env_u32(const char *name, unsigned fallback) {
@@ -19744,13 +19733,23 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
     return false;
   }
 
+  rtcore_v03_compact_context_decoded packet_context;
+  if (!rtcore_decode_v03_compact_context_image(
+          pI, thread, request.context_ptr, &packet_context)) {
+    if (failure_reason != NULL) {
+      *failure_reason = "compact_context_packet_profile_decode_failed";
+    }
+    return false;
+  }
   VulkanRayTracing::traceRay(
       trace_ray_arguments.top_level_as, trace_ray_arguments.ray_flags,
       trace_ray_arguments.cull_mask, trace_ray_arguments.sbt_record_offset,
       trace_ray_arguments.sbt_record_stride, trace_ray_arguments.miss_index,
       trace_ray_arguments.ray_origin, trace_ray_arguments.ray_tmin,
-      trace_ray_arguments.ray_direction, trace_ray_arguments.ray_tmax, NULL,
-      pI, thread);
+      trace_ray_arguments.ray_direction, trace_ray_arguments.ray_tmax,
+      packet_context.context_layout_version, packet_context.valid_flags,
+      packet_context.pipeline_profile_id, packet_context.bvh_format_profile_id,
+      NULL, pI, thread);
 
   const size_t traversal_stack_depth_after_materialize =
       thread->RT_thread_data->traversal_data.size();
@@ -21073,10 +21072,7 @@ struct rtcore_context_window_owner_seq_snapshot {
         context_ptr(0),
         handoff_window_base(0),
         lane_slot_index(0),
-        window_generation(0),
-        completion_seq_low(0),
-        resume_seq_low(0),
-        window_tag(0) {}
+        window_generation(0) {}
 
   bool valid;
   unsigned long long context_ptr;
@@ -21084,9 +21080,6 @@ struct rtcore_context_window_owner_seq_snapshot {
   unsigned lane_slot_index;
   ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
   unsigned window_generation;
-  unsigned completion_seq_low;
-  unsigned resume_seq_low;
-  unsigned window_tag;
 };
 
 static rtcore_context_window_owner_seq_snapshot
@@ -21094,8 +21087,7 @@ rtcore_make_context_window_owner_seq_snapshot(
     unsigned long long context_ptr, unsigned long long handoff_window_base,
     unsigned lane_slot_index,
     const ptx_thread_info::rtcore_current_warp_metadata &warp_metadata,
-    unsigned window_generation, unsigned completion_seq_low,
-    unsigned resume_seq_low, unsigned window_tag) {
+    unsigned window_generation) {
   rtcore_context_window_owner_seq_snapshot snapshot;
   snapshot.valid = warp_metadata.valid;
   snapshot.context_ptr = context_ptr;
@@ -21103,9 +21095,6 @@ rtcore_make_context_window_owner_seq_snapshot(
   snapshot.lane_slot_index = lane_slot_index;
   snapshot.warp_metadata = warp_metadata;
   snapshot.window_generation = window_generation;
-  snapshot.completion_seq_low = completion_seq_low;
-  snapshot.resume_seq_low = resume_seq_low;
-  snapshot.window_tag = window_tag;
   return snapshot;
 }
 
@@ -21136,9 +21125,6 @@ struct rtcore_driver_runtime_context_window_lifetime_bridge_snapshot {
         capacity_lane_slots(0),
         owner_generation(0),
         window_generation(0),
-        completion_seq_low(0),
-        resume_seq_low(0),
-        window_tag(0),
         token_owner_hw_sid(0),
         token_owner_hw_wid(0),
         token_owner_hw_tid(0),
@@ -21171,9 +21157,6 @@ struct rtcore_driver_runtime_context_window_lifetime_bridge_snapshot {
   unsigned capacity_lane_slots;
   unsigned owner_generation;
   unsigned window_generation;
-  unsigned completion_seq_low;
-  unsigned resume_seq_low;
-  unsigned window_tag;
   unsigned token_owner_hw_sid;
   unsigned token_owner_hw_wid;
   unsigned token_owner_hw_tid;
@@ -21266,9 +21249,6 @@ rtcore_make_driver_runtime_context_window_lifetime_bridge_snapshot(
   snapshot.capacity_lane_slots = allocation_record.capacity_lane_slots;
   snapshot.owner_generation = allocation_record.owner_generation;
   snapshot.window_generation = owner_seq_snapshot.window_generation;
-  snapshot.completion_seq_low = owner_seq_snapshot.completion_seq_low;
-  snapshot.resume_seq_low = owner_seq_snapshot.resume_seq_low;
-  snapshot.window_tag = owner_seq_snapshot.window_tag;
   snapshot.token_owner_hw_sid = token_key.owner_hw_sid;
   snapshot.token_owner_hw_wid = token_key.owner_hw_wid;
   snapshot.token_owner_hw_tid = token_key.owner_hw_tid;
@@ -21353,7 +21333,6 @@ static void rtcore_log_driver_runtime_context_window_lifetime_bridge_snapshot(
          "context_base=0x%llx, handoff_base=0x%llx, "
          "context_window_index=%llu, handoff_window_index=%llu, "
          "owner_generation=%u, window_generation=%u, "
-         "completion_seq_low=%u, resume_seq_low=%u, window_tag=%u, "
          "token_owner_hw_sid=%u, token_owner_hw_wid=%u, "
          "token_owner_hw_tid=%u, token_lane_slot_index=%u, "
          "active_lane_mask=0x%08x, capacity_lane_slots=%u, "
@@ -21377,8 +21356,7 @@ static void rtcore_log_driver_runtime_context_window_lifetime_bridge_snapshot(
          snapshot.context_base, snapshot.handoff_base,
          snapshot.context_window_index, snapshot.handoff_window_index,
          snapshot.owner_generation, snapshot.window_generation,
-         snapshot.completion_seq_low, snapshot.resume_seq_low,
-         snapshot.window_tag, snapshot.token_owner_hw_sid,
+         snapshot.token_owner_hw_sid,
          snapshot.token_owner_hw_wid, snapshot.token_owner_hw_tid,
          snapshot.token_lane_slot_index, snapshot.active_lane_mask,
          snapshot.capacity_lane_slots,
@@ -21474,9 +21452,6 @@ struct rtcore_input_provenance_registry_key {
         handoff_window_base(0),
         lane_slot_index(0),
         window_generation(0),
-        completion_seq_low(0),
-        resume_seq_low(0),
-        window_tag(0),
         owner_hw_sid(0),
         active_mask(0),
         static_inst_uid(0) {}
@@ -21485,9 +21460,6 @@ struct rtcore_input_provenance_registry_key {
   unsigned long long handoff_window_base;
   unsigned lane_slot_index;
   unsigned window_generation;
-  unsigned completion_seq_low;
-  unsigned resume_seq_low;
-  unsigned window_tag;
   unsigned owner_hw_sid;
   unsigned active_mask;
   unsigned static_inst_uid;
@@ -21558,9 +21530,6 @@ rtcore_make_input_provenance_registry_key(
   key.handoff_window_base = request.handoff_window_base;
   key.lane_slot_index = request.lane_slot_index;
   key.window_generation = owner_seq_snapshot.window_generation;
-  key.completion_seq_low = owner_seq_snapshot.completion_seq_low;
-  key.resume_seq_low = owner_seq_snapshot.resume_seq_low;
-  key.window_tag = owner_seq_snapshot.window_tag;
   key.owner_hw_sid = owner_seq_snapshot.warp_metadata.owner_hw_sid;
   key.active_mask = owner_seq_snapshot.warp_metadata.active_mask;
   key.static_inst_uid = owner_seq_snapshot.warp_metadata.static_inst_uid;
@@ -21620,9 +21589,6 @@ static bool rtcore_input_provenance_registry_keys_match(
          expected.handoff_window_base == observed.handoff_window_base &&
          expected.lane_slot_index == observed.lane_slot_index &&
          expected.window_generation == observed.window_generation &&
-         expected.completion_seq_low == observed.completion_seq_low &&
-         expected.resume_seq_low == observed.resume_seq_low &&
-         expected.window_tag == observed.window_tag &&
          expected.owner_hw_sid == observed.owner_hw_sid &&
          expected.active_mask == observed.active_mask &&
          expected.static_inst_uid == observed.static_inst_uid;
@@ -30488,9 +30454,6 @@ struct rtcore_traversal_completion_event {
         handoff_window_base(0),
         lane_slot_index(0),
         window_generation(0),
-        completion_seq_low(0),
-        resume_seq_low(0),
-        window_tag(0),
         reason(0),
         result_word(0),
         provider_backend_input_completion_event_annotation(),
@@ -30517,9 +30480,6 @@ struct rtcore_traversal_completion_event {
   unsigned long long handoff_window_base;
   unsigned lane_slot_index;
   unsigned window_generation;
-  unsigned completion_seq_low;
-  unsigned resume_seq_low;
-  unsigned window_tag;
   unsigned reason;
   unsigned result_word;
   rtcore_traversal_completion_provider_backend_input_annotation
@@ -30865,9 +30825,6 @@ rtcore_make_pending_traversal_completion_from_event(
   record.handoff_window_base = event.handoff_window_base;
   record.result_word = event.result_word;
   record.window_generation = event.window_generation;
-  record.completion_seq_low = event.completion_seq_low;
-  record.resume_seq_low = event.resume_seq_low;
-  record.window_tag = event.window_tag;
   record.reason = event.reason;
   record.traversal_snapshot = event.traversal_snapshot;
   rtcore_copy_completion_backend_input_annotation_to_pending(&record, event);
@@ -30989,7 +30946,7 @@ static bool rtcore_enqueue_pending_traversal_completion(
          "static_inst_uid=%u, lane_slot_index=%u, "
          "lane_thread_mask=0x%08x, context_ptr=0x%llx, "
          "handoff_window_base=0x%llx, result=0x%08x, "
-         "completion_seq=%u, resume_seq=%u, window_tag=%u, reason=%u, "
+         "reason=%u, "
          "delayed-completion-provider-backend-input-annotation=1, "
          "provider_backend_input_pending_completion_annotation_valid=%u, "
          "provider_payload_consumption_enabled=%u, "
@@ -31017,8 +30974,7 @@ static bool rtcore_enqueue_pending_traversal_completion(
          record.active_mask, record.static_inst_uid,
          record.lane_slot_index, record.lane_thread_mask,
          record.context_ptr, record.handoff_window_base,
-         record.result_word, record.completion_seq_low,
-         record.resume_seq_low, record.window_tag, record.reason,
+         record.result_word, record.reason,
          backend_input_annotation.valid ? 1 : 0,
          backend_input_annotation.provider_payload_consumption_enabled ? 1 : 0,
          backend_input_annotation.backend_input_snapshot_required ? 1 : 0,
@@ -31109,15 +31065,9 @@ bool rtcore_build_traversal_completion_event(
       event->warp_metadata, context_ptr, handoff_window_base);
   event->window_generation =
       rtcore_peek_next_synthetic_window_generation(event->handoff_key);
-  event->completion_seq_low =
-      rtcore_synthetic_completion_seq_for_generation(event->window_generation);
-  event->resume_seq_low = 0;
-  event->window_tag =
-      rtcore_synthetic_window_tag_for_generation(event->window_generation);
   event->owner_seq_snapshot = rtcore_make_context_window_owner_seq_snapshot(
       event->context_ptr, event->handoff_window_base, event->lane_slot_index,
-      event->warp_metadata, event->window_generation,
-      event->completion_seq_low, event->resume_seq_low, event->window_tag);
+      event->warp_metadata, event->window_generation);
   event->driver_runtime_context_window_lifetime_bridge_snapshot =
       rtcore_make_driver_runtime_context_window_lifetime_bridge_snapshot(
           allocation_record, lifetime_record, event->owner_seq_snapshot,
