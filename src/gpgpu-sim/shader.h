@@ -409,6 +409,9 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   virtual void do_on_warp_issued(
       unsigned warp_id, unsigned num_issued,
       const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
+  virtual void do_on_continuation_pseudo_op_issued(
+      unsigned warp_id, unsigned num_issued,
+      const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
   inline int get_sid() const;
 
  protected:
@@ -546,6 +549,9 @@ class two_level_active_scheduler : public scheduler_unit {
 
  protected:
   virtual void do_on_warp_issued(
+      unsigned warp_id, unsigned num_issued,
+      const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
+  virtual void do_on_continuation_pseudo_op_issued(
       unsigned warp_id, unsigned num_issued,
       const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
 
