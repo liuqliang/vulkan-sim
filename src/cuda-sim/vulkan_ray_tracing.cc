@@ -404,6 +404,26 @@ struct rtcore_compact_trace_event {
     uint16_t packed_count_bytes;
 };
 
+struct rtcore_boundary_candidate_snapshot {
+    rtcore_boundary_candidate_snapshot()
+        : valid(0), event_seq(0), shader_counter(0), hit_data_ref(0),
+          hit_group_index(0), geometry_type(0), geometry_index(0),
+          primitive_index(0), instance_index(0), hit_kind(0)
+    {
+    }
+
+    unsigned valid;
+    unsigned event_seq;
+    unsigned shader_counter;
+    uint64_t hit_data_ref;
+    unsigned hit_group_index;
+    unsigned geometry_type;
+    unsigned geometry_index;
+    unsigned primitive_index;
+    unsigned instance_index;
+    unsigned hit_kind;
+};
+
 static_assert(sizeof(rtcore_compact_trace_event) <=
                   RTCORE_COMPACT_TRACE_EVENT_TARGET_BYTES,
               "rtcore_compact_trace_event must stay within the compact target");
@@ -446,6 +466,7 @@ struct rtcore_compact_trace_export_record {
     bool instance_sbt_contribution_valid;
     unsigned instance_sbt_contribution;
     std::vector<rtcore_compact_trace_event> events;
+    std::vector<rtcore_boundary_candidate_snapshot> boundary_candidates;
 };
 
 static std::map<unsigned, rtcore_compact_trace_export_record>
@@ -488,6 +509,7 @@ struct rtcore_replay_lane_request {
     unsigned closest_hit_instance_index;
     bool instance_sbt_contribution_valid;
     unsigned instance_sbt_contribution;
+    rtcore_boundary_candidate_snapshot boundary_candidate;
     bool continuation_boundary_pending;
     unsigned continuation_depth;
     unsigned continuation_segment_event_count;
@@ -537,6 +559,7 @@ struct rtcore_replay_lane_request {
     unsigned long long unit_latency_armed_cycle;
     unsigned long long unit_latency_ready_cycle;
     std::vector<rtcore_compact_trace_event> events;
+    std::vector<rtcore_boundary_candidate_snapshot> boundary_candidates;
 };
 
 static std::map<unsigned, rtcore_replay_lane_request>
@@ -602,6 +625,7 @@ struct rtcore_continuation_return_packet {
             context_valid_flags[lane] = 0;
             pipeline_profile_id[lane] = 0;
             bvh_format_profile_id[lane] = 0;
+            boundary_candidates[lane] = rtcore_boundary_candidate_snapshot();
             for (unsigned word = 0; word < 32; ++word) {
                 handoff_words[lane][word] = 0;
             }
@@ -640,6 +664,7 @@ struct rtcore_continuation_return_packet {
     unsigned context_valid_flags[32];
     unsigned pipeline_profile_id[32];
     unsigned bvh_format_profile_id[32];
+    rtcore_boundary_candidate_snapshot boundary_candidates[32];
     unsigned handoff_words[32][32];
 };
 
@@ -653,6 +678,9 @@ struct rtcore_continuation_warp_boundary_state {
           reason_synthetic_split_mask(0), reason_final_mask(0),
           reason_unsupported_mask(0)
     {
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            boundary_candidates[lane] = rtcore_boundary_candidate_snapshot();
+        }
     }
 
     bool valid;
@@ -671,6 +699,7 @@ struct rtcore_continuation_warp_boundary_state {
     unsigned reason_synthetic_split_mask;
     unsigned reason_final_mask;
     unsigned reason_unsupported_mask;
+    rtcore_boundary_candidate_snapshot boundary_candidates[32];
 };
 
 struct rtcore_resident_warp_continuation_state {
@@ -721,6 +750,7 @@ struct rtcore_replay_warp_completion_entry_state {
     unsigned context_valid_flags[32];
     unsigned pipeline_profile_id[32];
     unsigned bvh_format_profile_id[32];
+    rtcore_boundary_candidate_snapshot boundary_candidates[32];
     unsigned handoff_words[32][32];
     bool all_active_lanes_complete;
     bool all_active_lanes_complete_logged;
@@ -763,6 +793,7 @@ struct rtcore_replay_warp_completion_entry_snapshot {
     unsigned context_valid_flags[32];
     unsigned pipeline_profile_id[32];
     unsigned bvh_format_profile_id[32];
+    rtcore_boundary_candidate_snapshot boundary_candidates[32];
     unsigned handoff_words[32][32];
     bool scoreboard_handoff_ready;
     bool scoreboard_handoff_delivered;
@@ -2434,6 +2465,7 @@ struct rtcore_bounded_trace_collector {
     unsigned oracle_anyhit_candidate_count;
     bool oracle_requires_intersection_shader;
     std::vector<rtcore_compact_trace_event> events;
+    std::vector<rtcore_boundary_candidate_snapshot> boundary_candidates;
 
     explicit rtcore_bounded_trace_collector(ptx_thread_info *thread)
         : enabled(rtcore_bounded_trace_collection_enabled()),
@@ -2558,18 +2590,18 @@ struct rtcore_bounded_trace_collector {
         }
     }
 
-    void append(rtcore_compact_trace_event_type event_type,
-                rtcore_compact_trace_resource_class resource_class,
-                uint64_t address_or_ref, unsigned bytes, unsigned count,
-                unsigned flags)
+    unsigned append(rtcore_compact_trace_event_type event_type,
+                    rtcore_compact_trace_resource_class resource_class,
+                    uint64_t address_or_ref, unsigned bytes, unsigned count,
+                    unsigned flags)
     {
         if (!enabled) {
-            return;
+            return UINT_MAX;
         }
         if (events.size() >= max_trace_events_per_lane) {
             record_overflow_event(event_type, resource_class, bytes, count);
             append_or_update_overflow_summary();
-            return;
+            return UINT_MAX;
         }
 
         rtcore_compact_trace_event event = {};
@@ -2581,6 +2613,7 @@ struct rtcore_bounded_trace_collector {
         event.packed_count_bytes =
             rtcore_pack_compact_trace_count_bytes(count, bytes);
         events.push_back(event);
+        return event.event_seq;
     }
 
     void append_node_fetch(uint64_t address, unsigned bytes, unsigned flags)
@@ -2624,19 +2657,41 @@ struct rtcore_bounded_trace_collector {
                RTCORE_TRACE_RESOURCE_PRIMITIVE, address, bytes, 1, flags);
     }
 
-    void append_primitive_test(uint64_t address_or_ref, bool hit,
-                               unsigned flags)
+    unsigned append_primitive_test(uint64_t address_or_ref, bool hit,
+                                   unsigned flags)
     {
-        append(RTCORE_TRACE_PRIMITIVE_TEST,
-               RTCORE_TRACE_RESOURCE_PRIMITIVE, address_or_ref, 0, 1,
-               flags | (hit ? 0x10u : 0u));
+        return append(RTCORE_TRACE_PRIMITIVE_TEST,
+                      RTCORE_TRACE_RESOURCE_PRIMITIVE, address_or_ref, 0, 1,
+                      flags | (hit ? 0x10u : 0u));
     }
 
-    void append_hit_update(uint64_t address_or_ref, unsigned hit_count,
-                           unsigned flags)
+    unsigned append_hit_update(uint64_t address_or_ref, unsigned hit_count,
+                               unsigned flags)
     {
-        append(RTCORE_TRACE_HIT_UPDATE, RTCORE_TRACE_RESOURCE_COMPLETION,
-               address_or_ref, 0, hit_count, flags);
+        return append(RTCORE_TRACE_HIT_UPDATE,
+                      RTCORE_TRACE_RESOURCE_COMPLETION, address_or_ref, 0,
+                      hit_count, flags);
+    }
+
+    void record_boundary_candidate(
+        unsigned event_seq, unsigned shader_counter, uint64_t hit_data_ref,
+        unsigned hit_group_index, unsigned geometry_type,
+        unsigned geometry_index, unsigned primitive_index,
+        unsigned instance_index, unsigned hit_kind)
+    {
+        if (event_seq == UINT_MAX) return;
+        rtcore_boundary_candidate_snapshot snapshot;
+        snapshot.valid = 1;
+        snapshot.event_seq = event_seq;
+        snapshot.shader_counter = shader_counter;
+        snapshot.hit_data_ref = hit_data_ref;
+        snapshot.hit_group_index = hit_group_index;
+        snapshot.geometry_type = geometry_type;
+        snapshot.geometry_index = geometry_index;
+        snapshot.primitive_index = primitive_index;
+        snapshot.instance_index = instance_index;
+        snapshot.hit_kind = hit_kind;
+        boundary_candidates.push_back(snapshot);
     }
 
     void append_completion_summary(unsigned node_events,
@@ -2679,6 +2734,7 @@ struct rtcore_bounded_trace_collector {
             oracle_requires_intersection_shader;
         if (enabled) {
             record.events = events;
+            record.boundary_candidates = boundary_candidates;
         }
         return record;
     }
@@ -2806,6 +2862,7 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.overflow_summary = record.overflow_summary;
     request.state = RTCORE_REPLAY_COMPLETED;
     request.events = record.events;
+    request.boundary_candidates = record.boundary_candidates;
 
     for (unsigned i = 0; i < request.events.size(); ++i) {
         rtcore_compact_trace_event_type event_type =
@@ -3867,6 +3924,7 @@ static void rtcore_mark_continuation_reason_mask(
 
 static void rtcore_materialize_replay_continuation_packet_handoff_words(
     const rtcore_replay_lane_request &request,
+    const rtcore_boundary_candidate_snapshot *boundary_candidate,
     rtcore_replay_continuation_packet_lane_fact *fact)
 {
     if (fact == NULL) {
@@ -3881,22 +3939,38 @@ static void rtcore_materialize_replay_continuation_packet_handoff_words(
                               : request.miss_index;
     fact->handoff_words[2] =
         fact->candidate_valid ? request.sbt_record_stride : 0u;
-    fact->handoff_words[3] =
-        fact->candidate_valid && request.instance_sbt_contribution_valid
-            ? request.instance_sbt_contribution
-            : 0u;
+    const bool boundary_candidate_valid =
+        boundary_candidate != NULL && boundary_candidate->valid;
+    fact->handoff_words[3] = fact->candidate_valid
+                                 ? (boundary_candidate_valid
+                                        ? boundary_candidate->hit_group_index
+                                        : request.instance_sbt_contribution)
+                                 : 0u;
     fact->handoff_words[4] =
-        fact->candidate_valid ? request.closest_hit_geometry_index : 0u;
+        fact->candidate_valid
+            ? (boundary_candidate_valid ? boundary_candidate->geometry_index
+                                        : request.closest_hit_geometry_index)
+            : 0u;
     if (fact->candidate_valid) {
-        const bool procedural = request.oracle_requires_intersection_shader;
+        const bool procedural = boundary_candidate_valid
+                                    ? boundary_candidate->geometry_type == 0x02u
+                                    : request.oracle_requires_intersection_shader;
         const unsigned geometry_type = procedural ? 0x02u : 0x01u;
-        const unsigned hit_kind = procedural ? 0u : request.closest_hit_kind;
+        const unsigned hit_kind = boundary_candidate_valid
+                                      ? boundary_candidate->hit_kind
+                                      : (procedural ? 0u
+                                                    : request.closest_hit_kind);
         const unsigned candidate_ref_kind = procedural ? 0x02u : 0x01u;
-        fact->handoff_words[6] = request.closest_hit_primitive_index;
-        fact->handoff_words[7] = request.closest_hit_instance_index;
+        const unsigned primitive_index =
+            boundary_candidate_valid ? boundary_candidate->primitive_index
+                                     : request.closest_hit_primitive_index;
+        fact->handoff_words[6] = primitive_index;
+        fact->handoff_words[7] = boundary_candidate_valid
+                                     ? boundary_candidate->instance_index
+                                     : request.closest_hit_instance_index;
         fact->handoff_words[9] = hit_kind | (geometry_type << 8);
         fact->handoff_words[11] =
-            (request.closest_hit_primitive_index & 0x00ffffffu) |
+            (primitive_index & 0x00ffffffu) |
             (candidate_ref_kind << 24) | (0x02u << 28);
     }
 }
@@ -3943,8 +4017,8 @@ rtcore_make_replay_continuation_packet_lane_fact(
     fact.context_valid_flags = request.context_valid_flags;
     fact.pipeline_profile_id = request.pipeline_profile_id;
     fact.bvh_format_profile_id = request.bvh_format_profile_id;
-    rtcore_materialize_replay_continuation_packet_handoff_words(request,
-                                                                &fact);
+    rtcore_materialize_replay_continuation_packet_handoff_words(
+        request, NULL, &fact);
     return fact;
 }
 
@@ -3987,7 +4061,8 @@ static void rtcore_populate_continuation_packet_handoff_summaries(
                 packet_fact.handoff_words[13] = 0x04u;
                 packet_fact.handoff_words[14] = 0x3f000000u;
                 packet_fact.handoff_words[15] =
-                    (request.closest_hit_kind & 0xffu) | (1u << 8) |
+                    (state.boundary_candidates[lane].hit_kind & 0xffu) |
+                    (1u << 8) |
                     (16u << 16) | (2u << 24);
                 packet_fact.handoff_words[16] = 0x3e800000u;
             }
@@ -4008,16 +4083,26 @@ static void rtcore_populate_continuation_packet_handoff_summaries(
                 RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED ||
             packet_fact.reason ==
                 RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED;
+        const rtcore_boundary_candidate_snapshot &boundary_candidate =
+            state.boundary_candidates[lane];
+        const bool shader_continuation_reason =
+            packet_fact.reason ==
+                RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED ||
+            packet_fact.reason ==
+                RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED;
         const bool candidate_available =
             request.valid &&
-            (request.hit_geometry_summary_valid ||
-             request.oracle_anyhit_candidate_count != 0 ||
-             request.oracle_requires_intersection_shader);
+            (shader_continuation_reason
+                 ? boundary_candidate.valid != 0
+                 : request.hit_geometry_summary_valid);
         packet_fact.selector_valid =
             selector_required && request.valid && request.ray_sbt_inputs_valid;
         packet_fact.candidate_valid = candidate_required && candidate_available;
         rtcore_materialize_replay_continuation_packet_handoff_words(
-            request, &packet_fact);
+            request,
+            shader_continuation_reason ? &boundary_candidate : NULL,
+            &packet_fact);
+        packet->boundary_candidates[lane] = boundary_candidate;
         packet_fact.v_result = 0x80000000u | packet_fact.reason;
         packet->v_result[lane] = packet_fact.v_result;
         packet->context_layout_version[lane] =
@@ -4345,6 +4430,7 @@ static bool rtcore_publish_scoreboard_visible_continuation_packet(
         state.pipeline_profile_id[lane] = packet.pipeline_profile_id[lane];
         state.bvh_format_profile_id[lane] =
             packet.bvh_format_profile_id[lane];
+        state.boundary_candidates[lane] = packet.boundary_candidates[lane];
         for (unsigned word = 0; word < 32; ++word) {
             state.handoff_words[lane][word] =
                 packet.handoff_words[lane][word];
@@ -7230,9 +7316,26 @@ static void rtcore_record_continuation_boundary_reason(
     }
 }
 
+static bool rtcore_find_boundary_candidate_snapshot(
+    const rtcore_replay_lane_request &request, unsigned event_index,
+    rtcore_boundary_candidate_snapshot *snapshot)
+{
+    if (event_index >= request.events.size()) return false;
+    const unsigned event_seq = request.events[event_index].event_seq;
+    for (std::vector<rtcore_boundary_candidate_snapshot>::const_iterator it =
+             request.boundary_candidates.begin();
+         it != request.boundary_candidates.end(); ++it) {
+        if (it->valid && it->event_seq == event_seq) {
+            if (snapshot) *snapshot = *it;
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool rtcore_mark_continuation_boundary(
     rtcore_replay_lane_request *request, unsigned long long service_cycle,
-    const char *boundary_reason)
+    const char *boundary_reason, unsigned boundary_event_index)
 {
     if (!request || !request->valid || request->continuation_boundary_pending ||
         !rtcore_continuation_request_has_warp_metadata(*request)) {
@@ -7262,6 +7365,22 @@ static bool rtcore_mark_continuation_boundary(
     state.resume_required_mask |= lane_mask;
     state.shader_required_mask |= lane_mask;
     rtcore_mark_continuation_reason_mask(&state, lane_mask, boundary_reason);
+    const bool shader_boundary =
+        boundary_reason != NULL &&
+        (strcmp(boundary_reason, "oracle_anyhit") == 0 ||
+         strcmp(boundary_reason, "oracle_intersection") == 0);
+    if (shader_boundary &&
+        !rtcore_find_boundary_candidate_snapshot(
+            *request, boundary_event_index, &request->boundary_candidate)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_CONTINUATION_BOUNDARY_CANDIDATE_FAULT "
+                "owner_hw_sid=%u thread_uid=%u lane_id=%u "
+                "boundary_event_index=%u fault=event_local_candidate_missing\n",
+                request->owner_hw_sid, request->thread_uid, request->lane_id,
+                boundary_event_index);
+        abort();
+    }
+    state.boundary_candidates[request->lane_id] = request->boundary_candidate;
     rtcore_record_continuation_boundary_reason(boundary_reason);
     const bool packet_ready =
         (state.boundary_reached_mask & state.active_mask) ==
@@ -7273,14 +7392,21 @@ static bool rtcore_mark_continuation_boundary(
            "terminal_mask=0x%08x resume_required_mask=0x%08x "
            "shader_required_mask=0x%08x continuation_depth=%u "
            "next_event_index=%u segment_event_count=%u packet_ready=%u "
-           "boundary_reason=%s service_cycle=%llu\n",
+           "boundary_reason=%s boundary_candidate_snapshot_valid=%u "
+           "boundary_event_seq=%u boundary_shader_counter=%u "
+           "boundary_hit_data_ref=0x%llx service_cycle=%llu\n",
            request->owner_hw_sid, request->thread_uid, request->lane_id,
            request->warp_uid, request->warp_id, state.active_mask,
            state.boundary_reached_mask, state.terminal_mask,
            state.resume_required_mask, state.shader_required_mask,
            state.continuation_depth, request->next_event_index,
            request->continuation_segment_event_count, packet_ready ? 1u : 0u,
-           boundary_reason ? boundary_reason : "unknown", service_cycle);
+           boundary_reason ? boundary_reason : "unknown",
+           request->boundary_candidate.valid,
+           request->boundary_candidate.event_seq,
+           request->boundary_candidate.shader_counter,
+           (unsigned long long)request->boundary_candidate.hit_data_ref,
+           service_cycle);
     fflush(stdout);
 
     if (packet_ready) {
@@ -7312,7 +7438,7 @@ static bool rtcore_maybe_mark_synthetic_continuation_boundary(
     }
 
     return rtcore_mark_continuation_boundary(request, service_cycle,
-                                             "synthetic_split");
+                                             "synthetic_split", UINT_MAX);
 }
 
 static const char *rtcore_oracle_shader_boundary_reason_for_event(
@@ -7378,7 +7504,8 @@ static bool rtcore_maybe_mark_oracle_shader_continuation_boundary(
         return false;
     }
 
-    return rtcore_mark_continuation_boundary(request, service_cycle, reason);
+    return rtcore_mark_continuation_boundary(request, service_cycle, reason,
+                                             consumed_event_index);
 }
 
 static bool rtcore_replay_advance_lane_request(
@@ -9631,6 +9758,8 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
                     it->second.pipeline_profile_id[lane];
                 local_snapshot.bvh_format_profile_id[lane] =
                     it->second.bvh_format_profile_id[lane];
+                local_snapshot.boundary_candidates[lane] =
+                    it->second.boundary_candidates[lane];
                 for (unsigned word = 0; word < 32; ++word) {
                     local_snapshot.handoff_words[lane][word] =
                         it->second.handoff_words[lane][word];
@@ -10671,7 +10800,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 warp_intersection_table* table = anyhit_table[thread->get_ctaid().x][thread->get_ctaid().y];
                                 
                                 uint32_t hit_group_index = instanceLeaf.InstanceContributionToHitGroupIndex;
-                                auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex0, instanceLeaf.InstanceID, pI, thread); // TODO: switch these to device addresses
+                                uint32_t boundary_shader_counter = UINT_MAX;
+                                auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex0, instanceLeaf.InstanceID, pI, thread, &boundary_shader_counter); // TODO: switch these to device addresses
 
                                 for(auto & newTransaction : intersectionTransactions.first)
                                 {
@@ -10735,11 +10865,20 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 thread->RT_thread_data->all_hit_data.push_back(device_hit_attributes);
 
                                 traversal_data.n_all_hits++;
-                                rtcore_compact_trace.append_hit_update(
+                                const unsigned boundary_event_seq =
+                                    rtcore_compact_trace.append_hit_update(
                                     (uint64_t)device_hit_attributes,
                                     traversal_data.n_all_hits,
                                     rtcore_trace_hit_update_flags(
                                         RTCORE_TRACE_HIT_UPDATE_KIND_ANY_HIT));
+                                rtcore_compact_trace.record_boundary_candidate(
+                                    boundary_event_seq,
+                                    boundary_shader_counter,
+                                    (uint64_t)device_hit_attributes,
+                                    hit_group_index, 1,
+                                    leaf.LeafDescriptor.GeometryIndex,
+                                    leaf.PrimitiveIndex0, instanceLeaf.InstanceID,
+                                    triangle_hit_kind);
                             }
 
                             if(terminateOnFirstHit)
@@ -10788,12 +10927,19 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             hit_group_index;
 
                         warp_intersection_table* table = intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
-                        auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex[0], instanceLeaf.InstanceID, pI, thread); // TODO: switch these to device addresses
-                        rtcore_compact_trace.append_primitive_test(
+                        uint32_t boundary_shader_counter = UINT_MAX;
+                        auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex[0], instanceLeaf.InstanceID, pI, thread, &boundary_shader_counter); // TODO: switch these to device addresses
+                        const unsigned boundary_event_seq =
+                            rtcore_compact_trace.append_primitive_test(
                             (uint64_t)leaf_addr + device_offset, true,
                             rtcore_trace_primitive_flags(
                                 RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED,
                                 true, true));
+                        rtcore_compact_trace.record_boundary_candidate(
+                            boundary_event_seq, boundary_shader_counter, 0,
+                            hit_group_index, 2,
+                            leaf.LeafDescriptor.GeometryIndex,
+                            leaf.PrimitiveIndex[0], instanceLeaf.InstanceID, 0);
                         
                         // transactions.insert(transactions.end(), intersectionTransactions.first.begin(), intersectionTransactions.first.end());
                         for(auto & newTransaction : intersectionTransactions.first)
@@ -11725,6 +11871,140 @@ function_info *VulkanRayTracing::rtcoreResolveCompatibilityShaderFunction(
 extern "C" function_info *rtcore_resolve_compatibility_shader_function(
     unsigned shaderID) {
     return VulkanRayTracing::rtcoreResolveCompatibilityShaderFunction(shaderID);
+}
+
+int VulkanRayTracing::rtcoreCompatibilityShaderTargetKind(unsigned shader_id,
+                                                           unsigned reason) {
+    if (shader_id == VK_SHADER_UNUSED_KHR) {
+        return 0;
+    }
+    if (shader_id >= VulkanRayTracing::shaders.size()) {
+        return -1;
+    }
+    const gl_shader_stage expected_stage =
+        reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED
+            ? MESA_SHADER_INTERSECTION
+            : (reason ==
+                       RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED
+                   ? MESA_SHADER_ANY_HIT
+                   : MESA_SHADER_NONE);
+    if (expected_stage == MESA_SHADER_NONE ||
+        VulkanRayTracing::shaders[shader_id].type != expected_stage) {
+        return -1;
+    }
+    return 1;
+}
+
+extern "C" int rtcore_compatibility_shader_target_kind(unsigned shader_id,
+                                                         unsigned reason) {
+    return VulkanRayTracing::rtcoreCompatibilityShaderTargetKind(shader_id,
+                                                                  reason);
+}
+
+extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
+    const ptx_instruction *pI, ptx_thread_info *thread, unsigned reason,
+    unsigned hit_record_selector, unsigned boundary_event_seq,
+    unsigned boundary_shader_counter,
+    unsigned long long boundary_hit_data_ref,
+    unsigned boundary_hit_group_index, unsigned boundary_geometry_type,
+    unsigned boundary_geometry_index, unsigned primitive_index,
+    unsigned instance_index, unsigned hit_kind) {
+    if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
+        thread->RT_thread_data->traversal_data.empty()) {
+        return 0;
+    }
+
+    const bool intersection =
+        reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED;
+    const bool anyhit =
+        reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED;
+    if (!intersection && !anyhit) return 0;
+
+    const uint32_t tid = thread->get_tid().x;
+    const uint32_t cta_x = thread->get_ctaid().x;
+    const uint32_t cta_y = thread->get_ctaid().y;
+    warp_intersection_table *table =
+        intersection ? VulkanRayTracing::intersection_table[cta_x][cta_y]
+                     : VulkanRayTracing::anyhit_table[cta_x][cta_y];
+    const uint32_t shader_counter = boundary_shader_counter;
+    const bool table_identity_valid =
+        table != NULL && shader_counter < INTERSECTION_TABLE_MAX_LENGTH &&
+        table->shader_exists(tid, shader_counter, pI, thread) &&
+        table->get_hitGroupIndex(shader_counter, tid, pI, thread) ==
+            boundary_hit_group_index &&
+        table->get_primitiveID(shader_counter, tid, pI, thread) ==
+            primitive_index &&
+        table->get_instanceID(shader_counter, tid, pI, thread) ==
+            instance_index;
+    if (!table_identity_valid) {
+        fprintf(stderr,
+                "GPGPU-Sim "
+                "RTCORE_SHADER_CONTINUATION_COMPAT_CONTEXT_FAULT "
+                "lane_id=%u reason=%u hit_record_selector=%u "
+                "boundary_event_seq=%u boundary_shader_counter=%u "
+                "boundary_hit_group_index=%u primitive_index=%u "
+                "instance_index=%u hit_kind=%u "
+                "fault=event_local_table_identity_mismatch\n",
+                tid, reason, hit_record_selector, boundary_event_seq,
+                shader_counter, boundary_hit_group_index, primitive_index,
+                instance_index, hit_kind);
+        fflush(stderr);
+        return 0;
+    }
+
+    Traversal_data *traversal_data =
+        thread->RT_thread_data->traversal_data.back();
+    memory_space *mem = thread->get_global_memory();
+    const int32_t current_shader_counter =
+        static_cast<int32_t>(shader_counter);
+    const int32_t current_shader_type = intersection ? 1 : 2;
+    mem->write(&(traversal_data->current_shader_counter),
+               sizeof(traversal_data->current_shader_counter),
+               &current_shader_counter, thread, pI);
+    mem->write(&(traversal_data->current_shader_type),
+               sizeof(traversal_data->current_shader_type),
+               &current_shader_type, thread, pI);
+
+    if (anyhit) {
+        if (shader_counter >= thread->RT_thread_data->all_hit_data.size() ||
+            boundary_hit_data_ref == 0 ||
+            reinterpret_cast<uint64_t>(
+                thread->RT_thread_data->all_hit_data[shader_counter]) !=
+                boundary_hit_data_ref) {
+            return 0;
+        }
+        Hit_data hit_attributes;
+        mem->read(reinterpret_cast<void *>(boundary_hit_data_ref),
+                  sizeof(hit_attributes), &hit_attributes);
+        if (boundary_geometry_type != 1 ||
+            hit_attributes.geometryType != VK_GEOMETRY_TYPE_TRIANGLES_KHR ||
+            hit_attributes.geometry_index != boundary_geometry_index ||
+            hit_attributes.primitive_index != primitive_index ||
+            hit_attributes.instance_index != instance_index ||
+            hit_attributes.hitGroupIndex != boundary_hit_group_index ||
+            hit_attributes.hit_kind != hit_kind) {
+            return 0;
+        }
+        thread->RT_thread_data->set_hitAttribute(
+            hit_attributes.barycentric_coordinates, pI, thread);
+    } else if (boundary_geometry_type != 2 || boundary_hit_data_ref != 0) {
+        return 0;
+    }
+
+    printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_COMPAT_CONTEXT_PREPARE "
+           "lane_id=%u reason=%u shader_counter=%u shader_type=%d "
+           "hit_record_selector=%u boundary_event_seq=%u "
+           "boundary_shader_counter=%u boundary_hit_data_ref=0x%llx "
+           "boundary_hit_group_index=%u boundary_geometry_type=%u "
+           "boundary_geometry_index=%u primitive_index=%u instance_index=%u "
+           "hit_kind=%u context_source=boundary_event_local_candidate\n",
+           tid, reason, shader_counter, current_shader_type,
+           hit_record_selector, boundary_event_seq, shader_counter,
+           boundary_hit_data_ref, boundary_hit_group_index,
+           boundary_geometry_type, boundary_geometry_index, primitive_index,
+           instance_index, hit_kind);
+    fflush(stdout);
+    return 1;
 }
 
 extern "C" int rtcore_call_compatibility_shader_function(

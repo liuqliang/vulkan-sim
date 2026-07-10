@@ -1860,6 +1860,7 @@ class simt_stack {
 
     void reset();
     void launch(address_type start_pc, const simt_mask_t &active_mask);
+    void push_call(address_type target_pc, const simt_mask_t &active_mask);
     void update(simt_mask_t &thread_done, addr_vector_t &next_pc, address_type recvg_pc, op_type next_inst_op, unsigned next_inst_size, address_type next_inst_pc, bool predicated);
 
     const simt_mask_t &get_active_mask() const;

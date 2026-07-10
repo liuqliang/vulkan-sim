@@ -329,6 +329,8 @@ public:
                       uint32_t launch_depth,
                       uint64_t launch_size_addr);
     static function_info* rtcoreResolveCompatibilityShaderFunction(uint32_t shaderID);
+    static int rtcoreCompatibilityShaderTargetKind(uint32_t shaderID,
+                                                   unsigned reason);
     static bool rtcoreLoadCompatibilitySbtShaderId(
         const void *base, uint64_t stride, uint64_t size,
         uint32_t record_index, uint32_t component_index,

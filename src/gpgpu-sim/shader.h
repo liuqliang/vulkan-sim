@@ -3088,6 +3088,10 @@ class shader_core_ctx : public core_t {
   kernel_info_t *get_kernel() { return m_kernel; }
   unsigned get_sid() const { return m_sid; }
   unsigned get_tpc() const { return m_tpc; }
+  bool rtcore_launch_shader_continuation_cohort(
+      unsigned warp_id, unsigned cohort_lane_mask,
+      function_info *target_func, unsigned *return_pc,
+      unsigned *return_rpc);
 
   // used by functional simulation:
   // modifiers

@@ -55,7 +55,8 @@ public:
     // virtual ~warp_intersection_table() {}
     virtual std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
             add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
-                            const ptx_instruction *pI, ptx_thread_info *thread) = 0;
+                            const ptx_instruction *pI, ptx_thread_info *thread,
+                            uint32_t *shader_counter) = 0;
     
     virtual void clear(const ptx_instruction *pI, ptx_thread_info *thread) = 0;
     virtual bool shader_exists(uint32_t tid, uint32_t shader_counter, const ptx_instruction *pI, ptx_thread_info *thread) = 0;
@@ -95,7 +96,8 @@ public:
 
     std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
             add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
-                            const ptx_instruction *pI, ptx_thread_info *thread);
+                            const ptx_instruction *pI, ptx_thread_info *thread,
+                            uint32_t *shader_counter);
     void clear(const ptx_instruction *pI, ptx_thread_info *thread);
     bool shader_exists(uint32_t tid, uint32_t shader_counter, const ptx_instruction *pI, ptx_thread_info *thread);
     bool exit_shaders(uint32_t shader_counter, uint32_t tid);
@@ -129,7 +131,8 @@ public:
 
     std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
             add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
-                            const ptx_instruction *pI, ptx_thread_info *thread);
+                            const ptx_instruction *pI, ptx_thread_info *thread,
+                            uint32_t *shader_counter);
     bool shader_exists(uint32_t tid, uint32_t shader_counter, const ptx_instruction *pI, ptx_thread_info *thread);
     bool exit_shaders(uint32_t shader_counter, uint32_t tid);
     uint32_t get_primitiveID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);

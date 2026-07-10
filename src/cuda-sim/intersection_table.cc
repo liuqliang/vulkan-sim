@@ -42,11 +42,13 @@ Coalescing_warp_intersection_table::Coalescing_warp_intersection_table()
 
 std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
 Coalescing_warp_intersection_table::add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
-                                                    const ptx_instruction *pI, ptx_thread_info *thread)
+                                                    const ptx_instruction *pI, ptx_thread_info *thread,
+                                                    uint32_t *shader_counter)
 {
     memory_space *mem = thread->get_global_memory();
 
     assert(tid < 32);
+    assert(shader_counter != NULL);
     std::vector<MemoryTransactionRecord> loads;
     std::vector<MemoryStoreTransactionRecord> stores;
 
@@ -70,6 +72,7 @@ Coalescing_warp_intersection_table::add_intersection(uint32_t hit_group_index, u
 
                 stores.push_back(MemoryStoreTransactionRecord(&table[i].thread_mask[tid], 1, StoreTransactionType::Intersection_Table_Store));
                 stores.push_back(MemoryStoreTransactionRecord(&table[i].shader_data[tid], 8, StoreTransactionType::Intersection_Table_Store));
+                *shader_counter = i;
                 return std::make_pair(loads, stores);
             }
         }
@@ -86,6 +89,7 @@ Coalescing_warp_intersection_table::add_intersection(uint32_t hit_group_index, u
     stores.push_back(MemoryStoreTransactionRecord(&table[tableSize].shader_data[tid], 8, StoreTransactionType::Intersection_Table_Store));
 
 
+    *shader_counter = tableSize;
     tableSize++;
 
     // if(tableSize > maxTableSize)
@@ -101,8 +105,8 @@ Coalescing_warp_intersection_table::add_intersection(uint32_t hit_group_index, u
 void Coalescing_warp_intersection_table::clear(const ptx_instruction *pI, ptx_thread_info *thread) {
     memory_space *mem = thread->get_global_memory();
 
-    for (int i = 0; i < tableSize; i++) 
-        for(int j = 0; j < 32; i++) {
+    for (int i = 0; i < tableSize; i++)
+        for(int j = 0; j < 32; j++) {
             // table[i]->thread_mask[j] = false;
             bool thread_mask_tid = false;
             mem->write(&(table[i].thread_mask[j]), sizeof(bool), &thread_mask_tid, thread, pI);
@@ -164,16 +168,19 @@ Baseline_warp_intersection_table::Baseline_warp_intersection_table()
 
 std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> > 
 Baseline_warp_intersection_table::add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
-                                                    const ptx_instruction *pI, ptx_thread_info *thread)
+                                                    const ptx_instruction *pI, ptx_thread_info *thread,
+                                                    uint32_t *shader_counter)
 {
     assert(tid < 32);
     assert(index[tid] < INTERSECTION_TABLE_MAX_LENGTH);
+    assert(shader_counter != NULL);
 
     memory_space *mem = thread->get_global_memory();
 
     std::vector<MemoryTransactionRecord> loads;
     std::vector<MemoryStoreTransactionRecord> stores;
 
+    *shader_counter = index[tid];
     mem->write(&(table[index[tid]].hitGroupIndex[tid]), sizeof(uint32_t), &hit_group_index, thread, pI);
     mem->write(&(table[index[tid]].shader_data[tid].primitiveID), sizeof(uint32_t), &primitiveID, thread, pI);
     mem->write(&(table[index[tid]].shader_data[tid].instanceID), sizeof(uint32_t), &instanceID, thread, pI);
@@ -193,7 +200,8 @@ void Baseline_warp_intersection_table::clear(const ptx_instruction *pI, ptx_thre
 
 std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
 Baseline_warp_intersection_table::add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
-                                                    const ptx_instruction *pI, ptx_thread_info *thread);
+                                                    const ptx_instruction *pI, ptx_thread_info *thread,
+                                                    uint32_t *shader_counter);
 
 bool Baseline_warp_intersection_table::shader_exists(uint32_t tid, uint32_t shader_counter, const ptx_instruction *pI, ptx_thread_info *thread) {
     return shader_counter < index[tid];

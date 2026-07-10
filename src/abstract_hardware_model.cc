@@ -2792,6 +2792,22 @@ void simt_stack::launch(address_type start_pc, const simt_mask_t &active_mask) {
   m_stack.push_back(new_stack_entry);
 }
 
+void simt_stack::push_call(address_type target_pc,
+                           const simt_mask_t &active_mask) {
+  assert(!m_stack.empty());
+  assert(active_mask.any());
+  assert((active_mask & ~m_stack.back().m_active_mask).none());
+
+  simt_stack_entry call_entry;
+  call_entry.m_pc = target_pc;
+  call_entry.m_calldepth = m_stack.back().m_calldepth + 1;
+  call_entry.m_active_mask = active_mask;
+  call_entry.m_branch_div_cycle =
+      m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  call_entry.m_type = STACK_ENTRY_TYPE_CALL;
+  m_stack.push_back(call_entry);
+}
+
 void simt_stack::resume(char *fname) {
   reset();
 
