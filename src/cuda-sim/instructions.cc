@@ -8775,9 +8775,13 @@ namespace {
 
 const unsigned long long RTCORE_CONTEXT_ALIGNMENT = 64;
 const unsigned long long RTCORE_HANDOFF_WINDOW_ALIGNMENT = 128;
+const unsigned RTCORE_RETURN_FOR_MISS = 0x01;
 const unsigned RTCORE_RETURN_FOR_CLOSEST_HIT = 0x02;
-const unsigned RTCORE_RETURN_FOR_MISS = 0x03;
-const unsigned RTCORE_RETURN_FOR_MEMORY_FAULT = 0x04;
+const unsigned RTCORE_RETURN_FOR_ANY_HIT = 0x03;
+const unsigned RTCORE_RETURN_FOR_INTERSECTION = 0x04;
+const unsigned RTCORE_RETURN_FOR_TRACE_DONE = 0x05;
+const unsigned RTCORE_RETURN_FOR_MEMORY_FAULT = 0x06;
+const unsigned RTCORE_RETURN_FOR_UNSUPPORTED = 0x07;
 const unsigned RTCORE_COMPLETION_FLAG_TRACE_DONE = 1u << 3;
 const unsigned RTCORE_COMPLETION_FLAG_MEMORY_FAULT = 1u << 4;
 const unsigned RTCORE_COMPLETION_VALID = 1u << 31;
@@ -11958,10 +11962,10 @@ void rtcore_publish_synthetic_handoff_window(
   fflush(stdout);
 }
 
-bool rtcore_synthetic_result_lane_binding_matches(
+bool rtcore_synthetic_lane_binding_matches(
     const ptx_instruction *pI, const rtcore_synthetic_handoff_key &key,
     const rtcore_synthetic_handoff_header &header,
-    unsigned long long context_ptr, unsigned result_word) {
+    unsigned long long context_ptr) {
   const bool context_matches = header.context_ptr == context_ptr;
   const bool window_base_matches =
       header.handoff_window_base == key.handoff_window_base;
@@ -11971,28 +11975,27 @@ bool rtcore_synthetic_result_lane_binding_matches(
       header.lane_slot_base == rtcore_handoff_lane_slot_base(
                                    key.handoff_window_base,
                                    key.lane_slot_index);
-  const bool result_matches_header = header.w0 == result_word;
   const unsigned lane_thread_mask =
       rtcore_lane_thread_mask(key.lane_slot_index);
   const bool active_lane = (header.thread_mask & lane_thread_mask) != 0;
   const bool accepted =
       context_matches && window_base_matches && lane_slot_matches &&
-      lane_slot_base_matches && result_matches_header && active_lane;
+      lane_slot_base_matches && active_lane;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT result-lane-binding (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
-         "lane_slot_index=%u, lane_slot_base=0x%llx, result=0x%08x, "
+         "lane_slot_index=%u, lane_slot_base=0x%llx, "
          "context_match=%u, window_base_match=%u, lane_slot_match=%u, "
-         "lane_slot_base_match=%u, result_match=%u, active_lane=%u, "
+         "lane_slot_base_match=%u, active_lane=%u, "
          "accepted=%u\n",
          pI->source_file(), pI->source_line(), context_ptr,
          key.handoff_window_base, key.lane_slot_index,
          rtcore_handoff_lane_slot_base(key.handoff_window_base,
                                        key.lane_slot_index),
-         result_word, context_matches ? 1 : 0,
+         context_matches ? 1 : 0,
          window_base_matches ? 1 : 0, lane_slot_matches ? 1 : 0,
-         lane_slot_base_matches ? 1 : 0, result_matches_header ? 1 : 0,
-         active_lane ? 1 : 0, accepted ? 1 : 0);
+         lane_slot_base_matches ? 1 : 0, active_lane ? 1 : 0,
+         accepted ? 1 : 0);
   fflush(stdout);
 
   return accepted;
@@ -12139,14 +12142,63 @@ void rtcore_rollback_symbolic_submit_after_result_write(
   fflush(stdout);
 }
 
-unsigned rtcore_compact_result(unsigned reason, unsigned flags,
-                               unsigned completion_seq_low,
-                               unsigned resume_seq_low,
-                               unsigned window_tag_low) {
-  return RTCORE_COMPLETION_VALID | (reason & 0xf) | ((flags & 0xff) << 4) |
-         ((completion_seq_low & 0xff) << 12) |
+bool rtcore_v03_return_reason_is_valid(unsigned reason) {
+  switch (reason) {
+    case RTCORE_RETURN_FOR_MISS:
+    case RTCORE_RETURN_FOR_CLOSEST_HIT:
+    case RTCORE_RETURN_FOR_ANY_HIT:
+    case RTCORE_RETURN_FOR_INTERSECTION:
+    case RTCORE_RETURN_FOR_TRACE_DONE:
+    case RTCORE_RETURN_FOR_MEMORY_FAULT:
+    case RTCORE_RETURN_FOR_UNSUPPORTED:
+      return true;
+    default:
+      return false;
+  }
+}
+
+unsigned rtcore_compact_result(unsigned reason) {
+  return RTCORE_COMPLETION_VALID | (reason & 0xff);
+}
+
+unsigned rtcore_legacy_handoff_group_header(
+    unsigned reason, unsigned flags, unsigned completion_seq_low,
+    unsigned resume_seq_low, unsigned window_tag_low) {
+  return RTCORE_WINDOW_GROUP_VALID | (reason & 0xf) |
+         ((flags & 0xff) << 4) | ((completion_seq_low & 0xff) << 12) |
          ((resume_seq_low & 0xff) << 20) |
          ((window_tag_low & 0x7) << 28);
+}
+
+unsigned rtcore_apply_test_compact_result_corruption(
+    const ptx_instruction *pI, unsigned result_word) {
+  const char *mode = getenv("VULKAN_SIM_RTCORE_TEST_V_RESULT_CORRUPTION");
+  if (mode == NULL || *mode == '\0' || strcmp(mode, "0") == 0) {
+    return result_word;
+  }
+
+  unsigned corrupted = result_word;
+  if (strcmp(mode, "reserved") == 0) {
+    corrupted |= 1u << 8;
+  } else if (strcmp(mode, "invalid") == 0) {
+    corrupted &= ~RTCORE_COMPLETION_VALID;
+  } else if (strcmp(mode, "unknown_reason") == 0) {
+    corrupted = (corrupted & ~0xffu) | 0x80u;
+  } else {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=INVALID_V_RESULT_CORRUPTION_MODE, mode=%s\n",
+           pI->source_file(), pI->source_line(), mode);
+    fflush(stdout);
+    inst_not_implemented(pI);
+    return result_word;
+  }
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT v-result-corruption (%s:%u), "
+         "v_result_profile=v03_compact, mode=%s, before=0x%08x, "
+         "after=0x%08x\n",
+         pI->source_file(), pI->source_line(), mode, result_word, corrupted);
+  fflush(stdout);
+  return corrupted;
 }
 
 void rtcore_log_v02_lsu_retire_side_observation(
@@ -12180,13 +12232,9 @@ void rtcore_log_v02_lsu_retire_side_observation(
       token->second.window_tag == window->window_tag;
   const unsigned window_reason =
       tracked_window && window != NULL ? ((window->w1 >> 8) & 0xff) : 0;
-  const unsigned window_flags =
-      tracked_window && window != NULL ? ((window->w1 >> 16) & 0xff) : 0;
   const unsigned expected_window_result =
       tracked_window && window != NULL
-          ? rtcore_compact_result(window_reason, window_flags,
-                                  window->completion_seq, window->resume_seq,
-                                  window->window_tag)
+          ? rtcore_compact_result(window_reason)
           : 0;
   const bool window_result_match =
       tracked_window && window != NULL &&
@@ -12239,7 +12287,7 @@ void rtcore_publish_synthetic_dependent_groups(
                   : traversal_data.missIndex;
 
   if (!memory_fault) {
-    header->w4 = rtcore_compact_result(
+    header->w4 = rtcore_legacy_handoff_group_header(
         reason, RTCORE_COMPLETION_FLAG_TRACE_DONE, completion_seq_low,
         resume_seq_low, window_tag_low);
     header->w5 = dispatch_selector;
@@ -12254,7 +12302,7 @@ void rtcore_publish_synthetic_dependent_groups(
   }
 
   if (closest_hit && traversal_data.hit_geometry) {
-    header->w8 = rtcore_compact_result(
+    header->w8 = rtcore_legacy_handoff_group_header(
         reason, RTCORE_COMPLETION_FLAG_TRACE_DONE, completion_seq_low,
         resume_seq_low, window_tag_low);
     header->w9 = (unsigned)traversal_data.closest_hit.geometryType;
@@ -12290,7 +12338,7 @@ void rtcore_publish_synthetic_dependent_groups(
   const bool fault_payload_omitted =
       rtcore_test_memory_fault_payload_omission_enabled();
   if (memory_fault && !fault_payload_omitted) {
-    header->w16 = rtcore_compact_result(
+    header->w16 = rtcore_legacy_handoff_group_header(
         reason, RTCORE_COMPLETION_FLAG_MEMORY_FAULT, completion_seq_low,
         resume_seq_low, window_tag_low);
     header->w17 = RTCORE_FAULT_PAYLOAD_MAGIC;
@@ -12394,12 +12442,20 @@ bool rtcore_submit_operands_are_valid(unsigned long long context_ptr,
 
 const char *rtcore_return_reason_name(unsigned reason) {
   switch (reason) {
-    case RTCORE_RETURN_FOR_CLOSEST_HIT:
-      return "closest_hit";
     case RTCORE_RETURN_FOR_MISS:
       return "miss";
+    case RTCORE_RETURN_FOR_CLOSEST_HIT:
+      return "closest_hit";
+    case RTCORE_RETURN_FOR_ANY_HIT:
+      return "any_hit_required";
+    case RTCORE_RETURN_FOR_INTERSECTION:
+      return "intersection_required";
+    case RTCORE_RETURN_FOR_TRACE_DONE:
+      return "trace_done_no_shader";
     case RTCORE_RETURN_FOR_MEMORY_FAULT:
-      return "memory_fault";
+      return "fault";
+    case RTCORE_RETURN_FOR_UNSUPPORTED:
+      return "unsupported";
     default:
       return "unknown";
   }
@@ -12532,6 +12588,27 @@ bool rtcore_software_lazy_load_synthetic_groups(
   return accepted;
 }
 
+bool rtcore_v03_compact_result_is_valid(
+    const ptx_instruction *pI, unsigned result_word) {
+  const bool completion_valid =
+      (result_word & RTCORE_COMPLETION_VALID) != 0;
+  const bool reserved_zero = (result_word & 0x7fffff00u) == 0;
+  const unsigned reason = result_word & 0xffu;
+  const bool reason_valid = rtcore_v03_return_reason_is_valid(reason);
+  const bool accepted = completion_valid && reserved_zero && reason_valid;
+
+  printf("GPGPU-Sim PTX: RT_SUBMIT v-result-validation (%s:%u), "
+         "v_result_profile=v03_compact, result=0x%08x, "
+         "completion_valid=%u, reserved_zero=%u, reason_valid=%u, "
+         "reason=%s, accepted=%u\n",
+         pI->source_file(), pI->source_line(), result_word,
+         completion_valid ? 1 : 0, reserved_zero ? 1 : 0,
+         reason_valid ? 1 : 0, rtcore_return_reason_name(reason),
+         accepted ? 1 : 0);
+  fflush(stdout);
+  return accepted;
+}
+
 bool rtcore_software_acquire_synthetic_completion(
     const ptx_instruction *pI, unsigned long long context_ptr,
     unsigned long long handoff_window_base, unsigned lane_slot_index,
@@ -12549,67 +12626,30 @@ bool rtcore_software_acquire_synthetic_completion(
       tracked_window &&
       rtcore_synthetic_owner_tuple_matches(*window, key, context_ptr, pI,
                                            thread);
-  const bool result_matches_w0 = tracked_window && window->w0 == result_word;
-  const bool completion_valid =
-      (result_word & RTCORE_COMPLETION_VALID) != 0 &&
-      tracked_window && (window->w0 & RTCORE_COMPLETION_VALID) != 0 &&
-      (window->w1 & 1u) != 0;
-
-  const unsigned result_reason = result_word & 0xf;
-  const unsigned window_reason =
-      tracked_window ? ((window->w1 >> 8) & 0xf) : 0;
-  const bool reason_matches =
-      tracked_window && result_reason == window_reason;
-
-  const unsigned result_flags = (result_word >> 4) & 0xff;
-  const unsigned window_flags =
-      tracked_window ? ((window->w1 >> 16) & 0xff) : 0;
-  const bool flags_matches = tracked_window && result_flags == window_flags;
-
-  const unsigned result_completion_seq_low = (result_word >> 12) & 0xff;
-  const unsigned window_completion_seq =
-      tracked_window ? (window->w2 & 0xffff) : 0;
-  const bool completion_seq_matches =
-      tracked_window &&
-      result_completion_seq_low == (window_completion_seq & 0xff);
-
-  const unsigned result_resume_seq_low = (result_word >> 20) & 0xff;
-  const unsigned window_resume_seq =
-      tracked_window ? ((window->w2 >> 16) & 0xffff) : 0;
-  const bool resume_seq_matches =
-      tracked_window && result_resume_seq_low == (window_resume_seq & 0xff);
-
-  const unsigned result_window_tag_low = (result_word >> 28) & 0x7;
-  const unsigned window_tag = tracked_window ? (window->w3 & 0x7) : 0;
-  const bool window_tag_matches =
-      tracked_window && result_window_tag_low == window_tag;
+  const bool compact_result_valid =
+      rtcore_v03_compact_result_is_valid(pI, result_word);
+  const unsigned result_reason = result_word & 0xffu;
   const bool dependent_groups_match =
-      tracked_window &&
+      compact_result_valid && tracked_window &&
       rtcore_software_lazy_load_synthetic_groups(
-          pI, *window, result_reason, result_completion_seq_low,
-          result_resume_seq_low, result_window_tag_low, lane_slot_index);
+          pI, *window, result_reason, window->completion_seq,
+          window->resume_seq, window->window_tag, lane_slot_index);
 
   const bool accepted =
       tracked_window && matching_context && owner_tuple_matches &&
-      result_matches_w0 && completion_valid && reason_matches &&
-      flags_matches && completion_seq_matches && resume_seq_matches &&
-      window_tag_matches && dependent_groups_match;
+      compact_result_valid && dependent_groups_match;
 
   printf("GPGPU-Sim PTX: RT_SUBMIT software-acquire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, result=0x%08x, tracked=%u, matching_context=%u, "
-         "owner_tuple_match=%u, w0_match=%u, valid=%u, reason_match=%u, "
-         "flags_match=%u, completion_seq_match=%u, resume_seq_match=%u, "
-         "tag_match=%u, dependent_groups_match=%u, accepted=%u, reason=%s\n",
+         "owner_tuple_match=%u, v_result_profile=v03_compact, "
+         "compact_result_valid=%u, dependent_groups_match=%u, accepted=%u, "
+         "reason=%s\n",
          pI->source_file(), pI->source_line(), context_ptr,
          handoff_window_base, lane_slot_index, result_word,
          tracked_window ? 1 : 0,
          matching_context ? 1 : 0, owner_tuple_matches ? 1 : 0,
-         result_matches_w0 ? 1 : 0,
-         completion_valid ? 1 : 0, reason_matches ? 1 : 0,
-         flags_matches ? 1 : 0, completion_seq_matches ? 1 : 0,
-         resume_seq_matches ? 1 : 0, window_tag_matches ? 1 : 0,
-         dependent_groups_match ? 1 : 0,
+         compact_result_valid ? 1 : 0, dependent_groups_match ? 1 : 0,
          accepted ? 1 : 0, rtcore_return_reason_name(result_reason));
   fflush(stdout);
   return accepted;
@@ -30566,9 +30606,8 @@ bool rtcore_build_traversal_completion_event(
   event->completion_flags =
       forced_memory_fault ? RTCORE_COMPLETION_FLAG_MEMORY_FAULT
                           : RTCORE_COMPLETION_FLAG_TRACE_DONE;
-  event->result_word = rtcore_compact_result(
-      event->reason, event->completion_flags, event->completion_seq_low,
-      event->resume_seq_low, event->window_tag);
+  event->result_word = rtcore_apply_test_compact_result_corruption(
+      pI, rtcore_compact_result(event->reason));
 
   memset(&event->header, 0, sizeof(event->header));
   event->header.context_ptr = event->context_ptr;
@@ -30591,9 +30630,8 @@ bool rtcore_build_traversal_completion_event(
       pI, event->traversal_snapshot, event->reason,
       event->completion_seq_low, event->resume_seq_low, event->window_tag,
       &event->header);
-  return rtcore_synthetic_result_lane_binding_matches(
-      pI, event->handoff_key, event->header, event->context_ptr,
-      event->result_word);
+  return rtcore_synthetic_lane_binding_matches(
+      pI, event->handoff_key, event->header, event->context_ptr);
 }
 
 bool rtcore_materialize_traversal_completion_lane_transaction(
