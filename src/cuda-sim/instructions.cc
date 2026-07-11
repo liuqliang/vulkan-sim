@@ -95,14 +95,6 @@ extern "C" bool rtcore_preflight_retire_resident_rt_warp_lane(
     unsigned long long handoff_window_base, unsigned token_id,
     unsigned token_allocator_generation, unsigned window_generation,
     const char **failure_reason);
-extern "C" bool rtcore_retire_resident_rt_warp_lane(
-    unsigned owner_hw_sid, unsigned warp_id, unsigned lane_id,
-    unsigned thread_uid, unsigned long long context_ptr,
-    unsigned long long handoff_window_base, unsigned token_id,
-    unsigned token_allocator_generation, unsigned window_generation,
-    bool external_resources_released, unsigned long long service_cycle,
-    unsigned *retired_lane_mask,
-    bool *resident_record_released, const char **failure_reason);
 
 const char *g_opcode_string[NUM_OPCODES] = {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) STR,
@@ -10689,6 +10681,17 @@ static void rtcore_log_launch_allocation_lifetime_submit(
   fflush(stdout);
 }
 
+static bool rtcore_preflight_launch_allocation_lifetime_retire(
+    const rtcore_runtime_context_window_allocation_record &allocation_record) {
+  if (!allocation_record.enabled || !allocation_record.valid) {
+    return false;
+  }
+  const rtcore_launch_allocation_lifetime_key key =
+      rtcore_make_launch_allocation_lifetime_key(allocation_record);
+  return g_rtcore_launch_allocation_lifetime_table.find(key) !=
+         g_rtcore_launch_allocation_lifetime_table.end();
+}
+
 static bool rtcore_mark_launch_allocation_lifetime_retire(
     const ptx_instruction *pI,
     const rtcore_runtime_context_window_allocation_record &allocation_record,
@@ -11084,6 +11087,43 @@ struct rtcore_symbolic_resubmit_lane_transaction {
   size_t handoff_slot_occupancy_before;
 };
 
+struct rtcore_symbolic_retire_lane_intent {
+  rtcore_symbolic_retire_lane_intent()
+      : valid(false), thread_uid(0), context_ptr(0), handoff_window_base(0),
+        token_id(0), token_allocator_generation(0), window_generation(0) {}
+
+  bool valid;
+  unsigned thread_uid;
+  unsigned long long context_ptr;
+  unsigned long long handoff_window_base;
+  unsigned token_id;
+  unsigned token_allocator_generation;
+  unsigned window_generation;
+  rtcore_synthetic_handoff_key handoff_key;
+  rtcore_symbolic_rt_token_key token_key;
+  rtcore_runtime_context_window_allocation_record allocation_record;
+};
+
+struct rtcore_symbolic_retire_transaction {
+  rtcore_symbolic_retire_transaction()
+      : valid(false), claimed(false), instruction(NULL), owner_hw_sid(0),
+        warp_uid(0), warp_id(0), static_inst_uid(0), active_mask(0),
+        seen_lane_mask(0), validated_lane_mask(0), claim_cycle(0) {}
+
+  bool valid;
+  bool claimed;
+  const ptx_instruction *instruction;
+  unsigned owner_hw_sid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned static_inst_uid;
+  unsigned active_mask;
+  unsigned seen_lane_mask;
+  unsigned validated_lane_mask;
+  unsigned long long claim_cycle;
+  rtcore_symbolic_retire_lane_intent lane[RTCORE_MAX_LANES_PER_WARP];
+};
+
 static std::map<rtcore_synthetic_handoff_key, rtcore_v03_handoff_lane_slot>
     g_rtcore_synthetic_handoff_windows;
 static std::map<rtcore_synthetic_handoff_key, unsigned>
@@ -11096,6 +11136,8 @@ static std::map<rtcore_symbolic_rt_token_reservation_key,
     g_rtcore_symbolic_rt_token_reservations;
 static std::map<unsigned, rtcore_symbolic_resubmit_lane_transaction>
     g_rtcore_symbolic_resubmit_lane_transactions;
+static std::map<unsigned, rtcore_symbolic_retire_transaction>
+    g_rtcore_symbolic_retire_transactions;
 static rtcore_symbolic_rt_token_allocator_state
     g_rtcore_symbolic_rt_token_allocator = {1, 1, 0, 0};
 unsigned g_rtcore_next_symbolic_rt_token_id = 1;
@@ -32066,6 +32108,256 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       allocation_record, lifetime_record);
 }
 
+static bool rtcore_publish_symbolic_retire_intent(
+    const ptx_instruction *pI,
+    const ptx_thread_info::rtcore_current_warp_metadata &metadata,
+    unsigned lane_slot_index, unsigned thread_uid,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    const rtcore_synthetic_handoff_key &handoff_key,
+    const rtcore_symbolic_rt_token_key &token_key,
+    const rtcore_runtime_context_window_allocation_record &allocation_record,
+    unsigned token_id, unsigned token_allocator_generation,
+    unsigned window_generation, const char **failure_reason) {
+  const char *reason = "accepted";
+  const unsigned lane_mask =
+      lane_slot_index < RTCORE_MAX_LANES_PER_WARP
+          ? 1u << lane_slot_index
+          : 0;
+  if (lane_mask == 0 || (metadata.active_mask & lane_mask) == 0) {
+    reason = "RETIRE_INTENT_LANE_NOT_ACTIVE";
+  }
+
+  rtcore_symbolic_retire_transaction &transaction =
+      g_rtcore_symbolic_retire_transactions[metadata.warp_uid];
+  if (!transaction.valid && strcmp(reason, "accepted") == 0) {
+    transaction.valid = true;
+    transaction.instruction = pI;
+    transaction.owner_hw_sid = metadata.owner_hw_sid;
+    transaction.warp_uid = metadata.warp_uid;
+    transaction.warp_id = metadata.warp_id;
+    transaction.static_inst_uid = metadata.static_inst_uid;
+  } else if (transaction.valid &&
+             (transaction.claimed ||
+              transaction.owner_hw_sid != metadata.owner_hw_sid ||
+              transaction.warp_uid != metadata.warp_uid ||
+              transaction.warp_id != metadata.warp_id ||
+              transaction.static_inst_uid != metadata.static_inst_uid)) {
+    reason = "RETIRE_INTENT_TRANSACTION_IDENTITY_MISMATCH";
+  }
+  if (strcmp(reason, "accepted") == 0 &&
+      (transaction.seen_lane_mask & lane_mask) != 0) {
+    reason = "RETIRE_INTENT_DUPLICATE_LANE";
+  }
+
+  if (strcmp(reason, "accepted") == 0) {
+    rtcore_symbolic_retire_lane_intent &intent =
+        transaction.lane[lane_slot_index];
+    intent.valid = true;
+    intent.thread_uid = thread_uid;
+    intent.context_ptr = context_ptr;
+    intent.handoff_window_base = handoff_window_base;
+    intent.token_id = token_id;
+    intent.token_allocator_generation = token_allocator_generation;
+    intent.window_generation = window_generation;
+    intent.handoff_key = handoff_key;
+    intent.token_key = token_key;
+    intent.allocation_record = allocation_record;
+    transaction.seen_lane_mask |= lane_mask;
+    transaction.validated_lane_mask |= lane_mask;
+    printf("GPGPU-Sim RTCORE_RETIRE_INTENT_PUBLISH "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+           "active_mask=0x%08x seen_lane_mask=0x%08x "
+           "validated_lane_mask=0x%08x resource_release_deferred=1\n",
+           metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
+           lane_slot_index, metadata.active_mask,
+           transaction.seen_lane_mask, transaction.validated_lane_mask);
+    fflush(stdout);
+  } else if (!transaction.valid || transaction.seen_lane_mask == 0) {
+    g_rtcore_symbolic_retire_transactions.erase(metadata.warp_uid);
+  }
+  if (failure_reason) {
+    *failure_reason = reason;
+  }
+  return strcmp(reason, "accepted") == 0;
+}
+
+extern "C" bool rtcore_claim_symbolic_retire_transaction(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned long long claim_cycle,
+    const char **failure_reason) {
+  const char *reason = "accepted";
+  std::map<unsigned, rtcore_symbolic_retire_transaction>::iterator it =
+      g_rtcore_symbolic_retire_transactions.find(warp_uid);
+  if (it == g_rtcore_symbolic_retire_transactions.end() ||
+      !it->second.valid) {
+    reason = "RETIRE_INTENT_TRANSACTION_MISSING";
+  }
+  rtcore_symbolic_retire_transaction *transaction =
+      strcmp(reason, "accepted") == 0 ? &it->second : NULL;
+  if (transaction &&
+      (transaction->claimed || transaction->owner_hw_sid != owner_hw_sid ||
+       transaction->warp_id != warp_id || active_mask == 0)) {
+    reason = "RETIRE_INTENT_CLAIM_IDENTITY_MISMATCH";
+  }
+  if (transaction && strcmp(reason, "accepted") == 0 &&
+      (transaction->seen_lane_mask != active_mask ||
+       transaction->validated_lane_mask != active_mask)) {
+    reason = "RETIRE_INTENT_WHOLE_MASK_INCOMPLETE";
+  }
+  if (transaction && strcmp(reason, "accepted") == 0) {
+    transaction->active_mask = active_mask;
+    transaction->claimed = true;
+    transaction->claim_cycle = claim_cycle;
+    printf("GPGPU-Sim RTCORE_RETIRE_INTENT_CLAIM "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x seen_lane_mask=0x%08x "
+           "validated_lane_mask=0x%08x claim_cycle=%llu\n",
+           owner_hw_sid, warp_uid, warp_id, active_mask,
+           transaction->seen_lane_mask, transaction->validated_lane_mask,
+           claim_cycle);
+    fflush(stdout);
+  }
+  if (failure_reason) {
+    *failure_reason = reason;
+  }
+  return strcmp(reason, "accepted") == 0;
+}
+
+extern "C" bool rtcore_commit_symbolic_retire_transaction(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned long long commit_cycle,
+    unsigned *released_lane_mask, const char **failure_reason) {
+  const char *reason = "accepted";
+  std::map<unsigned, rtcore_symbolic_retire_transaction>::iterator it =
+      g_rtcore_symbolic_retire_transactions.find(warp_uid);
+  if (it == g_rtcore_symbolic_retire_transactions.end() ||
+      !it->second.valid || !it->second.claimed) {
+    reason = "RETIRE_INTENT_TRANSACTION_NOT_CLAIMED";
+  }
+  rtcore_symbolic_retire_transaction *transaction =
+      strcmp(reason, "accepted") == 0 ? &it->second : NULL;
+  if (transaction &&
+      (transaction->owner_hw_sid != owner_hw_sid ||
+       transaction->warp_id != warp_id ||
+       transaction->active_mask != active_mask ||
+       transaction->seen_lane_mask != active_mask ||
+       transaction->validated_lane_mask != active_mask)) {
+    reason = "RETIRE_INTENT_COMMIT_IDENTITY_MISMATCH";
+  }
+
+  if (transaction && strcmp(reason, "accepted") == 0) {
+    for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+      const unsigned lane_mask = 1u << lane;
+      if ((active_mask & lane_mask) == 0) {
+        continue;
+      }
+      const rtcore_symbolic_retire_lane_intent &intent =
+          transaction->lane[lane];
+      std::map<rtcore_synthetic_handoff_key,
+               rtcore_v03_handoff_lane_slot>::const_iterator window =
+          g_rtcore_synthetic_handoff_windows.find(intent.handoff_key);
+      std::map<rtcore_symbolic_rt_token_key,
+               rtcore_symbolic_rt_token_record>::const_iterator token =
+          g_rtcore_symbolic_rt_tokens.find(intent.token_key);
+      const bool window_matches =
+          intent.valid &&
+          window != g_rtcore_synthetic_handoff_windows.end() &&
+          window->second.context_ptr == intent.context_ptr &&
+          window->second.handoff_window_base == intent.handoff_window_base &&
+          window->second.lane_slot_index == lane &&
+          window->second.owner_hw_sid == intent.handoff_key.owner_hw_sid &&
+          window->second.owner_hw_wid == intent.handoff_key.owner_hw_wid &&
+          window->second.submit_transaction_id == intent.window_generation &&
+          window->second.window_state == RTCORE_WINDOW_STATE_COMPLETE;
+      const bool token_matches =
+          token != g_rtcore_symbolic_rt_tokens.end() &&
+          token->second.token_id == intent.token_id &&
+          token->second.allocator_generation ==
+              intent.token_allocator_generation &&
+          token->second.completed &&
+          rtcore_symbolic_rt_token_allocator_record_matches(token->second);
+      const bool lifetime_matches =
+          rtcore_preflight_launch_allocation_lifetime_retire(
+              intent.allocation_record);
+      if (!window_matches || !token_matches || !lifetime_matches ||
+          !rtcore_symbolic_rt_token_can_retire(transaction->instruction,
+                                                intent.token_key)) {
+        reason = !window_matches
+                     ? "RETIRE_COMMIT_WINDOW_STALE"
+                     : (!token_matches
+                            ? "RETIRE_COMMIT_TOKEN_STALE"
+                            : "RETIRE_COMMIT_RUNTIME_LIFETIME_STALE");
+        break;
+      }
+    }
+  }
+
+  unsigned released_mask = 0;
+  if (transaction && strcmp(reason, "accepted") == 0) {
+    for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+      const unsigned lane_mask = 1u << lane;
+      if ((active_mask & lane_mask) == 0) {
+        continue;
+      }
+      const rtcore_symbolic_retire_lane_intent &intent =
+          transaction->lane[lane];
+      const bool released_window =
+          rtcore_release_synthetic_handoff_window(intent.handoff_key);
+      const bool released_token =
+          rtcore_release_symbolic_rt_token(intent.token_key);
+      if (!released_window || !released_token) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_RETIRE_RESOURCE_COMMIT_INVARIANT "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                "released_window=%u released_token=%u\n",
+                owner_hw_sid, warp_uid, warp_id, lane,
+                released_window ? 1u : 0u, released_token ? 1u : 0u);
+        fflush(stderr);
+        abort();
+      }
+      const bool lifetime_retire_committed =
+          rtcore_mark_launch_allocation_lifetime_retire(
+          transaction->instruction, intent.allocation_record, active_mask,
+          released_window, released_token);
+      if (!lifetime_retire_committed) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_RETIRE_RESOURCE_COMMIT_INVARIANT "
+                "reason=RETIRE_COMMIT_RUNTIME_LIFETIME_STALE "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u\n",
+                owner_hw_sid, warp_uid, warp_id, lane);
+        fflush(stderr);
+        abort();
+      }
+      rtcore_log_runtime_context_window_allocation_retire(
+          transaction->instruction, intent.allocation_record,
+          released_window, released_token,
+          rtcore_synthetic_handoff_window_count(),
+          rtcore_symbolic_rt_token_count(),
+          rtcore_symbolic_rt_token_allocator_live_count());
+      released_mask |= lane_mask;
+    }
+
+    printf("GPGPU-Sim RTCORE_RETIRE_EXTERNAL_LIFECYCLE_COMMIT "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x released_lane_mask=0x%08x "
+           "remaining_windows=%zu remaining_tokens=%zu "
+           "remaining_allocator_live=%zu commit_cycle=%llu\n",
+           owner_hw_sid, warp_uid, warp_id, active_mask, released_mask,
+           rtcore_synthetic_handoff_window_count(),
+           rtcore_symbolic_rt_token_count(),
+           rtcore_symbolic_rt_token_allocator_live_count(), commit_cycle);
+    fflush(stdout);
+    g_rtcore_symbolic_retire_transactions.erase(it);
+  }
+  if (released_lane_mask) {
+    *released_lane_mask = released_mask;
+  }
+  if (failure_reason) {
+    *failure_reason = reason;
+  }
+  return strcmp(reason, "accepted") == 0 && released_mask == active_mask;
+}
+
 void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   assert(pI->get_num_operands() == 2);
   const operand_info &context_ptr = pI->operand_lookup(0);
@@ -32089,6 +32381,18 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   }
   const bool retire_metadata_valid = rtcore_current_warp_metadata_is_valid(
       "RT_RETIRE_CONTEXT", pI, thread, &current_warp_metadata, lane_slot_index);
+  const bool timing_rt_unit_available =
+      thread->get_core() != NULL && thread->get_core()->get_gpu() != NULL &&
+      !thread->get_core()->get_gpu()->is_functional_sim();
+  if (!timing_rt_unit_available) {
+    printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
+           "reason=STAGED_RETIRE_REQUIRES_TIMING_RT_UNIT, "
+           "retire_phase=preflight, consumed=0\n",
+           pI->source_file(), pI->source_line());
+    fflush(stdout);
+    inst_not_implemented(pI);
+    return;
+  }
   const rtcore_synthetic_handoff_key key = rtcore_make_synthetic_handoff_key(
       handoff_window_base_data.u64, lane_slot_index, thread);
   const rtcore_symbolic_rt_token_key token_key =
@@ -32172,65 +32476,38 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
     return;
   }
 
-  // External lifetime resources commit first; the resident/request-state
-  // record remains live if either release fails.
-  const bool released_window = rtcore_release_synthetic_handoff_window(key);
-  const bool released_token = rtcore_release_symbolic_rt_token(token_key);
-  if (!released_window || !released_token) {
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_RETIRE_RESOURCE_COMMIT_INVARIANT "
-            "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
-            "released_window=%u released_token=%u\n",
-            current_warp_metadata.owner_hw_sid,
-            current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
-            lane_slot_index, released_window ? 1u : 0u,
-            released_token ? 1u : 0u);
-    fflush(stderr);
-    abort();
-  }
-
-  unsigned retired_lane_mask = 0;
-  bool resident_record_released = false;
-  const char *resident_retire_failure = "accepted";
-  const bool resident_retire_accepted =
+  const char *retire_intent_failure = "accepted";
+  const bool retire_intent_published =
       resident_token_found &&
-      rtcore_retire_resident_rt_warp_lane(
-          current_warp_metadata.owner_hw_sid,
-          current_warp_metadata.warp_id, lane_slot_index, thread->get_uid(),
-          context_ptr_data.u64, handoff_window_base_data.u64,
-          resident_token_id, resident_token_generation,
-          resident_window_generation, true,
-          rtcore_v02_lsu_issue_cycle(thread),
-          &retired_lane_mask, &resident_record_released,
-          &resident_retire_failure);
-  if (!resident_retire_accepted) {
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_RETIRE_RESIDENT_COMMIT_INVARIANT "
-            "reason=%s owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u\n",
-            resident_retire_failure, current_warp_metadata.owner_hw_sid,
-            current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
-            lane_slot_index);
-    fflush(stderr);
-    abort();
+      rtcore_publish_symbolic_retire_intent(
+          pI, current_warp_metadata, lane_slot_index, thread->get_uid(),
+          context_ptr_data.u64, handoff_window_base_data.u64, key, token_key,
+          allocation_record, resident_token_id, resident_token_generation,
+          resident_window_generation, &retire_intent_failure);
+  if (!retire_intent_published) {
+    printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
+           "reason=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u, retire_phase=intent_publication, consumed=0\n",
+           pI->source_file(), pI->source_line(), retire_intent_failure,
+           (unsigned long long)context_ptr_data.u64,
+           (unsigned long long)handoff_window_base_data.u64,
+           lane_slot_index);
+    fflush(stdout);
+    inst_not_implemented(pI);
+    return;
   }
 
-  rtcore_mark_launch_allocation_lifetime_retire(
-      pI, allocation_record, current_warp_metadata.active_mask, released_window,
-      released_token);
-  rtcore_log_runtime_context_window_allocation_retire(
-      pI, allocation_record, released_window, released_token,
-      rtcore_synthetic_handoff_window_count(), rtcore_symbolic_rt_token_count(),
-      rtcore_symbolic_rt_token_allocator_live_count());
   printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT synthetic-retire (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, owner_tuple_match=%u, released=%u, "
          "released_token=%u, remaining_windows=%zu, remaining_tokens=%zu, "
-         "remaining_allocator_live=%zu\n",
+         "remaining_allocator_live=%zu, retire_phase=intent_publication, "
+         "resource_release_deferred=1\n",
          pI->source_file(), pI->source_line(),
          (unsigned long long)context_ptr_data.u64,
          (unsigned long long)handoff_window_base_data.u64, lane_slot_index,
-         owner_tuple_matches ? 1 : 0, released_window ? 1 : 0,
-         released_token ? 1 : 0, rtcore_synthetic_handoff_window_count(),
+         owner_tuple_matches ? 1 : 0, 0u, 0u,
+         rtcore_synthetic_handoff_window_count(),
          rtcore_symbolic_rt_token_count(),
          rtcore_symbolic_rt_token_allocator_live_count());
   fflush(stdout);

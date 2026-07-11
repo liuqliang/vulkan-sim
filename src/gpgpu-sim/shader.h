@@ -1714,6 +1714,39 @@ class rt_unit : public pipelined_simd_unit {
 	        unsigned shader_continuation_resume_handoff_publish_mask;
 	        unsigned long long shader_continuation_decision_cycle;
 	      };
+      struct rtcore_retire_transaction {
+        rtcore_retire_transaction()
+            : owner_hw_sid(0), warp_uid(0), warp_id(0), active_mask(0),
+              resident_generation(0), bound_lane_mask(0),
+              pending_release_mask(0), already_released_lane_mask(0),
+              retired_lane_mask(0),
+              release_budget(32), resident_occupancy_at_begin(0),
+              resident_occupancy_before_commit(0),
+              resident_occupancy_after_commit(0), enqueue_cycle(0),
+              last_lane_release_cycle(0), commit_ready_cycle(0),
+              lifecycle_commit_cycle(0), lifecycle_committed(false),
+              ack_ready(false) {}
+
+        unsigned owner_hw_sid;
+        unsigned warp_uid;
+        unsigned warp_id;
+        unsigned active_mask;
+        unsigned resident_generation;
+        unsigned bound_lane_mask;
+        unsigned pending_release_mask;
+        unsigned already_released_lane_mask;
+        unsigned retired_lane_mask;
+        unsigned release_budget;
+        unsigned resident_occupancy_at_begin;
+        unsigned resident_occupancy_before_commit;
+        unsigned resident_occupancy_after_commit;
+        unsigned long long enqueue_cycle;
+        unsigned long long last_lane_release_cycle;
+        unsigned long long commit_ready_cycle;
+        unsigned long long lifecycle_commit_cycle;
+        bool lifecycle_committed;
+        bool ack_ready;
+      };
       struct rtcore_replay_release_identity_join_snapshot {
         rtcore_replay_release_identity_join_snapshot()
             : enabled(false),
@@ -2187,6 +2220,10 @@ class rt_unit : public pipelined_simd_unit {
       bool synthetic_completion_ready(const warp_inst_t &inst,
                                       unsigned long long current_cycle);
       void retire_synthetic_completion(const warp_inst_t &inst);
+      void enqueue_retire_transaction(const warp_inst_t &inst,
+                                      unsigned long long current_cycle);
+      void service_retire_transaction(unsigned long long current_cycle);
+      bool retire_ack_ready(const warp_inst_t &inst) const;
                           
       virtual void process_cache_access(
             baseline_cache *cache, warp_inst_t &inst, mem_fetch *mf);
@@ -2232,6 +2269,7 @@ class rt_unit : public pipelined_simd_unit {
       std::map<unsigned, warp_inst_t> m_current_warps;
       std::map<unsigned, rtcore_synthetic_completion_event>
           m_synthetic_warp_completion_entries;
+      std::map<unsigned, rtcore_retire_transaction> m_retire_transactions;
       unsigned n_warps;
 
       unsigned cacheline_count;
@@ -3355,6 +3393,8 @@ class shader_core_ctx : public core_t {
       unsigned rt_core_out_pending_warps,
       const rtcore_resident_gate_materialized_input_provenance_snapshot
           &materialized_input_provenance) const;
+  bool rtcore_retire_frontend_issue_available(
+      const warp_inst_t &inst, unsigned warp_id) const;
   bool rtcore_submit_warp_admission_budget_available(
       const warp_inst_t &inst, unsigned warp_id,
       unsigned long long issue_cycle) const;

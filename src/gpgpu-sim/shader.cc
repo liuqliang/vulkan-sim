@@ -71,6 +71,10 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
     unsigned instance_index, unsigned hit_kind);
 extern "C" int rtcore_compatibility_shader_target_kind(unsigned shader_id,
                                                          unsigned reason);
+extern "C" bool rtcore_retire_lifecycle_busy_for_owner(
+    unsigned owner_hw_sid);
+extern "C" bool rtcore_reserve_retire_lifecycle_frontend(
+    unsigned owner_hw_sid);
 
 struct rtcore_replay_service_cycle_identity_snapshot {
   bool valid;
@@ -206,6 +210,31 @@ extern "C" bool rtcore_record_shader_continuation_resubmit_decision(
     unsigned resume_handoff_publish_mask,
     bool pre_submit_guard_passed,
     unsigned long long shader_side_decision_cycle);
+extern "C" bool rtcore_claim_symbolic_retire_transaction(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned long long claim_cycle,
+    const char **failure_reason);
+extern "C" bool rtcore_commit_symbolic_retire_transaction(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned long long commit_cycle,
+    unsigned *released_lane_mask, const char **failure_reason);
+extern "C" bool rtcore_begin_retire_resident_rt_warp_transaction(
+    unsigned owner_hw_sid, unsigned retire_warp_uid, unsigned warp_id,
+    unsigned retire_active_mask, unsigned *resident_generation,
+    unsigned *bound_lane_mask, unsigned *pending_release_mask,
+    unsigned *already_released_lane_mask, unsigned *resident_occupancy,
+    const char **failure_reason);
+extern "C" bool rtcore_drain_retire_resident_rt_warp_lane(
+    unsigned owner_hw_sid, unsigned retire_warp_uid, unsigned warp_id,
+    unsigned expected_resident_generation, unsigned lane_id,
+    unsigned long long service_cycle, unsigned *retired_lane_mask,
+    unsigned *remaining_lane_mask, const char **failure_reason);
+extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
+    unsigned owner_hw_sid, unsigned retire_warp_uid, unsigned warp_id,
+    unsigned expected_resident_generation, unsigned retire_active_mask,
+    bool external_resources_released, unsigned long long service_cycle,
+    unsigned *resident_occupancy_before,
+    unsigned *resident_occupancy_after, const char **failure_reason);
 
 namespace {
 
@@ -313,6 +342,23 @@ static unsigned rtcore_warp_admission_budget_config() {
       return 1024u;
     }
     return static_cast<unsigned>(parsed);
+  }();
+  return budget;
+}
+
+static unsigned rtcore_request_state_release_budget_config() {
+  static unsigned budget = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REQUEST_STATE_RELEASE_BUDGET");
+    if (value == NULL || *value == '\0') {
+      return 32u;
+    }
+    char *end = NULL;
+    const unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || *end != '\0' || parsed == 0) {
+      return 32u;
+    }
+    return static_cast<unsigned>(parsed > 32 ? 32 : parsed);
   }();
   return budget;
 }
@@ -5235,6 +5281,21 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
       inst, warp_id, m_sid, inst.pc, snapshot, materialized_input_provenance);
 }
 
+bool shader_core_ctx::rtcore_retire_frontend_issue_available(
+    const warp_inst_t &inst, unsigned warp_id) const {
+  if (inst.op != RT_CORE_OP ||
+      !rtcore_retire_lifecycle_busy_for_owner(m_sid)) {
+    return true;
+  }
+  printf("GPGPU-Sim RTCORE_RETIRE_FRONTEND_BUSY "
+         "owner_hw_sid=%u warp_id=%u static_inst_pc=0x%llx "
+         "rt_subop=%u action=stall_before_functional_issue\n",
+         m_sid, warp_id, static_cast<unsigned long long>(inst.pc),
+         static_cast<unsigned>(inst.rt_subop));
+  fflush(stdout);
+  return false;
+}
+
 bool shader_core_ctx::rtcore_submit_warp_admission_budget_available(
     const warp_inst_t &inst, unsigned warp_id,
     unsigned long long issue_cycle) const {
@@ -5690,6 +5751,14 @@ void scheduler_unit::cycle() {
               }
             } else if (pI->op == RT_CORE_OP) {
               assert(m_shader->m_config->gpgpu_num_rt_core_units > 0);
+              if (!m_shader->rtcore_retire_frontend_issue_available(
+                      *pI, warp_id)) {
+                break;
+              }
+              if (pI->rt_subop == RT_CORE_SUBOP_RETIRE_CONTEXT &&
+                  m_rt_core_out->has_ready()) {
+                break;
+              }
               const unsigned rtcore_active_mask =
                   static_cast<unsigned>(active_mask.to_ulong());
               const char *rtcore_scheduler_credit_ledger_noop_env =
@@ -7341,6 +7410,17 @@ void scheduler_unit::cycle() {
                   m_shader->rtcore_submit_warp_admission_budget_consume(
                       *pI, warp_id, rtcore_warp_admission_issue_cycle);
                 }
+                if (pI->rt_subop == RT_CORE_SUBOP_RETIRE_CONTEXT &&
+                    !rtcore_reserve_retire_lifecycle_frontend(
+                        m_shader->get_sid())) {
+                  fprintf(stderr,
+                          "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+                          "reason=RETIRE_LIFECYCLE_FRONTEND_RESERVE_FAILED "
+                          "owner_hw_sid=%u warp_id=%u\n",
+                          m_shader->get_sid(), warp_id);
+                  fflush(stderr);
+                  abort();
+                }
                 m_shader->issue_warp(*m_rt_core_out, pI, active_mask,
                                      warp_id, m_id);
                 if (rtcore_scheduler_credit_ledger_scheduler_bridge_enabled) {
@@ -8686,6 +8766,11 @@ bool rt_unit::can_issue(const warp_inst_t &inst) const {
     default:
       return false;
   }
+  if (rtcore_retire_lifecycle_busy_for_owner(m_sid) &&
+      inst.rt_subop != RT_CORE_SUBOP_RETIRE_CONTEXT) {
+    return false;
+  }
+  if (!m_retire_transactions.empty()) return false;
   if (n_warps >= (m_config->m_rt_max_warps)) return false;
   if (!rtcore_warp_completion_entry_has_capacity(inst)) return false;
   return m_dispatch_reg->empty() && !occupied.test(inst.latency);
@@ -10987,7 +11072,269 @@ void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {
           event->second.issued_active_mask);
     }
     m_synthetic_warp_completion_entries.erase(inst.get_uid());
+  } else if (inst.rt_subop == RT_CORE_SUBOP_RETIRE_CONTEXT) {
+    std::map<unsigned, rtcore_retire_transaction>::const_iterator transaction =
+        m_retire_transactions.find(inst.get_uid());
+    assert(transaction != m_retire_transactions.end());
+    assert(transaction->second.ack_ready);
+    m_retire_transactions.erase(inst.get_uid());
   }
+}
+
+void rt_unit::enqueue_retire_transaction(
+    const warp_inst_t &inst, unsigned long long current_cycle) {
+  assert(inst.rt_subop == RT_CORE_SUBOP_RETIRE_CONTEXT);
+  if (!m_retire_transactions.empty()) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+            "reason=ADMISSION_FRONTEND_ALREADY_BUSY owner_hw_sid=%u "
+            "warp_uid=%u warp_id=%u\n",
+            m_sid, inst.get_uid(), inst.warp_id());
+    fflush(stderr);
+    abort();
+  }
+
+  const unsigned active_mask =
+      static_cast<unsigned>(inst.get_warp_active_mask().to_ulong());
+  const char *claim_failure = "accepted";
+  if (!rtcore_claim_symbolic_retire_transaction(
+          m_sid, inst.get_uid(), inst.warp_id(), active_mask, current_cycle,
+          &claim_failure)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+            "reason=%s phase=intent_claim owner_hw_sid=%u warp_uid=%u "
+            "warp_id=%u active_mask=0x%08x\n",
+            claim_failure, m_sid, inst.get_uid(), inst.warp_id(), active_mask);
+    fflush(stderr);
+    abort();
+  }
+
+  unsigned resident_generation = 0;
+  unsigned bound_lane_mask = 0;
+  unsigned pending_release_mask = 0;
+  unsigned already_released_lane_mask = 0;
+  unsigned resident_occupancy = 0;
+  const char *begin_failure = "accepted";
+  if (!rtcore_begin_retire_resident_rt_warp_transaction(
+          m_sid, inst.get_uid(), inst.warp_id(), active_mask,
+          &resident_generation, &bound_lane_mask, &pending_release_mask,
+          &already_released_lane_mask, &resident_occupancy, &begin_failure) ||
+      bound_lane_mask != active_mask) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+            "reason=%s phase=resident_begin owner_hw_sid=%u warp_uid=%u "
+            "warp_id=%u active_mask=0x%08x bound_lane_mask=0x%08x\n",
+            begin_failure, m_sid, inst.get_uid(), inst.warp_id(), active_mask,
+            bound_lane_mask);
+    fflush(stderr);
+    abort();
+  }
+
+  rtcore_retire_transaction transaction;
+  transaction.owner_hw_sid = m_sid;
+  transaction.warp_uid = inst.get_uid();
+  transaction.warp_id = inst.warp_id();
+  transaction.active_mask = active_mask;
+  transaction.resident_generation = resident_generation;
+  transaction.bound_lane_mask = bound_lane_mask;
+  transaction.pending_release_mask = pending_release_mask;
+  transaction.already_released_lane_mask = already_released_lane_mask;
+  transaction.retired_lane_mask = already_released_lane_mask;
+  transaction.release_budget =
+      rtcore_request_state_release_budget_config();
+  transaction.resident_occupancy_at_begin = resident_occupancy;
+  transaction.enqueue_cycle = current_cycle;
+  if (transaction.pending_release_mask == 0) {
+    transaction.last_lane_release_cycle = current_cycle;
+    transaction.commit_ready_cycle = current_cycle + 1;
+  }
+  m_retire_transactions[inst.get_uid()] = transaction;
+
+  printf("GPGPU-Sim RTCORE_RETIRE_TRANSACTION_ENQUEUE "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "resident_generation=%u bound_lane_mask=0x%08x "
+         "pending_release_mask=0x%08x already_released_lane_mask=0x%08x "
+         "request_state_release_budget=%u "
+         "resident_occupancy=%u scoreboard_pending=1 enqueue_cycle=%llu\n",
+         m_sid, inst.get_uid(), inst.warp_id(), active_mask,
+         resident_generation, bound_lane_mask, pending_release_mask,
+         already_released_lane_mask, transaction.release_budget,
+         resident_occupancy, current_cycle);
+  fflush(stdout);
+}
+
+void rt_unit::service_retire_transaction(unsigned long long current_cycle) {
+  if (m_retire_transactions.empty()) {
+    return;
+  }
+  assert(m_retire_transactions.size() == 1);
+  rtcore_retire_transaction &transaction =
+      m_retire_transactions.begin()->second;
+
+  if (transaction.pending_release_mask != 0) {
+    unsigned released_this_cycle = 0;
+    unsigned released_count = 0;
+    for (unsigned lane = 0;
+         lane < 32 && released_count < transaction.release_budget; ++lane) {
+      const unsigned lane_mask = 1u << lane;
+      if ((transaction.pending_release_mask & lane_mask) == 0) {
+        continue;
+      }
+      unsigned retired_lane_mask = 0;
+      unsigned remaining_lane_mask = 0;
+      const char *drain_failure = "accepted";
+      if (!rtcore_drain_retire_resident_rt_warp_lane(
+              transaction.owner_hw_sid, transaction.warp_uid,
+              transaction.warp_id, transaction.resident_generation, lane,
+              current_cycle, &retired_lane_mask, &remaining_lane_mask,
+              &drain_failure)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+                "reason=%s phase=request_state_drain owner_hw_sid=%u "
+                "warp_uid=%u warp_id=%u lane_id=%u\n",
+                drain_failure, transaction.owner_hw_sid,
+                transaction.warp_uid, transaction.warp_id, lane);
+        fflush(stderr);
+        abort();
+      }
+      if (transaction.resident_generation == 0) {
+        transaction.retired_lane_mask |= lane_mask;
+      } else {
+        transaction.retired_lane_mask = retired_lane_mask;
+      }
+      transaction.pending_release_mask &= ~lane_mask;
+      if (transaction.resident_generation != 0 &&
+          remaining_lane_mask != transaction.pending_release_mask) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+                "reason=REQUEST_STATE_DRAIN_MASK_MISMATCH "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                "event_pending_mask=0x%08x replay_remaining_mask=0x%08x\n",
+                transaction.owner_hw_sid, transaction.warp_uid,
+                transaction.warp_id, transaction.pending_release_mask,
+                remaining_lane_mask);
+        fflush(stderr);
+        abort();
+      }
+      released_this_cycle |= lane_mask;
+      released_count++;
+    }
+
+    printf("GPGPU-Sim RTCORE_RETIRE_REQUEST_STATE_DRAIN "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+           "request_state_release_budget=%u released_this_cycle_mask=0x%08x "
+           "retired_lane_mask=0x%08x pending_release_mask=0x%08x "
+           "resident_record_live=1 long_lifetime_resources_live=1 "
+           "service_cycle=%llu\n",
+           transaction.owner_hw_sid, transaction.warp_uid,
+           transaction.warp_id, transaction.release_budget,
+           released_this_cycle, transaction.retired_lane_mask,
+           transaction.pending_release_mask, current_cycle);
+    fflush(stdout);
+    if (transaction.pending_release_mask == 0) {
+      transaction.last_lane_release_cycle = current_cycle;
+      transaction.commit_ready_cycle = current_cycle + 1;
+    }
+    return;
+  }
+
+  if (!transaction.lifecycle_committed &&
+      current_cycle >= transaction.commit_ready_cycle) {
+    const bool scoreboard_pending_before_ack =
+        m_scoreboard != NULL &&
+        m_scoreboard->isRtWarpPending(transaction.warp_id);
+    if (!scoreboard_pending_before_ack) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+              "reason=RETIRE_ACK_SCOREBOARD_NOT_PENDING phase=lifecycle_commit "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u\n",
+              transaction.owner_hw_sid, transaction.warp_uid,
+              transaction.warp_id);
+      fflush(stderr);
+      abort();
+    }
+
+    unsigned released_lane_mask = 0;
+    const char *external_commit_failure = "accepted";
+    if (!rtcore_commit_symbolic_retire_transaction(
+            transaction.owner_hw_sid, transaction.warp_uid,
+            transaction.warp_id, transaction.active_mask, current_cycle,
+            &released_lane_mask, &external_commit_failure) ||
+        released_lane_mask != transaction.active_mask) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+              "reason=%s phase=external_lifecycle_commit owner_hw_sid=%u "
+              "warp_uid=%u warp_id=%u released_lane_mask=0x%08x\n",
+              external_commit_failure, transaction.owner_hw_sid,
+              transaction.warp_uid, transaction.warp_id,
+              released_lane_mask);
+      fflush(stderr);
+      abort();
+    }
+
+    const char *resident_commit_failure = "accepted";
+    if (!rtcore_commit_retire_resident_rt_warp_lifecycle(
+            transaction.owner_hw_sid, transaction.warp_uid,
+            transaction.warp_id, transaction.resident_generation,
+            transaction.active_mask, true, current_cycle,
+            &transaction.resident_occupancy_before_commit,
+            &transaction.resident_occupancy_after_commit,
+            &resident_commit_failure)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+              "reason=%s phase=resident_lifecycle_commit owner_hw_sid=%u "
+              "warp_uid=%u warp_id=%u\n",
+              resident_commit_failure, transaction.owner_hw_sid,
+              transaction.warp_uid, transaction.warp_id);
+      fflush(stderr);
+      abort();
+    }
+    const bool retire_frontend_busy_after_commit =
+        rtcore_retire_lifecycle_busy_for_owner(transaction.owner_hw_sid);
+    if (retire_frontend_busy_after_commit) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+              "reason=RETIRE_FRONTEND_NOT_RELEASED phase=lifecycle_commit "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u\n",
+              transaction.owner_hw_sid, transaction.warp_uid,
+              transaction.warp_id);
+      fflush(stderr);
+      abort();
+    }
+
+    transaction.lifecycle_committed = true;
+    transaction.lifecycle_commit_cycle = current_cycle;
+    transaction.ack_ready = true;
+    printf("GPGPU-Sim RTCORE_RETIRE_LIFECYCLE_ACK "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+           "last_lane_release_cycle=%llu commit_ready_cycle=%llu "
+           "lifecycle_commit_cycle=%llu retire_lifecycle_commit_cycles=1 "
+           "resident_occupancy_before=%u resident_occupancy_after=%u "
+           "scoreboard_pending_before_ack=%u ack_only=1 "
+           "normal_register_writeback=0 v_result_writeback=0 "
+           "handoff_result_writeback=0 "
+           "retire_frontend_busy_after_commit=%u\n",
+           transaction.owner_hw_sid, transaction.warp_uid,
+           transaction.warp_id, transaction.active_mask,
+           transaction.last_lane_release_cycle,
+           transaction.commit_ready_cycle,
+           transaction.lifecycle_commit_cycle,
+           transaction.resident_occupancy_before_commit,
+           transaction.resident_occupancy_after_commit,
+           scoreboard_pending_before_ack ? 1u : 0u,
+           retire_frontend_busy_after_commit ? 1u : 0u);
+    fflush(stdout);
+  }
+}
+
+bool rt_unit::retire_ack_ready(const warp_inst_t &inst) const {
+  if (inst.rt_subop != RT_CORE_SUBOP_RETIRE_CONTEXT) {
+    return false;
+  }
+  std::map<unsigned, rtcore_retire_transaction>::const_iterator transaction =
+      m_retire_transactions.find(inst.get_uid());
+  return transaction != m_retire_transactions.end() &&
+         transaction->second.ack_ready;
 }
 
 rt_unit::rtcore_replay_release_identity_join_snapshot
@@ -11577,6 +11924,8 @@ void rt_unit::cycle() {
     pipe_reg.set_thread_end_cycle(current_cycle);
     if (pipe_reg.rt_subop == RT_CORE_SUBOP_SUBMIT) {
       enqueue_synthetic_completion(pipe_reg, current_cycle);
+    } else if (pipe_reg.rt_subop == RT_CORE_SUBOP_RETIRE_CONTEXT) {
+      enqueue_retire_transaction(pipe_reg, current_cycle);
     }
 
     if (m_config->m_rt_coherence_engine) {
@@ -11591,6 +11940,8 @@ void rt_unit::cycle() {
       m_ray_coherence_engine->insert(pipe_reg);
     }
   }
+
+  service_retire_transaction(current_cycle);
   
   if (n_warps > 0 || !pipe_reg.empty()) {
     m_stats->rt_total_cycles[m_sid]++;
@@ -11850,6 +12201,11 @@ void rt_unit::cycle() {
         synthetic_submit_completion_ready &&
         (!activation_enabled || it->second.rt_subop != RT_CORE_SUBOP_SUBMIT ||
          candidate_scoreboard_handoff_release_allowed);
+    const bool retire_ack_ready = this->retire_ack_ready(it->second);
+    const bool rtcore_instruction_completion_ready =
+        it->second.rt_subop == RT_CORE_SUBOP_RETIRE_CONTEXT
+            ? retire_ack_ready
+            : gated_synthetic_submit_completion_ready;
     const unsigned long long candidate_release_gate_blocked_cycles =
         rtcore_update_replay_release_gate_activation_blocked_cycles(
             synthetic_submit_release_candidate &&
@@ -11871,12 +12227,12 @@ void rt_unit::cycle() {
         activation_enabled, activation_blocked,
         candidate_release_gate_blocked_cycles);
     // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
-	    if (gated_synthetic_submit_completion_ready &&
+	    if (rtcore_instruction_completion_ready &&
 	        it->second.rt_mem_accesses_empty() &&
 	        it->second.rt_intersection_delay_done() &&
 	        !it->second.has_pending_writes()) {
 	      RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid, it->second.warp_id(), it->first);
-	      if (m_operand_collector->writeback(it->second)) {
+	      if (retire_ack_ready || m_operand_collector->writeback(it->second)) {
 	        if (it->second.rt_subop == RT_CORE_SUBOP_SUBMIT) {
 	          rtcore_materialize_scoreboard_v_result(
 	              it->second, candidate_completion, current_cycle);

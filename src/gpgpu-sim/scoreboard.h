@@ -47,12 +47,13 @@ class Scoreboard {
 
   bool checkCollision(unsigned wid, const inst_t *inst) const;
   bool pendingWrites(unsigned wid) const;
+  bool isRtWarpPending(unsigned wid) const;
   void printContents() const;
   const bool islongop(unsigned warp_id, unsigned regnum);
 
  private:
   void reserveRegister(unsigned wid, unsigned regnum);
-  bool isRtSubmitWaitInstruction(const inst_t *inst) const;
+  bool isRtBlockingInstruction(const inst_t *inst) const;
   int get_sid() const { return m_sid; }
 
   unsigned m_sid;

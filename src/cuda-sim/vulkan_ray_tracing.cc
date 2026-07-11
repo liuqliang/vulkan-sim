@@ -568,6 +568,19 @@ static std::map<unsigned, rtcore_replay_lane_request>
     g_rtcore_replay_lane_requests;
 static std::deque<rtcore_replay_lane_request>
     g_rtcore_replay_lane_request_state_capacity_pending_admissions;
+static std::set<unsigned> g_rtcore_retire_lifecycle_busy_owners;
+
+extern "C" bool rtcore_retire_lifecycle_busy_for_owner(
+    unsigned owner_hw_sid)
+{
+    return g_rtcore_retire_lifecycle_busy_owners.count(owner_hw_sid) != 0;
+}
+
+extern "C" bool rtcore_reserve_retire_lifecycle_frontend(
+    unsigned owner_hw_sid)
+{
+    return g_rtcore_retire_lifecycle_busy_owners.insert(owner_hw_sid).second;
+}
 
 struct rtcore_replay_lane_state_init_bandwidth_owner_cycle {
     bool valid;
@@ -7039,6 +7052,10 @@ static void rtcore_commit_replay_lane_request_state_admission(
 static bool rtcore_try_drain_replay_lane_request_state_capacity_pending_admissions(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
+    if (rtcore_retire_lifecycle_busy_for_owner(owner_hw_sid)) {
+        return false;
+    }
+
     const bool capacity_gate_enabled =
         rtcore_replay_lane_request_state_capacity_gate_enabled();
     const unsigned capacity = rtcore_replay_lane_request_state_capacity_config();
@@ -9233,21 +9250,35 @@ extern "C" bool rtcore_preflight_retire_resident_rt_warp_lane(
     return strcmp(reason, "accepted") == 0;
 }
 
-extern "C" bool rtcore_retire_resident_rt_warp_lane(
-    unsigned owner_hw_sid, unsigned warp_id, unsigned lane_id,
-    unsigned thread_uid, unsigned long long context_ptr,
-    unsigned long long handoff_window_base, unsigned token_id,
-    unsigned token_allocator_generation, unsigned window_generation,
-    bool external_resources_released, unsigned long long service_cycle,
-    unsigned *retired_lane_mask,
-    bool *resident_record_released, const char **failure_reason)
+extern "C" bool rtcore_begin_retire_resident_rt_warp_transaction(
+    unsigned owner_hw_sid, unsigned retire_warp_uid, unsigned warp_id,
+    unsigned retire_active_mask, unsigned *resident_generation,
+    unsigned *bound_lane_mask, unsigned *pending_release_mask,
+    unsigned *already_released_lane_mask, unsigned *resident_occupancy,
+    const char **failure_reason)
 {
-    if (!rtcore_continuation_model_enabled()) {
-        if (retired_lane_mask) {
-            *retired_lane_mask = 0;
+    if (!rtcore_retire_lifecycle_busy_for_owner(owner_hw_sid)) {
+        if (failure_reason) {
+            *failure_reason = "RETIRE_LIFECYCLE_FRONTEND_NOT_RESERVED";
         }
-        if (resident_record_released) {
-            *resident_record_released = false;
+        return false;
+    }
+
+    if (!rtcore_continuation_model_enabled()) {
+        if (resident_generation) {
+            *resident_generation = 0;
+        }
+        if (bound_lane_mask) {
+            *bound_lane_mask = retire_active_mask;
+        }
+        if (pending_release_mask) {
+            *pending_release_mask = retire_active_mask;
+        }
+        if (already_released_lane_mask) {
+            *already_released_lane_mask = 0;
+        }
+        if (resident_occupancy) {
+            *resident_occupancy = 0;
         }
         if (failure_reason) {
             *failure_reason = "continuation_model_disabled";
@@ -9255,26 +9286,167 @@ extern "C" bool rtcore_retire_resident_rt_warp_lane(
         return true;
     }
 
-    const unsigned occupancy_before =
+    const unsigned occupancy =
         rtcore_resident_rt_warp_record_occupancy();
     const rtcore_resident_rt_warp_record_key resident_key =
         rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
-    rtcore_resident_rt_warp_record *record = NULL;
-    rtcore_replay_lane_request *request = NULL;
-    const char *reason = rtcore_validate_resident_rt_warp_lane_retire(
-        owner_hw_sid, warp_id, lane_id, thread_uid, context_ptr,
-        handoff_window_base, token_id, token_allocator_generation,
-        window_generation, &record, &request);
-    const unsigned lane_mask = lane_id < 32 ? 1u << lane_id : 0;
-    if (strcmp(reason, "accepted") == 0 && !external_resources_released) {
-        reason = "RETIRE_EXTERNAL_RESOURCES_NOT_RELEASED";
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator resident =
+        g_rtcore_resident_rt_warp_records.find(resident_key);
+    const char *reason = "accepted";
+    if (resident == g_rtcore_resident_rt_warp_records.end() ||
+        !resident->second.valid) {
+        reason = "MISSING_RESIDENT_RECORD";
     }
 
-    bool released_record = false;
-    unsigned retired_mask = record ? record->retired_lane_mask : 0;
-    unsigned bound_mask = record ? record->bound_lane_mask : 0;
-    unsigned resident_generation = record ? record->resident_generation : 0;
-    unsigned current_warp_uid = record ? record->current_warp_uid : 0;
+    rtcore_resident_rt_warp_record *record =
+        strcmp(reason, "accepted") == 0 ? &resident->second : NULL;
+    if (record && (retire_active_mask == 0 ||
+                   retire_active_mask != record->bound_lane_mask ||
+                   record->retired_lane_mask != 0)) {
+        reason = "RETIRE_WHOLE_BOUND_MASK_REQUIRED";
+    }
+    if (record && strcmp(reason, "accepted") == 0) {
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            const unsigned lane_mask = 1u << lane;
+            if ((retire_active_mask & lane_mask) == 0) {
+                continue;
+            }
+            const rtcore_resident_rt_warp_lane_identity &identity =
+                record->lane_identity[lane];
+            const char *lane_reason =
+                rtcore_validate_resident_rt_warp_lane_retire(
+                    owner_hw_sid, warp_id, lane, identity.thread_uid,
+                    identity.context_ptr, identity.handoff_window_base,
+                    identity.token_id, identity.token_allocator_generation,
+                    identity.window_generation, NULL, NULL);
+            if (strcmp(lane_reason, "accepted") != 0) {
+                reason = lane_reason;
+                break;
+            }
+        }
+    }
+
+    unsigned already_released_mask = 0;
+    if (record && strcmp(reason, "accepted") == 0) {
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            const unsigned lane_mask = 1u << lane;
+            if ((retire_active_mask & lane_mask) == 0) {
+                continue;
+            }
+            const unsigned thread_uid = record->lane_identity[lane].thread_uid;
+            std::map<unsigned, rtcore_replay_lane_request>::const_iterator request =
+                g_rtcore_replay_lane_requests.find(thread_uid);
+            if (request != g_rtcore_replay_lane_requests.end() &&
+                request->second.valid &&
+                request->second.state == RTCORE_REPLAY_COMPLETED) {
+                already_released_mask |= lane_mask;
+            }
+        }
+        record->retired_lane_mask = already_released_mask;
+    }
+    const unsigned pending_mask =
+        record ? record->bound_lane_mask & ~already_released_mask : 0;
+    if (strcmp(reason, "accepted") == 0) {
+        printf("GPGPU-Sim RTCORE_RETIRE_TRANSACTION_BEGIN "
+               "owner_hw_sid=%u retire_warp_uid=%u warp_id=%u "
+               "retire_active_mask=0x%08x resident_generation=%u "
+               "bound_lane_mask=0x%08x pending_release_mask=0x%08x "
+               "already_released_lane_mask=0x%08x resident_occupancy=%u\n",
+               owner_hw_sid, retire_warp_uid, warp_id, retire_active_mask,
+               record->resident_generation, record->bound_lane_mask,
+               pending_mask, already_released_mask, occupancy);
+        fflush(stdout);
+    }
+    if (resident_generation) {
+        *resident_generation = record ? record->resident_generation : 0;
+    }
+    if (bound_lane_mask) {
+        *bound_lane_mask = record ? record->bound_lane_mask : 0;
+    }
+    if (pending_release_mask) {
+        *pending_release_mask = pending_mask;
+    }
+    if (already_released_lane_mask) {
+        *already_released_lane_mask = already_released_mask;
+    }
+    if (resident_occupancy) {
+        *resident_occupancy = occupancy;
+    }
+    if (failure_reason) {
+        *failure_reason = reason;
+    }
+    return strcmp(reason, "accepted") == 0;
+}
+
+extern "C" bool rtcore_drain_retire_resident_rt_warp_lane(
+    unsigned owner_hw_sid, unsigned retire_warp_uid, unsigned warp_id,
+    unsigned expected_resident_generation, unsigned lane_id,
+    unsigned long long service_cycle, unsigned *retired_lane_mask,
+    unsigned *remaining_lane_mask, const char **failure_reason)
+{
+    if (!rtcore_continuation_model_enabled()) {
+        if (retired_lane_mask) {
+            *retired_lane_mask = lane_id < 32 ? 1u << lane_id : 0;
+        }
+        if (remaining_lane_mask) {
+            *remaining_lane_mask = 0;
+        }
+        if (failure_reason) {
+            *failure_reason = "continuation_model_disabled";
+        }
+        return true;
+    }
+
+    const rtcore_resident_rt_warp_record_key resident_key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator resident =
+        g_rtcore_resident_rt_warp_records.find(resident_key);
+    const char *reason = "accepted";
+    if (resident == g_rtcore_resident_rt_warp_records.end() ||
+        !resident->second.valid) {
+        reason = "MISSING_RESIDENT_RECORD";
+    }
+
+    rtcore_resident_rt_warp_record *record =
+        strcmp(reason, "accepted") == 0 ? &resident->second : NULL;
+    const unsigned lane_mask = lane_id < 32 ? 1u << lane_id : 0;
+    if (record && (record->resident_generation !=
+                       expected_resident_generation ||
+                   lane_mask == 0 ||
+                   (record->bound_lane_mask & lane_mask) == 0)) {
+        reason = "RETIRE_DRAIN_RESIDENT_IDENTITY_MISMATCH";
+    }
+    if (record && strcmp(reason, "accepted") == 0 &&
+        (record->retired_lane_mask & lane_mask) != 0) {
+        reason = "DUPLICATE_RESIDENT_LANE_RETIRE";
+    }
+
+    rtcore_replay_lane_request *request = NULL;
+    if (record && strcmp(reason, "accepted") == 0) {
+        const rtcore_resident_rt_warp_lane_identity &identity =
+            record->lane_identity[lane_id];
+        std::map<unsigned, rtcore_replay_lane_request>::iterator request_it =
+            g_rtcore_replay_lane_requests.find(identity.thread_uid);
+        if (request_it == g_rtcore_replay_lane_requests.end() ||
+            !request_it->second.valid) {
+            reason = "RETIRE_MISSING_PINNED_REQUEST_STATE";
+        } else {
+            request = &request_it->second;
+            const bool waiting_shader =
+                request->state == RTCORE_REPLAY_WAITING_SHADER &&
+                request->continuation_boundary_pending;
+            const bool final_wait =
+                request->state == RTCORE_REPLAY_FINAL_WAIT_RETIRE;
+            const bool already_released =
+                request->state == RTCORE_REPLAY_COMPLETED;
+            if (!waiting_shader && !final_wait && !already_released) {
+                reason = "RETIRE_REQUEST_STATE_NOT_QUIESCENT";
+            }
+        }
+    }
+
     const char *request_state_action = "none";
     if (record && request && strcmp(reason, "accepted") == 0) {
         const bool consumed_entry =
@@ -9288,49 +9460,141 @@ extern "C" bool rtcore_retire_resident_rt_warp_lane(
                 rtcore_record_replay_lane_request_state_capacity_release(
                     *request, service_cycle);
             }
-            request_state_action = "release_on_explicit_retire";
+            request_state_action = "release_on_staged_retire";
         } else {
             request_state_action = "already_released_by_mask_shrink";
         }
 
         record->retired_lane_mask |= lane_mask;
-        retired_mask = record->retired_lane_mask;
-        if ((record->retired_lane_mask & record->bound_lane_mask) ==
-            record->bound_lane_mask) {
-            rtcore_replay_warp_completion_entry_key current_key = {};
-            current_key.owner_hw_sid = record->owner_hw_sid;
-            current_key.warp_uid = record->current_warp_uid;
-            current_key.warp_id = record->warp_id;
-            current_key.active_mask = record->active_mask;
-            g_rtcore_continuation_warp_boundary_states.erase(current_key);
-            g_rtcore_resident_warp_continuation_states.erase(current_key);
-            g_rtcore_resident_rt_warp_records.erase(resident_key);
-            released_record = true;
+    }
+
+    const unsigned retired_mask = record ? record->retired_lane_mask : 0;
+    const unsigned remaining_mask =
+        record ? record->bound_lane_mask & ~record->retired_lane_mask : 0;
+    if (strcmp(reason, "accepted") == 0) {
+        printf("GPGPU-Sim RTCORE_RESIDENT_RT_WARP_RETIRE_DRAIN "
+               "owner_hw_sid=%u retire_warp_uid=%u warp_id=%u lane_id=%u "
+               "resident_generation=%u "
+               "retired_lane_mask=0x%08x request_state_action=%s "
+               "remaining_lane_mask=0x%08x resident_record_live=1 "
+               "service_cycle=%llu\n",
+               owner_hw_sid, retire_warp_uid, warp_id, lane_id,
+               expected_resident_generation, retired_mask,
+               request_state_action, remaining_mask, service_cycle);
+        fflush(stdout);
+    }
+    if (retired_lane_mask) {
+        *retired_lane_mask = retired_mask;
+    }
+    if (remaining_lane_mask) {
+        *remaining_lane_mask = remaining_mask;
+    }
+    if (failure_reason) {
+        *failure_reason = reason;
+    }
+    return strcmp(reason, "accepted") == 0;
+}
+
+extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
+    unsigned owner_hw_sid, unsigned retire_warp_uid, unsigned warp_id,
+    unsigned expected_resident_generation, unsigned retire_active_mask,
+    bool external_resources_released, unsigned long long service_cycle,
+    unsigned *resident_occupancy_before,
+    unsigned *resident_occupancy_after, const char **failure_reason)
+{
+    if (!rtcore_continuation_model_enabled()) {
+        const bool busy_released =
+            g_rtcore_retire_lifecycle_busy_owners.erase(owner_hw_sid) == 1;
+        if (resident_occupancy_before) {
+            *resident_occupancy_before = 0;
+        }
+        if (resident_occupancy_after) {
+            *resident_occupancy_after = 0;
+        }
+        if (failure_reason) {
+            *failure_reason = busy_released
+                                  ? "continuation_model_disabled"
+                                  : "RETIRE_LIFECYCLE_BUSY_MISSING";
+        }
+        return busy_released;
+    }
+
+    const unsigned occupancy_before =
+        rtcore_resident_rt_warp_record_occupancy();
+    const rtcore_resident_rt_warp_record_key resident_key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator resident =
+        g_rtcore_resident_rt_warp_records.find(resident_key);
+    const char *reason = "accepted";
+    if (resident == g_rtcore_resident_rt_warp_records.end() ||
+        !resident->second.valid) {
+        reason = "MISSING_RESIDENT_RECORD";
+    }
+
+    rtcore_resident_rt_warp_record *record =
+        strcmp(reason, "accepted") == 0 ? &resident->second : NULL;
+    if (record &&
+        (record->resident_generation != expected_resident_generation ||
+         retire_active_mask != record->bound_lane_mask ||
+         (record->retired_lane_mask & record->bound_lane_mask) !=
+             record->bound_lane_mask)) {
+        reason = "RETIRE_LIFECYCLE_DRAIN_INCOMPLETE";
+    }
+    if (record && strcmp(reason, "accepted") == 0 &&
+        !external_resources_released) {
+        reason = "RETIRE_EXTERNAL_RESOURCES_NOT_RELEASED";
+    }
+    if (record && strcmp(reason, "accepted") == 0 &&
+        !rtcore_retire_lifecycle_busy_for_owner(owner_hw_sid)) {
+        reason = "RETIRE_LIFECYCLE_BUSY_MISSING";
+    }
+
+    unsigned resident_generation =
+        record ? record->resident_generation : 0;
+    unsigned bound_mask = record ? record->bound_lane_mask : 0;
+    unsigned submit_warp_uid = record ? record->current_warp_uid : 0;
+    if (record && strcmp(reason, "accepted") == 0) {
+        rtcore_replay_warp_completion_entry_key current_key = {};
+        current_key.owner_hw_sid = record->owner_hw_sid;
+        current_key.warp_uid = record->current_warp_uid;
+        current_key.warp_id = record->warp_id;
+        current_key.active_mask = record->active_mask;
+        g_rtcore_continuation_warp_boundary_states.erase(current_key);
+        g_rtcore_resident_warp_continuation_states.erase(current_key);
+        g_rtcore_resident_rt_warp_records.erase(resident_key);
+        const size_t busy_released =
+            g_rtcore_retire_lifecycle_busy_owners.erase(owner_hw_sid);
+        if (busy_released != 1) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_RETIRE_RESIDENT_COMMIT_INVARIANT "
+                    "reason=RETIRE_LIFECYCLE_BUSY_MISSING owner_hw_sid=%u "
+                    "retire_warp_uid=%u warp_id=%u\n",
+                    owner_hw_sid, retire_warp_uid, warp_id);
+            fflush(stderr);
+            abort();
         }
     }
 
     const unsigned occupancy_after =
         rtcore_resident_rt_warp_record_occupancy();
     if (strcmp(reason, "accepted") == 0) {
-        printf("GPGPU-Sim RTCORE_RESIDENT_RT_WARP_RETIRE "
-               "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
-               "resident_generation=%u bound_lane_mask=0x%08x "
-               "retired_lane_mask=0x%08x request_state_action=%s "
-               "external_resources_released=%u "
-               "resident_record_released=%u resident_occupancy_before=%u "
+        printf("GPGPU-Sim RTCORE_RESIDENT_RT_WARP_RETIRE_COMMIT "
+               "owner_hw_sid=%u retire_warp_uid=%u submit_warp_uid=%u "
+               "warp_id=%u resident_generation=%u "
+               "bound_lane_mask=0x%08x external_resources_released=1 "
+               "resident_record_released=1 resident_occupancy_before=%u "
                "resident_occupancy_after=%u service_cycle=%llu\n",
-               owner_hw_sid, current_warp_uid, warp_id, lane_id,
-               resident_generation, bound_mask, retired_mask,
-               request_state_action, external_resources_released ? 1u : 0u,
-               released_record ? 1u : 0u,
-               occupancy_before, occupancy_after, service_cycle);
+               owner_hw_sid, retire_warp_uid, submit_warp_uid, warp_id,
+               resident_generation, bound_mask, occupancy_before,
+               occupancy_after, service_cycle);
         fflush(stdout);
     }
-    if (retired_lane_mask) {
-        *retired_lane_mask = retired_mask;
+    if (resident_occupancy_before) {
+        *resident_occupancy_before = occupancy_before;
     }
-    if (resident_record_released) {
-        *resident_record_released = released_record;
+    if (resident_occupancy_after) {
+        *resident_occupancy_after = occupancy_after;
     }
     if (failure_reason) {
         *failure_reason = reason;

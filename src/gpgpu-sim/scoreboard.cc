@@ -47,7 +47,7 @@ Scoreboard::Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t* gpu)
 void Scoreboard::printContents() const {
   printf("scoreboard contents (sid=%d): \n", m_sid);
   for (unsigned i = 0; i < reg_table.size(); i++) {
-    if (reg_table[i].size() == 0) continue;
+    if (reg_table[i].empty() && !m_pending_rt_warps[i]) continue;
     printf("  wid = %2d: ", i);
     std::set<unsigned>::const_iterator it;
     for (it = reg_table[i].begin(); it != reg_table[i].end(); it++)
@@ -57,9 +57,10 @@ void Scoreboard::printContents() const {
   }
 }
 
-bool Scoreboard::isRtSubmitWaitInstruction(const class inst_t* inst) const {
+bool Scoreboard::isRtBlockingInstruction(const class inst_t* inst) const {
   return inst && inst->op == RT_CORE_OP &&
-         inst->rt_subop == RT_CORE_SUBOP_SUBMIT;
+         (inst->rt_subop == RT_CORE_SUBOP_SUBMIT ||
+          inst->rt_subop == RT_CORE_SUBOP_RETIRE_CONTEXT);
 }
 
 void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
@@ -112,7 +113,7 @@ void Scoreboard::reserveRegisters(const class warp_inst_t* inst) {
     }
   }
 
-  if (isRtSubmitWaitInstruction(inst)) {
+  if (isRtBlockingInstruction(inst)) {
     assert(inst->warp_id() < m_pending_rt_warps.size());
     m_pending_rt_warps[inst->warp_id()] = true;
     SHADER_DPRINTF(SCOREBOARD, "RT wait marked - warp:%d\n",
@@ -131,7 +132,7 @@ void Scoreboard::releaseRegisters(const class warp_inst_t* inst) {
     }
   }
 
-  if (isRtSubmitWaitInstruction(inst)) {
+  if (isRtBlockingInstruction(inst)) {
     assert(inst->warp_id() < m_pending_rt_warps.size());
     m_pending_rt_warps[inst->warp_id()] = false;
     SHADER_DPRINTF(SCOREBOARD, "RT wait released - warp:%d\n",
@@ -177,4 +178,9 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
 
 bool Scoreboard::pendingWrites(unsigned wid) const {
   return !reg_table[wid].empty() || m_pending_rt_warps[wid];
+}
+
+bool Scoreboard::isRtWarpPending(unsigned wid) const {
+  assert(wid < m_pending_rt_warps.size());
+  return m_pending_rt_warps[wid];
 }
