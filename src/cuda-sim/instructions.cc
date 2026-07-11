@@ -11069,8 +11069,13 @@ struct rtcore_symbolic_resubmit_lane_transaction {
       : valid(false), owner_hw_sid(0), warp_uid(0), warp_id(0),
         static_inst_uid(0), previous_warp_uid(0), resident_generation(0),
         next_active_mask(0), seen_lane_mask(0), validated_lane_mask(0),
+        handoff_window_base(0),
         resident_occupancy_before(0),
-        token_occupancy_before(0), handoff_slot_occupancy_before(0) {}
+        token_occupancy_before(0), handoff_slot_occupancy_before(0) {
+    for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+      lane_thread[lane] = NULL;
+    }
+  }
 
   bool valid;
   unsigned owner_hw_sid;
@@ -11082,6 +11087,8 @@ struct rtcore_symbolic_resubmit_lane_transaction {
   unsigned next_active_mask;
   unsigned seen_lane_mask;
   unsigned validated_lane_mask;
+  unsigned long long handoff_window_base;
+  ptx_thread_info *lane_thread[RTCORE_MAX_LANES_PER_WARP];
   unsigned resident_occupancy_before;
   size_t token_occupancy_before;
   size_t handoff_slot_occupancy_before;
@@ -12443,6 +12450,228 @@ bool rtcore_synthetic_owner_tuple_matches(
          window.window_state == RTCORE_WINDOW_STATE_COMPLETE;
 }
 
+static bool rtcore_shader_return_application_required() {
+  const char *model = getenv("VULKAN_SIM_RTCORE_CONTINUATION_MODEL");
+  return model != NULL && strcmp(model, "oracle_shader_boundary") == 0;
+}
+
+static float rtcore_shader_return_word_to_float(unsigned word) {
+  float value = 0.0f;
+  memcpy(&value, &word, sizeof(value));
+  return value;
+}
+
+static bool rtcore_apply_shader_visible_resubmit_lane_return(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    unsigned owner_hw_sid, unsigned previous_warp_uid, unsigned warp_uid,
+    unsigned warp_id, unsigned lane_id,
+    unsigned long long handoff_window_base, unsigned long long apply_cycle,
+    const char **failure_reason) {
+  const char *failure = "accepted";
+  const char *action = "unsupported";
+  unsigned reason = 0;
+  unsigned shader_return_words[3] = {};
+  int32_t shader_counter = -1;
+  int32_t shader_type = -1;
+
+  if (thread == NULL || thread->RT_thread_data == NULL ||
+      thread->RT_thread_data->traversal_data.empty() ||
+      handoff_window_base == 0 || lane_id >= RTCORE_MAX_LANES_PER_WARP) {
+    failure = "SHADER_RETURN_APPLY_CONTEXT_MISSING";
+  }
+
+  Traversal_data *traversal_data = NULL;
+  memory_space *mem = NULL;
+  if (strcmp(failure, "accepted") == 0) {
+    traversal_data = thread->RT_thread_data->traversal_data.back();
+    mem = thread->get_global_memory();
+    if (traversal_data == NULL || mem == NULL) {
+      failure = "SHADER_RETURN_APPLY_TRAVERSAL_STATE_MISSING";
+    }
+  }
+
+  if (strcmp(failure, "accepted") == 0) {
+    const unsigned long long shader_return_base =
+        handoff_window_base +
+        lane_id * RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE +
+        RTCORE_HANDOFF_W_SHADER_RETURN_BEGIN * sizeof(unsigned);
+    mem->read_simulator_backing(shader_return_base,
+                                sizeof(shader_return_words),
+                                shader_return_words);
+    mem->read(&(traversal_data->current_shader_counter),
+              sizeof(traversal_data->current_shader_counter),
+              &shader_counter);
+    mem->read(&(traversal_data->current_shader_type),
+              sizeof(traversal_data->current_shader_type), &shader_type);
+    if ((shader_return_words[0] & 0xffffff00u) != 0) {
+      failure = "SHADER_RETURN_HIT_RESULT_RESERVED_BITS";
+    }
+  }
+
+  const unsigned hit_result = shader_return_words[0] & 0xffu;
+  if (strcmp(failure, "accepted") == 0 && shader_type == 2) {
+    reason = RTCORE_RETURN_FOR_ANY_HIT;
+    if (hit_result != RTCORE_HIT_RESULT_ACCEPT_HIT &&
+        hit_result != RTCORE_HIT_RESULT_IGNORE_HIT) {
+      failure = "SHADER_RETURN_ANYHIT_RESULT_INVALID";
+    } else if (shader_counter < 0 ||
+               static_cast<size_t>(shader_counter) >=
+                   thread->RT_thread_data->all_hit_data.size()) {
+      failure = "SHADER_RETURN_ANYHIT_CANDIDATE_MISSING";
+    }
+
+    Hit_data *candidate_address = NULL;
+    Hit_data candidate = {};
+    if (strcmp(failure, "accepted") == 0) {
+      candidate_address =
+          thread->RT_thread_data->all_hit_data[shader_counter];
+      if (candidate_address == NULL) {
+        failure = "SHADER_RETURN_ANYHIT_CANDIDATE_MISSING";
+      } else {
+        mem->read(candidate_address, sizeof(candidate), &candidate);
+      }
+    }
+
+    if (strcmp(failure, "accepted") == 0 &&
+        hit_result == RTCORE_HIT_RESULT_IGNORE_HIT) {
+      const float invalid_hit = -1.0f;
+      mem->write(&(candidate_address->world_min_thit), sizeof(invalid_hit),
+                 &invalid_hit, thread, pI);
+      action = "anyhit_ignore_invalidated";
+    } else if (strcmp(failure, "accepted") == 0) {
+      if (!(candidate.world_min_thit > 0.0f) ||
+          candidate.geometryType != VK_GEOMETRY_TYPE_TRIANGLES_KHR) {
+        failure = "SHADER_RETURN_ANYHIT_ACCEPT_CANDIDATE_INVALID";
+      } else {
+        bool hit_geometry = false;
+        Hit_data closest_hit = {};
+        mem->read(&(traversal_data->hit_geometry),
+                  sizeof(traversal_data->hit_geometry), &hit_geometry);
+        if (hit_geometry) {
+          mem->read(&(traversal_data->closest_hit),
+                    sizeof(traversal_data->closest_hit), &closest_hit);
+        }
+        const bool commit_candidate =
+            !hit_geometry ||
+            candidate.world_min_thit < closest_hit.world_min_thit;
+        if (commit_candidate) {
+          hit_geometry = true;
+          thread->RT_thread_data->set_hitAttribute(
+              candidate.barycentric_coordinates, pI, thread);
+          mem->write(&(traversal_data->hit_geometry),
+                     sizeof(traversal_data->hit_geometry), &hit_geometry,
+                     thread, pI);
+          mem->write(&(traversal_data->closest_hit),
+                     sizeof(traversal_data->closest_hit), &candidate, thread,
+                     pI);
+          action = "anyhit_accept_committed";
+        } else {
+          action = "anyhit_accept_kept_closer";
+        }
+      }
+    }
+  } else if (strcmp(failure, "accepted") == 0 && shader_type == 1) {
+    reason = RTCORE_RETURN_FOR_INTERSECTION;
+    if (hit_result != RTCORE_HIT_RESULT_CONTINUE_OR_NONE &&
+        hit_result != RTCORE_HIT_RESULT_REPORTED_INTERSECTION) {
+      failure = "SHADER_RETURN_INTERSECTION_RESULT_INVALID";
+    } else if (shader_counter < 0) {
+      failure = "SHADER_RETURN_INTERSECTION_CANDIDATE_MISSING";
+    } else if (hit_result == RTCORE_HIT_RESULT_CONTINUE_OR_NONE) {
+      action = "intersection_no_hit";
+    } else {
+      const unsigned metadata = shader_return_words[2];
+      const unsigned hit_kind = metadata & 0xffu;
+      const unsigned attribute_word_count = (metadata >> 8) & 0xffu;
+      const unsigned attribute_base_word = (metadata >> 16) & 0xffu;
+      const unsigned attribute_format = (metadata >> 24) & 0xffu;
+      const bool attribute_metadata_valid =
+          (attribute_word_count == 0 && attribute_base_word == 0 &&
+           attribute_format == 0) ||
+          (attribute_word_count > 0 &&
+           attribute_word_count <= RTCORE_HANDOFF_MAX_INLINE_ATTRIBUTE_WORDS &&
+           attribute_base_word == RTCORE_HANDOFF_W_INLINE_ATTRIBUTE_BEGIN &&
+           attribute_format == 0x02u);
+      const float reported_t =
+          rtcore_shader_return_word_to_float(shader_return_words[1]);
+      float tmin = 0.0f;
+      float tmax = 0.0f;
+      mem->read(&(traversal_data->Tmin), sizeof(traversal_data->Tmin),
+                &tmin);
+      mem->read(&(traversal_data->Tmax), sizeof(traversal_data->Tmax),
+                &tmax);
+      if (!attribute_metadata_valid || hit_kind > 0x7fu ||
+          !std::isfinite(reported_t) || reported_t < tmin ||
+          reported_t > tmax) {
+        failure = "SHADER_RETURN_INTERSECTION_REPORT_INVALID";
+      } else {
+        warp_intersection_table *table =
+            VulkanRayTracing::intersection_table[thread->get_ctaid().x]
+                                                   [thread->get_ctaid().y];
+        if (table == NULL ||
+            !table->shader_exists(thread->get_tid().x, shader_counter, pI,
+                                  thread)) {
+          failure = "SHADER_RETURN_INTERSECTION_TABLE_IDENTITY_MISSING";
+        } else {
+          bool hit_geometry = true;
+          mem->write(&(traversal_data->hit_geometry),
+                     sizeof(traversal_data->hit_geometry), &hit_geometry,
+                     thread, pI);
+          const VkGeometryTypeKHR geometry_type =
+              VK_GEOMETRY_TYPE_AABBS_KHR;
+          mem->write(&(traversal_data->closest_hit.geometryType),
+                     sizeof(traversal_data->closest_hit.geometryType),
+                     &geometry_type, thread, pI);
+          mem->write(&(traversal_data->closest_hit.hit_kind),
+                     sizeof(traversal_data->closest_hit.hit_kind), &hit_kind,
+                     thread, pI);
+          const int32_t hit_group_index = table->get_hitGroupIndex(
+              shader_counter, thread->get_tid().x, pI, thread);
+          mem->write(&(traversal_data->closest_hit.hitGroupIndex),
+                     sizeof(traversal_data->closest_hit.hitGroupIndex),
+                     &hit_group_index, thread, pI);
+          mem->write(&(traversal_data->closest_hit.world_min_thit),
+                     sizeof(traversal_data->closest_hit.world_min_thit),
+                     &reported_t, thread, pI);
+          const uint32_t primitive_index = table->get_primitiveID(
+              shader_counter, thread->get_tid().x, pI, thread);
+          mem->write(&(traversal_data->closest_hit.primitive_index),
+                     sizeof(traversal_data->closest_hit.primitive_index),
+                     &primitive_index, thread, pI);
+          const uint32_t instance_index = table->get_instanceID(
+              shader_counter, thread->get_tid().x, pI, thread);
+          mem->write(&(traversal_data->closest_hit.instance_index),
+                     sizeof(traversal_data->closest_hit.instance_index),
+                     &instance_index, thread, pI);
+          action = "intersection_reported_committed";
+        }
+      }
+    }
+  } else if (strcmp(failure, "accepted") == 0) {
+    failure = "SHADER_RETURN_BOUNDARY_TYPE_INVALID";
+  }
+
+  if (failure_reason != NULL) {
+    *failure_reason = failure;
+  }
+  if (strcmp(failure, "accepted") != 0) {
+    return false;
+  }
+
+  printf("GPGPU-Sim RTCORE_SHADER_RETURN_DECISION_APPLY "
+         "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u warp_id=%u "
+         "lane_id=%u handoff_window_base=0x%llx reason=%u hit_result=%u "
+         "shader_counter=%d "
+         "action=%s handoff_return_consumed=1 functional_state_applied=1 "
+         "functional_oracle_replayed=0 apply_cycle=%llu "
+         "apply_result=applied\n",
+         owner_hw_sid, previous_warp_uid, warp_uid, warp_id, lane_id,
+         handoff_window_base, reason, hit_result, shader_counter, action,
+         apply_cycle);
+  fflush(stdout);
+  return true;
+}
+
 enum rtcore_symbolic_resubmit_action {
   RTCORE_SYMBOLIC_RESUBMIT_NOT_APPLICABLE = 0,
   RTCORE_SYMBOLIC_RESUBMIT_PENDING_WHOLE_MASK,
@@ -12551,6 +12780,7 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
     transaction.previous_warp_uid = resident_warp_uid;
     transaction.resident_generation = resident_generation;
     transaction.next_active_mask = metadata.active_mask;
+    transaction.handoff_window_base = handoff_window_base;
     transaction.resident_occupancy_before = resident_occupancy;
     transaction.token_occupancy_before = rtcore_symbolic_rt_token_count();
     transaction.handoff_slot_occupancy_before =
@@ -12563,7 +12793,8 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
       transaction.static_inst_uid == metadata.static_inst_uid &&
       transaction.previous_warp_uid == resident_warp_uid &&
       transaction.resident_generation == resident_generation &&
-      transaction.next_active_mask == metadata.active_mask;
+      transaction.next_active_mask == metadata.active_mask &&
+      transaction.handoff_window_base == handoff_window_base;
   if (!transaction_metadata_matches) {
     return rtcore_reject_symbolic_resubmit(
         pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
@@ -12571,6 +12802,13 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
   }
 
   const unsigned lane_mask = rtcore_lane_thread_mask(lane_slot_index);
+  if (transaction.lane_thread[lane_slot_index] != NULL &&
+      transaction.lane_thread[lane_slot_index] != thread) {
+    return rtcore_reject_symbolic_resubmit(
+        pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
+        "RESUBMIT_LANE_THREAD_IDENTITY_MISMATCH");
+  }
+  transaction.lane_thread[lane_slot_index] = thread;
   transaction.seen_lane_mask |= lane_mask;
   transaction.validated_lane_mask |= lane_mask;
   const bool whole_mask_ready =
@@ -12611,6 +12849,37 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
         commit_failure);
   }
 
+  bool shader_return_decisions_applied = true;
+  const char *shader_return_apply_failure = "accepted";
+  if (rtcore_shader_return_application_required()) {
+    for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+      if ((metadata.active_mask & rtcore_lane_thread_mask(lane)) == 0) {
+        continue;
+      }
+      if (transaction.lane_thread[lane] == NULL ||
+          !rtcore_apply_shader_visible_resubmit_lane_return(
+              pI, transaction.lane_thread[lane], metadata.owner_hw_sid,
+              transaction.previous_warp_uid, metadata.warp_uid,
+              metadata.warp_id, lane, transaction.handoff_window_base,
+              rtcore_v02_lsu_issue_cycle(thread),
+              &shader_return_apply_failure)) {
+        shader_return_decisions_applied = false;
+        break;
+      }
+    }
+  }
+  if (!shader_return_decisions_applied) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_RETURN_DECISION_APPLY_FAULT "
+            "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u warp_id=%u "
+            "next_active_mask=0x%08x fault=%s\n",
+            metadata.owner_hw_sid, transaction.previous_warp_uid,
+            metadata.warp_uid, metadata.warp_id, metadata.active_mask,
+            shader_return_apply_failure);
+    fflush(stderr);
+    abort();
+  }
+
   bool adapter_completion_rebound = true;
   for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
     if ((metadata.active_mask & rtcore_lane_thread_mask(lane)) == 0) {
@@ -12643,7 +12912,7 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
 
   printf("GPGPU-Sim RTCORE_SHADER_VISIBLE_RESUBMIT_ADMISSION "
          "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u warp_id=%u "
-         "resident_generation=%u "
+         "handoff_window_base=0x%llx resident_generation=%u "
          "previous_active_mask=0x%08x next_active_mask=0x%08x "
          "released_lane_mask=0x%08x reactivated_lane_mask=0x%08x "
          "resident_record_reused=1 token_reused=1 handoff_slot_reused=1 "
@@ -12655,6 +12924,7 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
          "admission_result=%s\n",
          metadata.owner_hw_sid, transaction.previous_warp_uid,
          metadata.warp_uid, metadata.warp_id,
+         transaction.handoff_window_base,
          transaction.resident_generation,
          committed_previous_active_mask, metadata.active_mask,
          released_lane_mask, reactivated_lane_mask,

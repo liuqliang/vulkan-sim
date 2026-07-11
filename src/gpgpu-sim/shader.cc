@@ -581,11 +581,13 @@ rtcore_service_shader_continuation_pseudo_op(
            (reason == 4 && (hit_result == 1 || hit_result == 4)));
       printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_SHADER_RETURN_STORE "
              "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
-             "cohort_index=%u reason=%u w13_hit_result=%u "
+             "cohort_index=%u handoff_window_base=0x%llx reason=%u "
+             "w13_hit_result=%u "
              "w14_reported_t=0x%08x w15_metadata=0x%08x valid=%u "
              "handoff_return_producer=shader_store return_cycle=%llu\n",
              owner_hw_sid, entry.warp_uid, entry.warp_id, lane,
-             completed_cohort_index, reason, hit_result,
+             completed_cohort_index, entry.handoff_window_base, reason,
+             hit_result,
              shader_return_words[1], shader_return_words[2],
              return_valid ? 1u : 0u, current_cycle);
       fflush(stdout);
