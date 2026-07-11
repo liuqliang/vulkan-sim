@@ -12337,7 +12337,8 @@ bool rtcore_synthetic_owner_tuple_matches(
 
 void rtcore_publish_synthetic_handoff_window(
     const ptx_instruction *pI, const rtcore_synthetic_handoff_key &key,
-    const rtcore_v03_handoff_lane_slot &slot) {
+    const rtcore_v03_handoff_lane_slot &slot, ptx_thread_info *thread) {
+  assert(thread != NULL);
   const bool inserted =
       g_rtcore_synthetic_handoff_windows.insert(std::make_pair(key, slot))
           .second;
@@ -12357,6 +12358,8 @@ void rtcore_publish_synthetic_handoff_window(
   const unsigned long long lane_slot_base =
       rtcore_handoff_lane_slot_base(key.handoff_window_base,
                                     key.lane_slot_index);
+  thread->get_global_memory()->write_simulator_backing(
+      lane_slot_base, sizeof(slot.words), slot.words);
 
   printf("GPGPU-Sim PTX: RT_SUBMIT handoff-window-published (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -31441,7 +31444,7 @@ bool rtcore_materialize_traversal_completion_lane_transaction(
     return false;
   }
   rtcore_publish_synthetic_handoff_window(
-      pI, event.handoff_key, event.handoff_lane_slot);
+      pI, event.handoff_key, event.handoff_lane_slot, thread);
   rtcore_maybe_enqueue_v02_lsu_handoff_publication_store(event, thread);
   if (!rtcore_v02_lsu_handoff_publication_acknowledged(pI, event, thread)) {
     rtcore_rollback_symbolic_submit_after_handoff_publish(

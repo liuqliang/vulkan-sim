@@ -1574,6 +1574,8 @@ struct rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot 
       *provider_materialized_traversal_input_decoded_value_record_source_snapshot_block_reason;
 };
 
+struct rtcore_replay_warp_completion_entry_snapshot;
+
 class rt_unit : public pipelined_simd_unit {
     public:
         rt_unit(mem_fetch_interface *icnt,
@@ -2142,6 +2144,11 @@ class rt_unit : public pipelined_simd_unit {
 	          const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
 	          unsigned packet_schema_version, unsigned completion_valid_mask,
 	          unsigned terminal_lane_mask, unsigned continuation_lane_mask,
+	          unsigned long long current_cycle) const;
+	      void rtcore_materialize_scoreboard_v_result(
+	          const warp_inst_t &inst,
+	          const rtcore_replay_warp_completion_entry_snapshot
+	              &candidate_completion,
 	          unsigned long long current_cycle) const;
 	      void rtcore_record_shader_continuation_loop_decision(
 	          const warp_inst_t &inst, rtcore_synthetic_completion_event *event,
@@ -3090,7 +3097,8 @@ class shader_core_ctx : public core_t {
   unsigned get_tpc() const { return m_tpc; }
   bool rtcore_launch_shader_continuation_cohort(
       unsigned warp_id, unsigned cohort_lane_mask,
-      function_info *target_func, unsigned *return_pc,
+      function_info *target_func, unsigned long long handoff_window_base,
+      unsigned default_hit_result, unsigned *return_pc,
       unsigned *return_rpc);
 
   // used by functional simulation:

@@ -8217,23 +8217,19 @@ static bool rtcore_mark_resident_warp_continuation_wakeup(
         return false;
     }
     if (rtcore_shader_continuation_resubmit_bridge_enabled()) {
-        if (rtcore_shader_continuation_bridge_scoreboard_packet_ready(packet)) {
-            printf("GPGPU-Sim RTCORE_CONTINUATION_WARP_WAKEUP "
-                   "wakeup_result=deferred_to_shadercore_bridge "
-                   "owner_hw_sid=%u warp_uid=%u warp_id=%u "
-                   "active_mask=0x%08x service_cycle=%llu\n",
-                   packet.owner_hw_sid, packet.warp_uid, packet.warp_id,
-                   packet.active_mask, service_cycle);
-            fflush(stdout);
-            return false;
-        }
         printf("GPGPU-Sim RTCORE_CONTINUATION_WARP_WAKEUP "
-               "wakeup_result=bridge_gate_fallback_internal_wakeup "
+               "wakeup_result=deferred_until_shader_return_publication "
                "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+               "scoreboard_packet_ready=%u "
                "service_cycle=%llu\n",
                packet.owner_hw_sid, packet.warp_uid, packet.warp_id,
-               packet.active_mask, service_cycle);
+               packet.active_mask,
+               rtcore_shader_continuation_bridge_scoreboard_packet_ready(packet)
+                   ? 1u
+                   : 0u,
+               service_cycle);
         fflush(stdout);
+        return false;
     }
 
     const rtcore_replay_warp_completion_entry_key key =
