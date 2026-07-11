@@ -64,6 +64,46 @@ class ptx_recognizer;
 
 using half_float::half;
 
+extern "C" bool rtcore_query_resident_rt_warp_record(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned *current_warp_uid,
+    unsigned *active_mask, unsigned *resident_generation,
+    unsigned *resident_occupancy);
+extern "C" bool rtcore_bind_resident_rt_warp_lane_identity(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned static_inst_uid, unsigned lane_id,
+    unsigned thread_uid, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned token_id,
+    unsigned token_allocator_generation, unsigned window_generation);
+extern "C" bool rtcore_validate_shader_visible_resubmit_lane(
+    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
+    unsigned next_active_mask, unsigned lane_id, unsigned thread_uid,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned token_id, unsigned token_allocator_generation,
+    unsigned window_generation, const char **failure_reason);
+extern "C" bool rtcore_commit_shader_visible_resubmit_admission(
+    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
+    unsigned new_static_inst_uid, unsigned next_active_mask,
+    unsigned expected_previous_warp_uid,
+    unsigned expected_resident_generation,
+    unsigned long long service_cycle, unsigned *previous_active_mask,
+    unsigned *released_lane_mask, unsigned *reactivated_lane_mask,
+    unsigned *resident_occupancy_before, unsigned *resident_occupancy_after,
+    const char **failure_reason);
+extern "C" bool rtcore_preflight_retire_resident_rt_warp_lane(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned lane_id,
+    unsigned thread_uid, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned token_id,
+    unsigned token_allocator_generation, unsigned window_generation,
+    const char **failure_reason);
+extern "C" bool rtcore_retire_resident_rt_warp_lane(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned lane_id,
+    unsigned thread_uid, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned token_id,
+    unsigned token_allocator_generation, unsigned window_generation,
+    bool external_resources_released, unsigned long long service_cycle,
+    unsigned *retired_lane_mask,
+    bool *resident_record_released, const char **failure_reason);
+
 const char *g_opcode_string[NUM_OPCODES] = {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) STR,
 #define OP_W_DEF(OP, FUNC, STR, DST, CLASSIFICATION) STR,
@@ -11021,6 +11061,29 @@ struct rtcore_symbolic_rt_token_reservation_record {
   unsigned acquired_lane_mask;
 };
 
+struct rtcore_symbolic_resubmit_lane_transaction {
+  rtcore_symbolic_resubmit_lane_transaction()
+      : valid(false), owner_hw_sid(0), warp_uid(0), warp_id(0),
+        static_inst_uid(0), previous_warp_uid(0), resident_generation(0),
+        next_active_mask(0), seen_lane_mask(0), validated_lane_mask(0),
+        resident_occupancy_before(0),
+        token_occupancy_before(0), handoff_slot_occupancy_before(0) {}
+
+  bool valid;
+  unsigned owner_hw_sid;
+  unsigned warp_uid;
+  unsigned warp_id;
+  unsigned static_inst_uid;
+  unsigned previous_warp_uid;
+  unsigned resident_generation;
+  unsigned next_active_mask;
+  unsigned seen_lane_mask;
+  unsigned validated_lane_mask;
+  unsigned resident_occupancy_before;
+  size_t token_occupancy_before;
+  size_t handoff_slot_occupancy_before;
+};
+
 static std::map<rtcore_synthetic_handoff_key, rtcore_v03_handoff_lane_slot>
     g_rtcore_synthetic_handoff_windows;
 static std::map<rtcore_synthetic_handoff_key, unsigned>
@@ -11031,6 +11094,8 @@ static std::map<rtcore_symbolic_rt_token_key,
 static std::map<rtcore_symbolic_rt_token_reservation_key,
                 rtcore_symbolic_rt_token_reservation_record>
     g_rtcore_symbolic_rt_token_reservations;
+static std::map<unsigned, rtcore_symbolic_resubmit_lane_transaction>
+    g_rtcore_symbolic_resubmit_lane_transactions;
 static rtcore_symbolic_rt_token_allocator_state
     g_rtcore_symbolic_rt_token_allocator = {1, 1, 0, 0};
 unsigned g_rtcore_next_symbolic_rt_token_id = 1;
@@ -11226,7 +11291,8 @@ unsigned rtcore_v02_lsu_handoff_publication_memory_op_seq(
 
 unsigned long long rtcore_v02_lsu_issue_cycle(ptx_thread_info *thread) {
   return thread != NULL && thread->get_gpu() != NULL
-             ? thread->get_gpu()->gpu_tot_sim_cycle
+             ? thread->get_gpu()->gpu_tot_sim_cycle +
+                   thread->get_gpu()->gpu_sim_cycle
              : 0;
 }
 
@@ -12333,6 +12399,240 @@ bool rtcore_synthetic_owner_tuple_matches(
          window.owner_hw_sid == thread->get_hw_sid() &&
          (window.thread_mask & lane_thread_mask) != 0 &&
          window.window_state == RTCORE_WINDOW_STATE_COMPLETE;
+}
+
+enum rtcore_symbolic_resubmit_action {
+  RTCORE_SYMBOLIC_RESUBMIT_NOT_APPLICABLE = 0,
+  RTCORE_SYMBOLIC_RESUBMIT_PENDING_WHOLE_MASK,
+  RTCORE_SYMBOLIC_RESUBMIT_COMMITTED,
+  RTCORE_SYMBOLIC_RESUBMIT_REJECTED,
+};
+
+static rtcore_symbolic_resubmit_action rtcore_reject_symbolic_resubmit(
+    const ptx_instruction *pI, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned lane_slot_index,
+    const ptx_thread_info::rtcore_current_warp_metadata &metadata,
+    const char *reason) {
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+         "reason=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, owner_hw_sid=%u, warp_uid=%u, warp_id=%u, "
+         "next_active_mask=0x%08x, whole_mask_committed=0, consumed=0\n",
+         pI->source_file(), pI->source_line(),
+         reason != NULL ? reason : "RESUBMIT_ADMISSION_REJECTED", context_ptr,
+         handoff_window_base, lane_slot_index, metadata.owner_hw_sid,
+         metadata.warp_uid, metadata.warp_id, metadata.active_mask);
+  fflush(stdout);
+  return RTCORE_SYMBOLIC_RESUBMIT_REJECTED;
+}
+
+static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index,
+    const ptx_thread_info::rtcore_current_warp_metadata &metadata,
+    const rtcore_synthetic_handoff_key &handoff_key,
+    const rtcore_symbolic_rt_token_key &token_key) {
+  unsigned resident_warp_uid = 0;
+  unsigned previous_active_mask = 0;
+  unsigned resident_generation = 0;
+  unsigned resident_occupancy = 0;
+  const bool resident_live = rtcore_query_resident_rt_warp_record(
+      metadata.owner_hw_sid, metadata.warp_id, &resident_warp_uid,
+      &previous_active_mask, &resident_generation, &resident_occupancy);
+  const bool live_slot = rtcore_synthetic_handoff_window_is_live(handoff_key);
+  const bool live_token = rtcore_symbolic_rt_token_is_live(token_key);
+  const bool same_initial_submit =
+      resident_live && resident_warp_uid == metadata.warp_uid &&
+      previous_active_mask == metadata.active_mask;
+
+  if (!resident_live) {
+    return RTCORE_SYMBOLIC_RESUBMIT_NOT_APPLICABLE;
+  }
+  if (!live_slot && !live_token && same_initial_submit) {
+    return RTCORE_SYMBOLIC_RESUBMIT_NOT_APPLICABLE;
+  }
+  if (same_initial_submit) {
+    return RTCORE_SYMBOLIC_RESUBMIT_NOT_APPLICABLE;
+  }
+  if (!live_slot && !live_token) {
+    return rtcore_reject_symbolic_resubmit(
+        pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
+        "RESIDENT_CONTEXT_WINDOW_MISMATCH");
+  }
+  if (live_slot != live_token) {
+    return rtcore_reject_symbolic_resubmit(
+        pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
+        "RESUBMIT_SLOT_TOKEN_LIVENESS_MISMATCH");
+  }
+
+  std::map<rtcore_synthetic_handoff_key,
+           rtcore_v03_handoff_lane_slot>::const_iterator window =
+      g_rtcore_synthetic_handoff_windows.find(handoff_key);
+  std::map<rtcore_symbolic_rt_token_key,
+           rtcore_symbolic_rt_token_record>::const_iterator token =
+      g_rtcore_symbolic_rt_tokens.find(token_key);
+  const bool window_matches =
+      window != g_rtcore_synthetic_handoff_windows.end() &&
+      rtcore_synthetic_owner_tuple_matches(window->second, handoff_key,
+                                           context_ptr, pI, thread);
+  const bool token_matches =
+      token != g_rtcore_symbolic_rt_tokens.end() && token->second.completed &&
+      rtcore_symbolic_rt_token_allocator_record_matches(token->second);
+  if (!window_matches || !token_matches) {
+    return rtcore_reject_symbolic_resubmit(
+        pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
+        !window_matches ? "RESUBMIT_WINDOW_OWNER_MISMATCH"
+                        : "RESUBMIT_TOKEN_STALE_OR_INCOMPLETE");
+  }
+
+  const char *validation_failure = "accepted";
+  const bool lane_valid = rtcore_validate_shader_visible_resubmit_lane(
+      metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
+      metadata.active_mask, lane_slot_index, thread->get_uid(), context_ptr,
+      handoff_window_base, token->second.token_id,
+      token->second.allocator_generation,
+      window->second.submit_transaction_id, &validation_failure);
+  if (!lane_valid) {
+    return rtcore_reject_symbolic_resubmit(
+        pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
+        validation_failure);
+  }
+
+  rtcore_symbolic_resubmit_lane_transaction &transaction =
+      g_rtcore_symbolic_resubmit_lane_transactions[metadata.warp_uid];
+  if (!transaction.valid) {
+    transaction.valid = true;
+    transaction.owner_hw_sid = metadata.owner_hw_sid;
+    transaction.warp_uid = metadata.warp_uid;
+    transaction.warp_id = metadata.warp_id;
+    transaction.static_inst_uid = metadata.static_inst_uid;
+    transaction.previous_warp_uid = resident_warp_uid;
+    transaction.resident_generation = resident_generation;
+    transaction.next_active_mask = metadata.active_mask;
+    transaction.resident_occupancy_before = resident_occupancy;
+    transaction.token_occupancy_before = rtcore_symbolic_rt_token_count();
+    transaction.handoff_slot_occupancy_before =
+        rtcore_synthetic_handoff_window_count();
+  }
+  const bool transaction_metadata_matches =
+      transaction.owner_hw_sid == metadata.owner_hw_sid &&
+      transaction.warp_uid == metadata.warp_uid &&
+      transaction.warp_id == metadata.warp_id &&
+      transaction.static_inst_uid == metadata.static_inst_uid &&
+      transaction.previous_warp_uid == resident_warp_uid &&
+      transaction.resident_generation == resident_generation &&
+      transaction.next_active_mask == metadata.active_mask;
+  if (!transaction_metadata_matches) {
+    return rtcore_reject_symbolic_resubmit(
+        pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
+        "RESUBMIT_LANE_TRANSACTION_METADATA_MISMATCH");
+  }
+
+  const unsigned lane_mask = rtcore_lane_thread_mask(lane_slot_index);
+  transaction.seen_lane_mask |= lane_mask;
+  transaction.validated_lane_mask |= lane_mask;
+  const bool whole_mask_ready =
+      (transaction.seen_lane_mask & transaction.next_active_mask) ==
+          transaction.next_active_mask &&
+      (transaction.validated_lane_mask & transaction.next_active_mask) ==
+          transaction.next_active_mask;
+  if (!whole_mask_ready) {
+    printf("GPGPU-Sim RTCORE_SHADER_VISIBLE_RESUBMIT_LANE_PRECHECK "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+           "previous_active_mask=0x%08x next_active_mask=0x%08x "
+           "seen_lane_mask=0x%08x validated_lane_mask=0x%08x "
+           "precheck_result=pending_whole_mask\n",
+           metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
+           lane_slot_index, previous_active_mask, metadata.active_mask,
+           transaction.seen_lane_mask, transaction.validated_lane_mask);
+    fflush(stdout);
+    return RTCORE_SYMBOLIC_RESUBMIT_PENDING_WHOLE_MASK;
+  }
+
+  unsigned committed_previous_active_mask = 0;
+  unsigned released_lane_mask = 0;
+  unsigned reactivated_lane_mask = 0;
+  unsigned resident_occupancy_before = 0;
+  unsigned resident_occupancy_after = 0;
+  const char *commit_failure = "accepted";
+  const bool committed = rtcore_commit_shader_visible_resubmit_admission(
+      metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
+      metadata.static_inst_uid, metadata.active_mask,
+      transaction.previous_warp_uid, transaction.resident_generation,
+      rtcore_v02_lsu_issue_cycle(thread), &committed_previous_active_mask,
+      &released_lane_mask, &reactivated_lane_mask,
+      &resident_occupancy_before, &resident_occupancy_after, &commit_failure);
+  if (!committed) {
+    g_rtcore_symbolic_resubmit_lane_transactions.erase(metadata.warp_uid);
+    return rtcore_reject_symbolic_resubmit(
+        pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
+        commit_failure);
+  }
+
+  bool adapter_completion_rebound = true;
+  for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+    if ((metadata.active_mask & rtcore_lane_thread_mask(lane)) == 0) {
+      continue;
+    }
+    adapter_completion_rebound =
+        rtcore_publish_adapter_completion(
+            metadata.warp_uid, metadata.warp_id, metadata.owner_hw_sid,
+            metadata.active_mask, metadata.static_inst_uid, lane, 0, 0) &&
+        adapter_completion_rebound;
+  }
+  if (!adapter_completion_rebound) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_RESUBMIT_ADAPTER_REBIND_INVARIANT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x\n",
+            metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
+            metadata.active_mask);
+    fflush(stderr);
+    abort();
+  }
+
+  const size_t token_occupancy_after = rtcore_symbolic_rt_token_count();
+  const size_t handoff_slot_occupancy_after =
+      rtcore_synthetic_handoff_window_count();
+  const bool resource_occupancy_stable =
+      resident_occupancy_before == transaction.resident_occupancy_before &&
+      resident_occupancy_after == transaction.resident_occupancy_before &&
+      token_occupancy_after == transaction.token_occupancy_before &&
+      handoff_slot_occupancy_after == transaction.handoff_slot_occupancy_before;
+
+  printf("GPGPU-Sim RTCORE_SHADER_VISIBLE_RESUBMIT_ADMISSION "
+         "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u warp_id=%u "
+         "resident_generation=%u "
+         "previous_active_mask=0x%08x next_active_mask=0x%08x "
+         "released_lane_mask=0x%08x reactivated_lane_mask=0x%08x "
+         "resident_record_reused=1 token_reused=1 handoff_slot_reused=1 "
+         "resident_occupancy_delta=%d token_occupancy_delta=%lld "
+         "handoff_slot_occupancy_delta=%lld functional_oracle_replayed=0 "
+         "resource_identity_validated_mask=0x%08x "
+         "per_lane_owner_tuple_revalidated=1 service_cycle=%llu "
+         "adapter_completion_rebound=%u whole_mask_committed=1 "
+         "admission_result=%s\n",
+         metadata.owner_hw_sid, transaction.previous_warp_uid,
+         metadata.warp_uid, metadata.warp_id,
+         transaction.resident_generation,
+         committed_previous_active_mask, metadata.active_mask,
+         released_lane_mask, reactivated_lane_mask,
+         static_cast<int>(resident_occupancy_after) -
+             static_cast<int>(transaction.resident_occupancy_before),
+         static_cast<long long>(token_occupancy_after) -
+             static_cast<long long>(transaction.token_occupancy_before),
+         static_cast<long long>(handoff_slot_occupancy_after) -
+             static_cast<long long>(transaction.handoff_slot_occupancy_before),
+         transaction.validated_lane_mask,
+         rtcore_v02_lsu_issue_cycle(thread),
+         adapter_completion_rebound ? 1u : 0u,
+         resource_occupancy_stable ? "accepted"
+                                   : "RESOURCE_OCCUPANCY_CHANGED");
+  fflush(stdout);
+  g_rtcore_symbolic_resubmit_lane_transactions.erase(metadata.warp_uid);
+  if (!resource_occupancy_stable) {
+    abort();
+  }
+  return RTCORE_SYMBOLIC_RESUBMIT_COMMITTED;
 }
 
 void rtcore_publish_synthetic_handoff_window(
@@ -31552,6 +31852,33 @@ void rtcore_traversal_completion_adapter_publish(
     inst_not_implemented(pI);
     return;
   }
+  std::map<rtcore_symbolic_rt_token_key,
+           rtcore_symbolic_rt_token_record>::const_iterator resident_token =
+      g_rtcore_symbolic_rt_tokens.find(event.token_key);
+  std::map<rtcore_synthetic_handoff_key,
+           rtcore_v03_handoff_lane_slot>::const_iterator resident_window =
+      g_rtcore_synthetic_handoff_windows.find(event.handoff_key);
+  const bool resident_lane_bound =
+      resident_token != g_rtcore_symbolic_rt_tokens.end() &&
+      resident_window != g_rtcore_synthetic_handoff_windows.end() &&
+      rtcore_bind_resident_rt_warp_lane_identity(
+          event.warp_metadata.owner_hw_sid, event.warp_metadata.warp_uid,
+          event.warp_metadata.warp_id, event.warp_metadata.active_mask,
+          event.warp_metadata.static_inst_uid, event.lane_slot_index,
+          thread->get_uid(), event.context_ptr, event.handoff_window_base,
+          resident_token->second.token_id,
+          resident_token->second.allocator_generation,
+          resident_window->second.submit_transaction_id);
+  if (!resident_lane_bound) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=RESIDENT_RT_WARP_LANE_BIND_FAILED, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, consumed=0\n",
+           pI->source_file(), pI->source_line(), event.context_ptr,
+           event.handoff_window_base, event.lane_slot_index);
+    fflush(stdout);
+    inst_not_implemented(pI);
+    return;
+  }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT traversal-complete (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -31666,6 +31993,25 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       rtcore_get_symbolic_resource_profile();
   rtcore_log_symbolic_resource_profile_once(resource_profile);
 
+  const rtcore_synthetic_handoff_key key = rtcore_make_synthetic_handoff_key(
+      handoff_window_base_data.u64, lane_slot_index, thread);
+  const rtcore_symbolic_rt_token_key token_key =
+      rtcore_make_symbolic_rt_token_key(context_ptr_data.u64,
+                                        handoff_window_base_data.u64,
+                                        lane_slot_index, thread);
+  const rtcore_symbolic_resubmit_action resubmit_action =
+      rtcore_try_commit_symbolic_resubmit(
+          pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
+          lane_slot_index, current_warp_metadata, key, token_key);
+  if (resubmit_action == RTCORE_SYMBOLIC_RESUBMIT_REJECTED) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+  if (resubmit_action == RTCORE_SYMBOLIC_RESUBMIT_PENDING_WHOLE_MASK ||
+      resubmit_action == RTCORE_SYMBOLIC_RESUBMIT_COMMITTED) {
+    return;
+  }
+
   if (!rtcore_symbolic_submit_has_capacity(
           pI, resource_profile, lane_slot_index, context_ptr_data.u64,
           handoff_window_base_data.u64)) {
@@ -31673,18 +32019,12 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
-  const rtcore_synthetic_handoff_key key = rtcore_make_synthetic_handoff_key(
-      handoff_window_base_data.u64, lane_slot_index, thread);
   if (!rtcore_symbolic_submit_lane_slot_available(
           pI, key, context_ptr_data.u64)) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
 
-  const rtcore_symbolic_rt_token_key token_key =
-      rtcore_make_symbolic_rt_token_key(context_ptr_data.u64,
-                                        handoff_window_base_data.u64,
-                                        lane_slot_index, thread);
   if (!rtcore_symbolic_submit_token_available(pI, token_key)) {
     rtcore_reject_symbolic_submit(pI);
     return;
@@ -31798,10 +32138,82 @@ void rt_retire_context_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
       window, tracked_window, matching_context, owner_tuple_matches, token_key,
       token_can_retire);
 
-  // Functional execution reaches here once per active lane; real window release
-  // is deferred until a warp-level allocator exists.
+  std::map<rtcore_symbolic_rt_token_key,
+           rtcore_symbolic_rt_token_record>::const_iterator resident_token =
+      g_rtcore_symbolic_rt_tokens.find(token_key);
+  const bool resident_token_found =
+      resident_token != g_rtcore_symbolic_rt_tokens.end();
+  const unsigned resident_token_id =
+      resident_token_found ? resident_token->second.token_id : 0;
+  const unsigned resident_token_generation =
+      resident_token_found ? resident_token->second.allocator_generation : 0;
+  const unsigned resident_window_generation = window->submit_transaction_id;
+  const char *resident_retire_preflight_failure = "accepted";
+  const bool resident_retire_preflight_accepted =
+      resident_token_found &&
+      rtcore_preflight_retire_resident_rt_warp_lane(
+          current_warp_metadata.owner_hw_sid,
+          current_warp_metadata.warp_id, lane_slot_index, thread->get_uid(),
+          context_ptr_data.u64, handoff_window_base_data.u64,
+          resident_token_id, resident_token_generation,
+          resident_window_generation, &resident_retire_preflight_failure);
+  if (!resident_retire_preflight_accepted) {
+    printf("GPGPU-Sim PTX: RT_RETIRE_CONTEXT fail-closed (%s:%u), "
+           "reason=%s, context_ptr=0x%llx, handoff_window_base=0x%llx, "
+           "lane_slot_index=%u, resident_token_found=%u, "
+           "retire_phase=preflight, consumed=0\n",
+           pI->source_file(), pI->source_line(),
+           resident_retire_preflight_failure,
+           (unsigned long long)context_ptr_data.u64,
+           (unsigned long long)handoff_window_base_data.u64, lane_slot_index,
+           resident_token_found ? 1u : 0u);
+    fflush(stdout);
+    inst_not_implemented(pI);
+    return;
+  }
+
+  // External lifetime resources commit first; the resident/request-state
+  // record remains live if either release fails.
   const bool released_window = rtcore_release_synthetic_handoff_window(key);
   const bool released_token = rtcore_release_symbolic_rt_token(token_key);
+  if (!released_window || !released_token) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_RETIRE_RESOURCE_COMMIT_INVARIANT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+            "released_window=%u released_token=%u\n",
+            current_warp_metadata.owner_hw_sid,
+            current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
+            lane_slot_index, released_window ? 1u : 0u,
+            released_token ? 1u : 0u);
+    fflush(stderr);
+    abort();
+  }
+
+  unsigned retired_lane_mask = 0;
+  bool resident_record_released = false;
+  const char *resident_retire_failure = "accepted";
+  const bool resident_retire_accepted =
+      resident_token_found &&
+      rtcore_retire_resident_rt_warp_lane(
+          current_warp_metadata.owner_hw_sid,
+          current_warp_metadata.warp_id, lane_slot_index, thread->get_uid(),
+          context_ptr_data.u64, handoff_window_base_data.u64,
+          resident_token_id, resident_token_generation,
+          resident_window_generation, true,
+          rtcore_v02_lsu_issue_cycle(thread),
+          &retired_lane_mask, &resident_record_released,
+          &resident_retire_failure);
+  if (!resident_retire_accepted) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_RETIRE_RESIDENT_COMMIT_INVARIANT "
+            "reason=%s owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u\n",
+            resident_retire_failure, current_warp_metadata.owner_hw_sid,
+            current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
+            lane_slot_index);
+    fflush(stderr);
+    abort();
+  }
+
   rtcore_mark_launch_allocation_lifetime_retire(
       pI, allocation_record, current_warp_metadata.active_mask, released_window,
       released_token);
