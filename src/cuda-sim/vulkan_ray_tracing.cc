@@ -193,6 +193,7 @@ static const char *RTCORE_TRACE_REPLAY_MODEL_NAME =
 static const unsigned RTCORE_COMPACT_TRACE_DEFAULT_EVENTS_PER_LANE = 64;
 static const unsigned RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR = 256;
 static const unsigned RTCORE_COMPACT_TRACE_EVENT_TARGET_BYTES = 16;
+static const unsigned RTCORE_COMPACT_TRACE_EVENT_SEQ_CAPACITY = 65536;
 static const unsigned RTCORE_REPLAY_MEMORY_DEMAND_CACHE_LINE_BYTES = 64;
 static const unsigned RTCORE_REPLAY_MEMORY_REQUEST_GRANULE_BYTES = 32;
 static const unsigned RTCORE_REPLAY_STACK_LATENCY_CYCLES = 2;
@@ -2522,10 +2523,23 @@ static unsigned rtcore_trace_hit_update_flags(
     return static_cast<unsigned>(hit_update_kind) & 0xffu;
 }
 
+static bool rtcore_compact_trace_event_is_semantic_boundary(
+    rtcore_compact_trace_event_type event_type, unsigned flags)
+{
+    if (event_type == RTCORE_TRACE_HIT_UPDATE) {
+        return (flags & 0xffu) == RTCORE_TRACE_HIT_UPDATE_KIND_ANY_HIT;
+    }
+    return event_type == RTCORE_TRACE_PRIMITIVE_TEST &&
+           (flags & 0x0fu) ==
+               RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED &&
+           (flags & 0x20u) != 0;
+}
+
 struct rtcore_bounded_trace_collector {
     bool enabled;
     unsigned lane_id;
     unsigned max_trace_events_per_lane;
+    unsigned ordinary_timing_event_count;
     unsigned next_event_seq;
     bool timing_trace_overflowed;
     rtcore_trace_timing_precision_class timing_precision_class;
@@ -2543,7 +2557,8 @@ struct rtcore_bounded_trace_collector {
           lane_id(thread ? (thread->get_tid().x & 31u) : 0),
           max_trace_events_per_lane(
               rtcore_compact_trace_events_per_lane_config()),
-          next_event_seq(0), timing_trace_overflowed(false),
+          ordinary_timing_event_count(0), next_event_seq(0),
+          timing_trace_overflowed(false),
           timing_precision_class(RTCORE_TRACE_TIMING_PRECISION_EXACT),
           overflow_summary_events(0), overflow_summary(),
           has_overflow_summary_event(false), overflow_summary_event_index(0),
@@ -2556,8 +2571,23 @@ struct rtcore_bounded_trace_collector {
                 max_trace_events_per_lane =
                     RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR;
             }
-            events.reserve(max_trace_events_per_lane);
+            events.reserve(max_trace_events_per_lane + 1);
         }
+    }
+
+    rtcore_bounded_trace_collector(unsigned test_lane_id,
+                                   unsigned test_max_trace_events_per_lane)
+        : enabled(true), lane_id(test_lane_id),
+          max_trace_events_per_lane(test_max_trace_events_per_lane),
+          ordinary_timing_event_count(0), next_event_seq(0),
+          timing_trace_overflowed(false),
+          timing_precision_class(RTCORE_TRACE_TIMING_PRECISION_EXACT),
+          overflow_summary_events(0), overflow_summary(),
+          has_overflow_summary_event(false), overflow_summary_event_index(0),
+          oracle_anyhit_candidate_count(0),
+          oracle_requires_intersection_shader(false)
+    {
+        events.reserve(max_trace_events_per_lane + 1);
     }
 
     void record_overflow_event(rtcore_compact_trace_event_type event_type,
@@ -2626,6 +2656,19 @@ struct rtcore_bounded_trace_collector {
         return event;
     }
 
+    uint16_t allocate_event_seq()
+    {
+        if (next_event_seq >= RTCORE_COMPACT_TRACE_EVENT_SEQ_CAPACITY) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_COMPACT_TRACE_EVENT_SEQ_EXHAUSTED "
+                    "lane_id=%u next_event_seq=%u capacity=%u\n",
+                    lane_id, next_event_seq,
+                    RTCORE_COMPACT_TRACE_EVENT_SEQ_CAPACITY);
+            abort();
+        }
+        return static_cast<uint16_t>(next_event_seq++);
+    }
+
     void append_or_update_overflow_summary()
     {
         timing_trace_overflowed = true;
@@ -2642,23 +2685,9 @@ struct rtcore_bounded_trace_collector {
             return;
         }
 
-        if (events.size() < max_trace_events_per_lane) {
-            overflow_summary_event_index = events.size();
-            has_overflow_summary_event = true;
-            events.push_back(make_overflow_summary_event(
-                static_cast<uint16_t>(next_event_seq++)));
-            return;
-        }
-
-        if (!events.empty()) {
-            overflow_summary_event_index = events.size() - 1;
-            record_overflow_event(events[overflow_summary_event_index]);
-            has_overflow_summary_event = true;
-            const uint16_t event_seq =
-                events[overflow_summary_event_index].event_seq;
-            events[overflow_summary_event_index] =
-                make_overflow_summary_event(event_seq);
-        }
+        overflow_summary_event_index = events.size();
+        has_overflow_summary_event = true;
+        events.push_back(make_overflow_summary_event(allocate_event_seq()));
     }
 
     unsigned append(rtcore_compact_trace_event_type event_type,
@@ -2669,10 +2698,19 @@ struct rtcore_bounded_trace_collector {
         if (!enabled) {
             return UINT_MAX;
         }
-        if (events.size() >= max_trace_events_per_lane) {
+        const bool semantic_boundary =
+            rtcore_compact_trace_event_is_semantic_boundary(event_type,
+                                                            flags);
+        if (ordinary_timing_event_count >= max_trace_events_per_lane &&
+            !semantic_boundary) {
             record_overflow_event(event_type, resource_class, bytes, count);
             append_or_update_overflow_summary();
             return UINT_MAX;
+        }
+        const bool semantic_boundary_after_overflow =
+            semantic_boundary && has_overflow_summary_event;
+        if (semantic_boundary_after_overflow) {
+            append_or_update_overflow_summary();
         }
 
         rtcore_compact_trace_event event = {};
@@ -2680,10 +2718,26 @@ struct rtcore_bounded_trace_collector {
         event.packed_fields =
             rtcore_pack_compact_trace_fields(lane_id, event_type,
                                              resource_class, flags);
-        event.event_seq = static_cast<uint16_t>(next_event_seq++);
         event.packed_count_bytes =
             rtcore_pack_compact_trace_count_bytes(count, bytes);
+        if (semantic_boundary_after_overflow &&
+            has_overflow_summary_event &&
+            overflow_summary_event_index < events.size()) {
+            event.event_seq =
+                events[overflow_summary_event_index].event_seq;
+            events[overflow_summary_event_index].event_seq =
+                allocate_event_seq();
+            events.insert(events.begin() + overflow_summary_event_index,
+                          event);
+            overflow_summary_event_index++;
+            return event.event_seq;
+        }
+
+        event.event_seq = allocate_event_seq();
         events.push_back(event);
+        if (!semantic_boundary) {
+            ordinary_timing_event_count++;
+        }
         return event.event_seq;
     }
 
@@ -2810,6 +2864,111 @@ struct rtcore_bounded_trace_collector {
         return record;
     }
 };
+
+static void rtcore_compact_trace_self_test_require(bool condition,
+                                                   const char *reason)
+{
+    if (condition) return;
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_COMPACT_TRACE_BOUNDARY_OVERFLOW_SELF_TEST "
+            "failed reason=%s\n",
+            reason ? reason : "unknown");
+    abort();
+}
+
+static void rtcore_compact_trace_boundary_overflow_self_test()
+{
+    rtcore_bounded_trace_collector collector(7, 2);
+    collector.append(RTCORE_TRACE_NODE_TEST, RTCORE_TRACE_RESOURCE_NODE,
+                     0x10, 0, 1, 0);
+    collector.append(
+        RTCORE_TRACE_PRIMITIVE_TEST, RTCORE_TRACE_RESOURCE_PRIMITIVE, 0x20,
+        0, 1,
+        rtcore_trace_primitive_flags(
+            RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED, true, true));
+    collector.append(RTCORE_TRACE_STACK_PUSH, RTCORE_TRACE_RESOURCE_STACK,
+                     0x30, 0, 1,
+                     rtcore_trace_stack_flags(false, false, false));
+    collector.append(
+        RTCORE_TRACE_HIT_UPDATE, RTCORE_TRACE_RESOURCE_COMPLETION, 0x40, 0,
+        1, rtcore_trace_hit_update_flags(
+               RTCORE_TRACE_HIT_UPDATE_KIND_ANY_HIT));
+
+    rtcore_compact_trace_self_test_require(
+        collector.ordinary_timing_event_count == 2,
+        "semantic_boundary_consumed_ordinary_capacity");
+    rtcore_compact_trace_self_test_require(
+        !collector.timing_trace_overflowed &&
+            !collector.has_overflow_summary_event,
+        "summary_created_before_ordinary_overflow");
+
+    collector.append(RTCORE_TRACE_PRIMITIVE_FETCH,
+                     RTCORE_TRACE_RESOURCE_PRIMITIVE, 0x50, 32, 1, 0);
+    collector.append(
+        RTCORE_TRACE_PRIMITIVE_TEST, RTCORE_TRACE_RESOURCE_PRIMITIVE, 0x60,
+        0, 1,
+        rtcore_trace_primitive_flags(
+            RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED, true, true));
+    collector.append(
+        RTCORE_TRACE_HIT_UPDATE, RTCORE_TRACE_RESOURCE_COMPLETION, 0x68, 0,
+        1, rtcore_trace_hit_update_flags(
+               RTCORE_TRACE_HIT_UPDATE_KIND_ANY_HIT));
+    collector.append(RTCORE_TRACE_NODE_FETCH, RTCORE_TRACE_RESOURCE_NODE,
+                     0x70, 64, 1, 0);
+
+    const rtcore_compact_trace_event_type expected_types[] = {
+        RTCORE_TRACE_NODE_TEST,
+        RTCORE_TRACE_PRIMITIVE_TEST,
+        RTCORE_TRACE_STACK_PUSH,
+        RTCORE_TRACE_HIT_UPDATE,
+        RTCORE_TRACE_PRIMITIVE_TEST,
+        RTCORE_TRACE_HIT_UPDATE,
+        RTCORE_TRACE_OVERFLOW_SUMMARY,
+    };
+    const unsigned expected_event_count =
+        sizeof(expected_types) / sizeof(expected_types[0]);
+    rtcore_compact_trace_self_test_require(
+        collector.events.size() == expected_event_count,
+        "unexpected_retained_event_count");
+    for (unsigned i = 0; i < expected_event_count; ++i) {
+        rtcore_compact_trace_self_test_require(
+            rtcore_unpack_compact_trace_event_type(collector.events[i]) ==
+                expected_types[i],
+            "retained_event_order_mismatch");
+        rtcore_compact_trace_self_test_require(
+            collector.events[i].event_seq == i,
+            "event_seq_not_unique_monotonic");
+    }
+    rtcore_compact_trace_self_test_require(
+        collector.timing_trace_overflowed &&
+            collector.overflow_summary_events == 1 &&
+            collector.overflow_summary_event_index + 1 ==
+                collector.events.size(),
+        "overflow_summary_not_unique_terminal");
+    rtcore_compact_trace_self_test_require(
+        collector.overflow_summary.overflow_primitive_fetch_count == 1 &&
+            collector.overflow_summary.overflow_node_fetch_count == 1,
+        "overflow_counters_mismatch");
+
+    printf("GPGPU-Sim RTCORE_COMPACT_TRACE_BOUNDARY_OVERFLOW_SELF_TEST ok "
+           "ordinary_timing_event_count=%u retained_event_count=%u "
+           "overflow_summary_events=%u\n",
+           collector.ordinary_timing_event_count,
+           (unsigned)collector.events.size(),
+           collector.overflow_summary_events);
+    fflush(stdout);
+}
+
+static void rtcore_maybe_run_compact_trace_boundary_overflow_self_test()
+{
+    static bool ran = false;
+    if (ran) return;
+    const char *enabled =
+        getenv("VULKAN_SIM_RTCORE_TEST_COMPACT_TRACE_BOUNDARY_OVERFLOW");
+    if (!enabled || enabled[0] == '\0' || strcmp(enabled, "0") == 0) return;
+    ran = true;
+    rtcore_compact_trace_boundary_overflow_self_test();
+}
 
 static void rtcore_maybe_log_compact_trace_overflow_summary(
     const rtcore_compact_trace_export_record &record)
@@ -11316,6 +11475,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     traversal_data.rtcore_primitive_tests = 0;
 
     rtcore_bounded_trace_collector rtcore_compact_trace(thread);
+    rtcore_maybe_run_compact_trace_boundary_overflow_self_test();
 
     const bool pixel_trace_enabled = rtcore_pixel_trace_matches_thread(thread);
     if (pixel_trace_enabled) {
