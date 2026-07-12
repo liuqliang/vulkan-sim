@@ -46,6 +46,8 @@
 
 namespace fs = boost::filesystem;
 
+extern "C" bool rtcore_custom_path_mode_enabled();
+
 static bool rt_progress_logging_enabled() {
     static int enabled = []() {
         const char *value = getenv("VULKAN_SIM_PROGRESS_LOG");
@@ -1420,7 +1422,12 @@ enum rtcore_continuation_model {
 static rtcore_continuation_model rtcore_continuation_model_config()
 {
     const char *value = getenv("VULKAN_SIM_RTCORE_CONTINUATION_MODEL");
-    if (value == NULL || value[0] == '\0' || strcmp(value, "off") == 0) {
+    if (value == NULL || value[0] == '\0') {
+        return rtcore_custom_path_mode_enabled()
+                   ? RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY
+                   : RTCORE_CONTINUATION_MODEL_OFF;
+    }
+    if (strcmp(value, "off") == 0) {
         return RTCORE_CONTINUATION_MODEL_OFF;
     }
     if (strcmp(value, "synthetic_split") == 0) {
@@ -1430,6 +1437,12 @@ static rtcore_continuation_model rtcore_continuation_model_config()
         return RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY;
     }
     return RTCORE_CONTINUATION_MODEL_OFF;
+}
+
+extern "C" bool rtcore_oracle_shader_boundary_continuation_enabled()
+{
+    return rtcore_continuation_model_config() ==
+           RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY;
 }
 
 static bool rtcore_continuation_model_enabled()

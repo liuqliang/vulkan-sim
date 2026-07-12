@@ -95,6 +95,7 @@ extern "C" bool rtcore_preflight_retire_resident_rt_warp_lane(
     unsigned long long handoff_window_base, unsigned token_id,
     unsigned token_allocator_generation, unsigned window_generation,
     const char **failure_reason);
+extern "C" bool rtcore_oracle_shader_boundary_continuation_enabled();
 
 const char *g_opcode_string[NUM_OPCODES] = {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) STR,
@@ -7738,9 +7739,13 @@ static bool rtcore_legacy_trace_ray_path_enabled() {
       rtcore_get_path_mode_policy());
 }
 
-static bool rtcore_forward_sideband_path_enabled() {
+extern "C" bool rtcore_custom_path_mode_enabled() {
   return rtcore_path_mode_policy_enables_custom_path(
       rtcore_get_path_mode_policy());
+}
+
+static bool rtcore_forward_sideband_path_enabled() {
+  return rtcore_custom_path_mode_enabled();
 }
 
 static bool rtcore_trace_invocation_publication_source_enabled() {
@@ -12451,8 +12456,7 @@ bool rtcore_synthetic_owner_tuple_matches(
 }
 
 static bool rtcore_shader_return_application_required() {
-  const char *model = getenv("VULKAN_SIM_RTCORE_CONTINUATION_MODEL");
-  return model != NULL && strcmp(model, "oracle_shader_boundary") == 0;
+  return rtcore_oracle_shader_boundary_continuation_enabled();
 }
 
 static float rtcore_shader_return_word_to_float(unsigned word) {
