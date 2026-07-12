@@ -465,6 +465,7 @@ struct rtcore_compact_trace_export_record {
     unsigned cull_mask;
     bool hit_geometry_summary_valid;
     unsigned closest_hit_kind;
+    unsigned closest_hit_geometry_type;
     unsigned closest_hit_geometry_index;
     unsigned closest_hit_primitive_index;
     unsigned closest_hit_instance_index;
@@ -509,6 +510,7 @@ struct rtcore_replay_lane_request {
     unsigned cull_mask;
     bool hit_geometry_summary_valid;
     unsigned closest_hit_kind;
+    unsigned closest_hit_geometry_type;
     unsigned closest_hit_geometry_index;
     unsigned closest_hit_primitive_index;
     unsigned closest_hit_instance_index;
@@ -3102,6 +3104,7 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.cull_mask = record.cull_mask;
     request.hit_geometry_summary_valid = record.hit_geometry_summary_valid;
     request.closest_hit_kind = record.closest_hit_kind;
+    request.closest_hit_geometry_type = record.closest_hit_geometry_type;
     request.closest_hit_geometry_index = record.closest_hit_geometry_index;
     request.closest_hit_primitive_index = record.closest_hit_primitive_index;
     request.closest_hit_instance_index = record.closest_hit_instance_index;
@@ -4218,12 +4221,11 @@ static void rtcore_materialize_replay_continuation_packet_handoff_words(
     if (fact->candidate_valid) {
         const bool procedural = boundary_candidate_valid
                                     ? boundary_candidate->geometry_type == 0x02u
-                                    : request.oracle_requires_intersection_shader;
+                                    : request.closest_hit_geometry_type == 0x02u;
         const unsigned geometry_type = procedural ? 0x02u : 0x01u;
         const unsigned hit_kind = boundary_candidate_valid
                                       ? boundary_candidate->hit_kind
-                                      : (procedural ? 0u
-                                                    : request.closest_hit_kind);
+                                      : request.closest_hit_kind;
         const unsigned candidate_ref_kind = procedural ? 0x02u : 0x01u;
         const unsigned primitive_index =
             boundary_candidate_valid ? boundary_candidate->primitive_index
@@ -9031,6 +9033,114 @@ static const char *rtcore_resubmit_admission_test_failpoint_mode()
     return NULL;
 }
 
+extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
+    unsigned owner_hw_sid, unsigned previous_warp_uid, unsigned warp_id,
+    unsigned previous_active_mask, unsigned lane_id, ptx_thread_info *thread,
+    unsigned long long refresh_cycle, const char **failure_reason)
+{
+    const char *reason = "accepted";
+    if (thread == NULL || thread->RT_thread_data == NULL ||
+        thread->RT_thread_data->traversal_data.empty() || lane_id >= 32 ||
+        (previous_active_mask & (1u << lane_id)) == 0) {
+        reason = "REFRESH_THREAD_OR_TRAVERSAL_STATE_MISSING";
+    }
+
+    std::map<unsigned, rtcore_replay_lane_request>::iterator request_it =
+        g_rtcore_replay_lane_requests.end();
+    if (strcmp(reason, "accepted") == 0) {
+        request_it = g_rtcore_replay_lane_requests.find(thread->get_uid());
+        if (request_it == g_rtcore_replay_lane_requests.end() ||
+            !request_it->second.valid) {
+            reason = "REFRESH_RETAINED_REQUEST_MISSING";
+        }
+    }
+
+    rtcore_replay_lane_request *request =
+        request_it != g_rtcore_replay_lane_requests.end()
+            ? &request_it->second
+            : NULL;
+    if (request != NULL &&
+        (request->owner_hw_sid != owner_hw_sid ||
+         request->warp_uid != previous_warp_uid ||
+         request->warp_id != warp_id ||
+         request->active_mask != previous_active_mask ||
+         request->lane_id != lane_id ||
+         request->state != RTCORE_REPLAY_WAITING_SHADER ||
+         !request->continuation_boundary_pending)) {
+        reason = "REFRESH_RETAINED_REQUEST_IDENTITY_MISMATCH";
+    }
+
+    bool hit_geometry = false;
+    Hit_data closest_hit = {};
+    if (strcmp(reason, "accepted") == 0) {
+        Traversal_data *traversal_data =
+            thread->RT_thread_data->traversal_data.back();
+        memory_space *mem = thread->get_global_memory();
+        if (traversal_data == NULL || mem == NULL) {
+            reason = "REFRESH_TRAVERSAL_MEMORY_MISSING";
+        } else {
+            mem->read(&(traversal_data->hit_geometry),
+                      sizeof(traversal_data->hit_geometry), &hit_geometry);
+            if (hit_geometry) {
+                mem->read(&(traversal_data->closest_hit),
+                          sizeof(traversal_data->closest_hit), &closest_hit);
+                if (closest_hit.hitGroupIndex < 0 ||
+                    (closest_hit.geometryType !=
+                         VK_GEOMETRY_TYPE_TRIANGLES_KHR &&
+                     closest_hit.geometryType != VK_GEOMETRY_TYPE_AABBS_KHR)) {
+                    reason = "REFRESH_CLOSEST_HIT_STATE_INVALID";
+                }
+            }
+        }
+    }
+
+    if (strcmp(reason, "accepted") == 0) {
+        request->hit_geometry_summary_valid = hit_geometry;
+        request->closest_hit_kind =
+            hit_geometry ? closest_hit.hit_kind : 0u;
+        request->closest_hit_geometry_type =
+            hit_geometry
+                ? (closest_hit.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR
+                       ? 0x01u
+                       : 0x02u)
+                : 0u;
+        request->closest_hit_geometry_index =
+            hit_geometry ? closest_hit.geometry_index : 0u;
+        request->closest_hit_primitive_index =
+            hit_geometry ? closest_hit.primitive_index : 0u;
+        request->closest_hit_instance_index =
+            hit_geometry ? closest_hit.instance_index : 0u;
+        request->instance_sbt_contribution_valid = hit_geometry;
+        request->instance_sbt_contribution =
+            hit_geometry
+                ? static_cast<unsigned>(closest_hit.hitGroupIndex)
+                : 0u;
+        printf("GPGPU-Sim RTCORE_SHADER_RETURN_TERMINAL_FACTS_REFRESH "
+               "owner_hw_sid=%u previous_warp_uid=%u warp_id=%u "
+               "lane_id=%u hit_geometry=%u closest_hit_kind=%u "
+               "closest_hit_geometry_type=%u "
+               "closest_hit_geometry_index=%u "
+               "closest_hit_primitive_index=%u "
+               "closest_hit_instance_index=%u "
+               "instance_sbt_contribution=%u "
+               "refresh_source=shader_return_terminal_facts_refresh "
+               "refresh_cycle=%llu\n",
+               owner_hw_sid, previous_warp_uid, warp_id, lane_id,
+               hit_geometry ? 1u : 0u, request->closest_hit_kind,
+               request->closest_hit_geometry_type,
+               request->closest_hit_geometry_index,
+               request->closest_hit_primitive_index,
+               request->closest_hit_instance_index,
+               request->instance_sbt_contribution, refresh_cycle);
+        fflush(stdout);
+    }
+
+    if (failure_reason != NULL) {
+        *failure_reason = reason;
+    }
+    return strcmp(reason, "accepted") == 0;
+}
+
 extern "C" bool rtcore_validate_shader_visible_resubmit_lane(
     unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
     unsigned next_active_mask, unsigned lane_id, unsigned thread_uid,
@@ -12342,6 +12452,13 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         candidate_summary_valid
             ? traversal_data.closest_hit.hit_kind
             : 0u;
+    rtcore_trace_export.closest_hit_geometry_type =
+        candidate_summary_valid
+            ? (traversal_data.closest_hit.geometryType ==
+                       VK_GEOMETRY_TYPE_TRIANGLES_KHR
+                   ? 0x01u
+                   : 0x02u)
+            : 0u;
     rtcore_trace_export.closest_hit_geometry_index =
         candidate_summary_valid
             ? traversal_data.closest_hit.geometry_index
@@ -13147,13 +13264,23 @@ int VulkanRayTracing::rtcoreCompatibilityShaderTargetKind(unsigned shader_id,
     if (shader_id >= VulkanRayTracing::shaders.size()) {
         return -1;
     }
-    const gl_shader_stage expected_stage =
-        reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED
-            ? MESA_SHADER_INTERSECTION
-            : (reason ==
-                       RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED
-                   ? MESA_SHADER_ANY_HIT
-                   : MESA_SHADER_NONE);
+    gl_shader_stage expected_stage = MESA_SHADER_NONE;
+    switch (reason) {
+    case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_MISS:
+        expected_stage = MESA_SHADER_MISS;
+        break;
+    case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_CLOSEST_HIT_READY:
+        expected_stage = MESA_SHADER_CLOSEST_HIT;
+        break;
+    case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED:
+        expected_stage = MESA_SHADER_ANY_HIT;
+        break;
+    case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED:
+        expected_stage = MESA_SHADER_INTERSECTION;
+        break;
+    default:
+        break;
+    }
     if (expected_stage == MESA_SHADER_NONE ||
         VulkanRayTracing::shaders[shader_id].type != expected_stage) {
         return -1;
@@ -13184,9 +13311,118 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
         reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED;
     const bool anyhit =
         reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED;
-    if (!intersection && !anyhit) return 0;
+    const bool terminal_miss =
+        reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_MISS;
+    const bool terminal_closest_hit =
+        reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_CLOSEST_HIT_READY;
+    if (!intersection && !anyhit && !terminal_miss &&
+        !terminal_closest_hit) {
+        return 0;
+    }
 
     const uint32_t tid = thread->get_tid().x;
+    Traversal_data *traversal_data =
+        thread->RT_thread_data->traversal_data.back();
+    memory_space *mem = thread->get_global_memory();
+
+    if (terminal_miss || terminal_closest_hit) {
+        bool hit_geometry = false;
+        mem->read(&(traversal_data->hit_geometry),
+                  sizeof(traversal_data->hit_geometry), &hit_geometry);
+        uint32_t miss_index = 0;
+        mem->read(&(traversal_data->missIndex),
+                  sizeof(traversal_data->missIndex), &miss_index);
+
+        bool terminal_state_valid = false;
+        Hit_data closest_hit = {};
+        uint64_t expected_selector = miss_index;
+        unsigned expected_geometry_type = 0;
+        if (terminal_miss) {
+            terminal_state_valid =
+                !hit_geometry && hit_record_selector == miss_index;
+        } else {
+            mem->read(&(traversal_data->closest_hit),
+                      sizeof(traversal_data->closest_hit), &closest_hit);
+            uint32_t sbt_record_offset = 0;
+            uint32_t sbt_record_stride = 0;
+            mem->read(&(traversal_data->sbtRecordOffset),
+                      sizeof(traversal_data->sbtRecordOffset),
+                      &sbt_record_offset);
+            mem->read(&(traversal_data->sbtRecordStride),
+                      sizeof(traversal_data->sbtRecordStride),
+                      &sbt_record_stride);
+            expected_selector =
+                closest_hit.hitGroupIndex < 0
+                    ? UINT64_MAX
+                    : static_cast<uint64_t>(sbt_record_offset) +
+                          static_cast<uint64_t>(closest_hit.geometry_index) *
+                              sbt_record_stride +
+                          static_cast<uint32_t>(closest_hit.hitGroupIndex);
+            expected_geometry_type =
+                closest_hit.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR
+                    ? 1u
+                    : 2u;
+            terminal_state_valid =
+                hit_geometry && expected_selector <= UINT_MAX &&
+                hit_record_selector == expected_selector &&
+                boundary_hit_group_index ==
+                    static_cast<unsigned>(closest_hit.hitGroupIndex) &&
+                boundary_geometry_type == expected_geometry_type &&
+                boundary_geometry_index == closest_hit.geometry_index &&
+                primitive_index == closest_hit.primitive_index &&
+                instance_index == closest_hit.instance_index &&
+                hit_kind == closest_hit.hit_kind;
+        }
+        if (!terminal_state_valid) {
+            fprintf(stderr,
+                    "GPGPU-Sim "
+                    "RTCORE_SHADER_CONTINUATION_COMPAT_CONTEXT_FAULT "
+                    "lane_id=%u reason=%u hit_record_selector=%u "
+                    "expected_selector=%llu miss_index=%u hit_geometry=%u "
+                    "packet_hit_group_index=%u traversal_hit_group_index=%d "
+                    "packet_geometry_type=%u traversal_geometry_type=%u "
+                    "packet_geometry_index=%u traversal_geometry_index=%u "
+                    "packet_primitive_index=%u traversal_primitive_index=%u "
+                    "packet_instance_index=%u traversal_instance_index=%u "
+                    "packet_hit_kind=%u traversal_hit_kind=%u "
+                    "fault=terminal_traversal_state_mismatch\n",
+                    tid, reason, hit_record_selector,
+                    static_cast<unsigned long long>(expected_selector),
+                    miss_index, hit_geometry ? 1u : 0u,
+                    boundary_hit_group_index,
+                    terminal_closest_hit ? closest_hit.hitGroupIndex : -1,
+                    boundary_geometry_type,
+                    terminal_closest_hit ? expected_geometry_type : 0u,
+                    boundary_geometry_index,
+                    terminal_closest_hit ? closest_hit.geometry_index : 0u,
+                    primitive_index,
+                    terminal_closest_hit ? closest_hit.primitive_index : 0u,
+                    instance_index,
+                    terminal_closest_hit ? closest_hit.instance_index : 0u,
+                    hit_kind,
+                    terminal_closest_hit ? closest_hit.hit_kind : 0u);
+            fflush(stderr);
+            return 0;
+        }
+
+        const int32_t current_shader_counter = -1;
+        const int32_t current_shader_type = -1;
+        mem->write(&(traversal_data->current_shader_counter),
+                   sizeof(traversal_data->current_shader_counter),
+                   &current_shader_counter, thread, pI);
+        mem->write(&(traversal_data->current_shader_type),
+                   sizeof(traversal_data->current_shader_type),
+                   &current_shader_type, thread, pI);
+        printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_COMPAT_CONTEXT_PREPARE "
+               "lane_id=%u reason=%u hit_record_selector=%u "
+               "terminal_kind=%s shader_counter=-1 shader_type=-1 "
+               "context_source=terminal_traversal_state\n",
+               tid, reason, hit_record_selector,
+               terminal_miss ? "terminal_miss" : "terminal_closest_hit");
+        fflush(stdout);
+        return 1;
+    }
+
     const uint32_t cta_x = thread->get_ctaid().x;
     const uint32_t cta_y = thread->get_ctaid().y;
     warp_intersection_table *table =
@@ -13218,9 +13454,6 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
         return 0;
     }
 
-    Traversal_data *traversal_data =
-        thread->RT_thread_data->traversal_data.back();
-    memory_space *mem = thread->get_global_memory();
     const int32_t current_shader_counter =
         static_cast<int32_t>(shader_counter);
     const int32_t current_shader_type = intersection ? 1 : 2;

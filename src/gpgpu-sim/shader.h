@@ -3136,7 +3136,8 @@ class shader_core_ctx : public core_t {
   bool rtcore_launch_shader_continuation_cohort(
       unsigned warp_id, unsigned cohort_lane_mask,
       function_info *target_func, unsigned long long handoff_window_base,
-      unsigned default_hit_result, unsigned *return_pc,
+      unsigned default_hit_result, bool requires_handoff_return,
+      unsigned *return_pc,
       unsigned *return_rpc);
 
   // used by functional simulation:

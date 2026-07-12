@@ -90,6 +90,10 @@ extern "C" bool rtcore_commit_shader_visible_resubmit_admission(
     unsigned *released_lane_mask, unsigned *reactivated_lane_mask,
     unsigned *resident_occupancy_before, unsigned *resident_occupancy_after,
     const char **failure_reason);
+extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
+    unsigned owner_hw_sid, unsigned previous_warp_uid, unsigned warp_id,
+    unsigned previous_active_mask, unsigned lane_id, ptx_thread_info *thread,
+    unsigned long long refresh_cycle, const char **failure_reason);
 extern "C" bool rtcore_preflight_retire_resident_rt_warp_lane(
     unsigned owner_hw_sid, unsigned warp_id, unsigned lane_id,
     unsigned thread_uid, unsigned long long context_ptr,
@@ -9284,6 +9288,7 @@ const unsigned long long RTCORE_HANDOFF_WINDOW_ALIGNMENT = 128;
 const unsigned RTCORE_HANDOFF_LANE_SLOT_WORDS = 32;
 const unsigned RTCORE_HANDOFF_W_RAY_FLAGS = 0;
 const unsigned RTCORE_HANDOFF_W_SELECTOR_BEGIN = 1;
+const unsigned RTCORE_HANDOFF_W_GEOMETRY_INDEX = 4;
 const unsigned RTCORE_HANDOFF_W_CANDIDATE_BEGIN = 5;
 const unsigned RTCORE_HANDOFF_W_SHADER_RETURN_BEGIN = 13;
 const unsigned RTCORE_HANDOFF_W_INLINE_ATTRIBUTE_BEGIN = 16;
@@ -12495,6 +12500,7 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
   const char *action = "unsupported";
   unsigned reason = 0;
   unsigned shader_return_words[3] = {};
+  unsigned boundary_geometry_index = 0;
   int32_t shader_counter = -1;
   int32_t shader_type = -1;
 
@@ -12519,9 +12525,16 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
         handoff_window_base +
         lane_id * RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE +
         RTCORE_HANDOFF_W_SHADER_RETURN_BEGIN * sizeof(unsigned);
+    const unsigned long long boundary_geometry_index_addr =
+        handoff_window_base +
+        lane_id * RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE +
+        RTCORE_HANDOFF_W_GEOMETRY_INDEX * sizeof(unsigned);
     mem->read_simulator_backing(shader_return_base,
                                 sizeof(shader_return_words),
                                 shader_return_words);
+    mem->read_simulator_backing(boundary_geometry_index_addr,
+                                sizeof(boundary_geometry_index),
+                                &boundary_geometry_index);
     mem->read(&(traversal_data->current_shader_counter),
               sizeof(traversal_data->current_shader_counter),
               &shader_counter);
@@ -12659,6 +12672,7 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
               closest_hit.geometryType == VK_GEOMETRY_TYPE_AABBS_KHR &&
               closest_hit.hit_kind == hit_kind &&
               closest_hit.hitGroupIndex == hit_group_index &&
+              closest_hit.geometry_index == boundary_geometry_index &&
               closest_hit.primitive_index == primitive_index &&
               closest_hit.instance_index == instance_index;
           if (ordering == rtcore::RTCORE_PROCEDURAL_REPORT_KEEP_EXISTING) {
@@ -12681,6 +12695,9 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
             mem->write(&(traversal_data->closest_hit.hitGroupIndex),
                        sizeof(traversal_data->closest_hit.hitGroupIndex),
                        &hit_group_index, thread, pI);
+            mem->write(&(traversal_data->closest_hit.geometry_index),
+                       sizeof(traversal_data->closest_hit.geometry_index),
+                       &boundary_geometry_index, thread, pI);
             mem->write(&(traversal_data->closest_hit.world_min_thit),
                        sizeof(traversal_data->closest_hit.world_min_thit),
                        &reported_t, thread, pI);
@@ -12709,13 +12726,13 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
   printf("GPGPU-Sim RTCORE_SHADER_RETURN_DECISION_APPLY "
          "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u warp_id=%u "
          "lane_id=%u handoff_window_base=0x%llx reason=%u hit_result=%u "
-         "shader_counter=%d "
+         "shader_counter=%d boundary_geometry_index=%u "
          "action=%s handoff_return_consumed=1 functional_state_applied=1 "
          "functional_oracle_replayed=0 apply_cycle=%llu "
          "apply_result=applied\n",
          owner_hw_sid, previous_warp_uid, warp_uid, warp_id, lane_id,
-         handoff_window_base, reason, hit_result, shader_counter, action,
-         apply_cycle);
+         handoff_window_base, reason, hit_result, shader_counter,
+         boundary_geometry_index, action, apply_cycle);
   fflush(stdout);
   return true;
 }
@@ -12877,6 +12894,53 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
     return RTCORE_SYMBOLIC_RESUBMIT_PENDING_WHOLE_MASK;
   }
 
+  bool shader_return_decisions_applied = true;
+  const char *shader_return_apply_failure = "accepted";
+  bool terminal_facts_refreshed = true;
+  const char *terminal_facts_refresh_failure = "accepted";
+  if (rtcore_shader_return_application_required()) {
+    for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+      if ((metadata.active_mask & rtcore_lane_thread_mask(lane)) == 0) {
+        continue;
+      }
+      if (transaction.lane_thread[lane] == NULL ||
+          !rtcore_apply_shader_visible_resubmit_lane_return(
+              pI, transaction.lane_thread[lane], metadata.owner_hw_sid,
+              transaction.previous_warp_uid, metadata.warp_uid,
+              metadata.warp_id, lane, transaction.handoff_window_base,
+              rtcore_v02_lsu_issue_cycle(thread),
+              &shader_return_apply_failure)) {
+        shader_return_decisions_applied = false;
+        break;
+      }
+      if (!rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
+              metadata.owner_hw_sid, transaction.previous_warp_uid,
+              metadata.warp_id, previous_active_mask, lane,
+              transaction.lane_thread[lane],
+              rtcore_v02_lsu_issue_cycle(thread),
+              &terminal_facts_refresh_failure)) {
+        terminal_facts_refreshed = false;
+        break;
+      }
+    }
+  }
+  if (!shader_return_decisions_applied || !terminal_facts_refreshed) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_RETURN_DECISION_APPLY_FAULT "
+            "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u warp_id=%u "
+            "next_active_mask=0x%08x apply_result=%u refresh_result=%u "
+            "fault=%s\n",
+            metadata.owner_hw_sid, transaction.previous_warp_uid,
+            metadata.warp_uid, metadata.warp_id, metadata.active_mask,
+            shader_return_decisions_applied ? 1u : 0u,
+            terminal_facts_refreshed ? 1u : 0u,
+            !shader_return_decisions_applied
+                ? shader_return_apply_failure
+                : terminal_facts_refresh_failure);
+    fflush(stderr);
+    abort();
+  }
+
   unsigned committed_previous_active_mask = 0;
   unsigned released_lane_mask = 0;
   unsigned reactivated_lane_mask = 0;
@@ -12895,37 +12959,6 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
     return rtcore_reject_symbolic_resubmit(
         pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
         commit_failure);
-  }
-
-  bool shader_return_decisions_applied = true;
-  const char *shader_return_apply_failure = "accepted";
-  if (rtcore_shader_return_application_required()) {
-    for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
-      if ((metadata.active_mask & rtcore_lane_thread_mask(lane)) == 0) {
-        continue;
-      }
-      if (transaction.lane_thread[lane] == NULL ||
-          !rtcore_apply_shader_visible_resubmit_lane_return(
-              pI, transaction.lane_thread[lane], metadata.owner_hw_sid,
-              transaction.previous_warp_uid, metadata.warp_uid,
-              metadata.warp_id, lane, transaction.handoff_window_base,
-              rtcore_v02_lsu_issue_cycle(thread),
-              &shader_return_apply_failure)) {
-        shader_return_decisions_applied = false;
-        break;
-      }
-    }
-  }
-  if (!shader_return_decisions_applied) {
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_SHADER_RETURN_DECISION_APPLY_FAULT "
-            "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u warp_id=%u "
-            "next_active_mask=0x%08x fault=%s\n",
-            metadata.owner_hw_sid, transaction.previous_warp_uid,
-            metadata.warp_uid, metadata.warp_id, metadata.active_mask,
-            shader_return_apply_failure);
-    fflush(stderr);
-    abort();
   }
 
   bool adapter_completion_rebound = true;
