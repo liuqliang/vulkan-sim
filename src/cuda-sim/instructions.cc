@@ -96,6 +96,7 @@ extern "C" bool rtcore_preflight_retire_resident_rt_warp_lane(
     unsigned token_allocator_generation, unsigned window_generation,
     const char **failure_reason);
 extern "C" bool rtcore_oracle_shader_boundary_continuation_enabled();
+extern "C" bool rtcore_custom_submit_continuation_contract_valid();
 
 const char *g_opcode_string[NUM_OPCODES] = {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) STR,
@@ -32218,10 +32219,22 @@ void rtcore_traversal_completion_adapter_publish(
 }  // namespace
 
 void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  assert(pI->get_num_operands() == 3);
   if (rtcore_fail_closed_on_invalid_path_mode(pI)) {
     return;
   }
+  if (!rtcore_custom_submit_continuation_contract_valid()) {
+    const char *model = getenv("VULKAN_SIM_RTCORE_CONTINUATION_MODEL");
+    printf("GPGPU-Sim PTX: RT_SUBMIT continuation-contract violation "
+           "(%s:%u), continuation_model=%s, action=fail-closed, "
+           "required_model=oracle_shader_boundary, "
+           "fallback_path_mode=legacy\n",
+           pI->source_file(), pI->source_line(),
+           model != NULL && model[0] != '\0' ? model : "<unset>");
+    fflush(stdout);
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+  assert(pI->get_num_operands() == 3);
 
   const operand_info &result = pI->operand_lookup(0);
   const operand_info &context_ptr = pI->operand_lookup(1);

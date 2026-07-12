@@ -1445,6 +1445,18 @@ extern "C" bool rtcore_oracle_shader_boundary_continuation_enabled()
            RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY;
 }
 
+extern "C" bool rtcore_custom_submit_continuation_contract_valid()
+{
+    if (!rtcore_custom_path_mode_enabled()) {
+        return false;
+    }
+    const char *value = getenv("VULKAN_SIM_RTCORE_CONTINUATION_MODEL");
+    if (value == NULL || value[0] == '\0') {
+        return true;
+    }
+    return strcmp(value, "oracle_shader_boundary") == 0;
+}
+
 static bool rtcore_continuation_model_enabled()
 {
     return rtcore_continuation_model_config() != RTCORE_CONTINUATION_MODEL_OFF;
