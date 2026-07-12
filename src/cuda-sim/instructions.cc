@@ -53,6 +53,7 @@ class ptx_recognizer;
 #include "cuda_device_printf.h"
 #include "ptx.tab.h"
 #include "ptx_loader.h"
+#include "rtcore_procedural_hit_ordering.h"
 #include "vulkan_ray_tracing.h"
 #include "vulkan_rt_thread_data.h"
 
@@ -7069,50 +7070,68 @@ void report_ray_intersection_impl(const ptx_instruction *pI, ptx_thread_info *th
   Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
 
   float Tmin;
+  float Tmax;
+  float world_min_thit;
+  bool hit_geometry;
   mem->read(&(traversal_data->Tmin), sizeof(traversal_data->Tmin), &Tmin);
+  mem->read(&(traversal_data->Tmax), sizeof(traversal_data->Tmax), &Tmax);
+  mem->read(&(traversal_data->closest_hit.world_min_thit),
+            sizeof(traversal_data->closest_hit.world_min_thit),
+            &world_min_thit);
+  mem->read(&(traversal_data->hit_geometry),
+            sizeof(traversal_data->hit_geometry), &hit_geometry);
 
   bool return_value = false;
+  const rtcore::procedural_report_ordering ordering =
+      rtcore::classify_procedural_report(t_hit, Tmin, Tmax, hit_geometry,
+                                         world_min_thit);
+  if (ordering == rtcore::RTCORE_PROCEDURAL_REPORT_COMMIT) {
+    int32_t shader_counter;
+    mem->read(&(traversal_data->current_shader_counter),
+              sizeof(traversal_data->current_shader_counter),
+              &shader_counter);
 
-  if((Tmin <= t_hit)) {
-    float Tmax;
-    mem->read(&(traversal_data->Tmax), sizeof(traversal_data->Tmax), &Tmax);
+    assert(shader_counter != -1);
+    warp_intersection_table* table =
+        VulkanRayTracing::intersection_table[thread->get_ctaid().x]
+                                               [thread->get_ctaid().y];
 
-    float world_min_thit;
-    mem->read(&(traversal_data->closest_hit.world_min_thit), sizeof(traversal_data->closest_hit.world_min_thit), &world_min_thit);
+    return_value = true;
 
-    bool hit_geometry;
-    mem->read(&(traversal_data->hit_geometry), sizeof(traversal_data->hit_geometry), &hit_geometry);
+    hit_geometry = true;
+    mem->write(&(traversal_data->hit_geometry),
+               sizeof(traversal_data->hit_geometry), &hit_geometry, thread,
+               pI);
 
-    if((hit_geometry && t_hit < world_min_thit) || (!hit_geometry && t_hit <= Tmax)) {
-      int32_t shader_counter;
-      mem->read(&(traversal_data->current_shader_counter), sizeof(traversal_data->current_shader_counter), &shader_counter);
+    VkGeometryTypeKHR geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+    mem->write(&(traversal_data->closest_hit.geometryType),
+               sizeof(VkGeometryTypeKHR), &geometryType, thread, pI);
 
-      assert(shader_counter != -1);
-      warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+    mem->write(&(traversal_data->closest_hit.hit_kind),
+               sizeof(traversal_data->closest_hit.hit_kind), &hit_kind,
+               thread, pI);
 
-      return_value = true;
+    int32_t hitGroupIndex = table->get_hitGroupIndex(
+        shader_counter, thread->get_tid().x, pI, thread);
+    mem->write(&(traversal_data->closest_hit.hitGroupIndex),
+               sizeof(traversal_data->closest_hit.hitGroupIndex),
+               &hitGroupIndex, thread, pI);
 
-      hit_geometry = true;
-      mem->write(&(traversal_data->hit_geometry), sizeof(traversal_data->hit_geometry), &hit_geometry, thread, pI);
+    mem->write(&(traversal_data->closest_hit.world_min_thit),
+               sizeof(traversal_data->closest_hit.world_min_thit), &t_hit,
+               thread, pI);
 
-      VkGeometryTypeKHR geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
-      mem->write(&(traversal_data->closest_hit.geometryType), sizeof(VkGeometryTypeKHR), &geometryType, thread, pI);
+    uint32_t primitive_index = table->get_primitiveID(
+        shader_counter, thread->get_tid().x, pI, thread);
+    mem->write(&(traversal_data->closest_hit.primitive_index),
+               sizeof(traversal_data->closest_hit.primitive_index),
+               &primitive_index, thread, pI);
 
-      mem->write(&(traversal_data->closest_hit.hit_kind),
-                 sizeof(traversal_data->closest_hit.hit_kind), &hit_kind,
-                 thread, pI);
-
-      int32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
-      mem->write(&(traversal_data->closest_hit.hitGroupIndex), sizeof(traversal_data->closest_hit.hitGroupIndex), &hitGroupIndex, thread, pI);
-
-      mem->write(&(traversal_data->closest_hit.world_min_thit), sizeof(traversal_data->closest_hit.world_min_thit), &t_hit, thread, pI);
-
-      uint32_t primitive_index = table->get_primitiveID(shader_counter, thread->get_tid().x, pI, thread);
-      mem->write(&(traversal_data->closest_hit.primitive_index), sizeof(traversal_data->closest_hit.primitive_index), &primitive_index, thread, pI);
-
-      uint32_t instance_index = table->get_instanceID(shader_counter, thread->get_tid().x, pI, thread);
-      mem->write(&(traversal_data->closest_hit.instance_index), sizeof(traversal_data->closest_hit.instance_index), &instance_index, thread, pI);
-    }
+    uint32_t instance_index = table->get_instanceID(
+        shader_counter, thread->get_tid().x, pI, thread);
+    mem->write(&(traversal_data->closest_hit.instance_index),
+               sizeof(traversal_data->closest_hit.instance_index),
+               &instance_index, thread, pI);
   }
 
   data.pred =
@@ -12601,13 +12620,24 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
           rtcore_shader_return_word_to_float(shader_return_words[1]);
       float tmin = 0.0f;
       float tmax = 0.0f;
+      bool hit_geometry = false;
+      Hit_data closest_hit = {};
       mem->read(&(traversal_data->Tmin), sizeof(traversal_data->Tmin),
                 &tmin);
       mem->read(&(traversal_data->Tmax), sizeof(traversal_data->Tmax),
                 &tmax);
+      mem->read(&(traversal_data->hit_geometry),
+                sizeof(traversal_data->hit_geometry), &hit_geometry);
+      if (hit_geometry) {
+        mem->read(&(traversal_data->closest_hit),
+                  sizeof(traversal_data->closest_hit), &closest_hit);
+      }
+      const rtcore::procedural_report_ordering ordering =
+          rtcore::classify_procedural_report(
+              reported_t, tmin, tmax, hit_geometry,
+              closest_hit.world_min_thit);
       if (!attribute_metadata_valid || hit_kind > 0x7fu ||
-          !std::isfinite(reported_t) || reported_t < tmin ||
-          reported_t > tmax) {
+          ordering == rtcore::RTCORE_PROCEDURAL_REPORT_INVALID) {
         failure = "SHADER_RETURN_INTERSECTION_REPORT_INVALID";
       } else {
         warp_intersection_table *table =
@@ -12618,37 +12648,50 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
                                   thread)) {
           failure = "SHADER_RETURN_INTERSECTION_TABLE_IDENTITY_MISSING";
         } else {
-          bool hit_geometry = true;
-          mem->write(&(traversal_data->hit_geometry),
-                     sizeof(traversal_data->hit_geometry), &hit_geometry,
-                     thread, pI);
-          const VkGeometryTypeKHR geometry_type =
-              VK_GEOMETRY_TYPE_AABBS_KHR;
-          mem->write(&(traversal_data->closest_hit.geometryType),
-                     sizeof(traversal_data->closest_hit.geometryType),
-                     &geometry_type, thread, pI);
-          mem->write(&(traversal_data->closest_hit.hit_kind),
-                     sizeof(traversal_data->closest_hit.hit_kind), &hit_kind,
-                     thread, pI);
           const int32_t hit_group_index = table->get_hitGroupIndex(
               shader_counter, thread->get_tid().x, pI, thread);
-          mem->write(&(traversal_data->closest_hit.hitGroupIndex),
-                     sizeof(traversal_data->closest_hit.hitGroupIndex),
-                     &hit_group_index, thread, pI);
-          mem->write(&(traversal_data->closest_hit.world_min_thit),
-                     sizeof(traversal_data->closest_hit.world_min_thit),
-                     &reported_t, thread, pI);
           const uint32_t primitive_index = table->get_primitiveID(
               shader_counter, thread->get_tid().x, pI, thread);
-          mem->write(&(traversal_data->closest_hit.primitive_index),
-                     sizeof(traversal_data->closest_hit.primitive_index),
-                     &primitive_index, thread, pI);
           const uint32_t instance_index = table->get_instanceID(
               shader_counter, thread->get_tid().x, pI, thread);
-          mem->write(&(traversal_data->closest_hit.instance_index),
-                     sizeof(traversal_data->closest_hit.instance_index),
-                     &instance_index, thread, pI);
-          action = "intersection_reported_committed";
+          const bool already_committed =
+              hit_geometry && closest_hit.world_min_thit == reported_t &&
+              closest_hit.geometryType == VK_GEOMETRY_TYPE_AABBS_KHR &&
+              closest_hit.hit_kind == hit_kind &&
+              closest_hit.hitGroupIndex == hit_group_index &&
+              closest_hit.primitive_index == primitive_index &&
+              closest_hit.instance_index == instance_index;
+          if (ordering == rtcore::RTCORE_PROCEDURAL_REPORT_KEEP_EXISTING) {
+            action = already_committed
+                         ? "intersection_reported_already_committed"
+                         : "intersection_reported_kept_closer";
+          } else {
+            hit_geometry = true;
+            mem->write(&(traversal_data->hit_geometry),
+                       sizeof(traversal_data->hit_geometry), &hit_geometry,
+                       thread, pI);
+            const VkGeometryTypeKHR geometry_type =
+                VK_GEOMETRY_TYPE_AABBS_KHR;
+            mem->write(&(traversal_data->closest_hit.geometryType),
+                       sizeof(traversal_data->closest_hit.geometryType),
+                       &geometry_type, thread, pI);
+            mem->write(&(traversal_data->closest_hit.hit_kind),
+                       sizeof(traversal_data->closest_hit.hit_kind),
+                       &hit_kind, thread, pI);
+            mem->write(&(traversal_data->closest_hit.hitGroupIndex),
+                       sizeof(traversal_data->closest_hit.hitGroupIndex),
+                       &hit_group_index, thread, pI);
+            mem->write(&(traversal_data->closest_hit.world_min_thit),
+                       sizeof(traversal_data->closest_hit.world_min_thit),
+                       &reported_t, thread, pI);
+            mem->write(&(traversal_data->closest_hit.primitive_index),
+                       sizeof(traversal_data->closest_hit.primitive_index),
+                       &primitive_index, thread, pI);
+            mem->write(&(traversal_data->closest_hit.instance_index),
+                       sizeof(traversal_data->closest_hit.instance_index),
+                       &instance_index, thread, pI);
+            action = "intersection_reported_committed";
+          }
         }
       }
     }
