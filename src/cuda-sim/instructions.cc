@@ -40,6 +40,7 @@ class ptx_recognizer;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <sstream>
@@ -7463,21 +7464,21 @@ static bool rtcore_publish_v03_compact_context_image(
   image.words[RTCORE_CONTEXT_W_MISS_INDEX] = miss_index;
   rtcore_context_store_u64(
       &image, RTCORE_CONTEXT_W_SBT_HIT_BASE_LO,
-      (uint64_t)(uintptr_t)metadata.hit_sbt);
+      (uint64_t)(uintptr_t)metadata.hit_sbt_device_addr);
   image.words[RTCORE_CONTEXT_W_SBT_HIT_STRIDE] =
       (uint32_t)metadata.hit_sbt_stride;
   image.words[RTCORE_CONTEXT_W_SBT_HIT_SIZE] =
       (uint32_t)metadata.hit_sbt_size;
   rtcore_context_store_u64(
       &image, RTCORE_CONTEXT_W_SBT_MISS_BASE_LO,
-      (uint64_t)(uintptr_t)metadata.miss_sbt);
+      (uint64_t)(uintptr_t)metadata.miss_sbt_device_addr);
   image.words[RTCORE_CONTEXT_W_SBT_MISS_STRIDE] =
       (uint32_t)metadata.miss_sbt_stride;
   image.words[RTCORE_CONTEXT_W_SBT_MISS_SIZE] =
       (uint32_t)metadata.miss_sbt_size;
   rtcore_context_store_u64(
       &image, RTCORE_CONTEXT_W_SBT_CALLABLE_BASE_LO,
-      (uint64_t)(uintptr_t)metadata.callable_sbt);
+      (uint64_t)(uintptr_t)metadata.callable_sbt_device_addr);
   image.words[RTCORE_CONTEXT_W_SBT_CALLABLE_STRIDE] =
       (uint32_t)metadata.callable_sbt_stride;
   image.words[RTCORE_CONTEXT_W_SBT_CALLABLE_SIZE] =
@@ -7510,10 +7511,10 @@ static bool rtcore_publish_v03_compact_context_image(
          (image.words[RTCORE_CONTEXT_W_HEADER] >> 16) & 0xffu,
          (image.words[RTCORE_CONTEXT_W_HEADER] >> 24) & 0xffu,
          (unsigned long long)top_level_as,
-         (unsigned long long)(uintptr_t)metadata.hit_sbt,
+         (unsigned long long)(uintptr_t)metadata.hit_sbt_device_addr,
          (uint32_t)metadata.hit_sbt_stride,
          (uint32_t)metadata.hit_sbt_size,
-         (unsigned long long)(uintptr_t)metadata.miss_sbt,
+         (unsigned long long)(uintptr_t)metadata.miss_sbt_device_addr,
          (uint32_t)metadata.miss_sbt_stride,
          (uint32_t)metadata.miss_sbt_size,
          image.words[RTCORE_CONTEXT_W_PIPELINE_PROFILE],
@@ -33131,6 +33132,37 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // printf("########## variable name = %s, size = %d\n", name.c_str(), size);
   variable_decleration_entry* variable_decleration = thread->RT_thread_data->get_variable_decleration_entry(type, name, size);
   if (variable_decleration != NULL) {
+    if (variable_decleration->type == nir_var_ray_hit_attrib &&
+        variable_decleration->size < size) {
+      memory_space *mem = thread->get_global_memory();
+      std::vector<unsigned char> preserved(variable_decleration->size);
+      bool preserved_read = true;
+      if (use_external_launcher) {
+        mem->read_simulator_backing(variable_decleration->address,
+                                    preserved.size(), preserved.data());
+      } else {
+        preserved_read = mem->read_vulkan_buffer(
+            variable_decleration->address, preserved.size(), preserved.data());
+      }
+      if (!preserved_read) {
+        fprintf(stderr,
+                "GPGPU-Sim RT hit-attribute growth fault: old_address=0x%llx "
+                "old_size=%u requested_size=%u\n",
+                (unsigned long long)variable_decleration->address,
+                variable_decleration->size, size);
+        fflush(stderr);
+        abort();
+      }
+
+      const uint64_t expanded_address =
+          (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
+      std::vector<unsigned char> initialized(size, 0);
+      std::copy(preserved.begin(), preserved.end(), initialized.begin());
+      mem->write(expanded_address, initialized.size(), initialized.data(),
+                 thread, pI);
+      variable_decleration->address = expanded_address;
+      variable_decleration->size = size;
+    }
     address = variable_decleration->address;
     if(variable_decleration->type != nir_var_ray_hit_attrib) // MRS_TODO: in raytracing_extended closest hit attribs needs 36 bytes instead of 12 which is wrong
       assert(variable_decleration->size == size);

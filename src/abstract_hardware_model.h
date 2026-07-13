@@ -365,6 +365,10 @@ typedef struct vulkan_kernel_metadata {
   void *miss_sbt;
   void *hit_sbt;
   void *callable_sbt;
+  void *raygen_sbt_device_addr;
+  void *miss_sbt_device_addr;
+  void *hit_sbt_device_addr;
+  void *callable_sbt_device_addr;
   uint64_t raygen_sbt_stride;
   uint64_t raygen_sbt_size;
   uint64_t miss_sbt_stride;

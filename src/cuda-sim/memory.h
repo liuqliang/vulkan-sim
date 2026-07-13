@@ -105,9 +105,12 @@ class memory_space {
                                        const void *data) = 0;
   virtual void read_simulator_backing(mem_addr_t addr, size_t length,
                                       void *data) const = 0;
+  virtual bool read_vulkan_buffer(mem_addr_t addr, size_t length,
+                                  void *data) const = 0;
   virtual void print(const char *format, FILE *fout) const = 0;
   virtual void set_watch(addr_t addr, unsigned watchpoint) = 0;
-  virtual void bind_vulkan_buffer(void* bufferAddr, unsigned bufferSize, void* devPtr) = 0;
+  virtual void bind_vulkan_buffer(void *bufferAddr, size_t bufferSize,
+                                  void *devPtr) = 0;
 };
 
 template <unsigned BSIZE>
@@ -124,22 +127,31 @@ class memory_space_impl : public memory_space {
                                        const void *data);
   virtual void read_simulator_backing(mem_addr_t addr, size_t length,
                                       void *data) const;
+  virtual bool read_vulkan_buffer(mem_addr_t addr, size_t length,
+                                  void *data) const;
   virtual void print(const char *format, FILE *fout) const;
 
   virtual void set_watch(addr_t addr, unsigned watchpoint);
-  virtual void bind_vulkan_buffer(void* bufferAddr, unsigned bufferSize, void* devPtr);
+  virtual void bind_vulkan_buffer(void *bufferAddr, size_t bufferSize,
+                                  void *devPtr);
 
  private:
   bool simulator_backing_contains(mem_addr_t addr, size_t length) const;
   void read_single_block(mem_addr_t blk_idx, mem_addr_t addr, size_t length,
                          void *data) const;
-  void* find_vulkan_buffer(mem_addr_t addr) const;
+  void *find_vulkan_buffer(mem_addr_t addr) const;
+  struct vulkan_buffer_mapping {
+    void *host_addr;
+    size_t valid_bytes;
+    mem_addr_t allocation_base;
+    size_t allocation_size;
+  };
   std::string m_name;
   unsigned m_log2_block_size;
   typedef mem_map<mem_addr_t, mem_storage<BSIZE> > map_t;
   map_t m_data;
   std::map<unsigned, mem_addr_t> m_watchpoints;
-  std::map<void*, void*> m_vulkan_address_map;
+  std::map<void *, vulkan_buffer_mapping> m_vulkan_address_map;
 };
 
 #endif

@@ -153,15 +153,16 @@ void memory_space_impl<BSIZE>::read_single_block(mem_addr_t blk_idx,
 }
 
 template <unsigned BSIZE>
-void* memory_space_impl<BSIZE>::find_vulkan_buffer(mem_addr_t addr) const {
+void *memory_space_impl<BSIZE>::find_vulkan_buffer(mem_addr_t addr) const {
   mem_addr_t index = addr & ~(VULKAN_ADDR_BLK - 1);
   unsigned offset = addr & (VULKAN_ADDR_BLK - 1);
 
-  if (m_vulkan_address_map.find((void*)index) != m_vulkan_address_map.end()) {
-    void* vulkan_addr = m_vulkan_address_map.at((void*)index);
-    return (void*)((unsigned long long)vulkan_addr + offset);
-  }
-  else {
+  typename std::map<void *, vulkan_buffer_mapping>::const_iterator mapped =
+      m_vulkan_address_map.find((void *)index);
+  if (mapped != m_vulkan_address_map.end() &&
+      offset < mapped->second.valid_bytes) {
+    return (unsigned char *)mapped->second.host_addr + offset;
+  } else {
     printf("Could not find %p in Vulkan address map\n", (void*)index);
     return NULL;
   }
@@ -208,6 +209,54 @@ void memory_space_impl<BSIZE>::read_simulator_backing(
 }
 
 template <unsigned BSIZE>
+bool memory_space_impl<BSIZE>::read_vulkan_buffer(mem_addr_t addr,
+                                                  size_t length,
+                                                  void *data) const {
+  if (length == 0) {
+    return true;
+  }
+  if (data == NULL) {
+    return false;
+  }
+  const mem_addr_t first_block_base = addr & ~(VULKAN_ADDR_BLK - 1);
+  typename std::map<void *, vulkan_buffer_mapping>::const_iterator first =
+      m_vulkan_address_map.find((void *)first_block_base);
+  if (first == m_vulkan_address_map.end() ||
+      addr < first->second.allocation_base) {
+    return false;
+  }
+  const mem_addr_t allocation_offset = addr - first->second.allocation_base;
+  if (allocation_offset > first->second.allocation_size ||
+      length > first->second.allocation_size - allocation_offset) {
+    return false;
+  }
+
+  size_t nbytes_remain = length;
+  size_t dst_offset = 0;
+  mem_addr_t current_addr = addr;
+  while (nbytes_remain > 0) {
+    const mem_addr_t block_base = current_addr & ~(VULKAN_ADDR_BLK - 1);
+    const size_t block_offset = current_addr & (VULKAN_ADDR_BLK - 1);
+    typename std::map<void *, vulkan_buffer_mapping>::const_iterator mapped =
+        m_vulkan_address_map.find((void *)block_base);
+    if (mapped == m_vulkan_address_map.end() ||
+        mapped->second.allocation_base != first->second.allocation_base ||
+        block_offset >= mapped->second.valid_bytes) {
+      return false;
+    }
+    const size_t copy_bytes =
+        std::min(nbytes_remain, mapped->second.valid_bytes - block_offset);
+    memcpy((unsigned char *)data + dst_offset,
+           (const unsigned char *)mapped->second.host_addr + block_offset,
+           copy_bytes);
+    current_addr += copy_bytes;
+    dst_offset += copy_bytes;
+    nbytes_remain -= copy_bytes;
+  }
+  return true;
+}
+
+template <unsigned BSIZE>
 void memory_space_impl<BSIZE>::print(const char *format, FILE *fout) const {
   typename map_t::const_iterator i_page;
 
@@ -223,13 +272,19 @@ void memory_space_impl<BSIZE>::set_watch(addr_t addr, unsigned watchpoint) {
 }
 
 template <unsigned BSIZE>
-void memory_space_impl<BSIZE>::bind_vulkan_buffer(void* bufferAddr, unsigned bufferSize, void* devPtr) {
-  unsigned index = 0;
-  void* addr = bufferAddr;
-  while (addr < (bufferAddr + bufferSize)) {
-    m_vulkan_address_map[devPtr + index * VULKAN_ADDR_BLK] = addr;
-    addr += VULKAN_ADDR_BLK;
-    index++;
+void memory_space_impl<BSIZE>::bind_vulkan_buffer(void *bufferAddr,
+                                                  size_t bufferSize,
+                                                  void *devPtr) {
+  const mem_addr_t allocation_base = (mem_addr_t)devPtr;
+  unsigned char *host_base = (unsigned char *)bufferAddr;
+  for (size_t offset = 0; offset < bufferSize; offset += VULKAN_ADDR_BLK) {
+    vulkan_buffer_mapping mapping;
+    mapping.host_addr = host_base + offset;
+    mapping.valid_bytes =
+        std::min(bufferSize - offset, (size_t)VULKAN_ADDR_BLK);
+    mapping.allocation_base = allocation_base;
+    mapping.allocation_size = bufferSize;
+    m_vulkan_address_map[(void *)(allocation_base + offset)] = mapping;
   }
 }
 

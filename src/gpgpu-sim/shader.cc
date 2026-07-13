@@ -978,7 +978,114 @@ rtcore_service_shader_continuation_pseudo_op(
   assert(entry.cohort_cursor < entry.cohort_count);
   const unsigned cohort_index = entry.cohort_cursor;
   const unsigned cohort_lane_mask = entry.cohort_lane_masks[cohort_index];
-  const unsigned cohort_shader_id = entry.cohort_shader_ids[cohort_index];
+  assert(shader != NULL);
+  ptx_thread_info **thread_info = shader->get_thread_info();
+  const unsigned warp_size = shader->get_warp_size();
+  unsigned representative_lane = 0;
+  while (representative_lane < warp_size && representative_lane < 32 &&
+         (cohort_lane_mask & (1u << representative_lane)) == 0) {
+    representative_lane++;
+  }
+  if (representative_lane >= warp_size || representative_lane >= 32) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_CONTINUATION_SBT_METADATA_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+            "fault=empty_decode_cohort_fail_closed\n",
+            owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index);
+    abort();
+  }
+  ptx_thread_info *decode_thread =
+      thread_info[warp_id * warp_size + representative_lane];
+  const unsigned component = entry.cohort_sbt_record_components[cohort_index];
+  const unsigned long long component_offset =
+      static_cast<unsigned long long>(component) * sizeof(uint32_t);
+  const unsigned long long record_addr =
+      entry.cohort_sbt_record_addrs[cohort_index];
+  if (decode_thread == NULL || component > 1 ||
+      record_addr > ULLONG_MAX - component_offset) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_CONTINUATION_SBT_METADATA_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+            "fault=invalid_device_decode_address_fail_closed\n",
+            owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index);
+    abort();
+  }
+  const unsigned long long metadata_addr = record_addr + component_offset;
+  uint32_t decoded_shader_id = UINT_MAX;
+  if (!decode_thread->get_global_memory()->read_vulkan_buffer(
+          (mem_addr_t)metadata_addr, sizeof(decoded_shader_id),
+          &decoded_shader_id)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_CONTINUATION_SBT_METADATA_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+            "metadata_addr=0x%llx fault=unmapped_sbt_content_fail_closed\n",
+            owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index,
+            metadata_addr);
+    abort();
+  }
+  const unsigned cohort_reason = rtcore_shader_continuation_cohort_reason(
+      entry, cohort_index);
+  const int target_kind =
+      rtcore_compatibility_shader_target_kind(decoded_shader_id, cohort_reason);
+  const char *target_kind_name =
+      target_kind == 1 ? "shader" : (target_kind == 0 ? "null" : "invalid");
+  printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_SBT_METADATA_DECODE "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+         "generation=%u aligned_32b_addr=0x%llx metadata_addr=0x%llx "
+         "shader_record_component=%u shader_id=%u target_kind=%s "
+         "content_source=simulator_mapped_sbt decode_cycle=%llu\n",
+         owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index,
+         entry.metadata_lookup_generation,
+         entry.metadata_lookup_aligned_32b_addr, metadata_addr, component,
+         decoded_shader_id, target_kind_name, current_cycle);
+  fflush(stdout);
+  if (target_kind < 0) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_CONTINUATION_SBT_METADATA_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+            "shader_id=%u reason=%u "
+            "fault=malformed_or_stage_mismatch_fail_closed\n",
+            owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index,
+            decoded_shader_id, cohort_reason);
+    abort();
+  }
+  entry.cohort_shader_ids[cohort_index] = decoded_shader_id;
+  if (target_kind == 0) {
+    const bool terminal_no_shader =
+        cohort_reason == RTCORE_SHADER_CONTINUATION_REASON_MISS ||
+        cohort_reason == RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY;
+    const char *no_shader_action = terminal_no_shader
+                                       ? "terminal_no_shader"
+                                       : "continuation_no_shader_resume";
+    printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_SBT_NO_SHADER "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+           "generation=%u aligned_32b_addr=0x%llx "
+           "cohort_lane_mask=0x%08x cohort_reason=%u "
+           "no_shader_action=%s no_shader_cycle=%llu\n",
+           owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index,
+           entry.metadata_lookup_generation,
+           entry.metadata_lookup_aligned_32b_addr, cohort_lane_mask,
+           cohort_reason, no_shader_action, current_cycle);
+    fflush(stdout);
+    entry.metadata_lookup_state =
+        RTCORE_SHADER_CONTINUATION_SBT_METADATA_NOT_REQUESTED;
+    entry.metadata_lookup_generation = 0;
+    entry.metadata_lookup_aligned_32b_addr = 0;
+    entry.metadata_lookup_request_cycle = 0;
+    entry.metadata_lookup_response_cycle = 0;
+    entry.metadata_lookup_wait_scheduler_cycles = 0;
+    entry.cohort_cursor++;
+    const bool all_cohorts_complete =
+        entry.cohort_cursor >= entry.cohort_count;
+    if (all_cohorts_complete) {
+      g_rtcore_shader_continuation_dispatcher_pending.erase(it);
+    }
+    result.issued = true;
+    return result;
+  }
+
+  entry.target_shader_id_ready_mask |= cohort_lane_mask;
+  const unsigned cohort_shader_id = decoded_shader_id;
   function_info *target_func =
       rtcore_resolve_compatibility_shader_function(cohort_shader_id);
   if (target_func == NULL) {
@@ -992,12 +1099,7 @@ rtcore_service_shader_continuation_pseudo_op(
   }
   unsigned return_pc = 0;
   unsigned return_rpc = 0;
-  assert(shader != NULL);
-  ptx_thread_info **thread_info = shader->get_thread_info();
-  const unsigned warp_size = shader->get_warp_size();
   unsigned long long handoff_window_base = 0;
-  const unsigned cohort_reason = rtcore_shader_continuation_cohort_reason(
-      entry, cohort_index);
   const bool requires_handoff_return =
       rtcore_shader_continuation_requires_handoff_return(cohort_reason);
   for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
@@ -10108,130 +10210,6 @@ static unsigned rtcore_shader_continuation_hit_record_selector_cohort_count(
   return selector_key_count;
 }
 
-static bool rtcore_shader_continuation_load_compat_sbt_shader_id(
-    const kernel_info_t *kernel, unsigned completion_reason,
-    unsigned sbt_record_selector,
-    unsigned shader_record_component, unsigned *shader_id) {
-  if (kernel == NULL || shader_id == NULL) {
-    return false;
-  }
-  const void *base = NULL;
-  uint64_t stride = 0;
-  uint64_t size = 0;
-  if (completion_reason == RTCORE_SHADER_CONTINUATION_REASON_MISS) {
-    base = kernel->vulkan_metadata.miss_sbt;
-    stride = kernel->vulkan_metadata.miss_sbt_stride;
-    size = kernel->vulkan_metadata.miss_sbt_size;
-  } else if (completion_reason ==
-                 RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY ||
-             rtcore_shader_continuation_requires_handoff_return(
-                 completion_reason)) {
-    base = kernel->vulkan_metadata.hit_sbt;
-    stride = kernel->vulkan_metadata.hit_sbt_stride;
-    size = kernel->vulkan_metadata.hit_sbt_size;
-  } else {
-    return false;
-  }
-  if (base == NULL || stride == 0 || size == 0) {
-    return false;
-  }
-  const uint64_t component_offset =
-      static_cast<uint64_t>(shader_record_component) * sizeof(uint32_t);
-  if (component_offset + sizeof(uint32_t) > stride ||
-      sbt_record_selector > UINT64_MAX / stride) {
-    return false;
-  }
-  const uint64_t record_offset =
-      static_cast<uint64_t>(sbt_record_selector) * stride;
-  if (record_offset > size || component_offset > size - record_offset ||
-      sizeof(uint32_t) > size - record_offset - component_offset) {
-    return false;
-  }
-  uint32_t encoded_shader_id = UINT_MAX;
-  memcpy(&encoded_shader_id,
-         static_cast<const uint8_t *>(base) + record_offset + component_offset,
-         sizeof(encoded_shader_id));
-  *shader_id = encoded_shader_id;
-  return true;
-}
-
-static unsigned rtcore_shader_continuation_compat_target_shader_id_key(
-    const kernel_info_t *kernel,
-    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
-    unsigned lane, unsigned target_reason_mask) {
-  const unsigned lane_mask = 1u << lane;
-  if (kernel == NULL || (target_reason_mask & lane_mask) == 0) {
-    return UINT_MAX;
-  }
-
-  const unsigned completion_reason = snapshot.lane_completion_reason[lane];
-  if (completion_reason != RTCORE_SHADER_CONTINUATION_REASON_MISS &&
-      completion_reason !=
-          RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY &&
-      !rtcore_shader_continuation_requires_handoff_return(
-          completion_reason)) {
-    return UINT_MAX;
-  }
-  const unsigned sbt_record_selector =
-      rtcore_shader_continuation_sbt_record_selector_key(snapshot, lane);
-  const unsigned shader_record_component =
-      rtcore_shader_continuation_shader_record_component(completion_reason);
-  unsigned shader_id = UINT_MAX;
-  if (!rtcore_shader_continuation_load_compat_sbt_shader_id(
-          kernel, completion_reason, sbt_record_selector,
-          shader_record_component, &shader_id) ||
-      rtcore_compatibility_shader_target_kind(
-          shader_id, completion_reason) != 1) {
-    return UINT_MAX;
-  }
-  return shader_id;
-}
-
-static unsigned rtcore_shader_continuation_compat_null_target_mask(
-    const kernel_info_t *kernel,
-    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
-    unsigned sbt_record_selector_ready_mask) {
-  unsigned mask = 0;
-  for (unsigned lane = 0; lane < 32; ++lane) {
-    const unsigned lane_mask = 1u << lane;
-    if ((sbt_record_selector_ready_mask & lane_mask) == 0) continue;
-    const unsigned completion_reason = snapshot.lane_completion_reason[lane];
-    const unsigned sbt_record_selector =
-        rtcore_shader_continuation_sbt_record_selector_key(snapshot, lane);
-    const unsigned shader_record_component =
-        rtcore_shader_continuation_shader_record_component(completion_reason);
-    unsigned shader_id = UINT_MAX;
-    if (rtcore_shader_continuation_load_compat_sbt_shader_id(
-            kernel, completion_reason, sbt_record_selector,
-            shader_record_component, &shader_id) &&
-        rtcore_compatibility_shader_target_kind(
-            shader_id, completion_reason) == 0) {
-      mask |= lane_mask;
-    }
-  }
-  return mask;
-}
-
-static unsigned rtcore_shader_continuation_compat_target_shader_id_ready_mask(
-    const kernel_info_t *kernel,
-    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
-    unsigned sbt_record_selector_ready_mask, unsigned target_reason_mask) {
-  unsigned mask = 0;
-  for (unsigned lane = 0; lane < 32; ++lane) {
-    const unsigned lane_mask = 1u << lane;
-    if ((sbt_record_selector_ready_mask & lane_mask) == 0) {
-      continue;
-    }
-    const unsigned shader_id =
-        rtcore_shader_continuation_compat_target_shader_id_key(
-            kernel, snapshot, lane, target_reason_mask);
-    if (shader_id != UINT_MAX) {
-      mask |= lane_mask;
-    }
-  }
-  return mask;
-}
-
 static unsigned rtcore_shader_continuation_cohort_reason_priority(
     unsigned reason) {
   switch (reason) {
@@ -10248,52 +10226,46 @@ static unsigned rtcore_shader_continuation_cohort_reason_priority(
   }
 }
 
-static unsigned rtcore_shader_continuation_collect_target_shader_id_cohorts(
-    const kernel_info_t *kernel,
+static unsigned rtcore_shader_continuation_collect_sbt_address_cohorts(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
-    unsigned target_shader_id_ready_mask, unsigned target_reason_mask,
-    unsigned shader_ids[32], unsigned lane_masks[32]) {
-  unsigned shader_id_count = 0;
+    unsigned sbt_address_ready_mask, unsigned target_reason_mask,
+    unsigned lane_masks[32]) {
+  unsigned cohort_count = 0;
   unsigned selector_keys[32] = {};
   unsigned reason_keys[32] = {};
   for (unsigned lane = 0; lane < 32; ++lane) {
     const unsigned lane_mask = 1u << lane;
-    if ((target_shader_id_ready_mask & lane_mask) == 0) {
+    if ((sbt_address_ready_mask & lane_mask) == 0 ||
+        (target_reason_mask & lane_mask) == 0) {
       continue;
     }
-    const unsigned shader_id =
-        rtcore_shader_continuation_compat_target_shader_id_key(
-            kernel, snapshot, lane, target_reason_mask);
     const unsigned selector_key =
         rtcore_shader_continuation_sbt_record_selector_key(snapshot, lane);
     const unsigned completion_reason = snapshot.lane_completion_reason[lane];
     bool seen = false;
-    for (unsigned index = 0; index < shader_id_count; ++index) {
-      if (shader_ids[index] == shader_id &&
-          selector_keys[index] == selector_key &&
+    for (unsigned index = 0; index < cohort_count; ++index) {
+      if (selector_keys[index] == selector_key &&
           reason_keys[index] == completion_reason) {
         seen = true;
         break;
       }
     }
-    if (!seen && shader_id_count < 32) {
-      shader_ids[shader_id_count] = shader_id;
-      selector_keys[shader_id_count] = selector_key;
-      reason_keys[shader_id_count] = completion_reason;
-      lane_masks[shader_id_count] = 0;
-      shader_id_count++;
+    if (!seen && cohort_count < 32) {
+      selector_keys[cohort_count] = selector_key;
+      reason_keys[cohort_count] = completion_reason;
+      lane_masks[cohort_count] = 0;
+      cohort_count++;
     }
-    for (unsigned index = 0; index < shader_id_count; ++index) {
-      if (shader_ids[index] == shader_id &&
-          selector_keys[index] == selector_key &&
+    for (unsigned index = 0; index < cohort_count; ++index) {
+      if (selector_keys[index] == selector_key &&
           reason_keys[index] == completion_reason) {
         lane_masks[index] |= lane_mask;
         break;
       }
     }
   }
-  for (unsigned index = 0; index < shader_id_count; ++index) {
-    for (unsigned next = index + 1; next < shader_id_count; ++next) {
+  for (unsigned index = 0; index < cohort_count; ++index) {
+    for (unsigned next = index + 1; next < cohort_count; ++next) {
       const unsigned index_priority =
           rtcore_shader_continuation_cohort_reason_priority(
               reason_keys[index]);
@@ -10303,44 +10275,36 @@ static unsigned rtcore_shader_continuation_collect_target_shader_id_cohorts(
       const bool next_first =
           next_priority < index_priority ||
           (next_priority == index_priority &&
-           (selector_keys[next] < selector_keys[index] ||
-            (selector_keys[next] == selector_keys[index] &&
-             shader_ids[next] < shader_ids[index])));
+           selector_keys[next] < selector_keys[index]);
       if (!next_first) continue;
-      std::swap(shader_ids[index], shader_ids[next]);
       std::swap(selector_keys[index], selector_keys[next]);
       std::swap(reason_keys[index], reason_keys[next]);
       std::swap(lane_masks[index], lane_masks[next]);
     }
   }
-  return shader_id_count;
+  return cohort_count;
 }
 
-static unsigned rtcore_shader_continuation_compat_target_shader_id_cohort_count(
-    const kernel_info_t *kernel,
+static unsigned rtcore_shader_continuation_sbt_address_cohort_count(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
-    unsigned target_shader_id_ready_mask, unsigned target_reason_mask) {
-  unsigned shader_ids[32] = {};
+    unsigned sbt_address_ready_mask, unsigned target_reason_mask) {
   unsigned lane_masks[32] = {};
-  return rtcore_shader_continuation_collect_target_shader_id_cohorts(
-      kernel, snapshot, target_shader_id_ready_mask, target_reason_mask,
-      shader_ids, lane_masks);
+  return rtcore_shader_continuation_collect_sbt_address_cohorts(
+      snapshot, sbt_address_ready_mask, target_reason_mask, lane_masks);
 }
 
-static void rtcore_record_shader_continuation_target_shader_id_cohorts(
+static void rtcore_record_shader_continuation_sbt_address_cohorts(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
-    unsigned active_mask, const kernel_info_t *kernel,
+    unsigned active_mask,
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
-    unsigned target_shader_id_ready_mask, unsigned target_reason_mask,
+    unsigned sbt_address_ready_mask, unsigned target_reason_mask,
     unsigned long long current_cycle) {
-  unsigned shader_ids[32] = {};
   unsigned lane_masks[32] = {};
-  const unsigned shader_id_count =
-      rtcore_shader_continuation_collect_target_shader_id_cohorts(
-          kernel, snapshot, target_shader_id_ready_mask, target_reason_mask,
-          shader_ids, lane_masks);
+  const unsigned cohort_count =
+      rtcore_shader_continuation_collect_sbt_address_cohorts(
+          snapshot, sbt_address_ready_mask, target_reason_mask, lane_masks);
 
-  for (unsigned index = 0; index < shader_id_count; ++index) {
+  for (unsigned index = 0; index < cohort_count; ++index) {
     unsigned representative_lane = 0;
     while (representative_lane < 32 &&
            (lane_masks[index] & (1u << representative_lane)) == 0) {
@@ -10354,20 +10318,17 @@ static void rtcore_record_shader_continuation_target_shader_id_cohorts(
         snapshot.lane_completion_reason[representative_lane];
     const unsigned target_shader_record_component =
         rtcore_shader_continuation_shader_record_component(completion_reason);
-    printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_TARGET_SHADER_ID_COHORT "
+    printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_SBT_ADDRESS_COHORT "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
-           "target_shader_id_cohort_index=%u "
-           "target_shader_id_lane_mask=0x%08x "
-           "target_shader_id=%u "
+           "sbt_address_cohort_index=%u "
+           "sbt_address_lane_mask=0x%08x "
            "target_hit_record_selector=%u "
            "target_completion_reason=%u "
            "target_shader_record_component=%u "
-           "target_resolution_metadata_producer=vulkan_sim_compatibility "
-           "compatibility_target_resolution=sbt_metadata_lookup "
+           "target_resolution_state=deferred_until_lsu_response "
            "shader_side_decision_cycle=%llu\n",
            owner_hw_sid, warp_uid, warp_id, active_mask, index,
-           lane_masks[index], shader_ids[index], selector_key,
-           completion_reason,
+           lane_masks[index], selector_key, completion_reason,
            target_shader_record_component, current_cycle);
   }
 }
@@ -10477,13 +10438,10 @@ static bool rtcore_shader_continuation_load_sbt_metadata_request_address(
 static void rtcore_record_shader_continuation_callshader_context_preflight(
     const shader_core_ctx *core, const warp_inst_t &inst, unsigned owner_hw_sid,
     unsigned warp_uid, unsigned warp_id, unsigned active_mask,
-    const kernel_info_t *kernel,
-    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
-    unsigned target_shader_id_ready_mask, unsigned target_reason_mask,
+    unsigned sbt_address_ready_mask,
     unsigned long long current_cycle) {
   unsigned thread_mask = 0;
   unsigned instruction_pointer_mask = 0;
-  unsigned target_function_mask = 0;
 
   shader_core_ctx *mutable_core = const_cast<shader_core_ctx *>(core);
   ptx_thread_info **thread_info =
@@ -10493,7 +10451,7 @@ static void rtcore_record_shader_continuation_callshader_context_preflight(
 
   for (unsigned lane = 0; lane < 32 && lane < warp_size; ++lane) {
     const unsigned lane_mask = 1u << lane;
-    if ((target_shader_id_ready_mask & lane_mask) == 0) {
+    if ((sbt_address_ready_mask & lane_mask) == 0) {
       continue;
     }
     ptx_thread_info *thread = NULL;
@@ -10508,74 +10466,52 @@ static void rtcore_record_shader_continuation_callshader_context_preflight(
     if (thread->get_inst(inst.pc) != NULL) {
       instruction_pointer_mask |= lane_mask;
     }
-    const unsigned shader_id =
-        rtcore_shader_continuation_compat_target_shader_id_key(
-            kernel, snapshot, lane, target_reason_mask);
-    if (shader_id != UINT_MAX &&
-        rtcore_resolve_compatibility_shader_function(shader_id) != NULL) {
-      target_function_mask |= lane_mask;
-    }
   }
 
   const unsigned missing_thread_mask =
-      target_shader_id_ready_mask & ~thread_mask;
+      sbt_address_ready_mask & ~thread_mask;
   const unsigned missing_instruction_pointer_mask =
-      target_shader_id_ready_mask & ~instruction_pointer_mask;
-  const unsigned missing_target_function_mask =
-      target_shader_id_ready_mask & ~target_function_mask;
-  const unsigned ready_mask = target_shader_id_ready_mask & thread_mask &
-                              instruction_pointer_mask &
-                              target_function_mask;
+      sbt_address_ready_mask & ~instruction_pointer_mask;
+  const unsigned ready_mask =
+      sbt_address_ready_mask & thread_mask & instruction_pointer_mask;
   const char *status =
       ready_mask != 0
-          ? "preflight_ready_no_call"
-          : (target_shader_id_ready_mask == 0
-                 ? "no_target_shader_id"
+          ? "sbt_address_preflight_ready"
+          : (sbt_address_ready_mask == 0
+                 ? "no_sbt_address_candidate"
                  : (missing_thread_mask != 0
                         ? "missing_thread_context"
                         : (missing_instruction_pointer_mask != 0
                                ? "missing_instruction_pointer"
-                               : (missing_target_function_mask != 0
-                                      ? "missing_target_function_resolver"
-                                      : "preflight_blocked_unknown"))));
+                               : "preflight_blocked_unknown")));
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALLSHADER_CONTEXT_PREFLIGHT "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
-         "callshader_context_target_shader_id_ready_mask=0x%08x "
+         "callshader_context_sbt_address_ready_mask=0x%08x "
          "callshader_context_thread_mask=0x%08x "
          "callshader_context_missing_thread_mask=0x%08x "
          "callshader_context_instruction_pointer_mask=0x%08x "
          "callshader_context_missing_instruction_pointer_mask=0x%08x "
-         "callshader_context_target_function_mask=0x%08x "
-         "callshader_context_missing_target_function_mask=0x%08x "
          "callshader_context_ready_mask=0x%08x "
+         "target_function_resolution=deferred_until_lsu_response "
          "callshader_context_status=%s "
          "direct_callshader_action=preflight_only_no_call "
          "shader_side_decision_cycle=%llu\n",
          owner_hw_sid, warp_uid, warp_id, active_mask,
-         target_shader_id_ready_mask, thread_mask, missing_thread_mask,
+         sbt_address_ready_mask, thread_mask, missing_thread_mask,
          instruction_pointer_mask, missing_instruction_pointer_mask,
-         target_function_mask, missing_target_function_mask, ready_mask, status,
-         current_cycle);
+         ready_mask, status, current_cycle);
 }
 
 static void rtcore_record_shader_continuation_direct_callshader_action(
     const shader_core_ctx *core, const warp_inst_t &inst, unsigned owner_hw_sid,
     unsigned warp_uid, unsigned warp_id, unsigned active_mask,
-    const kernel_info_t *kernel,
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
-    unsigned target_reason_mask, unsigned target_shader_id_ready_mask,
+    unsigned target_reason_mask, unsigned sbt_address_ready_mask,
     unsigned long long current_cycle) {
   unsigned candidate_mask = 0;
   unsigned missing_thread_mask = 0;
   unsigned missing_instruction_pointer_mask = 0;
-  unsigned missing_target_function_mask = 0;
-  const unsigned sbt_record_selector_ready_mask =
-      rtcore_shader_continuation_sbt_record_selector_ready_mask(
-          snapshot, target_reason_mask);
-  const unsigned null_target_mask =
-      rtcore_shader_continuation_compat_null_target_mask(
-          kernel, snapshot, sbt_record_selector_ready_mask);
 
   shader_core_ctx *mutable_core = const_cast<shader_core_ctx *>(core);
   ptx_thread_info **thread_info =
@@ -10585,7 +10521,7 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
 
   for (unsigned lane = 0; lane < 32 && lane < warp_size; ++lane) {
     const unsigned lane_mask = 1u << lane;
-    if ((target_shader_id_ready_mask & lane_mask) == 0) {
+    if ((sbt_address_ready_mask & lane_mask) == 0) {
       continue;
     }
 
@@ -10605,23 +10541,11 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
       continue;
     }
 
-    const unsigned shader_id =
-        rtcore_shader_continuation_compat_target_shader_id_key(
-            kernel, snapshot, lane, target_reason_mask);
-    function_info *target_func =
-        shader_id != UINT_MAX
-            ? rtcore_resolve_compatibility_shader_function(shader_id)
-            : NULL;
-    if (target_func == NULL) {
-      missing_target_function_mask |= lane_mask;
-      continue;
-    }
-
     candidate_mask |= lane_mask;
   }
 
   const unsigned unresolved_target_mask =
-      target_reason_mask & ~(candidate_mask | null_target_mask);
+      target_reason_mask & ~candidate_mask;
   if (unresolved_target_mask != 0) {
     fprintf(stderr,
             "GPGPU-Sim "
@@ -10630,42 +10554,30 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
             "target_reason_mask=0x%08x candidate_mask=0x%08x "
             "unresolved_target_mask=0x%08x missing_thread_mask=0x%08x "
             "missing_instruction_pointer_mask=0x%08x "
-            "missing_target_function_mask=0x%08x\n",
+            "target_resolution_state=pre_content_decode\n",
             owner_hw_sid, warp_uid, warp_id, active_mask, target_reason_mask,
             candidate_mask, unresolved_target_mask, missing_thread_mask,
-            missing_instruction_pointer_mask, missing_target_function_mask);
+            missing_instruction_pointer_mask);
     fflush(stderr);
     abort();
   }
 
-  const unsigned terminal_reason_mask =
-      rtcore_shader_continuation_reason_mask(
-          snapshot, RTCORE_SHADER_CONTINUATION_REASON_MISS) |
-      rtcore_shader_continuation_reason_mask(
-          snapshot, RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY);
-  const unsigned terminal_null_target_mask =
-      null_target_mask & terminal_reason_mask;
-  const char *action = "no_ready_context";
+  const char *action = candidate_mask != 0
+                           ? "enqueued_pending_sbt_device_decode"
+                           : "no_ready_context";
   if (candidate_mask != 0) {
-    action = terminal_null_target_mask != 0
-                 ? "enqueued_shadercore_pseudo_op_with_terminal_no_shader"
-                 : "enqueued_shadercore_pseudo_op";
-  } else if (null_target_mask != 0) {
-    action = terminal_null_target_mask != 0
-                 ? "terminal_no_shader"
-                 : "continuation_no_shader_resume";
-  }
-  if (candidate_mask != 0) {
-    unsigned cohort_shader_ids[32] = {};
+    unsigned cohort_shader_ids[32];
     unsigned cohort_lane_masks[32] = {};
     unsigned long long cohort_context_ptrs[32] = {};
     unsigned long long cohort_sbt_record_addrs[32] = {};
     unsigned long long cohort_sbt_aligned_32b_addrs[32] = {};
     unsigned cohort_sbt_record_components[32] = {};
+    for (unsigned index = 0; index < 32; ++index) {
+      cohort_shader_ids[index] = UINT_MAX;
+    }
     const unsigned cohort_count =
-        rtcore_shader_continuation_collect_target_shader_id_cohorts(
-            kernel, snapshot, candidate_mask, target_reason_mask,
-            cohort_shader_ids, cohort_lane_masks);
+        rtcore_shader_continuation_collect_sbt_address_cohorts(
+            snapshot, candidate_mask, target_reason_mask, cohort_lane_masks);
     for (unsigned cohort_index = 0; cohort_index < cohort_count;
          ++cohort_index) {
       bool cohort_address_ready = false;
@@ -10737,7 +10649,7 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
     }
     rtcore_enqueue_shader_continuation_dispatcher_pending(
         owner_hw_sid, warp_uid, warp_id, inst.dynamic_warp_id(), active_mask,
-        target_shader_id_ready_mask, candidate_mask, cohort_count,
+        0, candidate_mask, cohort_count,
         cohort_lane_masks, cohort_shader_ids, cohort_context_ptrs,
         cohort_sbt_record_addrs, cohort_sbt_aligned_32b_addrs,
         cohort_sbt_record_components, inst.pc, snapshot, current_cycle);
@@ -10747,23 +10659,23 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
          "synchronous_rtunit_callshader=0 "
          "shadercore_pseudo_op_enqueued=%u "
-         "direct_callshader_target_shader_id_ready_mask=0x%08x "
+         "direct_callshader_sbt_address_ready_mask=0x%08x "
+         "direct_callshader_target_shader_id_ready_mask=0x00000000 "
          "direct_callshader_action=%s "
          "direct_callshader_candidate_mask=0x%08x "
-         "direct_callshader_null_target_mask=0x%08x "
-         "direct_callshader_terminal_no_shader_mask=0x%08x "
+         "direct_callshader_null_target_mask=deferred "
+         "direct_callshader_terminal_no_shader_mask=deferred "
          "direct_callshader_lane_mask=0x%08x "
          "direct_callshader_missing_thread_mask=0x%08x "
          "direct_callshader_missing_instruction_pointer_mask=0x%08x "
-         "direct_callshader_missing_target_function_mask=0x%08x "
+         "direct_callshader_missing_target_function_mask=deferred "
          "direct_callshader_failed_invocation_mask=0x00000000 "
          "cohort_backend_invocation=deferred_shadercore_control_transfer "
          "shader_side_decision_cycle=%llu\n",
          owner_hw_sid, warp_uid, warp_id, active_mask,
-         candidate_mask != 0 ? 1u : 0u, target_shader_id_ready_mask, action,
-         candidate_mask, null_target_mask, terminal_null_target_mask, 0u,
-         missing_thread_mask, missing_instruction_pointer_mask,
-         missing_target_function_mask, current_cycle);
+         candidate_mask != 0 ? 1u : 0u, sbt_address_ready_mask, action,
+         candidate_mask, 0u, missing_thread_mask,
+         missing_instruction_pointer_mask, current_cycle);
 }
 
 rt_unit::rtcore_completion_timing_snapshot
@@ -11421,9 +11333,9 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
     unsigned raw_fact_instance_sbt_contribution_ready_mask,
     unsigned raw_fact_hit_record_selector_formula_ready_mask,
     unsigned raw_fact_hit_record_selector_formula_cohort_count,
-    unsigned target_shader_id_ready_mask,
-    unsigned target_shader_id_lookup_miss_mask,
-    unsigned target_shader_id_cohort_count,
+    unsigned sbt_address_ready_mask,
+    unsigned sbt_address_missing_mask,
+    unsigned sbt_address_cohort_count,
     unsigned long long current_cycle) const {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT || event == NULL ||
       event->shader_continuation_loop_decision_logged) {
@@ -11590,8 +11502,8 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
          "target_resolution_source=compatibility_selector_summary_bridge "
          "target_resolution_input_source=custom_handoff_facts "
-         "target_resolution_metadata_producer=vulkan_sim_compatibility "
-         "target_resolution_resolved=%u "
+         "target_resolution_metadata_producer=application_sbt "
+         "target_resolution_resolved=0 "
          "target_reason_intersection_mask=0x%08x "
          "target_reason_anyhit_mask=0x%08x "
          "target_reason_synthetic_split_mask=0x%08x "
@@ -11602,13 +11514,12 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "target_selector_cohort_count=%u "
          "target_hit_record_selector_formula_ready_mask=0x%08x "
          "target_hit_record_selector_formula_cohort_count=%u "
-         "target_shader_id_ready_mask=0x%08x "
-         "target_shader_id_lookup_miss_mask=0x%08x "
-         "target_shader_id_cohort_count=%u "
-         "compatibility_target_resolution=sbt_metadata_lookup "
+         "target_sbt_address_ready_mask=0x%08x "
+         "target_sbt_address_missing_mask=0x%08x "
+         "target_sbt_address_cohort_count=%u "
+         "target_shader_id_resolution=deferred_until_lsu_response "
          "shader_side_decision_cycle=%llu\n",
          m_sid, event->warp_uid, event->warp_id, issued_active_mask,
-         target_shader_id_ready_mask != 0 ? 1 : 0,
          reason_oracle_intersection_mask,
          reason_oracle_anyhit_mask,
          reason_synthetic_split_mask,
@@ -11619,14 +11530,14 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          target_selector_cohort_count,
          raw_fact_hit_record_selector_formula_ready_mask,
          raw_fact_hit_record_selector_formula_cohort_count,
-         target_shader_id_ready_mask,
-         target_shader_id_lookup_miss_mask,
-         target_shader_id_cohort_count, current_cycle);
+         sbt_address_ready_mask,
+         sbt_address_missing_mask,
+         sbt_address_cohort_count, current_cycle);
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_RAW_FACT_SUFFICIENCY_AUDIT "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
          "raw_fact_source=custom_handoff_facts "
-         "compatibility_metadata_producer=vulkan_sim "
+         "sbt_metadata_producer=application_sbt "
          "raw_fact_required_mask=0x%08x "
          "raw_fact_ray_sbt_inputs_ready_mask=0x%08x "
          "raw_fact_geometry_primitive_ready_mask=0x%08x "
@@ -11636,10 +11547,10 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          "raw_fact_sbt_region_metadata_ready_mask=0x%08x "
          "raw_fact_record_selector_ready_mask=0x%08x "
          "raw_fact_resolved_target_ready_mask=0x%08x "
-         "compatibility_resolved_target_ready_mask=0x%08x "
+         "device_sbt_address_ready_mask=0x%08x "
          "raw_fact_sufficient_mask=0x%08x "
          "raw_fact_missing_mask=0x%08x "
-         "raw_fact_audit_status=raw_facts_incomplete_compatibility_bridge_required "
+         "raw_fact_audit_status=target_decode_deferred_until_lsu_response "
          "shader_side_decision_cycle=%llu\n",
          m_sid, event->warp_uid, event->warp_id, issued_active_mask,
          target_reason_mask,
@@ -11651,7 +11562,7 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
          raw_fact_sbt_region_metadata_ready_mask,
          raw_fact_record_selector_ready_mask,
          raw_fact_resolved_target_ready_mask,
-         target_shader_id_ready_mask,
+         sbt_address_ready_mask,
          raw_fact_sufficient_mask,
          raw_fact_missing_mask, current_cycle);
 
@@ -13024,41 +12935,36 @@ void rt_unit::cycle() {
 	                    rtcore_shader_continuation_hit_record_selector_cohort_count(
 	                        candidate_completion,
 	                        raw_fact_hit_record_selector_formula_ready_mask);
-		            const kernel_info_t *compat_kernel =
-		                m_core != NULL ? m_core->get_kernel() : NULL;
 		            const unsigned sbt_record_selector_ready_mask =
 		                rtcore_shader_continuation_sbt_record_selector_ready_mask(
 		                    candidate_completion, target_reason_mask);
-		            const unsigned target_shader_id_ready_mask =
-		                rtcore_shader_continuation_compat_target_shader_id_ready_mask(
-		                    compat_kernel, candidate_completion,
-		                    sbt_record_selector_ready_mask, target_reason_mask);
-	            const unsigned target_shader_id_lookup_miss_mask =
-	                target_reason_mask & ~target_shader_id_ready_mask;
-	            const unsigned target_shader_id_cohort_count =
-		                rtcore_shader_continuation_compat_target_shader_id_cohort_count(
-		                    compat_kernel, candidate_completion,
-		                    target_shader_id_ready_mask, target_reason_mask);
-	            rtcore_record_shader_continuation_target_shader_id_cohorts(
-	                m_sid, release_event->second.warp_uid,
-	                release_event->second.warp_id,
-	                release_event->second.issued_active_mask,
-		                compat_kernel, candidate_completion,
-		                target_shader_id_ready_mask, target_reason_mask,
+		            const unsigned sbt_address_ready_mask =
+		                sbt_record_selector_ready_mask;
+		            const unsigned sbt_address_missing_mask =
+		                target_reason_mask & ~sbt_address_ready_mask;
+		            const unsigned sbt_address_cohort_count =
+		                rtcore_shader_continuation_sbt_address_cohort_count(
+		                    candidate_completion, sbt_address_ready_mask,
+		                    target_reason_mask);
+		            rtcore_record_shader_continuation_sbt_address_cohorts(
+		                m_sid, release_event->second.warp_uid,
+		                release_event->second.warp_id,
+		                release_event->second.issued_active_mask,
+		                candidate_completion, sbt_address_ready_mask,
+		                target_reason_mask,
 		                current_cycle);
-	            rtcore_record_shader_continuation_callshader_context_preflight(
-	                m_core, it->second, m_sid, release_event->second.warp_uid,
-	                release_event->second.warp_id,
-	                release_event->second.issued_active_mask,
-		                compat_kernel, candidate_completion,
-		                target_shader_id_ready_mask, target_reason_mask,
+		            rtcore_record_shader_continuation_callshader_context_preflight(
+		                m_core, it->second, m_sid, release_event->second.warp_uid,
+		                release_event->second.warp_id,
+		                release_event->second.issued_active_mask,
+		                sbt_address_ready_mask,
 		                current_cycle);
-	            rtcore_record_shader_continuation_direct_callshader_action(
-	                m_core, it->second, m_sid, release_event->second.warp_uid,
-	                release_event->second.warp_id,
-	                release_event->second.issued_active_mask,
-		                compat_kernel, candidate_completion,
-		                target_reason_mask, target_shader_id_ready_mask,
+		            rtcore_record_shader_continuation_direct_callshader_action(
+		                m_core, it->second, m_sid, release_event->second.warp_uid,
+		                release_event->second.warp_id,
+		                release_event->second.issued_active_mask,
+		                candidate_completion, target_reason_mask,
+		                sbt_address_ready_mask,
 		                current_cycle);
 	            rtcore_record_shader_continuation_loop_decision(
 	                it->second, &release_event->second,
@@ -13081,9 +12987,9 @@ void rt_unit::cycle() {
 	                raw_fact_instance_sbt_contribution_ready_mask,
 	                raw_fact_hit_record_selector_formula_ready_mask,
 	                raw_fact_hit_record_selector_formula_cohort_count,
-	                target_shader_id_ready_mask,
-	                target_shader_id_lookup_miss_mask,
-	                target_shader_id_cohort_count,
+		                sbt_address_ready_mask,
+		                sbt_address_missing_mask,
+		                sbt_address_cohort_count,
 	                current_cycle);
 	            rtcore_synthetic_release_snapshot release_snapshot =
 	                rtcore_make_synthetic_release_snapshot(

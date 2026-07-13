@@ -12827,6 +12827,10 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
                       void *miss_sbt,
                       void *hit_sbt,
                       void *callable_sbt,
+                      void *raygen_sbt_device_addr,
+                      void *miss_sbt_device_addr,
+                      void *hit_sbt_device_addr,
+                      void *callable_sbt_device_addr,
                       uint64_t raygen_sbt_stride,
                       uint64_t raygen_sbt_size,
                       uint64_t miss_sbt_stride,
@@ -12989,6 +12993,10 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     grid->vulkan_metadata.miss_sbt = miss_sbt;
     grid->vulkan_metadata.hit_sbt = hit_sbt;
     grid->vulkan_metadata.callable_sbt = callable_sbt;
+    grid->vulkan_metadata.raygen_sbt_device_addr = raygen_sbt_device_addr;
+    grid->vulkan_metadata.miss_sbt_device_addr = miss_sbt_device_addr;
+    grid->vulkan_metadata.hit_sbt_device_addr = hit_sbt_device_addr;
+    grid->vulkan_metadata.callable_sbt_device_addr = callable_sbt_device_addr;
     grid->vulkan_metadata.raygen_sbt_stride = raygen_sbt_stride;
     grid->vulkan_metadata.raygen_sbt_size = raygen_sbt_size;
     grid->vulkan_metadata.miss_sbt_stride = miss_sbt_stride;

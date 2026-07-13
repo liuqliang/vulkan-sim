@@ -62,6 +62,10 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
                       void *miss_sbt,
                       void *hit_sbt,
                       void *callable_sbt,
+                      void *raygen_sbt_device_addr,
+                      void *miss_sbt_device_addr,
+                      void *hit_sbt_device_addr,
+                      void *callable_sbt_device_addr,
                       uint64_t raygen_sbt_stride,
                       uint64_t raygen_sbt_size,
                       uint64_t miss_sbt_stride,
@@ -79,6 +83,8 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
     VulkanRayTracing::invoke_gpgpusim();
     VulkanRayTracing::vkCmdTraceRaysKHR(
             raygen_sbt, miss_sbt, hit_sbt, callable_sbt,
+            raygen_sbt_device_addr, miss_sbt_device_addr,
+            hit_sbt_device_addr, callable_sbt_device_addr,
             raygen_sbt_stride, raygen_sbt_size,
             miss_sbt_stride, miss_sbt_size,
             hit_sbt_stride, hit_sbt_size,
@@ -117,6 +123,10 @@ extern void gpgpusim_vkCmdTraceRaysKHR_cpp(
                       void *miss_sbt,
                       void *hit_sbt,
                       void *callable_sbt,
+                      void *raygen_sbt_device_addr,
+                      void *miss_sbt_device_addr,
+                      void *hit_sbt_device_addr,
+                      void *callable_sbt_device_addr,
                       uint64_t raygen_sbt_stride,
                       uint64_t raygen_sbt_size,
                       uint64_t miss_sbt_stride,
@@ -134,6 +144,8 @@ extern void gpgpusim_vkCmdTraceRaysKHR_cpp(
     VulkanRayTracing::invoke_gpgpusim();
     VulkanRayTracing::vkCmdTraceRaysKHR(
             raygen_sbt, miss_sbt, hit_sbt, callable_sbt,
+            raygen_sbt_device_addr, miss_sbt_device_addr,
+            hit_sbt_device_addr, callable_sbt_device_addr,
             raygen_sbt_stride, raygen_sbt_size,
             miss_sbt_stride, miss_sbt_size,
             hit_sbt_stride, hit_sbt_size,
