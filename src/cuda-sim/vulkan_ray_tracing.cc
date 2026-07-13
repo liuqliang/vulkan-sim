@@ -11515,6 +11515,70 @@ static uint64_t rtcore_get_or_create_root_proxy_id(
                                          root_node_offset);
 }
 
+bool VulkanRayTracing::traceRayFromRtcoreAbi(
+    const rtcore_trace_ray_abi_entry& entry,
+    const ptx_instruction *pI,
+    ptx_thread_info *thread)
+{
+    const bool source_valid =
+        entry.source != nullptr &&
+        strcmp(entry.source, "decoded_context_window_abi_value_record") == 0;
+    const bool root_valid =
+        entry.top_level_as != 0 &&
+        entry.top_level_as == entry.root_metadata_handle &&
+        entry.root_address_space != nullptr &&
+        strcmp(entry.root_address_space, "actual_as_bvh_memory") == 0 &&
+        entry.root_node_reference != 0 &&
+        entry.layout_profile_reference != nullptr &&
+        strcmp(entry.layout_profile_reference,
+               "RTCORE_BVH_FORMAT_VULKAN_SIM_GEN_RT") == 0 &&
+        entry.bvh_memory_binding;
+    const bool context_valid =
+        entry.context_layout_version == 1 &&
+        (entry.context_valid_flags & 0x01u) != 0 &&
+        (entry.context_valid_flags & ~0x07u) == 0 &&
+        entry.pipeline_profile_id == 1 &&
+        entry.bvh_format_profile_id == 1;
+    const bool authority_valid =
+        entry.all_field_bundles_present &&
+        entry.decoded_source_authority_valid &&
+        entry.root_descriptor_authority_valid &&
+        entry.runtime_lifetime_valid;
+    if (!entry.valid || !source_valid || !root_valid || !context_valid ||
+        !authority_valid || pI == nullptr || thread == nullptr) {
+        printf("GPGPU-Sim PTX: RT_SUBMIT "
+               "abi-native-trace-ray-entry-rejected=1, "
+               "entry_valid=%u, source_valid=%u, root_valid=%u, "
+               "context_valid=%u, authority_valid=%u\n",
+               entry.valid ? 1 : 0, source_valid ? 1 : 0,
+               root_valid ? 1 : 0, context_valid ? 1 : 0,
+               authority_valid ? 1 : 0);
+        fflush(stdout);
+        return false;
+    }
+
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "abi-native-trace-ray-entry=1, source=%s, "
+           "top_level_as=0x%llx, root_node_reference=0x%llx, "
+           "context_layout_version=%u, pipeline_profile_id=%u, "
+           "bvh_format_profile_id=%u\n",
+           entry.source,
+           (unsigned long long)entry.top_level_as,
+           (unsigned long long)entry.root_node_reference,
+           entry.context_layout_version, entry.pipeline_profile_id,
+           entry.bvh_format_profile_id);
+    fflush(stdout);
+
+    traceRay((VkAccelerationStructureKHR)entry.top_level_as,
+             entry.ray_flags, entry.cull_mask, entry.sbt_record_offset,
+             entry.sbt_record_stride, entry.miss_index, entry.ray_origin,
+             entry.ray_tmin, entry.ray_direction, entry.ray_tmax,
+             entry.context_layout_version, entry.context_valid_flags,
+             entry.pipeline_profile_id, entry.bvh_format_profile_id,
+             NULL, pI, thread);
+    return true;
+}
+
 void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 				   uint rayFlags,
                    uint cullMask,

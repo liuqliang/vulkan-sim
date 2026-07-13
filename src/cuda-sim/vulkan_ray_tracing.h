@@ -148,6 +148,34 @@ typedef struct Descriptor
     VkDescriptorType type;
 } Descriptor;
 
+struct rtcore_trace_ray_abi_entry {
+    bool valid;
+    const char *source;
+    bool all_field_bundles_present;
+    bool decoded_source_authority_valid;
+    bool root_descriptor_authority_valid;
+    bool runtime_lifetime_valid;
+    uint64_t top_level_as;
+    uint64_t root_metadata_handle;
+    const char *root_address_space;
+    uint64_t root_node_reference;
+    const char *layout_profile_reference;
+    bool bvh_memory_binding;
+    uint32_t ray_flags;
+    uint32_t cull_mask;
+    float3 ray_origin;
+    float ray_tmin;
+    float3 ray_direction;
+    float ray_tmax;
+    uint32_t sbt_record_offset;
+    uint32_t sbt_record_stride;
+    uint32_t miss_index;
+    uint32_t context_layout_version;
+    uint32_t context_valid_flags;
+    uint32_t pipeline_profile_id;
+    uint32_t bvh_format_profile_id;
+};
+
 typedef struct shader_stage_info {
     uint32_t ID;
     gl_shader_stage type;
@@ -266,6 +294,10 @@ private:
     static bool dumped;
     static bool _init_;
 public:
+    static bool traceRayFromRtcoreAbi(
+                       const rtcore_trace_ray_abi_entry& entry,
+                       const ptx_instruction *pI,
+                       ptx_thread_info *thread);
     // static RayDebugGPUData rayDebugGPUData[2000][2000];
     static warp_intersection_table*** intersection_table;
     static warp_intersection_table*** anyhit_table;

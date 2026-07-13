@@ -20438,15 +20438,51 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
     }
     return false;
   }
-  VulkanRayTracing::traceRay(
-      trace_ray_arguments.top_level_as, trace_ray_arguments.ray_flags,
-      trace_ray_arguments.cull_mask, trace_ray_arguments.sbt_record_offset,
-      trace_ray_arguments.sbt_record_stride, trace_ray_arguments.miss_index,
-      trace_ray_arguments.ray_origin, trace_ray_arguments.ray_tmin,
-      trace_ray_arguments.ray_direction, trace_ray_arguments.ray_tmax,
-      packet_context.context_layout_version, packet_context.valid_flags,
-      packet_context.pipeline_profile_id, packet_context.bvh_format_profile_id,
-      NULL, pI, thread);
+  const rtcore_decoded_trace_ray_value_record &abi_record =
+      materialized_input.decoded_trace_ray_value_record;
+  rtcore_trace_ray_abi_entry abi_entry = {};
+  abi_entry.valid = abi_record.valid;
+  abi_entry.source = abi_record.source;
+  abi_entry.all_field_bundles_present =
+      trace_ray_arguments
+          .all_field_bundles_from_decoded_value_record_source_snapshot;
+  abi_entry.decoded_source_authority_valid =
+      trace_ray_arguments.decoded_value_record_authority_matches_request &&
+      trace_ray_arguments.decoded_value_record_matches_request;
+  abi_entry.root_descriptor_authority_valid =
+      trace_ray_arguments
+          .decoded_value_record_selected_root_descriptor_authority_matches_request &&
+      trace_ray_arguments
+          .decoded_value_record_root_descriptor_fields_match_request;
+  abi_entry.runtime_lifetime_valid =
+      trace_ray_arguments.provider_payload_runtime_lifetime_ready &&
+      trace_ray_arguments.context_window_owner_seq_matches_lifetime &&
+      trace_ray_arguments.token_lifetime_key_ready;
+  abi_entry.top_level_as = abi_record.top_level_as;
+  abi_entry.root_metadata_handle = abi_record.root_metadata_handle;
+  abi_entry.root_address_space = abi_record.root_address_space;
+  abi_entry.root_node_reference = abi_record.root_node_reference;
+  abi_entry.layout_profile_reference = abi_record.layout_profile_reference;
+  abi_entry.bvh_memory_binding = abi_record.bvh_memory_binding;
+  abi_entry.ray_flags = abi_record.ray_flags;
+  abi_entry.cull_mask = abi_record.cull_mask;
+  abi_entry.ray_origin = abi_record.ray_origin;
+  abi_entry.ray_tmin = abi_record.ray_tmin;
+  abi_entry.ray_direction = abi_record.ray_direction;
+  abi_entry.ray_tmax = abi_record.ray_tmax;
+  abi_entry.sbt_record_offset = abi_record.sbt_record_offset;
+  abi_entry.sbt_record_stride = abi_record.sbt_record_stride;
+  abi_entry.miss_index = abi_record.miss_index;
+  abi_entry.context_layout_version = packet_context.context_layout_version;
+  abi_entry.context_valid_flags = packet_context.valid_flags;
+  abi_entry.pipeline_profile_id = packet_context.pipeline_profile_id;
+  abi_entry.bvh_format_profile_id = packet_context.bvh_format_profile_id;
+  if (!VulkanRayTracing::traceRayFromRtcoreAbi(abi_entry, pI, thread)) {
+    if (failure_reason != NULL) {
+      *failure_reason = "abi_native_trace_ray_entry_rejected";
+    }
+    return false;
+  }
 
   const size_t traversal_stack_depth_after_materialize =
       thread->RT_thread_data->traversal_data.size();
