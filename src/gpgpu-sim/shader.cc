@@ -43,6 +43,7 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include "../cuda-sim/cuda-sim.h"
 #include "../cuda-sim/ptx-stats.h"
 #include "../cuda-sim/ptx_sim.h"
+#include "../cuda-sim/rtcore_replay_interface.h"
 #include "../statwrapper.h"
 #include "addrdec.h"
 #include "dram.h"
@@ -76,89 +77,6 @@ extern "C" bool rtcore_retire_lifecycle_busy_for_owner(
     unsigned owner_hw_sid);
 extern "C" bool rtcore_reserve_retire_lifecycle_frontend(
     unsigned owner_hw_sid);
-
-struct rtcore_replay_service_cycle_identity_snapshot {
-  bool valid;
-  bool memory_progressed;
-  bool ready_progressed;
-  unsigned owner_hw_sid;
-  unsigned thread_uid;
-  unsigned lane_id;
-  bool has_warp_metadata;
-  unsigned warp_uid;
-  unsigned warp_id;
-  unsigned active_mask;
-  unsigned static_inst_uid;
-};
-
-struct rtcore_boundary_candidate_snapshot {
-  unsigned valid;
-  unsigned event_seq;
-  unsigned shader_counter;
-  uint64_t hit_data_ref;
-  unsigned hit_group_index;
-  unsigned geometry_type;
-  unsigned geometry_index;
-  unsigned primitive_index;
-  unsigned instance_index;
-  unsigned hit_kind;
-};
-
-struct rtcore_replay_warp_completion_entry_snapshot {
-  bool enabled;
-  bool found;
-  bool all_active_lanes_complete;
-  unsigned owner_hw_sid;
-  unsigned warp_uid;
-  unsigned warp_id;
-  unsigned active_mask;
-  unsigned admitted_lane_mask;
-  unsigned completed_lane_mask;
-  unsigned result_valid_mask;
-  unsigned completed_lane_count;
-  unsigned result_reg_base;
-  unsigned result_data_slot[32];
-  unsigned lane_status[32];
-  unsigned packet_schema_version;
-  unsigned context_profile_valid_mask;
-  unsigned reported_attribute_metadata_valid_mask;
-  unsigned inline_payload_location_valid_mask;
-  unsigned inline_payload_base_word;
-  unsigned max_inline_attribute_words;
-  unsigned lane_completion_valid_mask;
-  unsigned terminal_lane_mask;
-  unsigned continuation_lane_mask;
-  unsigned unsupported_reason_mask;
-  unsigned handoff_selector_valid_mask;
-  unsigned handoff_candidate_valid_mask;
-  unsigned handoff_software_return_valid_mask;
-  unsigned lane_completion_reason[32];
-  unsigned lane_continuation_depth[32];
-  unsigned context_layout_version[32];
-  unsigned context_valid_flags[32];
-  unsigned pipeline_profile_id[32];
-  unsigned bvh_format_profile_id[32];
-  rtcore_boundary_candidate_snapshot boundary_candidates[32];
-  unsigned handoff_words[32][32];
-  bool scoreboard_handoff_ready;
-  bool scoreboard_handoff_delivered;
-  unsigned long long scoreboard_handoff_cycle;
-};
-
-struct rtcore_memory_unit_request_snapshot {
-  bool valid;
-  unsigned response_target;
-  unsigned owner_hw_sid;
-  unsigned rt_request_id;
-  unsigned lane_id;
-  unsigned memory_op_seq;
-  unsigned chunk_id;
-  unsigned chunk_count;
-  unsigned access_kind;
-  unsigned long long aligned_32b_addr;
-  bool is_write;
-  unsigned long long issue_cycle;
-};
 
 extern "C" bool rtcore_symbolic_submit_issue_resources_available(
     unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
