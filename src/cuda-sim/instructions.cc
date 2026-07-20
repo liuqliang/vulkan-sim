@@ -8294,12 +8294,12 @@ static void rtcore_publish_trace_context_publication_source_shadow(
 
 static bool rtcore_fail_closed_on_rt_publish_trace_context_operand_contract(
     const ptx_instruction *pI) {
-  if (pI->get_num_operands() == 16) {
+  if (pI->get_num_operands() == 16 || pI->get_num_operands() == 17) {
     return false;
   }
   printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
          "reason=RT_PUBLISH_TRACE_CONTEXT_OPERAND_CONTRACT, "
-         "observed_operands=%u, expected_operands=16\n",
+         "observed_operands=%u, expected_operands=16_or_17\n",
          pI->source_file(), pI->source_line(), pI->get_num_operands());
   fflush(stdout);
   inst_not_implemented(pI);
@@ -8385,15 +8385,35 @@ void rt_publish_trace_context_impl(const ptx_instruction *pI, ptx_thread_info *t
   ptx_reg_t Tmax_data =
       thread->get_operand_value(Tmax, Tmax, F32_TYPE, thread, 1);
 
+  const bool prepare_v04_shadow_handoff = pI->get_num_operands() == 17;
+  unsigned v04_shadow_handoff_bytes = 0;
+  if (prepare_v04_shadow_handoff) {
+    const operand_info &handoff_bytes = pI->operand_lookup(16);
+    const ptx_reg_t handoff_bytes_data = thread->get_operand_value(
+        handoff_bytes, handoff_bytes, U32_TYPE, thread, 1);
+    v04_shadow_handoff_bytes = handoff_bytes_data.u32;
+    if (v04_shadow_handoff_bytes != rtcore::abi_v04::kLaneSlotBytes) {
+      printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
+             "reason=V04_SHADOW_HANDOFF_BYTES_MISMATCH, "
+             "observed_bytes=%u, expected_bytes=%zu\n",
+             pI->source_file(), pI->source_line(),
+             v04_shadow_handoff_bytes,
+             (size_t)rtcore::abi_v04::kLaneSlotBytes);
+      fflush(stdout);
+      inst_not_implemented(pI);
+      return;
+    }
+  }
+
   float3 ray_origin = {originX_data.f32, originY_data.f32, originZ_data.f32};
   float3 ray_direction = {directionX_data.f32, directionY_data.f32,
                           directionZ_data.f32};
-  if (!rtcore_publish_v03_compact_context_image(
-          pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
-          (uint64_t)topLevelAS_data.u64, rayFlags_data.u32,
-          cullMask_data.u32, sbtRecordOffset_data.u32,
-          sbtRecordStride_data.u32, missIndex_data.u32, ray_origin,
-          Tmin_data.f32, ray_direction, Tmax_data.f32)) {
+  const bool context_published = rtcore_publish_v03_compact_context_image(
+      pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
+      (uint64_t)topLevelAS_data.u64, rayFlags_data.u32, cullMask_data.u32,
+      sbtRecordOffset_data.u32, sbtRecordStride_data.u32, missIndex_data.u32,
+      ray_origin, Tmin_data.f32, ray_direction, Tmax_data.f32);
+  if (!context_published) {
     printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
            "reason=COMPACT_CONTEXT_PUBLICATION_FAILED, "
            "context_ptr=0x%llx, handoff_window_base=0x%llx\n",
@@ -8401,6 +8421,47 @@ void rt_publish_trace_context_impl(const ptx_instruction *pI, ptx_thread_info *t
            handoff_window_base_data.u64);
     fflush(stdout);
     inst_not_implemented(pI);
+    return;
+  }
+
+  if (prepare_v04_shadow_handoff) {
+    const uint64_t lane_slot_index = thread->get_hw_tid() % 32;
+    const uint64_t lane_offset =
+        lane_slot_index * rtcore::abi_v04::kLaneSlotBytes;
+    const uint64_t lane_address = handoff_window_base_data.u64 + lane_offset;
+    if (lane_address < handoff_window_base_data.u64) {
+      printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
+             "reason=V04_SHADOW_HANDOFF_ADDRESS_OVERFLOW, "
+             "handoff_window_base=0x%llx, lane_slot_index=%llu\n",
+             pI->source_file(), pI->source_line(),
+             handoff_window_base_data.u64,
+             (unsigned long long)lane_slot_index);
+      fflush(stdout);
+      inst_not_implemented(pI);
+      return;
+    }
+    if (!thread->get_global_memory()->ensure_simulator_backing(
+            (mem_addr_t)lane_address, v04_shadow_handoff_bytes)) {
+      printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
+             "reason=V04_SHADOW_HANDOFF_ADDRESS_RANGE_INVALID, "
+             "lane_address=0x%llx, lane_slot_bytes=%u\n",
+             pI->source_file(), pI->source_line(),
+             (unsigned long long)lane_address,
+             v04_shadow_handoff_bytes);
+      fflush(stdout);
+      inst_not_implemented(pI);
+      return;
+    }
+    printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT "
+           "v04-shadow-handoff-backing-prepared (%s:%u), "
+           "handoff_window_base=0x%llx, lane_slot_index=%llu, "
+           "lane_address=0x%llx, lane_slot_bytes=%zu, byte_write=0\n",
+           pI->source_file(), pI->source_line(),
+           handoff_window_base_data.u64,
+           (unsigned long long)lane_slot_index,
+           (unsigned long long)lane_address,
+           (size_t)v04_shadow_handoff_bytes);
+    fflush(stdout);
   }
 }
 

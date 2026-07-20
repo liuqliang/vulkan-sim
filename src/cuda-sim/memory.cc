@@ -28,6 +28,7 @@
 
 #include "memory.h"
 #include <algorithm>
+#include <limits>
 #include <stdlib.h>
 #include "../../libcuda/gpgpu_context.h"
 #include "../debug.h"
@@ -72,6 +73,30 @@ void memory_space_impl<BSIZE>::write_simulator_backing(
     current_addr += tx_bytes;
     nbytes_remain -= tx_bytes;
   }
+}
+
+template <unsigned BSIZE>
+bool memory_space_impl<BSIZE>::ensure_simulator_backing(mem_addr_t addr,
+                                                        size_t length) {
+  if (length == 0) {
+    return true;
+  }
+  if (static_cast<mem_addr_t>(length - 1) >
+      std::numeric_limits<mem_addr_t>::max() - addr) {
+    return false;
+  }
+  size_t nbytes_remain = length;
+  mem_addr_t current_addr = addr;
+  while (nbytes_remain > 0) {
+    const unsigned offset = current_addr & (BSIZE - 1);
+    const mem_addr_t page = current_addr >> m_log2_block_size;
+    const size_t tx_bytes =
+        std::min(nbytes_remain, static_cast<size_t>(BSIZE - offset));
+    m_data[page];
+    current_addr += tx_bytes;
+    nbytes_remain -= tx_bytes;
+  }
+  return true;
 }
 
 template <unsigned BSIZE>

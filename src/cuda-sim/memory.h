@@ -103,6 +103,7 @@ class memory_space {
   virtual void read(mem_addr_t addr, size_t length, void *data) const = 0;
   virtual void write_simulator_backing(mem_addr_t addr, size_t length,
                                        const void *data) = 0;
+  virtual bool ensure_simulator_backing(mem_addr_t addr, size_t length) = 0;
   virtual void read_simulator_backing(mem_addr_t addr, size_t length,
                                       void *data) const = 0;
   virtual bool read_vulkan_buffer(mem_addr_t addr, size_t length,
@@ -125,6 +126,7 @@ class memory_space_impl : public memory_space {
   virtual void read(mem_addr_t addr, size_t length, void *data) const;
   virtual void write_simulator_backing(mem_addr_t addr, size_t length,
                                        const void *data);
+  virtual bool ensure_simulator_backing(mem_addr_t addr, size_t length);
   virtual void read_simulator_backing(mem_addr_t addr, size_t length,
                                       void *data) const;
   virtual bool read_vulkan_buffer(mem_addr_t addr, size_t length,

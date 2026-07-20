@@ -1360,7 +1360,12 @@ void ptx_instruction::set_input_output_registers() {
       operand_classification = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2};
       break;
     case RT_PUBLISH_TRACE_CONTEXT_OP:
-      operand_classification = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+      operand_classification =
+          num_operands == 17
+              ? std::list<unsigned>{1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                    1, 1, 1, 1, 1, 1, 1, 1}
+              : std::list<unsigned>{1, 1, 1, 1, 1, 1, 1, 1,
+                                    1, 1, 1, 1, 1, 1, 1, 1};
       break;
     case RT_SUBMIT_OP:
       operand_classification = {2, 1, 1};
