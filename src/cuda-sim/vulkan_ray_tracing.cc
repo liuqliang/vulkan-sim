@@ -28,6 +28,7 @@
 
 #include "vulkan_ray_tracing.h"
 #include "vulkan_rt_thread_data.h"
+#include "rtcore_v04_shadow_boundary.h"
 
 #include <iostream>
 #include <vector>
@@ -413,7 +414,8 @@ struct rtcore_boundary_candidate_snapshot {
     rtcore_boundary_candidate_snapshot()
         : valid(0), event_seq(0), shader_counter(0), hit_data_ref(0),
           hit_group_index(0), geometry_type(0), geometry_index(0),
-          primitive_index(0), instance_index(0), hit_kind(0)
+          primitive_index(0), instance_index(0), hit_kind(0),
+          v04_boundary_values()
     {
     }
 
@@ -427,11 +429,56 @@ struct rtcore_boundary_candidate_snapshot {
     unsigned primitive_index;
     unsigned instance_index;
     unsigned hit_kind;
+    rtcore::abi_v04::shadow::boundary_values v04_boundary_values;
 };
 
 static_assert(sizeof(rtcore_compact_trace_event) <=
                   RTCORE_COMPACT_TRACE_EVENT_TARGET_BYTES,
               "rtcore_compact_trace_event must stay within the compact target");
+
+static uint32_t rtcore_v04_fp32_bits(float value)
+{
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static rtcore::abi_v04::shadow::boundary_values
+rtcore_make_v04_boundary_values_from_hit(
+    const Hit_data &hit, uint64_t instance_metadata_reference,
+    uint32_t instance_sbt_contribution, uint32_t instance_index,
+    uint32_t instance_custom_index, uint32_t boundary_ray_tmax_fp32,
+    bool publish_triangle_attributes)
+{
+    rtcore::abi_v04::shadow::boundary_values values;
+    values.candidate_valid = true;
+    values.instance_metadata_reference = instance_metadata_reference;
+    values.instance_sbt_contribution = instance_sbt_contribution;
+    values.geometry_index = hit.geometry_index;
+    values.boundary_ray_tmax_fp32 = boundary_ray_tmax_fp32;
+    values.primitive_index = hit.primitive_index;
+    values.instance_index = instance_index;
+    values.instance_custom_index = instance_custom_index;
+    values.geometry_type =
+        hit.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR
+            ? rtcore::abi_v04::shadow::kBoundaryGeometryTriangle
+            : rtcore::abi_v04::shadow::kBoundaryGeometryProcedural;
+    values.hit_kind = hit.hit_kind;
+    // The current Simulator subset does not yet expose procedural any-hit.
+    values.procedural_any_hit_eligible = false;
+    if (publish_triangle_attributes &&
+        values.geometry_type ==
+            rtcore::abi_v04::shadow::kBoundaryGeometryTriangle) {
+        values.input_attribute_word_count = 2;
+        values.input_attribute_location = 0x01;
+        values.input_attribute_format = 0x01;
+        values.inline_attribute_words[0] =
+            rtcore_v04_fp32_bits(hit.barycentric_coordinates.x);
+        values.inline_attribute_words[1] =
+            rtcore_v04_fp32_bits(hit.barycentric_coordinates.y);
+    }
+    return values;
+}
 
 struct rtcore_compact_trace_export_record {
     bool valid;
@@ -471,6 +518,10 @@ struct rtcore_compact_trace_export_record {
     unsigned closest_hit_instance_index;
     bool instance_sbt_contribution_valid;
     unsigned instance_sbt_contribution;
+    bool v04_shadow_boundary_enabled;
+    bool v04_shadow_trace_input_valid;
+    std::array<uint32_t, rtcore::abi_v04::kWordCount>
+        v04_shadow_trace_input_words;
     std::vector<rtcore_compact_trace_event> events;
     std::vector<rtcore_boundary_candidate_snapshot> boundary_candidates;
 };
@@ -516,6 +567,12 @@ struct rtcore_replay_lane_request {
     unsigned closest_hit_instance_index;
     bool instance_sbt_contribution_valid;
     unsigned instance_sbt_contribution;
+    bool v04_shadow_boundary_enabled;
+    bool v04_shadow_trace_input_valid;
+    std::array<uint32_t, rtcore::abi_v04::kWordCount>
+        v04_shadow_trace_input_words;
+    rtcore::abi_v04::shadow::boundary_values
+        v04_replay_committed_boundary_values;
     rtcore_boundary_candidate_snapshot boundary_candidate;
     bool continuation_boundary_pending;
     unsigned continuation_depth;
@@ -2829,7 +2886,8 @@ struct rtcore_bounded_trace_collector {
         unsigned event_seq, unsigned shader_counter, uint64_t hit_data_ref,
         unsigned hit_group_index, unsigned geometry_type,
         unsigned geometry_index, unsigned primitive_index,
-        unsigned instance_index, unsigned hit_kind)
+        unsigned instance_index, unsigned hit_kind,
+        const rtcore::abi_v04::shadow::boundary_values &v04_boundary_values)
     {
         if (event_seq == UINT_MAX) return;
         rtcore_boundary_candidate_snapshot snapshot;
@@ -2843,6 +2901,7 @@ struct rtcore_bounded_trace_collector {
         snapshot.primitive_index = primitive_index;
         snapshot.instance_index = instance_index;
         snapshot.hit_kind = hit_kind;
+        snapshot.v04_boundary_values = v04_boundary_values;
         boundary_candidates.push_back(snapshot);
     }
 
@@ -3111,6 +3170,14 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.instance_sbt_contribution_valid =
         record.instance_sbt_contribution_valid;
     request.instance_sbt_contribution = record.instance_sbt_contribution;
+    request.v04_shadow_boundary_enabled =
+        record.v04_shadow_boundary_enabled;
+    request.v04_shadow_trace_input_valid =
+        record.v04_shadow_trace_input_valid;
+    request.v04_shadow_trace_input_words =
+        record.v04_shadow_trace_input_words;
+    request.v04_replay_committed_boundary_values =
+        rtcore::abi_v04::shadow::boundary_values();
     request.continuation_boundary_pending = false;
     request.continuation_depth = 0;
     request.continuation_segment_event_count = 0;
@@ -4288,6 +4355,130 @@ rtcore_make_replay_continuation_packet_lane_fact(
     return fact;
 }
 
+static bool rtcore_apply_v04_shadow_boundary_test_mutation(
+    rtcore::abi_v04::shadow::boundary_values *values,
+    bool *mutate_reserved_word)
+{
+    const char *mutation =
+        getenv("VULKAN_SIM_RTCORE_TEST_V04_SHADOW_BOUNDARY_MUTATION");
+    if (mutate_reserved_word != NULL) {
+        *mutate_reserved_word = false;
+    }
+    if (mutation == NULL || mutation[0] == '\0' ||
+        strcmp(mutation, "none") == 0) {
+        return true;
+    }
+    if (values == NULL) {
+        return false;
+    }
+    if (strcmp(mutation, "metadata_zero") == 0) {
+        values->instance_metadata_reference = 0;
+    } else if (strcmp(mutation, "metadata_misaligned") == 0) {
+        values->instance_metadata_reference |= 0x08u;
+    } else if (strcmp(mutation, "sbt_overflow") == 0) {
+        values->instance_sbt_contribution = 0x01000000u;
+    } else if (strcmp(mutation, "hit_kind") == 0) {
+        values->hit_kind = 0x80u;
+    } else if (strcmp(mutation, "attribute_metadata") == 0) {
+        values->input_attribute_word_count = 3;
+    } else if (strcmp(mutation, "reserved") == 0) {
+        if (mutate_reserved_word != NULL) {
+            *mutate_reserved_word = true;
+        }
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool rtcore_observe_v04_shadow_boundary_publication(
+    const rtcore_replay_lane_request &request, unsigned reason,
+    const rtcore_boundary_candidate_snapshot *boundary_candidate)
+{
+    if (!request.v04_shadow_boundary_enabled) {
+        return true;
+    }
+    if (!request.v04_shadow_trace_input_valid) {
+        return false;
+    }
+
+    const bool continuation_reason =
+        reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED ||
+        reason ==
+            RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED;
+    const bool terminal_hit_reason =
+        reason ==
+        RTCORE_REPLAY_CONTINUATION_PACKET_REASON_CLOSEST_HIT_READY;
+    const char *fact_source = continuation_reason
+                                  ? "event_boundary_candidate"
+                                  : terminal_hit_reason
+                                        ? "terminal_boundary_fact"
+                                        : "reason_has_no_candidate";
+    rtcore::abi_v04::shadow::boundary_values values;
+    if (continuation_reason && boundary_candidate != NULL) {
+        values = boundary_candidate->v04_boundary_values;
+        if (reason ==
+            RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED) {
+            rtcore::abi_v04::shadow::tighten_intersection_boundary(
+                request.v04_replay_committed_boundary_values, &values);
+        }
+    } else if (terminal_hit_reason) {
+        values = request.v04_replay_committed_boundary_values;
+    }
+
+    bool mutate_reserved_word = false;
+    const bool mutation_valid =
+        rtcore_apply_v04_shadow_boundary_test_mutation(
+            &values, &mutate_reserved_word);
+    rtcore::abi_v04::shadow::boundary_publication publication =
+        rtcore::abi_v04::shadow::build_boundary_publication(
+            request.v04_shadow_trace_input_words, reason, values);
+    if (mutate_reserved_word && publication.valid()) {
+        publication.words[rtcore::abi_v04::kHitKind.word] |= 1u << 9;
+    }
+    const rtcore::abi_v04::shadow::boundary_validation validation =
+        rtcore::abi_v04::shadow::validate_boundary_publication(
+            publication.words, request.v04_shadow_trace_input_words,
+            reason, values);
+    const bool valid = mutation_valid && publication.valid() &&
+                       validation.matches();
+
+    printf("GPGPU-Sim RTCORE_V04_SHADOW_BOUNDARY_PUBLICATION "
+           "valid=%u reason=%u owner_hw_sid=%u thread_uid=%u lane_id=%u "
+           "warp_uid=%u fact_source=%s candidate_event_seq=%u "
+           "instance_metadata_ref=0x%llx "
+           "instance_metadata_source=gen_rt_tlas_instance_leaf_device_address "
+           "boundary_ray_tmax_fp32=0x%08x written_word_mask=0x%08x "
+           "compared_word_mask=0x%08x mismatch_word_mask=0x%08x "
+           "error=%s "
+           "boundary_words={w14=0x%08x,w15=0x%08x,w16=0x%08x,"
+           "w17=0x%08x,w18=0x%08x,w19=0x%08x,w20=0x%08x,"
+           "w21=0x%08x,w22=0x%08x,w23=0x%08x} "
+           "inline_attributes={w28=0x%08x,w29=0x%08x,w30=0x%08x,"
+           "w31=0x%08x} event_local=1 live_handoff_write=0 "
+           "v03_completion_authority=1 traversal_authority=0 "
+           "shader_consumer_enabled=0\n",
+           valid ? 1u : 0u, reason, request.owner_hw_sid,
+           request.thread_uid, request.lane_id, request.warp_uid,
+           fact_source,
+           boundary_candidate != NULL ? boundary_candidate->event_seq : 0u,
+           static_cast<unsigned long long>(
+               values.instance_metadata_reference),
+           values.boundary_ray_tmax_fp32, publication.written_word_mask,
+           validation.compared_word_mask, validation.mismatch_word_mask,
+           rtcore::abi_v04::shadow::boundary_error_name(
+               publication.valid() ? validation.error : publication.error),
+           publication.words[14], publication.words[15],
+           publication.words[16], publication.words[17],
+           publication.words[18], publication.words[19],
+           publication.words[20], publication.words[21],
+           publication.words[22], publication.words[23],
+           publication.words[28], publication.words[29],
+           publication.words[30], publication.words[31]);
+    fflush(stdout);
+    return valid;
+}
+
 static void rtcore_populate_continuation_packet_handoff_summaries(
     rtcore_continuation_return_packet *packet,
     const rtcore_continuation_warp_boundary_state &state)
@@ -4364,6 +4555,18 @@ static void rtcore_populate_continuation_packet_handoff_summaries(
         packet_fact.selector_valid =
             selector_required && request.valid && request.ray_sbt_inputs_valid;
         packet_fact.candidate_valid = candidate_required && candidate_available;
+        if (!rtcore_observe_v04_shadow_boundary_publication(
+                request, packet_fact.reason,
+                shader_continuation_reason ? &boundary_candidate : NULL)) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_SHADOW_BOUNDARY_FAULT "
+                    "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+                    "reason=%u fault=event_local_publication_invalid\n",
+                    request.owner_hw_sid, request.thread_uid, request.lane_id,
+                    request.warp_uid, packet_fact.reason);
+            fflush(stderr);
+            abort();
+        }
         rtcore_materialize_replay_continuation_packet_handoff_words(
             request,
             shader_continuation_reason ? &boundary_candidate : NULL,
@@ -7605,6 +7808,58 @@ static bool rtcore_find_boundary_candidate_snapshot(
     return false;
 }
 
+static bool rtcore_apply_v04_shadow_consumed_traversal_event(
+    rtcore_replay_lane_request *request, unsigned consumed_event_index)
+{
+    if (request == NULL || !request->valid) return false;
+    if (!request->v04_shadow_boundary_enabled) return true;
+    if (consumed_event_index >= request->events.size()) return false;
+
+    const rtcore_compact_trace_event &event =
+        request->events[consumed_event_index];
+    if (rtcore_unpack_compact_trace_event_type(event) !=
+            RTCORE_TRACE_PRIMITIVE_TEST ||
+        (rtcore_unpack_compact_trace_flags(event) & 0x0fu) !=
+            RTCORE_TRACE_PRIMITIVE_KIND_TRIANGLE_TEST) {
+        return true;
+    }
+
+    rtcore_boundary_candidate_snapshot candidate;
+    if (!rtcore_find_boundary_candidate_snapshot(
+            *request, consumed_event_index, &candidate)) {
+        // Triangle misses, farther hits, and any-hit candidates do not commit
+        // traversal-owned state at the primitive-test event.
+        return true;
+    }
+    if (!candidate.valid ||
+        candidate.v04_boundary_values.geometry_type !=
+            rtcore::abi_v04::shadow::kBoundaryGeometryTriangle) {
+        return false;
+    }
+
+    rtcore::abi_v04::shadow::boundary_values next_terminal;
+    if (!rtcore::abi_v04::shadow::
+            commit_triangle_candidate_if_strictly_closer(
+                request->v04_replay_committed_boundary_values,
+                candidate.v04_boundary_values, &next_terminal)) {
+        return false;
+    }
+    const bool selected =
+        rtcore::abi_v04::shadow::triangle_candidate_is_strictly_closer(
+            request->v04_replay_committed_boundary_values,
+            candidate.v04_boundary_values);
+    request->v04_replay_committed_boundary_values = next_terminal;
+    printf("GPGPU-Sim RTCORE_V04_SHADOW_OPAQUE_EVENT_COMMIT "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u event_seq=%u "
+           "selected=%u candidate_t_fp32=0x%08x "
+           "replay_order_only=1 oracle_final_preload=0\n",
+           request->owner_hw_sid, request->thread_uid, request->lane_id,
+           candidate.event_seq, selected ? 1u : 0u,
+           candidate.v04_boundary_values.boundary_ray_tmax_fp32);
+    fflush(stdout);
+    return true;
+}
+
 static bool rtcore_mark_continuation_boundary(
     rtcore_replay_lane_request *request, unsigned long long service_cycle,
     const char *boundary_reason, unsigned boundary_event_index)
@@ -7800,6 +8055,15 @@ static bool rtcore_replay_advance_lane_request(
     }
 
     const unsigned consumed_event_index = request->next_event_index;
+    if (!rtcore_apply_v04_shadow_consumed_traversal_event(
+            request, consumed_event_index)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHADOW_TRAVERSAL_EVENT_FAULT "
+                "owner_hw_sid=%u thread_uid=%u lane_id=%u event_index=%u\n",
+                request->owner_hw_sid, request->thread_uid, request->lane_id,
+                consumed_event_index);
+        abort();
+    }
     request->next_event_index++;
     request->continuation_segment_event_count++;
     if (rtcore_maybe_mark_oracle_shader_continuation_boundary(
@@ -9036,6 +9300,7 @@ static const char *rtcore_resubmit_admission_test_failpoint_mode()
 extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
     unsigned owner_hw_sid, unsigned previous_warp_uid, unsigned warp_id,
     unsigned previous_active_mask, unsigned lane_id, ptx_thread_info *thread,
+    const rtcore::abi_v04::shadow::boundary_return_update *return_update,
     unsigned long long refresh_cycle, const char **failure_reason)
 {
     const char *reason = "accepted";
@@ -9069,6 +9334,10 @@ extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
          !request->continuation_boundary_pending)) {
         reason = "REFRESH_RETAINED_REQUEST_IDENTITY_MISMATCH";
     }
+    if (strcmp(reason, "accepted") == 0 &&
+        request->v04_shadow_boundary_enabled && return_update == NULL) {
+        reason = "REFRESH_V04_RETURN_UPDATE_MISSING";
+    }
 
     bool hit_geometry = false;
     Hit_data closest_hit = {};
@@ -9090,6 +9359,20 @@ extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
                      closest_hit.geometryType != VK_GEOMETRY_TYPE_AABBS_KHR)) {
                     reason = "REFRESH_CLOSEST_HIT_STATE_INVALID";
                 }
+            }
+        }
+    }
+
+    if (strcmp(reason, "accepted") == 0) {
+        if (request->v04_shadow_boundary_enabled) {
+            rtcore::abi_v04::shadow::boundary_values next_terminal;
+            if (!rtcore::abi_v04::shadow::apply_boundary_return_update(
+                    request->v04_replay_committed_boundary_values,
+                    request->boundary_candidate.v04_boundary_values,
+                    *return_update, &next_terminal)) {
+                reason = "REFRESH_V04_RETURN_UPDATE_INVALID";
+            } else {
+                request->v04_replay_committed_boundary_values = next_terminal;
             }
         }
     }
@@ -9123,6 +9406,9 @@ extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
                "closest_hit_primitive_index=%u "
                "closest_hit_instance_index=%u "
                "instance_sbt_contribution=%u "
+               "v04_return_action=%u v04_terminal_valid=%u "
+               "v04_terminal_instance_metadata_ref=0x%llx "
+               "v04_terminal_attribute_word_count=%u "
                "refresh_source=shader_return_terminal_facts_refresh "
                "refresh_cycle=%llu\n",
                owner_hw_sid, previous_warp_uid, warp_id, lane_id,
@@ -9131,7 +9417,19 @@ extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
                request->closest_hit_geometry_index,
                request->closest_hit_primitive_index,
                request->closest_hit_instance_index,
-               request->instance_sbt_contribution, refresh_cycle);
+               request->instance_sbt_contribution,
+               return_update != NULL
+                   ? static_cast<unsigned>(return_update->action)
+                   : 0u,
+               request->v04_replay_committed_boundary_values.candidate_valid
+                   ? 1u
+                                                                       : 0u,
+               static_cast<unsigned long long>(
+                   request->v04_replay_committed_boundary_values
+                       .instance_metadata_reference),
+               request->v04_replay_committed_boundary_values
+                   .input_attribute_word_count,
+               refresh_cycle);
         fflush(stdout);
     }
 
@@ -11544,15 +11842,21 @@ bool VulkanRayTracing::traceRayFromRtcoreAbi(
         entry.decoded_source_authority_valid &&
         entry.root_descriptor_authority_valid &&
         entry.runtime_lifetime_valid;
+    const bool v04_shadow_input_valid =
+        !entry.v04_shadow_boundary_enabled ||
+        entry.v04_shadow_trace_input_valid;
     if (!entry.valid || !source_valid || !root_valid || !context_valid ||
-        !authority_valid || pI == nullptr || thread == nullptr) {
+        !authority_valid || !v04_shadow_input_valid || pI == nullptr ||
+        thread == nullptr) {
         printf("GPGPU-Sim PTX: RT_SUBMIT "
                "abi-native-trace-ray-entry-rejected=1, "
                "entry_valid=%u, source_valid=%u, root_valid=%u, "
-               "context_valid=%u, authority_valid=%u\n",
+               "context_valid=%u, authority_valid=%u, "
+               "v04_shadow_input_valid=%u\n",
                entry.valid ? 1 : 0, source_valid ? 1 : 0,
                root_valid ? 1 : 0, context_valid ? 1 : 0,
-               authority_valid ? 1 : 0);
+               authority_valid ? 1 : 0,
+               v04_shadow_input_valid ? 1 : 0);
         fflush(stdout);
         return false;
     }
@@ -11575,7 +11879,7 @@ bool VulkanRayTracing::traceRayFromRtcoreAbi(
              entry.ray_tmin, entry.ray_direction, entry.ray_tmax,
              entry.context_layout_version, entry.context_valid_flags,
              entry.pipeline_profile_id, entry.bvh_format_profile_id,
-             NULL, pI, thread);
+             NULL, &entry, pI, thread);
     return true;
 }
 
@@ -11594,9 +11898,13 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                    uint32_t pipeline_profile_id,
                    uint32_t bvh_format_profile_id,
                    int payload,
+                   const rtcore_trace_ray_abi_entry *rtcore_abi_entry,
                    const ptx_instruction *pI,
                    ptx_thread_info *thread)
 {
+    const bool v04_shadow_boundary_enabled =
+        rtcore_abi_entry != NULL &&
+        rtcore_abi_entry->v04_shadow_boundary_enabled;
     // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
     //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
 
@@ -11732,6 +12040,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     float min_thit = ray.dir_tmax.w;
     struct GEN_RT_BVH_QUAD_LEAF closest_leaf;
     struct GEN_RT_BVH_INSTANCE_LEAF closest_instanceLeaf;    
+    uint64_t closest_instance_metadata_ref = 0;
     float4x4 closest_worldToObject, closest_objectToWorld;
     Ray closest_objectRay;
     float min_thit_object;
@@ -11939,6 +12248,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
             GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
             GEN_RT_BVH_INSTANCE_LEAF_unpack(&instanceLeaf, leaf_addr);
+            const uint64_t instance_metadata_ref =
+                (uint64_t)leaf_addr + device_offset;
             transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
             total_nodes_accessed++;
@@ -12187,7 +12498,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 : !counter_clockwise_facing;
                         const uint32_t triangle_hit_kind =
                             front_facing ? 0xfeu : 0xffu;
-                        rtcore_compact_trace.append_primitive_test(
+                        const unsigned primitive_test_event_seq =
+                            rtcore_compact_trace.append_primitive_test(
                             (uint64_t)leaf_addr + device_offset, hit,
                             rtcore_trace_primitive_flags(
                                 RTCORE_TRACE_PRIMITIVE_KIND_TRIANGLE_TEST,
@@ -12220,11 +12532,58 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             }
 
                             if (skipAnyHitShader && world_thit < min_thit) {
-                                min_thit = thit / worldToObject_tMultiplier;
+                                min_thit = world_thit;
+                                if (v04_shadow_boundary_enabled) {
+                                    Hit_data opaque_candidate = {};
+                                    opaque_candidate.geometryType =
+                                        VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+                                    opaque_candidate.hit_kind = triangle_hit_kind;
+                                    opaque_candidate.geometry_index =
+                                        leaf.LeafDescriptor.GeometryIndex;
+                                    opaque_candidate.primitive_index =
+                                        leaf.PrimitiveIndex0;
+                                    opaque_candidate.instance_index =
+                                        instanceLeaf.InstanceID;
+                                    opaque_candidate.hitGroupIndex =
+                                        instanceLeaf
+                                            .InstanceContributionToHitGroupIndex;
+                                    opaque_candidate.world_min_thit = world_thit;
+                                    const float3 object_intersection_point =
+                                        objectRay.get_origin() +
+                                        make_float3(
+                                            objectRay.get_direction().x * thit,
+                                            objectRay.get_direction().y * thit,
+                                            objectRay.get_direction().z * thit);
+                                    opaque_candidate.barycentric_coordinates =
+                                        Barycentric(object_intersection_point,
+                                                    p[0], p[1], p[2]);
+                                    rtcore_compact_trace
+                                        .record_boundary_candidate(
+                                            primitive_test_event_seq, UINT_MAX,
+                                            0,
+                                            instanceLeaf
+                                                .InstanceContributionToHitGroupIndex,
+                                            1,
+                                            leaf.LeafDescriptor.GeometryIndex,
+                                            leaf.PrimitiveIndex0,
+                                            instanceLeaf.InstanceID,
+                                            triangle_hit_kind,
+                                            rtcore_make_v04_boundary_values_from_hit(
+                                                opaque_candidate,
+                                                instance_metadata_ref,
+                                                instanceLeaf
+                                                    .InstanceContributionToHitGroupIndex,
+                                                instanceLeaf.InstanceIndex,
+                                                instanceLeaf.InstanceID,
+                                                rtcore_v04_fp32_bits(world_thit),
+                                                true));
+                                }
                             }
                             min_thit_object = thit;
                             closest_leaf = leaf;
                             closest_instanceLeaf = instanceLeaf;
+                            closest_instance_metadata_ref =
+                                instance_metadata_ref;
                             closest_worldToObject = worldToObjectMatrix;
                             closest_objectToWorld = objectToWorldMatrix;
                             closest_objectRay = objectRay;
@@ -12318,7 +12677,17 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                     hit_group_index, 1,
                                     leaf.LeafDescriptor.GeometryIndex,
                                     leaf.PrimitiveIndex0, instanceLeaf.InstanceID,
-                                    triangle_hit_kind);
+                                    triangle_hit_kind,
+                                    v04_shadow_boundary_enabled
+                                        ? rtcore_make_v04_boundary_values_from_hit(
+                                              anyhit_hit_attributes,
+                                              instance_metadata_ref,
+                                              instanceLeaf.InstanceContributionToHitGroupIndex,
+                                              instanceLeaf.InstanceIndex,
+                                              instanceLeaf.InstanceID,
+                                              rtcore_v04_fp32_bits(anyhit_thit),
+                                              true)
+                                        : rtcore::abi_v04::shadow::boundary_values());
                             }
 
                             if(terminateOnFirstHit)
@@ -12379,7 +12748,16 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             boundary_event_seq, boundary_shader_counter, 0,
                             hit_group_index, 2,
                             leaf.LeafDescriptor.GeometryIndex,
-                            leaf.PrimitiveIndex[0], instanceLeaf.InstanceID, 0);
+                            leaf.PrimitiveIndex[0], instanceLeaf.InstanceID, 0,
+                            v04_shadow_boundary_enabled
+                                ? rtcore_make_v04_boundary_values_from_hit(
+                                      traversal_data.closest_hit,
+                                      instance_metadata_ref,
+                                      instanceLeaf.InstanceContributionToHitGroupIndex,
+                                      instanceLeaf.InstanceIndex,
+                                      instanceLeaf.InstanceID,
+                                      rtcore_v04_fp32_bits(min_thit), false)
+                                : rtcore::abi_v04::shadow::boundary_values());
                         
                         // transactions.insert(transactions.end(), intersectionTransactions.first.begin(), intersectionTransactions.first.end());
                         for(auto & newTransaction : intersectionTransactions.first)
@@ -12541,6 +12919,15 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         candidate_summary_valid
             ? (unsigned)traversal_data.closest_hit.hitGroupIndex
             : 0u;
+    rtcore_trace_export.v04_shadow_boundary_enabled =
+        v04_shadow_boundary_enabled;
+    rtcore_trace_export.v04_shadow_trace_input_valid =
+        rtcore_trace_export.v04_shadow_boundary_enabled &&
+        rtcore_abi_entry->v04_shadow_trace_input_valid;
+    if (rtcore_trace_export.v04_shadow_trace_input_valid) {
+        rtcore_trace_export.v04_shadow_trace_input_words =
+            rtcore_abi_entry->v04_shadow_trace_input_words;
+    }
     rtcore_publish_compact_trace_export(thread, rtcore_trace_export);
     rtcore_admit_compact_trace_for_replay(thread);
     mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);

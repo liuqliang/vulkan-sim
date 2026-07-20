@@ -55,6 +55,7 @@ class ptx_recognizer;
 #include "ptx.tab.h"
 #include "ptx_loader.h"
 #include "rtcore_procedural_hit_ordering.h"
+#include "rtcore_v04_shadow_boundary.h"
 #include "rtcore_v04_shadow_trace_input.h"
 #include "vulkan_ray_tracing.h"
 #include "vulkan_rt_thread_data.h"
@@ -95,6 +96,7 @@ extern "C" bool rtcore_commit_shader_visible_resubmit_admission(
 extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
     unsigned owner_hw_sid, unsigned previous_warp_uid, unsigned warp_id,
     unsigned previous_active_mask, unsigned lane_id, ptx_thread_info *thread,
+    const rtcore::abi_v04::shadow::boundary_return_update *return_update,
     unsigned long long refresh_cycle, const char **failure_reason);
 extern "C" bool rtcore_preflight_retire_resident_rt_warp_lane(
     unsigned owner_hw_sid, unsigned warp_id, unsigned lane_id,
@@ -7735,6 +7737,10 @@ static const char *rtcore_v04_shadow_consumer_gate_name() {
   return "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_CONSUMER";
 }
 
+static const char *rtcore_v04_shadow_boundary_publication_gate_name() {
+  return "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_BOUNDARY_PUBLICATION";
+}
+
 static bool rtcore_v04_shadow_consumer_configuration_valid(
     const ptx_instruction *pI, bool *consumer_enabled) {
   const rtcore_v04_shadow_gate_state consumer_state =
@@ -7769,11 +7775,43 @@ static bool rtcore_v04_shadow_consumer_configuration_valid(
   return false;
 }
 
+static bool rtcore_v04_shadow_boundary_publication_configuration_valid(
+    const ptx_instruction *pI, bool shadow_consumer_enabled,
+    bool *boundary_publication_enabled) {
+  const rtcore_v04_shadow_gate_state boundary_state =
+      rtcore_v04_shadow_gate(
+          rtcore_v04_shadow_boundary_publication_gate_name());
+  if (boundary_publication_enabled != NULL) {
+    *boundary_publication_enabled =
+        boundary_state == RTCORE_V04_SHADOW_GATE_ENABLED;
+  }
+  const char *reason = NULL;
+  if (boundary_state == RTCORE_V04_SHADOW_GATE_INVALID) {
+    reason = "V04_SHADOW_BOUNDARY_PUBLICATION_GATE_INVALID";
+  } else if (boundary_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             !shadow_consumer_enabled) {
+    reason = "V04_SHADOW_TRACE_INPUT_CONSUMER_REQUIRED";
+  }
+  if (reason == NULL) {
+    return true;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), reason=%s, "
+         "boundary_publication_gate=%s, shadow_consumer_enabled=%u\n",
+         pI->source_file(), pI->source_line(), reason,
+         getenv(rtcore_v04_shadow_boundary_publication_gate_name()) != NULL
+             ? getenv(rtcore_v04_shadow_boundary_publication_gate_name())
+             : "<unset>",
+         shadow_consumer_enabled ? 1u : 0u);
+  fflush(stdout);
+  return false;
+}
+
 static bool rtcore_validate_v04_shadow_trace_input(
     const ptx_instruction *pI, ptx_thread_info *thread,
     unsigned long long context_ptr, unsigned long long handoff_window_base,
     unsigned lane_slot_index,
-    const rtcore_v03_compact_context_decoded &admission_context) {
+    const rtcore_v03_compact_context_decoded &admission_context,
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> *validated_words) {
   if (thread == NULL || lane_slot_index >= 32) {
     return false;
   }
@@ -7842,6 +7880,9 @@ static bool rtcore_validate_v04_shadow_trace_input(
   const rtcore::abi_v04::shadow::trace_input_validation validation =
       rtcore::abi_v04::shadow::validate_trace_input_words(actual, expected);
   const bool valid = mutation_valid && validation.matches();
+  if (valid && validated_words != NULL) {
+    *validated_words = actual;
+  }
   printf("GPGPU-Sim PTX: RT_SUBMIT v04-shadow-trace-input-consumer "
          "(%s:%u), profile=%s, context_ptr=0x%llx, "
          "handoff_window_base=0x%llx, lane_slot_index=%u, "
@@ -8429,6 +8470,7 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                    0,
                    0,
                    0,
+                   NULL,
                    NULL,
                    pI,
                    thread);
@@ -9459,6 +9501,20 @@ const unsigned RTCORE_RETURN_FOR_INTERSECTION = 0x04;
 const unsigned RTCORE_RETURN_FOR_TRACE_DONE = 0x05;
 const unsigned RTCORE_RETURN_FOR_MEMORY_FAULT = 0x06;
 const unsigned RTCORE_RETURN_FOR_UNSUPPORTED = 0x07;
+static_assert(RTCORE_RETURN_FOR_MISS == rtcore::abi_v04::kReasonMiss,
+              "V0.3/V0.4 miss reason encoding drift");
+static_assert(RTCORE_RETURN_FOR_CLOSEST_HIT ==
+                  rtcore::abi_v04::kReasonClosestHitReady,
+              "V0.3/V0.4 closest-hit reason encoding drift");
+static_assert(RTCORE_RETURN_FOR_ANY_HIT ==
+                  rtcore::abi_v04::kReasonAnyHitRequired,
+              "V0.3/V0.4 any-hit reason encoding drift");
+static_assert(RTCORE_RETURN_FOR_INTERSECTION ==
+                  rtcore::abi_v04::kReasonIntersectionRequired,
+              "V0.3/V0.4 intersection reason encoding drift");
+static_assert(RTCORE_RETURN_FOR_TRACE_DONE ==
+                  rtcore::abi_v04::kReasonTraceDoneNoShader,
+              "V0.3/V0.4 trace-done reason encoding drift");
 const unsigned RTCORE_HIT_RESULT_CONTINUE_OR_NONE = 0x01;
 const unsigned RTCORE_HIT_RESULT_ACCEPT_HIT = 0x02;
 const unsigned RTCORE_HIT_RESULT_IGNORE_HIT = 0x03;
@@ -12654,6 +12710,7 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
     unsigned owner_hw_sid, unsigned previous_warp_uid, unsigned warp_uid,
     unsigned warp_id, unsigned lane_id,
     unsigned long long handoff_window_base, unsigned long long apply_cycle,
+    rtcore::abi_v04::shadow::boundary_return_update *v04_return_update,
     const char **failure_reason) {
   const char *failure = "accepted";
   const char *action = "unsupported";
@@ -12662,6 +12719,16 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
   unsigned boundary_geometry_index = 0;
   int32_t shader_counter = -1;
   int32_t shader_type = -1;
+  bool v04_commit_current_candidate = false;
+  uint32_t v04_reported_t_fp32 = 0;
+  uint32_t v04_reported_hit_kind = 0;
+  uint32_t v04_reported_attribute_word_count = 0;
+  uint32_t v04_reported_attribute_format = 0;
+
+  if (v04_return_update != NULL) {
+    *v04_return_update =
+        rtcore::abi_v04::shadow::boundary_return_update();
+  }
 
   if (thread == NULL || thread->RT_thread_data == NULL ||
       thread->RT_thread_data->traversal_data.empty() ||
@@ -12739,6 +12806,7 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
           candidate.geometryType != VK_GEOMETRY_TYPE_TRIANGLES_KHR) {
         failure = "SHADER_RETURN_ANYHIT_ACCEPT_CANDIDATE_INVALID";
       } else {
+        v04_commit_current_candidate = true;
         bool hit_geometry = false;
         Hit_data closest_hit = {};
         mem->read(&(traversal_data->hit_geometry),
@@ -12868,6 +12936,12 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
                        &instance_index, thread, pI);
             action = "intersection_reported_committed";
           }
+          v04_commit_current_candidate = true;
+          memcpy(&v04_reported_t_fp32, &reported_t,
+                 sizeof(v04_reported_t_fp32));
+          v04_reported_hit_kind = hit_kind;
+          v04_reported_attribute_word_count = attribute_word_count;
+          v04_reported_attribute_format = attribute_format;
         }
       }
     }
@@ -12880,6 +12954,30 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
   }
   if (strcmp(failure, "accepted") != 0) {
     return false;
+  }
+
+  if (v04_return_update != NULL && v04_commit_current_candidate) {
+    v04_return_update->action =
+        reason == RTCORE_RETURN_FOR_ANY_HIT
+            ? rtcore::abi_v04::shadow::kBoundaryReturnCommitAnyHit
+            : rtcore::abi_v04::shadow::kBoundaryReturnCommitIntersection;
+    v04_return_update->reported_t_fp32 = v04_reported_t_fp32;
+    v04_return_update->reported_hit_kind = v04_reported_hit_kind;
+    v04_return_update->reported_attribute_word_count =
+        v04_reported_attribute_word_count;
+    v04_return_update->reported_attribute_format =
+        v04_reported_attribute_format;
+    if (reason == RTCORE_RETURN_FOR_INTERSECTION &&
+        v04_reported_attribute_word_count > 0) {
+      const unsigned long long attribute_base =
+          handoff_window_base +
+          lane_id * RTCORE_HANDOFF_WINDOW_BYTES_PER_LANE +
+          RTCORE_HANDOFF_W_INLINE_ATTRIBUTE_BEGIN * sizeof(unsigned);
+      mem->read_simulator_backing(
+          attribute_base,
+          v04_reported_attribute_word_count * sizeof(unsigned),
+          v04_return_update->reported_attribute_words.data());
+    }
   }
 
   printf("GPGPU-Sim RTCORE_SHADER_RETURN_DECISION_APPLY "
@@ -13058,16 +13156,22 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
   bool terminal_facts_refreshed = true;
   const char *terminal_facts_refresh_failure = "accepted";
   if (rtcore_shader_return_application_required()) {
+    const bool v04_shadow_boundary_return_enabled =
+        rtcore_v04_shadow_gate(
+            rtcore_v04_shadow_boundary_publication_gate_name()) ==
+        RTCORE_V04_SHADOW_GATE_ENABLED;
     for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
       if ((metadata.active_mask & rtcore_lane_thread_mask(lane)) == 0) {
         continue;
       }
+      rtcore::abi_v04::shadow::boundary_return_update v04_return_update;
       if (transaction.lane_thread[lane] == NULL ||
           !rtcore_apply_shader_visible_resubmit_lane_return(
               pI, transaction.lane_thread[lane], metadata.owner_hw_sid,
               transaction.previous_warp_uid, metadata.warp_uid,
               metadata.warp_id, lane, transaction.handoff_window_base,
               rtcore_v02_lsu_issue_cycle(thread),
+              v04_shadow_boundary_return_enabled ? &v04_return_update : NULL,
               &shader_return_apply_failure)) {
         shader_return_decisions_applied = false;
         break;
@@ -13076,6 +13180,7 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
               metadata.owner_hw_sid, transaction.previous_warp_uid,
               metadata.warp_id, previous_active_mask, lane,
               transaction.lane_thread[lane],
+              v04_shadow_boundary_return_enabled ? &v04_return_update : NULL,
               rtcore_v02_lsu_issue_cycle(thread),
               &terminal_facts_refresh_failure)) {
         terminal_facts_refreshed = false;
@@ -14204,6 +14309,8 @@ struct rtcore_traversal_source_request {
         handoff_window_base(0),
         lane_slot_index(0),
         provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
+        v04_shadow_boundary_enabled(false),
+        v04_shadow_trace_input_valid(false),
         from_provider_backend_input_snapshot(false),
         replay_backend_input_source_snapshot("unavailable"),
         replay_actual_abi_source_snapshot_admitted(false),
@@ -14296,6 +14403,7 @@ struct rtcore_traversal_source_request {
         replay_selected_root_descriptor_policy_passed(false) {
     memset(&replay_ray_origin, 0, sizeof(replay_ray_origin));
     memset(&replay_ray_direction, 0, sizeof(replay_ray_direction));
+    v04_shadow_trace_input_words.fill(0);
   }
 
   const ptx_instruction *pI;
@@ -14305,6 +14413,10 @@ struct rtcore_traversal_source_request {
   unsigned lane_slot_index;
   ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
   rtcore_traversal_source_provider provider;
+  bool v04_shadow_boundary_enabled;
+  bool v04_shadow_trace_input_valid;
+  std::array<uint32_t, rtcore::abi_v04::kWordCount>
+      v04_shadow_trace_input_words;
   bool from_provider_backend_input_snapshot;
   const char *replay_backend_input_source_snapshot;
   bool replay_actual_abi_source_snapshot_admitted;
@@ -20635,6 +20747,12 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
   abi_entry.context_valid_flags = packet_context.valid_flags;
   abi_entry.pipeline_profile_id = packet_context.pipeline_profile_id;
   abi_entry.bvh_format_profile_id = packet_context.bvh_format_profile_id;
+  abi_entry.v04_shadow_boundary_enabled =
+      request.v04_shadow_boundary_enabled;
+  abi_entry.v04_shadow_trace_input_valid =
+      request.v04_shadow_trace_input_valid;
+  abi_entry.v04_shadow_trace_input_words =
+      request.v04_shadow_trace_input_words;
   if (!VulkanRayTracing::traceRayFromRtcoreAbi(abi_entry, pI, thread)) {
     if (failure_reason != NULL) {
       *failure_reason = "abi_native_trace_ray_entry_rejected";
@@ -31932,6 +32050,9 @@ bool rtcore_build_traversal_completion_event(
     unsigned lane_slot_index,
     const rtcore_runtime_context_window_allocation_record &allocation_record,
     const rtcore_launch_allocation_lifetime_record *lifetime_record,
+    bool v04_shadow_boundary_enabled,
+    const std::array<uint32_t, rtcore::abi_v04::kWordCount>
+        *v04_shadow_trace_input_words,
     rtcore_traversal_completion_event *event) {
   if (event == NULL) {
     return false;
@@ -31976,6 +32097,14 @@ bool rtcore_build_traversal_completion_event(
       rtcore_make_traversal_source_request(
           pI, thread, event->context_ptr, event->handoff_window_base,
           event->lane_slot_index, &event->warp_metadata);
+  source_request.v04_shadow_boundary_enabled =
+      v04_shadow_boundary_enabled;
+  source_request.v04_shadow_trace_input_valid =
+      v04_shadow_boundary_enabled && v04_shadow_trace_input_words != NULL;
+  if (source_request.v04_shadow_trace_input_valid) {
+    source_request.v04_shadow_trace_input_words =
+        *v04_shadow_trace_input_words;
+  }
   rtcore_pre_provider_traversal_data_snapshot
       pre_provider_traversal_data_snapshot =
           rtcore_make_pre_provider_traversal_data_snapshot(source_request);
@@ -32418,12 +32547,16 @@ void rtcore_traversal_completion_adapter_publish(
     const operand_info &result, unsigned long long context_ptr,
     unsigned long long handoff_window_base,
     const rtcore_runtime_context_window_allocation_record &allocation_record,
-    const rtcore_launch_allocation_lifetime_record *lifetime_record) {
+    const rtcore_launch_allocation_lifetime_record *lifetime_record,
+    bool v04_shadow_boundary_enabled,
+    const std::array<uint32_t, rtcore::abi_v04::kWordCount>
+        *v04_shadow_trace_input_words) {
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
   rtcore_traversal_completion_event event;
   if (!rtcore_build_traversal_completion_event(
           pI, thread, context_ptr, handoff_window_base, lane_slot_index,
-          allocation_record, lifetime_record, &event)) {
+          allocation_record, lifetime_record, v04_shadow_boundary_enabled,
+          v04_shadow_trace_input_words, &event)) {
     inst_not_implemented(pI);
     return;
   }
@@ -32510,6 +32643,13 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   bool v04_shadow_consumer_enabled = false;
   if (!rtcore_v04_shadow_consumer_configuration_valid(
           pI, &v04_shadow_consumer_enabled)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+  bool v04_shadow_boundary_publication_enabled = false;
+  if (!rtcore_v04_shadow_boundary_publication_configuration_valid(
+          pI, v04_shadow_consumer_enabled,
+          &v04_shadow_boundary_publication_enabled)) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
@@ -32621,11 +32761,14 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     return;
   }
 
+  std::array<uint32_t, rtcore::abi_v04::kWordCount>
+      v04_shadow_trace_input_words = {};
   if (v04_shadow_consumer_enabled &&
       (!admission_context_valid ||
        !rtcore_validate_v04_shadow_trace_input(
            pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
-           lane_slot_index, admission_context))) {
+           lane_slot_index, admission_context,
+           &v04_shadow_trace_input_words))) {
     printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
            "reason=V04_SHADOW_TRACE_INPUT_MISMATCH, context_ptr=0x%llx, "
            "handoff_window_base=0x%llx, lane_slot_index=%u, "
@@ -32691,7 +32834,11 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   rtcore_traversal_completion_adapter_publish(
       pI, thread, result, context_ptr_data.u64, handoff_window_base_data.u64,
-      allocation_record, lifetime_record);
+      allocation_record, lifetime_record,
+      v04_shadow_boundary_publication_enabled,
+      v04_shadow_boundary_publication_enabled
+          ? &v04_shadow_trace_input_words
+          : NULL);
 }
 
 static bool rtcore_publish_symbolic_retire_intent(
