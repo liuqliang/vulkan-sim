@@ -572,6 +572,7 @@ struct rtcore_replay_lane_request {
     bool v04_live_publication_armed;
     bool v04_live_publication_committed;
     unsigned v04_live_publication_reason;
+    unsigned v04_live_publication_warp_uid;
     uint32_t v04_live_publication_word_mask;
     unsigned v04_live_publication_pending_chunk_mask;
     unsigned v04_live_publication_acked_chunk_mask;
@@ -4414,6 +4415,13 @@ static unsigned rtcore_v04_live_publication_chunk_mask(uint32_t word_mask)
     return chunk_mask;
 }
 
+static bool rtcore_v04_live_publication_matches_current_submit(
+    const rtcore_replay_lane_request &request)
+{
+    return request.v04_live_publication_armed &&
+           request.v04_live_publication_warp_uid == request.warp_uid;
+}
+
 static void rtcore_fail_v04_live_handoff_publication(
     const rtcore_replay_lane_request &request, const char *reason,
     uint32_t word_mask, unsigned chunk_mask)
@@ -4421,11 +4429,13 @@ static void rtcore_fail_v04_live_handoff_publication(
     fprintf(stderr,
             "GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_PUBLICATION_FAULT "
             "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+            "publication_warp_uid=%u "
             "handoff_window_base=0x%llx word_mask=0x%08x "
             "chunk_mask=0x%x fault=%s\n",
             request.owner_hw_sid, request.thread_uid, request.lane_id,
-            request.warp_uid, request.handoff_window_base, word_mask,
-            chunk_mask, reason != NULL ? reason : "unknown");
+            request.warp_uid, request.v04_live_publication_warp_uid,
+            request.handoff_window_base, word_mask, chunk_mask,
+            reason != NULL ? reason : "unknown");
     fflush(stderr);
     abort();
 }
@@ -4450,23 +4460,28 @@ static bool rtcore_arm_v04_live_handoff_publication(
         abort();
     }
 
-    if (request->v04_live_publication_armed &&
-        !request->v04_live_publication_committed) {
+    if (request->v04_live_publication_armed) {
+        if (!rtcore_v04_live_publication_matches_current_submit(*request)) {
+            rtcore_fail_v04_live_handoff_publication(
+                *request, "stale_publication_submit_identity", word_mask,
+                rtcore_v04_live_publication_chunk_mask(word_mask));
+        }
         const bool same_publication =
             request->v04_live_publication_reason == reason &&
             request->v04_live_publication_word_mask == word_mask &&
             request->v04_live_publication_words == words;
-        if (!same_publication) {
-            rtcore_fail_v04_live_handoff_publication(
-                *request, "overlapping_boundary_publication", word_mask,
-                rtcore_v04_live_publication_chunk_mask(word_mask));
+        if (same_publication) {
+            return request->v04_live_publication_committed;
         }
-        return false;
+        rtcore_fail_v04_live_handoff_publication(
+            *request, "overlapping_boundary_publication", word_mask,
+            rtcore_v04_live_publication_chunk_mask(word_mask));
     }
 
     request->v04_live_publication_armed = false;
     request->v04_live_publication_committed = false;
     request->v04_live_publication_reason = reason;
+    request->v04_live_publication_warp_uid = request->warp_uid;
     request->v04_live_publication_word_mask = word_mask;
     request->v04_live_publication_pending_chunk_mask =
         rtcore_v04_live_publication_chunk_mask(word_mask);
@@ -4549,6 +4564,46 @@ static bool rtcore_arm_v04_live_handoff_publication(
            service_cycle);
     fflush(stdout);
     return request->v04_live_publication_committed;
+}
+
+static void rtcore_invalidate_v04_live_handoff_publication_for_resubmit(
+    rtcore_replay_lane_request *request, unsigned next_warp_uid,
+    unsigned long long service_cycle)
+{
+    if (!rtcore_v04_live_handoff_publication_enabled()) {
+        return;
+    }
+    if (request == NULL || !request->valid ||
+        !rtcore_v04_live_publication_matches_current_submit(*request) ||
+        !request->v04_live_publication_committed) {
+        if (request != NULL) {
+            rtcore_fail_v04_live_handoff_publication(
+                *request, "resubmit_before_current_publication_commit",
+                request->v04_live_publication_word_mask,
+                request->v04_live_publication_pending_chunk_mask);
+        }
+        abort();
+    }
+
+    printf("GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_PUBLICATION_INVALIDATE "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u "
+           "publication_warp_uid=%u next_warp_uid=%u reason=%u "
+           "service_cycle=%llu\n",
+           request->owner_hw_sid, request->thread_uid, request->lane_id,
+           request->v04_live_publication_warp_uid, next_warp_uid,
+           request->v04_live_publication_reason, service_cycle);
+    fflush(stdout);
+
+    request->v04_live_publication_armed = false;
+    request->v04_live_publication_committed = false;
+    request->v04_live_publication_reason = 0;
+    request->v04_live_publication_warp_uid = 0;
+    request->v04_live_publication_word_mask = 0;
+    request->v04_live_publication_pending_chunk_mask = 0;
+    request->v04_live_publication_acked_chunk_mask = 0;
+    request->v04_live_publication_armed_cycle = 0;
+    request->v04_live_publication_words.fill(0);
+    request->v04_live_publication_preimage_words.fill(0);
 }
 
 static bool rtcore_observe_v04_shadow_boundary_publication(
@@ -4682,6 +4737,42 @@ static bool rtcore_observe_v04_shadow_boundary_publication(
            publication.words[30], publication.words[31]);
     fflush(stdout);
     return valid;
+}
+
+static bool rtcore_prepare_v04_terminal_completion_publication(
+    rtcore_replay_lane_request *request, unsigned long long service_cycle)
+{
+    if (!rtcore_v04_live_handoff_publication_enabled()) {
+        return true;
+    }
+    if (request == NULL || !request->valid) {
+        abort();
+    }
+
+    const rtcore_replay_continuation_packet_lane_fact packet_fact =
+        rtcore_make_replay_continuation_packet_lane_fact(*request);
+    if (!packet_fact.terminal) {
+        rtcore_fail_v04_live_handoff_publication(
+            *request, "completion_reason_not_terminal", 0, 0);
+    }
+    if (rtcore_v04_live_publication_matches_current_submit(*request) &&
+        request->v04_live_publication_reason == packet_fact.reason) {
+        return request->v04_live_publication_committed;
+    }
+
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> publication_words = {};
+    uint32_t publication_word_mask = 0;
+    if (!rtcore_observe_v04_shadow_boundary_publication(
+            *request, packet_fact.reason, NULL, &publication_words,
+            &publication_word_mask)) {
+        rtcore_fail_v04_live_handoff_publication(
+            *request, "terminal_boundary_publication_invalid",
+            publication_word_mask,
+            rtcore_v04_live_publication_chunk_mask(publication_word_mask));
+    }
+    return rtcore_arm_v04_live_handoff_publication(
+        request, packet_fact.reason, publication_words,
+        publication_word_mask, service_cycle);
 }
 
 static void rtcore_populate_continuation_packet_handoff_summaries(
@@ -5315,14 +5406,29 @@ static void rtcore_record_replay_lane_completion_entry(
     if (packet_fact.software_return_valid) {
         state.handoff_software_return_valid_mask |= lane_mask;
     }
-    state.v04_shadow_boundary_image_valid_mask &= ~lane_mask;
+    if (rtcore_v04_live_handoff_publication_enabled()) {
+        if (!rtcore_v04_live_publication_matches_current_submit(request) ||
+            !request.v04_live_publication_committed ||
+            request.v04_live_publication_reason != packet_fact.reason) {
+            rtcore_fail_v04_live_handoff_publication(
+                request, "completion_record_before_publication_commit",
+                request.v04_live_publication_word_mask,
+                request.v04_live_publication_pending_chunk_mask);
+        }
+        state.v04_shadow_boundary_image_valid_mask |= lane_mask;
+    } else {
+        state.v04_shadow_boundary_image_valid_mask &= ~lane_mask;
+    }
     state.lane_completion_reason[request.lane_id] = packet_fact.reason;
     state.lane_continuation_depth[request.lane_id] =
         packet_fact.continuation_depth;
     for (unsigned word = 0; word < 32; ++word) {
         state.handoff_words[request.lane_id][word] =
             packet_fact.handoff_words[word];
-        state.v04_shadow_handoff_words[request.lane_id][word] = 0;
+        state.v04_shadow_handoff_words[request.lane_id][word] =
+            rtcore_v04_live_handoff_publication_enabled()
+                ? request.v04_live_publication_words[word]
+                : 0;
     }
     rtcore_update_replay_warp_completion_entry_state(&state);
     if (state.all_active_lanes_complete &&
@@ -7086,7 +7192,7 @@ static bool rtcore_record_v04_live_handoff_publication_response(
     const unsigned publication_chunk_bit = 1u << publication_chunk;
     const bool response_valid =
         request.valid && request.owner_hw_sid == owner_hw_sid &&
-        request.v04_live_publication_armed &&
+        rtcore_v04_live_publication_matches_current_submit(request) &&
         !request.v04_live_publication_committed && chunk_id == 0 &&
         chunk_count == 1 &&
         response_target == RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE &&
@@ -7195,17 +7301,42 @@ static bool rtcore_record_v04_live_handoff_publication_response(
     std::map<rtcore_replay_warp_completion_entry_key,
              rtcore_continuation_warp_boundary_state>::iterator boundary_it =
         g_rtcore_continuation_warp_boundary_states.find(boundary_key);
-    if (boundary_it == g_rtcore_continuation_warp_boundary_states.end() ||
-        !boundary_it->second.valid ||
-        !boundary_it->second.pending_packet_valid ||
-        boundary_it->second.packet_published) {
+    if (boundary_it != g_rtcore_continuation_warp_boundary_states.end() &&
+        boundary_it->second.valid &&
+        boundary_it->second.pending_packet_valid &&
+        !boundary_it->second.packet_published) {
+        (void)rtcore_publish_continuation_return_packet(
+            &boundary_it->second, response_cycle);
+        return true;
+    }
+
+    const rtcore_replay_warp_completion_entry_key completion_key =
+        rtcore_make_replay_warp_completion_entry_key(request);
+    std::map<rtcore_replay_warp_completion_entry_key,
+             rtcore_replay_warp_completion_entry_state>::const_iterator
+        completion_it =
+            g_rtcore_replay_warp_completion_entries.find(completion_key);
+    const unsigned lane_mask = 1u << request.lane_id;
+    const bool terminal_completion_pending =
+        request.state == RTCORE_REPLAY_COMPLETION_PENDING &&
+        completion_it != g_rtcore_replay_warp_completion_entries.end() &&
+        completion_it->second.valid &&
+        (completion_it->second.completed_lane_mask & lane_mask) == 0;
+    if (!terminal_completion_pending) {
         rtcore_fail_v04_live_handoff_publication(
-            request, "ack_boundary_state_missing",
+            request, "ack_completion_owner_missing",
             request.v04_live_publication_word_mask,
             request.v04_live_publication_pending_chunk_mask);
     }
-    (void)rtcore_publish_continuation_return_packet(
-        &boundary_it->second, response_cycle);
+
+    printf("GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_TERMINAL_ACK_READY "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+           "reason=%u completion_path=generic_terminal "
+           "response_cycle=%llu\n",
+           request.owner_hw_sid, request.thread_uid, request.lane_id,
+           request.warp_uid, request.v04_live_publication_reason,
+           response_cycle);
+    fflush(stdout);
     return true;
 }
 
@@ -7780,6 +7911,23 @@ static bool rtcore_service_replay_completion_ingress_requests_for_owner(
             break;
         }
 
+        const bool publication_was_armed =
+            request.v04_live_publication_armed;
+        if (!rtcore_prepare_v04_terminal_completion_publication(
+                &request, service_cycle)) {
+            selected_bank_ids.insert(selected_bank_id);
+            if (!publication_was_armed &&
+                request.v04_live_publication_armed) {
+                progressed = true;
+                if (last_identity) {
+                    *last_identity =
+                        rtcore_make_replay_service_progress_identity(
+                            thread_uid, true, false);
+                }
+            }
+            continue;
+        }
+
         (*ingress_budget)--;
         rtcore_record_replay_lane_completion_entry(request);
         selected_bank_ids.insert(selected_bank_id);
@@ -7998,10 +8146,11 @@ static bool rtcore_v04_live_handoff_packet_ready(
             0) {
             continue;
         }
-        if (request.v04_live_publication_armed) {
+        if (rtcore_v04_live_publication_matches_current_submit(request)) {
             armed |= lane_mask;
         }
-        if (request.v04_live_publication_committed) {
+        if (rtcore_v04_live_publication_matches_current_submit(request) &&
+            request.v04_live_publication_committed) {
             committed |= lane_mask;
         }
     }
@@ -10271,6 +10420,8 @@ extern "C" bool rtcore_commit_shader_visible_resubmit_admission(
                 continue;
             }
 
+            rtcore_invalidate_v04_live_handoff_publication_for_resubmit(
+                &request, new_warp_uid, service_cycle);
             request.warp_uid = new_warp_uid;
             request.static_inst_uid = new_static_inst_uid;
             request.active_mask = next_active_mask;

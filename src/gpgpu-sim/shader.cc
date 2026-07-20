@@ -31,6 +31,7 @@
 static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 
 #include <algorithm>
+#include <ctype.h>
 #include <deque>
 #include <float.h>
 #include <limits.h>
@@ -332,6 +333,92 @@ static bool rtcore_shader_continuation_requires_handoff_return(
     unsigned reason) {
   return reason == RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED ||
          reason == RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED;
+}
+
+enum rtcore_v04_shader_builtin_gate_state {
+  RTCORE_V04_SHADER_BUILTIN_GATE_DISABLED = 0,
+  RTCORE_V04_SHADER_BUILTIN_GATE_ENABLED,
+  RTCORE_V04_SHADER_BUILTIN_GATE_INVALID,
+};
+
+static bool rtcore_v04_shader_builtin_env_value_is(
+    const char *value, const char *expected) {
+  if (value == NULL || expected == NULL) return value == expected;
+  while (*value != '\0' && *expected != '\0') {
+    if (tolower(static_cast<unsigned char>(*value)) !=
+        tolower(static_cast<unsigned char>(*expected))) {
+      return false;
+    }
+    ++value;
+    ++expected;
+  }
+  return *value == '\0' && *expected == '\0';
+}
+
+static rtcore_v04_shader_builtin_gate_state
+rtcore_v04_shader_builtin_gate_state_for(const char *name) {
+  const char *value = getenv(name);
+  if (value == NULL || *value == '\0' || strcmp(value, "0") == 0 ||
+      rtcore_v04_shader_builtin_env_value_is(value, "false") ||
+      rtcore_v04_shader_builtin_env_value_is(value, "off") ||
+      rtcore_v04_shader_builtin_env_value_is(value, "no") ||
+      rtcore_v04_shader_builtin_env_value_is(value, "disabled")) {
+    return RTCORE_V04_SHADER_BUILTIN_GATE_DISABLED;
+  }
+  if (strcmp(value, "1") == 0 ||
+      rtcore_v04_shader_builtin_env_value_is(value, "true") ||
+      rtcore_v04_shader_builtin_env_value_is(value, "on") ||
+      rtcore_v04_shader_builtin_env_value_is(value, "yes") ||
+      rtcore_v04_shader_builtin_env_value_is(value, "enabled")) {
+    return RTCORE_V04_SHADER_BUILTIN_GATE_ENABLED;
+  }
+  return RTCORE_V04_SHADER_BUILTIN_GATE_INVALID;
+}
+
+static const char *rtcore_v04_shader_builtin_consumer_gate_name() {
+  return "VULKAN_SIM_RTCORE_ABI_V04_SHADER_BUILTIN_CONSUMER";
+}
+
+static bool rtcore_v04_shader_builtin_consumer_runtime_enabled() {
+  const rtcore_v04_shader_builtin_gate_state consumer_state =
+      rtcore_v04_shader_builtin_gate_state_for(
+          rtcore_v04_shader_builtin_consumer_gate_name());
+  if (consumer_state == RTCORE_V04_SHADER_BUILTIN_GATE_INVALID) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SHADER_BUILTIN_CONFIGURATION_FAULT "
+            "fault=consumer_gate_invalid value=%s\n",
+            getenv(rtcore_v04_shader_builtin_consumer_gate_name()) != NULL
+                ? getenv(rtcore_v04_shader_builtin_consumer_gate_name())
+                : "<unset>");
+    abort();
+  }
+  if (consumer_state != RTCORE_V04_SHADER_BUILTIN_GATE_ENABLED) return false;
+
+  static const char *required_gates[] = {
+      "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_PUBLICATION",
+      "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_CONSUMER",
+      "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_BOUNDARY_PUBLICATION",
+      "VULKAN_SIM_RTCORE_ABI_V04_LIVE_HANDOFF_PUBLICATION",
+      "VULKAN_SIM_RTCORE_ABI_V04_TLAS_BINDING_ENFORCEMENT",
+  };
+  for (unsigned index = 0;
+       index < sizeof(required_gates) / sizeof(required_gates[0]); ++index) {
+    const rtcore_v04_shader_builtin_gate_state required_state =
+        rtcore_v04_shader_builtin_gate_state_for(required_gates[index]);
+    if (required_state == RTCORE_V04_SHADER_BUILTIN_GATE_ENABLED) continue;
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SHADER_BUILTIN_CONFIGURATION_FAULT "
+            "fault=%s required_gate=%s value=%s\n",
+            required_state == RTCORE_V04_SHADER_BUILTIN_GATE_INVALID
+                ? "required_gate_invalid"
+                : "required_gate_disabled",
+            required_gates[index],
+            getenv(required_gates[index]) != NULL
+                ? getenv(required_gates[index])
+                : "<unset>");
+    abort();
+  }
+  return true;
 }
 
 enum rtcore_shader_continuation_sbt_metadata_lookup_state {
@@ -4920,7 +5007,6 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
   }
   if (warp_id >= m_warp_count || cohort_lane_mask == 0 ||
       target_func == NULL ||
-      (requires_handoff_return && handoff_window_base == 0) ||
       return_pc == NULL || return_rpc == NULL ||
       target_func->num_args() != 0 || target_func->has_return()) {
     fprintf(stderr,
@@ -4929,6 +5015,62 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
             "fault=invalid_call_target_fail_closed\n",
             m_sid, warp_id, cohort_lane_mask);
     abort();
+  }
+
+  const bool v04_builtin_consumer_enabled =
+      rtcore_v04_shader_builtin_consumer_runtime_enabled();
+  symbol *v04_builtin_consumer_marker =
+      target_func->get_symtab()->lookup("%rt_v04_builtin_consumer_marker");
+  const bool compiler_marker_present =
+      v04_builtin_consumer_marker != NULL;
+  if (compiler_marker_present != v04_builtin_consumer_enabled) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SHADER_BUILTIN_CONFIGURATION_FAULT "
+            "owner_hw_sid=%u warp_id=%u cohort_lane_mask=0x%08x "
+            "fault=compiler_runtime_gate_mismatch runtime_gate=%u "
+            "compiler_marker=%u\n",
+            m_sid, warp_id, cohort_lane_mask,
+            v04_builtin_consumer_enabled ? 1u : 0u,
+            compiler_marker_present ? 1u : 0u);
+    abort();
+  }
+
+  const bool requires_handoff_lane_pointer =
+      requires_handoff_return || v04_builtin_consumer_enabled;
+  symbol *handoff_lane_ptr = NULL;
+  if (requires_handoff_lane_pointer) {
+    handoff_lane_ptr =
+        target_func->get_symtab()->lookup("%rt_handoff_lane_ptr");
+    if (handoff_window_base == 0 || handoff_lane_ptr == NULL) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
+              "owner_hw_sid=%u warp_id=%u cohort_lane_mask=0x%08x "
+              "fault=%s\n",
+              m_sid, warp_id, cohort_lane_mask,
+              handoff_window_base == 0
+                  ? "missing_handoff_window_base_fail_closed"
+                  : "missing_handoff_lane_pointer_fail_closed");
+      abort();
+    }
+  }
+
+  symbol *hit_result = NULL;
+  symbol *reported_t = NULL;
+  symbol *reported_metadata = NULL;
+  if (requires_handoff_return) {
+    hit_result = target_func->get_symtab()->lookup("%rt_hit_result");
+    reported_t = target_func->get_symtab()->lookup("%rt_reported_t");
+    reported_metadata =
+        target_func->get_symtab()->lookup("%rt_reported_metadata");
+    if (hit_result == NULL || reported_t == NULL ||
+        reported_metadata == NULL) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
+              "owner_hw_sid=%u warp_id=%u cohort_lane_mask=0x%08x "
+              "fault=missing_shader_return_register_fail_closed\n",
+              m_sid, warp_id, cohort_lane_mask);
+      abort();
+    }
   }
 
   m_simt_stack[warp_id]->get_pdom_stack_top_info(return_pc, return_rpc);
@@ -4965,36 +5107,18 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
     }
     thread->callstack_push(*return_pc, *return_rpc, NULL, NULL,
                            call_uid_next++);
-    if (requires_handoff_return) {
-      symbol *handoff_lane_ptr =
-          target_func->get_symtab()->lookup("%rt_handoff_lane_ptr");
-      if (handoff_lane_ptr == NULL) {
-        fprintf(stderr,
-                "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
-                "owner_hw_sid=%u warp_id=%u lane_id=%u "
-                "fault=missing_handoff_lane_pointer_fail_closed\n",
-                m_sid, warp_id, lane);
-        abort();
-      }
+    if (requires_handoff_lane_pointer) {
       ptx_reg_t handoff_lane_value;
       handoff_lane_value.u64 =
           handoff_window_base + lane * RTCORE_HANDOFF_WINDOW_SLOT_BYTES;
       thread->set_reg(handoff_lane_ptr, handoff_lane_value);
-      symbol *hit_result =
-          target_func->get_symtab()->lookup("%rt_hit_result");
-      symbol *reported_t =
-          target_func->get_symtab()->lookup("%rt_reported_t");
-      symbol *reported_metadata =
-          target_func->get_symtab()->lookup("%rt_reported_metadata");
-      if (hit_result == NULL || reported_t == NULL ||
-          reported_metadata == NULL) {
-        fprintf(stderr,
-                "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
-                "owner_hw_sid=%u warp_id=%u lane_id=%u "
-                "fault=missing_shader_return_register_fail_closed\n",
-                m_sid, warp_id, lane);
-        abort();
-      }
+    }
+    if (v04_builtin_consumer_enabled) {
+      ptx_reg_t marker_value;
+      marker_value.u32 = 1;
+      thread->set_reg(v04_builtin_consumer_marker, marker_value);
+    }
+    if (requires_handoff_return) {
       ptx_reg_t initial_return_value;
       initial_return_value.u32 = default_hit_result;
       thread->set_reg(hit_result, initial_return_value);
@@ -5004,6 +5128,14 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
     }
     thread->set_npc(target_func);
     thread->update_pc();
+  }
+
+  if (v04_builtin_consumer_enabled) {
+    printf("GPGPU-Sim RTCORE_V04_SHADER_BUILTIN_CONTEXT "
+           "owner_hw_sid=%u warp_id=%u cohort_lane_mask=0x%08x "
+           "handoff_window_base=0x%llx lane_stride=%u marker=1\n",
+           m_sid, warp_id, cohort_lane_mask, handoff_window_base,
+           RTCORE_HANDOFF_WINDOW_SLOT_BYTES);
   }
 
   const unsigned target_pc = target_func->get_start_PC();
