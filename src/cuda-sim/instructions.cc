@@ -55,6 +55,7 @@ class ptx_recognizer;
 #include "ptx.tab.h"
 #include "ptx_loader.h"
 #include "rtcore_procedural_hit_ordering.h"
+#include "rtcore_v04_shadow_trace_input.h"
 #include "vulkan_ray_tracing.h"
 #include "vulkan_rt_thread_data.h"
 
@@ -7700,6 +7701,163 @@ static bool rtcore_rt_env_value_is_explicit_true(const char *value) {
           rtcore_path_mode_is(value, "enabled") ||
           rtcore_path_mode_is(value, "enable") ||
           rtcore_path_mode_is(value, "default"));
+}
+
+enum rtcore_v04_shadow_gate_state {
+  RTCORE_V04_SHADOW_GATE_DISABLED = 0,
+  RTCORE_V04_SHADOW_GATE_ENABLED,
+  RTCORE_V04_SHADOW_GATE_INVALID,
+};
+
+static rtcore_v04_shadow_gate_state rtcore_v04_shadow_gate(const char *name) {
+  const char *value = getenv(name);
+  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
+      rtcore_path_mode_is(value, "false") ||
+      rtcore_path_mode_is(value, "off") ||
+      rtcore_path_mode_is(value, "no") ||
+      rtcore_path_mode_is(value, "disabled")) {
+    return RTCORE_V04_SHADOW_GATE_DISABLED;
+  }
+  if (strcmp(value, "1") == 0 || rtcore_path_mode_is(value, "true") ||
+      rtcore_path_mode_is(value, "on") ||
+      rtcore_path_mode_is(value, "yes") ||
+      rtcore_path_mode_is(value, "enabled")) {
+    return RTCORE_V04_SHADOW_GATE_ENABLED;
+  }
+  return RTCORE_V04_SHADOW_GATE_INVALID;
+}
+
+static const char *rtcore_v04_shadow_publication_gate_name() {
+  return "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_PUBLICATION";
+}
+
+static const char *rtcore_v04_shadow_consumer_gate_name() {
+  return "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_CONSUMER";
+}
+
+static bool rtcore_v04_shadow_consumer_configuration_valid(
+    const ptx_instruction *pI, bool *consumer_enabled) {
+  const rtcore_v04_shadow_gate_state consumer_state =
+      rtcore_v04_shadow_gate(rtcore_v04_shadow_consumer_gate_name());
+  const rtcore_v04_shadow_gate_state publication_state =
+      rtcore_v04_shadow_gate(rtcore_v04_shadow_publication_gate_name());
+  if (consumer_enabled != NULL) {
+    *consumer_enabled = consumer_state == RTCORE_V04_SHADOW_GATE_ENABLED;
+  }
+  const char *reason = NULL;
+  if (consumer_state == RTCORE_V04_SHADOW_GATE_INVALID) {
+    reason = "V04_SHADOW_CONSUMER_GATE_INVALID";
+  } else if (consumer_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             publication_state != RTCORE_V04_SHADOW_GATE_ENABLED) {
+    reason = publication_state == RTCORE_V04_SHADOW_GATE_INVALID
+                 ? "V04_SHADOW_PUBLICATION_GATE_INVALID"
+                 : "V04_SHADOW_PUBLICATION_GATE_REQUIRED";
+  }
+  if (reason == NULL) {
+    return true;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), reason=%s, "
+         "consumer_gate=%s, publication_gate=%s\n",
+         pI->source_file(), pI->source_line(), reason,
+         getenv(rtcore_v04_shadow_consumer_gate_name()) != NULL
+             ? getenv(rtcore_v04_shadow_consumer_gate_name())
+             : "<unset>",
+         getenv(rtcore_v04_shadow_publication_gate_name()) != NULL
+             ? getenv(rtcore_v04_shadow_publication_gate_name())
+             : "<unset>");
+  fflush(stdout);
+  return false;
+}
+
+static bool rtcore_validate_v04_shadow_trace_input(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index,
+    const rtcore_v03_compact_context_decoded &admission_context) {
+  if (thread == NULL || lane_slot_index >= 32) {
+    return false;
+  }
+  const uint64_t lane_offset =
+      (uint64_t)lane_slot_index * rtcore::abi_v04::kLaneSlotBytes;
+  const uint64_t lane_address = handoff_window_base + lane_offset;
+  if (lane_address < handoff_window_base) {
+    return false;
+  }
+
+  std::array<uint8_t, rtcore::abi_v04::kLaneSlotBytes> image = {};
+  thread->get_global_memory()->read_simulator_backing(
+      (mem_addr_t)lane_address, image.size(), image.data());
+  std::array<uint32_t, rtcore::abi_v04::kWordCount> actual =
+      rtcore::abi_v04::decode_words_le(image);
+
+  const char *mutation =
+      getenv("VULKAN_SIM_RTCORE_TEST_V04_SHADOW_TRACE_INPUT_MUTATION");
+  bool mutation_valid = mutation == NULL || mutation[0] == '\0' ||
+                        strcmp(mutation, "none") == 0;
+  if (mutation != NULL && strcmp(mutation, "context") == 0) {
+    actual[rtcore::abi_v04::kContextAddressLow32.word] ^= 1u;
+    mutation_valid = true;
+  } else if (mutation != NULL && strcmp(mutation, "ray_tmin") == 0) {
+    actual[rtcore::abi_v04::kRayTminFp32.word] ^= 1u;
+    mutation_valid = true;
+  } else if (mutation != NULL && strcmp(mutation, "packed_policy") == 0) {
+    actual[rtcore::abi_v04::kCullMask.word] ^= 1u;
+    mutation_valid = true;
+  } else if (mutation != NULL && strcmp(mutation, "reserved") == 0) {
+    for (std::size_t word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+      if (rtcore::abi_v04::kReservedMasks[word] == 0xffffffffu) {
+        actual[word] ^= 1u;
+        mutation_valid = true;
+        break;
+      }
+    }
+  }
+
+  rtcore::abi_v04::shadow::trace_input_values expected = {};
+  expected.context_address = context_ptr;
+  expected.traversable_reference =
+      admission_context.as_handle_or_traversable_ref;
+  expected.world_ray_origin_fp32[0] =
+      rtcore_context_float_to_u32(admission_context.ray_origin.x);
+  expected.world_ray_origin_fp32[1] =
+      rtcore_context_float_to_u32(admission_context.ray_origin.y);
+  expected.world_ray_origin_fp32[2] =
+      rtcore_context_float_to_u32(admission_context.ray_origin.z);
+  expected.ray_tmin_fp32 =
+      rtcore_context_float_to_u32(admission_context.ray_tmin);
+  expected.world_ray_direction_fp32[0] =
+      rtcore_context_float_to_u32(admission_context.ray_direction.x);
+  expected.world_ray_direction_fp32[1] =
+      rtcore_context_float_to_u32(admission_context.ray_direction.y);
+  expected.world_ray_direction_fp32[2] =
+      rtcore_context_float_to_u32(admission_context.ray_direction.z);
+  expected.launch_ray_tmax_fp32 =
+      rtcore_context_float_to_u32(admission_context.ray_tmax);
+  expected.ray_flags = admission_context.ray_flags;
+  expected.cull_mask = admission_context.cull_mask;
+  expected.sbt_record_offset = admission_context.sbt_offset;
+  expected.sbt_record_stride = admission_context.sbt_stride;
+  expected.miss_index = admission_context.miss_index;
+
+  const rtcore::abi_v04::shadow::trace_input_validation validation =
+      rtcore::abi_v04::shadow::validate_trace_input_words(actual, expected);
+  const bool valid = mutation_valid && validation.matches();
+  printf("GPGPU-Sim PTX: RT_SUBMIT v04-shadow-trace-input-consumer "
+         "(%s:%u), profile=%s, context_ptr=0x%llx, "
+         "handoff_window_base=0x%llx, lane_slot_index=%u, "
+         "lane_address=0x%llx, expected_encoding_valid=%u, "
+         "owned_word_mask=0x%08x, mismatch_word_mask=0x%08x, "
+         "mutation=%s, mutation_valid=%u, observation_only=1, "
+         "traversal_authority=0, valid=%u\n",
+         pI->source_file(), pI->source_line(), rtcore::abi_v04::kProfileId,
+         context_ptr, handoff_window_base, lane_slot_index,
+         (unsigned long long)lane_address,
+         validation.expected_encoding_valid ? 1u : 0u,
+         validation.owned_word_mask, validation.mismatch_word_mask,
+         mutation != NULL && mutation[0] != '\0' ? mutation : "none",
+         mutation_valid ? 1u : 0u, valid ? 1u : 0u);
+  fflush(stdout);
+  return valid;
 }
 
 static const char *rtcore_path_mode_raw_value() {
@@ -32349,6 +32507,13 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   assert(pI->get_num_operands() == 3);
 
+  bool v04_shadow_consumer_enabled = false;
+  if (!rtcore_v04_shadow_consumer_configuration_valid(
+          pI, &v04_shadow_consumer_enabled)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+
   const operand_info &result = pI->operand_lookup(0);
   const operand_info &context_ptr = pI->operand_lookup(1);
   const operand_info &handoff_window_base = pI->operand_lookup(2);
@@ -32413,8 +32578,9 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const rtcore_runtime_context_window_allocation_record allocation_record =
       rtcore_make_runtime_context_window_allocation_record(
           context_ptr_data.u64, handoff_window_base_data.u64, lane_slot_index);
+  rtcore_v03_compact_context_decoded admission_context;
+  bool admission_context_valid = false;
   if (rtcore_compiler_driver_publication_source_enabled()) {
-    rtcore_v03_compact_context_decoded admission_context;
     if (!rtcore_decode_v03_compact_context_image(
             pI, thread, context_ptr_data.u64, &admission_context)) {
       printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
@@ -32429,6 +32595,7 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       inst_not_implemented(pI);
       return;
     }
+    admission_context_valid = true;
   }
 
   const rtcore_symbolic_resource_profile resource_profile =
@@ -32451,6 +32618,25 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   if (resubmit_action == RTCORE_SYMBOLIC_RESUBMIT_PENDING_WHOLE_MASK ||
       resubmit_action == RTCORE_SYMBOLIC_RESUBMIT_COMMITTED) {
+    return;
+  }
+
+  if (v04_shadow_consumer_enabled &&
+      (!admission_context_valid ||
+       !rtcore_validate_v04_shadow_trace_input(
+           pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
+           lane_slot_index, admission_context))) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
+           "reason=V04_SHADOW_TRACE_INPUT_MISMATCH, context_ptr=0x%llx, "
+           "handoff_window_base=0x%llx, lane_slot_index=%u, "
+           "admission_context_valid=%u, lifetime_mutated=0, "
+           "traversal_consumed=0\n",
+           pI->source_file(), pI->source_line(),
+           (unsigned long long)context_ptr_data.u64,
+           (unsigned long long)handoff_window_base_data.u64,
+           lane_slot_index, admission_context_valid ? 1u : 0u);
+    fflush(stdout);
+    rtcore_reject_symbolic_submit(pI);
     return;
   }
 
