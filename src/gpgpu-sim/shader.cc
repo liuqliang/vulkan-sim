@@ -2539,8 +2539,11 @@ static void rtcore_record_v02_lsu_sideband_response_wakeup_kind(
     } else if (
         snapshot.access_kind ==
         RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE) {
-      g_rtcore_replay_cycle_hook_consumer_stats
-          .v02_lsu_sideband_handoff_publication_store_nonblocking_completion_count++;
+      if (!rtcore_v04_live_publication_memory_op_seq(
+              snapshot.memory_op_seq)) {
+        g_rtcore_replay_cycle_hook_consumer_stats
+            .v02_lsu_sideband_handoff_publication_store_nonblocking_completion_count++;
+      }
     } else if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE) {
       g_rtcore_replay_cycle_hook_consumer_stats
           .v02_lsu_sideband_result_store_nonblocking_completion_count++;
@@ -2613,9 +2616,14 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
   if (!snapshot.valid) {
     return;
   }
-  if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_STACK_STORE ||
+  const bool v04_live_publication_store =
       snapshot.access_kind ==
-          RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
+          RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE &&
+      rtcore_v04_live_publication_memory_op_seq(snapshot.memory_op_seq);
+  if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_STACK_STORE ||
+      (snapshot.access_kind ==
+           RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE &&
+       !v04_live_publication_store) ||
       snapshot.access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE) {
     return;
   }

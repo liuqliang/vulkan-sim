@@ -7742,6 +7742,10 @@ static const char *rtcore_v04_shadow_boundary_publication_gate_name() {
   return "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_BOUNDARY_PUBLICATION";
 }
 
+static const char *rtcore_v04_live_handoff_publication_gate_name() {
+  return "VULKAN_SIM_RTCORE_ABI_V04_LIVE_HANDOFF_PUBLICATION";
+}
+
 static const char *rtcore_v04_shadow_shader_return_publication_gate_name() {
   return "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_SHADER_RETURN_PUBLICATION";
 }
@@ -7811,6 +7815,49 @@ static bool rtcore_v04_shadow_boundary_publication_configuration_valid(
              ? getenv(rtcore_v04_shadow_boundary_publication_gate_name())
              : "<unset>",
          shadow_consumer_enabled ? 1u : 0u);
+  fflush(stdout);
+  return false;
+}
+
+static bool rtcore_v04_live_handoff_publication_configuration_valid(
+    const ptx_instruction *pI, bool boundary_publication_enabled,
+    bool *live_publication_enabled) {
+  const rtcore_v04_shadow_gate_state live_state =
+      rtcore_v04_shadow_gate(
+          rtcore_v04_live_handoff_publication_gate_name());
+  if (live_publication_enabled != NULL) {
+    *live_publication_enabled =
+        live_state == RTCORE_V04_SHADOW_GATE_ENABLED;
+  }
+  const bool memory_path_enabled =
+      rtcore_env_flag_enabled(
+          "VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_REQUEST_OFFER") &&
+      rtcore_env_flag_enabled(
+          "VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_L1D_CLIENT") &&
+      rtcore_env_flag_enabled(
+          "VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_RESPONSE_WAIT");
+  const char *reason = NULL;
+  if (live_state == RTCORE_V04_SHADOW_GATE_INVALID) {
+    reason = "V04_LIVE_HANDOFF_PUBLICATION_GATE_INVALID";
+  } else if (live_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             !boundary_publication_enabled) {
+    reason = "V04_SHADOW_BOUNDARY_PUBLICATION_REQUIRED";
+  } else if (live_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             !memory_path_enabled) {
+    reason = "V04_LIVE_HANDOFF_MEMORY_UNIT_PATH_REQUIRED";
+  }
+  if (reason == NULL) {
+    return true;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), reason=%s, "
+         "live_handoff_publication_gate=%s, "
+         "boundary_publication_enabled=%u, memory_path_enabled=%u\n",
+         pI->source_file(), pI->source_line(), reason,
+         getenv(rtcore_v04_live_handoff_publication_gate_name()) != NULL
+             ? getenv(rtcore_v04_live_handoff_publication_gate_name())
+             : "<unset>",
+         boundary_publication_enabled ? 1u : 0u,
+         memory_path_enabled ? 1u : 0u);
   fflush(stdout);
   return false;
 }
@@ -13546,8 +13593,14 @@ void rtcore_publish_synthetic_handoff_window(
   const unsigned long long lane_slot_base =
       rtcore_handoff_lane_slot_base(key.handoff_window_base,
                                     key.lane_slot_index);
-  thread->get_global_memory()->write_simulator_backing(
-      lane_slot_base, sizeof(slot.words), slot.words);
+  const bool v04_live_publication_enabled =
+      rtcore_v04_shadow_gate(
+          rtcore_v04_live_handoff_publication_gate_name()) ==
+      RTCORE_V04_SHADOW_GATE_ENABLED;
+  if (!v04_live_publication_enabled) {
+    thread->get_global_memory()->write_simulator_backing(
+        lane_slot_base, sizeof(slot.words), slot.words);
+  }
 
   printf("GPGPU-Sim PTX: RT_SUBMIT handoff-window-published (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
@@ -13555,6 +13608,7 @@ void rtcore_publish_synthetic_handoff_window(
          "lane_slot_base=0x%llx, owner_hw_tid=%u, owner_hw_wid=%u, "
          "owner_hw_sid=%u, thread_mask=0x%08x, "
          "submit_transaction_id=%u, handoff_profile=v03_compressed_sync, "
+         "backing_byte_write=%u, compatibility_map_only=%u, "
          "ray_flags=0x%08x, selector={w1=0x%08x,w2=0x%08x,w3=0x%08x,"
          "w4=0x%08x}, candidate_metadata={w9=0x%08x,w10=0x%08x,"
          "w11=0x%08x,w12=0x%08x}\n",
@@ -13562,6 +13616,8 @@ void rtcore_publish_synthetic_handoff_window(
          key.handoff_window_base, key.lane_slot_index, lane_slot_byte_offset,
          lane_slot_base, slot.owner_hw_tid, slot.owner_hw_wid,
          slot.owner_hw_sid, slot.thread_mask, slot.submit_transaction_id,
+         v04_live_publication_enabled ? 0u : 1u,
+         v04_live_publication_enabled ? 1u : 0u,
          slot.words[RTCORE_HANDOFF_W_RAY_FLAGS], slot.words[1],
          slot.words[2], slot.words[3], slot.words[4], slot.words[9],
          slot.words[10], slot.words[11], slot.words[12]);
@@ -20978,6 +21034,7 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
   abi_entry.context_valid_flags = packet_context.valid_flags;
   abi_entry.pipeline_profile_id = packet_context.pipeline_profile_id;
   abi_entry.bvh_format_profile_id = packet_context.bvh_format_profile_id;
+  abi_entry.handoff_window_base = request.handoff_window_base;
   abi_entry.v04_shadow_boundary_enabled =
       request.v04_shadow_boundary_enabled;
   abi_entry.v04_shadow_trace_input_valid =
@@ -31754,6 +31811,11 @@ void rtcore_maybe_enqueue_v02_lsu_handoff_window_sideband(
 
 void rtcore_maybe_enqueue_v02_lsu_handoff_publication_store(
     const rtcore_traversal_completion_event &event, ptx_thread_info *thread) {
+  if (rtcore_v04_shadow_gate(
+          rtcore_v04_live_handoff_publication_gate_name()) ==
+      RTCORE_V04_SHADOW_GATE_ENABLED) {
+    return;
+  }
   if (!rtcore_v02_lsu_handoff_publication_store_enabled() ||
       !rtcore_v02_lsu_handoff_window_sideband_enabled()) {
     return;
@@ -31774,6 +31836,11 @@ void rtcore_maybe_enqueue_v02_lsu_handoff_publication_store(
 bool rtcore_v02_lsu_handoff_publication_acknowledged(
     const ptx_instruction *pI, const rtcore_traversal_completion_event &event,
     ptx_thread_info *thread) {
+  if (rtcore_v04_shadow_gate(
+          rtcore_v04_live_handoff_publication_gate_name()) ==
+      RTCORE_V04_SHADOW_GATE_ENABLED) {
+    return true;
+  }
   if (!rtcore_v02_lsu_handoff_publication_ack_enabled()) {
     return true;
   }
@@ -32901,11 +32968,19 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
+  bool v04_live_handoff_publication_enabled = false;
+  if (!rtcore_v04_live_handoff_publication_configuration_valid(
+          pI, v04_shadow_boundary_publication_enabled,
+          &v04_live_handoff_publication_enabled)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
   if (!rtcore_v04_shadow_shader_return_configuration_valid(
           pI, v04_shadow_boundary_publication_enabled)) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
+  (void)v04_live_handoff_publication_enabled;
 
   const operand_info &result = pI->operand_lookup(0);
   const operand_info &context_ptr = pI->operand_lookup(1);

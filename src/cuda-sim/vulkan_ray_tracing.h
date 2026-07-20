@@ -175,6 +175,7 @@ struct rtcore_trace_ray_abi_entry {
     uint32_t context_valid_flags;
     uint32_t pipeline_profile_id;
     uint32_t bvh_format_profile_id;
+    uint64_t handoff_window_base;
     bool v04_shadow_boundary_enabled;
     bool v04_shadow_trace_input_valid;
     std::array<uint32_t, 32> v04_shadow_trace_input_words;

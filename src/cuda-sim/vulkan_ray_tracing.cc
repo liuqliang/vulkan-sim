@@ -243,6 +243,7 @@ enum rtcore_v02_lsu_access_kind {
     RTCORE_V02_LSU_ACCESS_STACK_LOAD,
     RTCORE_V02_LSU_ACCESS_STACK_STORE,
     RTCORE_V02_LSU_ACCESS_RESULT_STORE,
+    RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE,
     RTCORE_V02_LSU_ACCESS_KIND_COUNT,
 };
 
@@ -485,6 +486,7 @@ struct rtcore_compact_trace_export_record {
     bool v04_shadow_trace_input_valid;
     std::array<uint32_t, rtcore::abi_v04::kWordCount>
         v04_shadow_trace_input_words;
+    unsigned long long handoff_window_base;
     std::vector<rtcore_compact_trace_event> events;
     std::vector<rtcore_boundary_candidate_snapshot> boundary_candidates;
 };
@@ -534,6 +536,19 @@ struct rtcore_replay_lane_request {
     bool v04_shadow_trace_input_valid;
     std::array<uint32_t, rtcore::abi_v04::kWordCount>
         v04_shadow_trace_input_words;
+    unsigned long long handoff_window_base;
+    memory_space *v04_live_handoff_memory;
+    bool v04_live_publication_armed;
+    bool v04_live_publication_committed;
+    unsigned v04_live_publication_reason;
+    uint32_t v04_live_publication_word_mask;
+    unsigned v04_live_publication_pending_chunk_mask;
+    unsigned v04_live_publication_acked_chunk_mask;
+    unsigned long long v04_live_publication_armed_cycle;
+    std::array<uint32_t, rtcore::abi_v04::kWordCount>
+        v04_live_publication_words;
+    std::array<uint32_t, rtcore::abi_v04::kWordCount>
+        v04_live_publication_preimage_words;
     rtcore::abi_v04::shadow::boundary_values
         v04_replay_committed_boundary_values;
     rtcore_boundary_candidate_snapshot boundary_candidate;
@@ -718,6 +733,7 @@ struct rtcore_continuation_warp_boundary_state {
           active_mask(0), boundary_reached_mask(0), terminal_mask(0),
           resume_required_mask(0), shader_required_mask(0),
           continuation_depth(0), packet_published(false),
+          pending_packet_valid(false), live_publication_wait_logged(false),
           reason_oracle_anyhit_mask(0), reason_oracle_intersection_mask(0),
           reason_synthetic_split_mask(0), reason_final_mask(0),
           reason_unsupported_mask(0)
@@ -738,12 +754,15 @@ struct rtcore_continuation_warp_boundary_state {
     unsigned shader_required_mask;
     unsigned continuation_depth;
     bool packet_published;
+    bool pending_packet_valid;
+    bool live_publication_wait_logged;
     unsigned reason_oracle_anyhit_mask;
     unsigned reason_oracle_intersection_mask;
     unsigned reason_synthetic_split_mask;
     unsigned reason_final_mask;
     unsigned reason_unsupported_mask;
     rtcore_boundary_candidate_snapshot boundary_candidates[32];
+    rtcore_continuation_return_packet pending_packet;
 };
 
 struct rtcore_resident_warp_continuation_state {
@@ -1801,6 +1820,16 @@ static bool rtcore_replay_memory_unit_path_active()
     return rtcore_replay_memory_unit_request_offer_enabled() &&
            rtcore_replay_memory_unit_l1d_client_enabled() &&
            rtcore_memory_unit_response_wait_enabled();
+}
+
+static bool rtcore_v04_live_handoff_publication_enabled()
+{
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_ABI_V04_LIVE_HANDOFF_PUBLICATION");
+        return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled != 0;
 }
 
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
@@ -3090,6 +3119,7 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
         record.v04_shadow_trace_input_valid;
     request.v04_shadow_trace_input_words =
         record.v04_shadow_trace_input_words;
+    request.handoff_window_base = record.handoff_window_base;
     request.v04_replay_committed_boundary_values =
         rtcore::abi_v04::shadow::boundary_values();
     request.continuation_boundary_pending = false;
@@ -3491,6 +3521,12 @@ static bool rtcore_mark_resident_warp_continuation_wakeup(
 static bool rtcore_publish_continuation_return_packet(
     rtcore_continuation_warp_boundary_state *state,
     unsigned long long service_cycle);
+
+extern "C" void rtcore_enqueue_memory_unit_handoff_window_request(
+    unsigned owner_hw_sid, unsigned rt_request_id, unsigned lane_id,
+    unsigned memory_op_seq, unsigned access_kind,
+    unsigned long long byte_address, unsigned chunk_count, bool is_write,
+    unsigned long long issue_cycle);
 
 static bool rtcore_maybe_block_replay_lane_request_state_capacity_admission(
     const rtcore_replay_lane_request &request,
@@ -4305,13 +4341,165 @@ static bool rtcore_apply_v04_shadow_boundary_test_mutation(
     return true;
 }
 
+static unsigned rtcore_v04_live_publication_chunk_mask(uint32_t word_mask)
+{
+    unsigned chunk_mask = 0;
+    for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+        if ((word_mask & (uint32_t{1} << word)) != 0) {
+            chunk_mask |= 1u << (word / 8u);
+        }
+    }
+    return chunk_mask;
+}
+
+static void rtcore_fail_v04_live_handoff_publication(
+    const rtcore_replay_lane_request &request, const char *reason,
+    uint32_t word_mask, unsigned chunk_mask)
+{
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_PUBLICATION_FAULT "
+            "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+            "handoff_window_base=0x%llx word_mask=0x%08x "
+            "chunk_mask=0x%x fault=%s\n",
+            request.owner_hw_sid, request.thread_uid, request.lane_id,
+            request.warp_uid, request.handoff_window_base, word_mask,
+            chunk_mask, reason != NULL ? reason : "unknown");
+    fflush(stderr);
+    abort();
+}
+
+static bool rtcore_arm_v04_live_handoff_publication(
+    rtcore_replay_lane_request *request, unsigned reason,
+    const std::array<uint32_t, rtcore::abi_v04::kWordCount> &words,
+    uint32_t word_mask, unsigned long long service_cycle)
+{
+    if (!rtcore_v04_live_handoff_publication_enabled()) {
+        return true;
+    }
+    if (request == NULL || !request->valid ||
+        !request->v04_shadow_boundary_enabled ||
+        !rtcore_replay_memory_unit_path_active() ||
+        request->v04_live_handoff_memory == NULL ||
+        request->handoff_window_base == 0 || request->lane_id >= 32) {
+        if (request != NULL) {
+            rtcore_fail_v04_live_handoff_publication(
+                *request, "arm_contract_invalid", word_mask, 0);
+        }
+        abort();
+    }
+
+    if (request->v04_live_publication_armed &&
+        !request->v04_live_publication_committed) {
+        const bool same_publication =
+            request->v04_live_publication_reason == reason &&
+            request->v04_live_publication_word_mask == word_mask &&
+            request->v04_live_publication_words == words;
+        if (!same_publication) {
+            rtcore_fail_v04_live_handoff_publication(
+                *request, "overlapping_boundary_publication", word_mask,
+                rtcore_v04_live_publication_chunk_mask(word_mask));
+        }
+        return false;
+    }
+
+    request->v04_live_publication_armed = false;
+    request->v04_live_publication_committed = false;
+    request->v04_live_publication_reason = reason;
+    request->v04_live_publication_word_mask = word_mask;
+    request->v04_live_publication_pending_chunk_mask =
+        rtcore_v04_live_publication_chunk_mask(word_mask);
+    request->v04_live_publication_acked_chunk_mask = 0;
+    request->v04_live_publication_armed_cycle = service_cycle;
+    request->v04_live_publication_words = words;
+
+    const uint32_t allowed_rtcore_words =
+        (uint32_t{0x3ff} << 14) | (uint32_t{0xf} << 28);
+    if ((word_mask & ~allowed_rtcore_words) != 0) {
+        rtcore_fail_v04_live_handoff_publication(
+            *request, "word_ownership_violation", word_mask,
+            request->v04_live_publication_pending_chunk_mask);
+    }
+
+    const unsigned long long lane_offset =
+        static_cast<unsigned long long>(request->lane_id) *
+        rtcore::abi_v04::kLaneSlotBytes;
+    const unsigned long long lane_address =
+        request->handoff_window_base + lane_offset;
+    if (lane_address < request->handoff_window_base) {
+        rtcore_fail_v04_live_handoff_publication(
+            *request, "lane_address_overflow", word_mask,
+            request->v04_live_publication_pending_chunk_mask);
+    }
+    request->v04_live_handoff_memory->read_simulator_backing(
+        lane_address, sizeof(request->v04_live_publication_preimage_words),
+        request->v04_live_publication_preimage_words.data());
+
+    uint32_t immutable_mismatch_mask = 0;
+    const uint32_t immutable_mask =
+        rtcore::abi_v04::shadow::trace_input_owned_word_mask();
+    for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+        const uint32_t word_bit = uint32_t{1} << word;
+        if ((immutable_mask & word_bit) != 0 &&
+            request->v04_live_publication_preimage_words[word] !=
+                words[word]) {
+            immutable_mismatch_mask |= word_bit;
+        }
+    }
+    if (immutable_mismatch_mask != 0) {
+        rtcore_fail_v04_live_handoff_publication(
+            *request, "compiler_owned_preimage_mismatch", word_mask,
+            request->v04_live_publication_pending_chunk_mask);
+    }
+
+    request->v04_live_publication_armed = true;
+    if (request->v04_live_publication_pending_chunk_mask == 0) {
+        request->v04_live_publication_committed = true;
+    } else {
+        for (unsigned chunk = 0;
+             chunk < RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT; ++chunk) {
+            if ((request->v04_live_publication_pending_chunk_mask &
+                 (1u << chunk)) == 0) {
+                continue;
+            }
+            rtcore_enqueue_memory_unit_handoff_window_request(
+                request->owner_hw_sid, request->thread_uid,
+                request->lane_id,
+                RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE + chunk,
+                RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE,
+                lane_address +
+                    chunk * RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES,
+                1, true, service_cycle);
+        }
+    }
+
+    printf("GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_PUBLICATION_ARMED "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+           "reason=%u lane_address=0x%llx word_mask=0x%08x "
+           "chunk_mask=0x%x chunk_count=%u committed_without_write=%u "
+           "rt_memory_unit=1 completion_release=after_matching_write_ack "
+           "service_cycle=%llu\n",
+           request->owner_hw_sid, request->thread_uid, request->lane_id,
+           request->warp_uid, reason, lane_address, word_mask,
+           request->v04_live_publication_pending_chunk_mask,
+           rtcore_continuation_count_lanes(
+               request->v04_live_publication_pending_chunk_mask),
+           request->v04_live_publication_committed ? 1u : 0u,
+           service_cycle);
+    fflush(stdout);
+    return request->v04_live_publication_committed;
+}
+
 static bool rtcore_observe_v04_shadow_boundary_publication(
     const rtcore_replay_lane_request &request, unsigned reason,
     const rtcore_boundary_candidate_snapshot *boundary_candidate,
-    std::array<uint32_t, rtcore::abi_v04::kWordCount> *published_words)
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> *published_words,
+    uint32_t *published_word_mask)
 {
     if (published_words != NULL) {
         published_words->fill(0);
+    }
+    if (published_word_mask != NULL) {
+        *published_word_mask = 0;
     }
     if (!request.v04_shadow_boundary_enabled) {
         return true;
@@ -4363,6 +4551,9 @@ static bool rtcore_observe_v04_shadow_boundary_publication(
     if (valid && published_words != NULL) {
         *published_words = publication.words;
     }
+    if (valid && published_word_mask != NULL) {
+        *published_word_mask = publication.written_word_mask;
+    }
 
     printf("GPGPU-Sim RTCORE_V04_SHADOW_BOUNDARY_PUBLICATION "
            "valid=%u reason=%u owner_hw_sid=%u thread_uid=%u lane_id=%u "
@@ -4402,16 +4593,17 @@ static bool rtcore_observe_v04_shadow_boundary_publication(
 
 static void rtcore_populate_continuation_packet_handoff_summaries(
     rtcore_continuation_return_packet *packet,
-    const rtcore_continuation_warp_boundary_state &state)
+    const rtcore_continuation_warp_boundary_state &state,
+    unsigned long long service_cycle)
 {
     if (!packet || !packet->valid) {
         return;
     }
 
-    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+    for (std::map<unsigned, rtcore_replay_lane_request>::iterator it =
              g_rtcore_replay_lane_requests.begin();
          it != g_rtcore_replay_lane_requests.end(); ++it) {
-        const rtcore_replay_lane_request &request = it->second;
+        rtcore_replay_lane_request &request = it->second;
         if (!rtcore_continuation_request_matches_boundary_key(request,
                                                               state)) {
             continue;
@@ -4478,10 +4670,12 @@ static void rtcore_populate_continuation_packet_handoff_summaries(
         packet_fact.candidate_valid = candidate_required && candidate_available;
         std::array<uint32_t, rtcore::abi_v04::kWordCount>
             v04_shadow_handoff_words = {};
+        uint32_t v04_shadow_written_word_mask = 0;
         if (!rtcore_observe_v04_shadow_boundary_publication(
                 request, packet_fact.reason,
                 shader_continuation_reason ? &boundary_candidate : NULL,
-                &v04_shadow_handoff_words)) {
+                &v04_shadow_handoff_words,
+                &v04_shadow_written_word_mask)) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_SHADOW_BOUNDARY_FAULT "
                     "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
@@ -4498,6 +4692,9 @@ static void rtcore_populate_continuation_packet_handoff_summaries(
                 packet->v04_shadow_handoff_words[lane][word] =
                     v04_shadow_handoff_words[word];
             }
+            rtcore_arm_v04_live_handoff_publication(
+                &request, packet_fact.reason, v04_shadow_handoff_words,
+                v04_shadow_written_word_mask, service_cycle);
         }
         rtcore_materialize_replay_continuation_packet_handoff_words(
             request,
@@ -6769,6 +6966,156 @@ static bool rtcore_record_memory_unit_response_wait_chunk(
     return true;
 }
 
+static bool rtcore_record_v04_live_handoff_publication_response(
+    unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
+    unsigned chunk_id, unsigned chunk_count, unsigned response_target,
+    unsigned long long response_cycle)
+{
+    if (!rtcore_v04_live_handoff_publication_enabled() ||
+        !rtcore_v04_live_publication_memory_op_seq(memory_op_seq)) {
+        return false;
+    }
+
+    std::map<unsigned, rtcore_replay_lane_request>::iterator request_it =
+        g_rtcore_replay_lane_requests.find(rt_request_id);
+    if (request_it == g_rtcore_replay_lane_requests.end()) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_PUBLICATION_FAULT "
+                "owner_hw_sid=%u rt_request_id=%u memory_op_seq=%u "
+                "fault=ack_request_missing\n",
+                owner_hw_sid, rt_request_id, memory_op_seq);
+        fflush(stderr);
+        abort();
+    }
+    rtcore_replay_lane_request &request = request_it->second;
+    const unsigned publication_chunk =
+        memory_op_seq - RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE;
+    const unsigned publication_chunk_bit = 1u << publication_chunk;
+    const bool response_valid =
+        request.valid && request.owner_hw_sid == owner_hw_sid &&
+        request.v04_live_publication_armed &&
+        !request.v04_live_publication_committed && chunk_id == 0 &&
+        chunk_count == 1 &&
+        response_target == RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE &&
+        (request.v04_live_publication_pending_chunk_mask &
+         publication_chunk_bit) != 0 &&
+        (request.v04_live_publication_acked_chunk_mask &
+         publication_chunk_bit) == 0;
+    if (!response_valid) {
+        rtcore_fail_v04_live_handoff_publication(
+            request, "ack_identity_or_chunk_mismatch",
+            request.v04_live_publication_word_mask,
+            request.v04_live_publication_pending_chunk_mask);
+    }
+
+    request.v04_live_publication_acked_chunk_mask |= publication_chunk_bit;
+    const bool all_chunks_acked =
+        request.v04_live_publication_acked_chunk_mask ==
+        request.v04_live_publication_pending_chunk_mask;
+    printf("GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_PUBLICATION_ACK "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+           "memory_op_seq=%u publication_chunk=%u "
+           "pending_chunk_mask=0x%x acked_chunk_mask=0x%x "
+           "all_chunks_acked=%u response_cycle=%llu\n",
+           request.owner_hw_sid, request.thread_uid, request.lane_id,
+           request.warp_uid, memory_op_seq, publication_chunk,
+           request.v04_live_publication_pending_chunk_mask,
+           request.v04_live_publication_acked_chunk_mask,
+           all_chunks_acked ? 1u : 0u, response_cycle);
+    fflush(stdout);
+    if (!all_chunks_acked) {
+        return true;
+    }
+
+    const unsigned long long lane_address =
+        request.handoff_window_base +
+        static_cast<unsigned long long>(request.lane_id) *
+            rtcore::abi_v04::kLaneSlotBytes;
+    const char *mutation =
+        getenv("VULKAN_SIM_RTCORE_TEST_V04_LIVE_HANDOFF_MUTATION");
+    bool mutation_applied = false;
+    for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+        const uint32_t word_bit = uint32_t{1} << word;
+        if ((request.v04_live_publication_word_mask & word_bit) == 0) {
+            continue;
+        }
+        uint32_t value = request.v04_live_publication_words[word];
+        if (!mutation_applied && mutation != NULL &&
+            strcmp(mutation, "owned_word") == 0) {
+            value ^= 1u;
+            mutation_applied = true;
+        }
+        request.v04_live_handoff_memory->write_simulator_backing(
+            lane_address + word * sizeof(uint32_t), sizeof(value), &value);
+    }
+
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> postimage = {};
+    request.v04_live_handoff_memory->read_simulator_backing(
+        lane_address, sizeof(postimage), postimage.data());
+    uint32_t owned_mismatch_mask = 0;
+    uint32_t preserved_mismatch_mask = 0;
+    for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+        const uint32_t word_bit = uint32_t{1} << word;
+        if ((request.v04_live_publication_word_mask & word_bit) != 0) {
+            if (postimage[word] !=
+                request.v04_live_publication_words[word]) {
+                owned_mismatch_mask |= word_bit;
+            }
+        } else if (postimage[word] !=
+                   request.v04_live_publication_preimage_words[word]) {
+            preserved_mismatch_mask |= word_bit;
+        }
+    }
+    if (owned_mismatch_mask != 0 || preserved_mismatch_mask != 0) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_PUBLICATION_FAULT "
+                "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+                "word_mask=0x%08x owned_mismatch_mask=0x%08x "
+                "preserved_mismatch_mask=0x%08x mutation=%s "
+                "fault=post_ack_backing_validation\n",
+                request.owner_hw_sid, request.thread_uid, request.lane_id,
+                request.warp_uid, request.v04_live_publication_word_mask,
+                owned_mismatch_mask, preserved_mismatch_mask,
+                mutation != NULL && mutation[0] != '\0' ? mutation : "none");
+        fflush(stderr);
+        abort();
+    }
+
+    request.v04_live_publication_committed = true;
+    printf("GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_PUBLICATION_COMMIT "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+           "reason=%u lane_address=0x%llx word_mask=0x%08x "
+           "chunk_mask=0x%x acked_chunk_mask=0x%x "
+           "owned_mismatch_mask=0x%08x preserved_mismatch_mask=0x%08x "
+           "functional_backing_write=1 completion_release_ready=1 "
+           "response_cycle=%llu\n",
+           request.owner_hw_sid, request.thread_uid, request.lane_id,
+           request.warp_uid, request.v04_live_publication_reason,
+           lane_address, request.v04_live_publication_word_mask,
+           request.v04_live_publication_pending_chunk_mask,
+           request.v04_live_publication_acked_chunk_mask,
+           owned_mismatch_mask, preserved_mismatch_mask, response_cycle);
+    fflush(stdout);
+
+    const rtcore_replay_warp_completion_entry_key boundary_key =
+        rtcore_make_continuation_warp_key(request);
+    std::map<rtcore_replay_warp_completion_entry_key,
+             rtcore_continuation_warp_boundary_state>::iterator boundary_it =
+        g_rtcore_continuation_warp_boundary_states.find(boundary_key);
+    if (boundary_it == g_rtcore_continuation_warp_boundary_states.end() ||
+        !boundary_it->second.valid ||
+        !boundary_it->second.pending_packet_valid ||
+        boundary_it->second.packet_published) {
+        rtcore_fail_v04_live_handoff_publication(
+            request, "ack_boundary_state_missing",
+            request.v04_live_publication_word_mask,
+            request.v04_live_publication_pending_chunk_mask);
+    }
+    (void)rtcore_publish_continuation_return_packet(
+        &boundary_it->second, response_cycle);
+    return true;
+}
+
 static unsigned rtcore_replay_memory_contention_cache_lines_for_event(
     const rtcore_compact_trace_event &event)
 {
@@ -7465,6 +7812,26 @@ static void rtcore_admit_compact_trace_for_replay(ptx_thread_info *thread)
 
     rtcore_replay_lane_request request =
         rtcore_build_replay_lane_request(record);
+    request.v04_live_handoff_memory = thread->get_global_memory();
+    if (rtcore_v04_live_handoff_publication_enabled() &&
+        (!request.v04_shadow_boundary_enabled ||
+         !rtcore_replay_memory_unit_path_active() ||
+         request.handoff_window_base == 0 ||
+         request.v04_live_handoff_memory == NULL)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_PUBLICATION_FAULT "
+                "owner_hw_sid=%u thread_uid=%u lane_id=%u "
+                "boundary_enabled=%u memory_path_active=%u "
+                "handoff_window_base=0x%llx memory_backing_valid=%u "
+                "fault=admission_contract_invalid\n",
+                request.owner_hw_sid, request.thread_uid, request.lane_id,
+                request.v04_shadow_boundary_enabled ? 1u : 0u,
+                rtcore_replay_memory_unit_path_active() ? 1u : 0u,
+                request.handoff_window_base,
+                request.v04_live_handoff_memory != NULL ? 1u : 0u);
+        fflush(stderr);
+        abort();
+    }
     rtcore_record_replay_resource_route_stats(request);
     request.ready_order = g_rtcore_next_replay_ready_order++;
     if (rtcore_maybe_block_replay_lane_request_state_capacity_admission(
@@ -7507,6 +7874,53 @@ static const char *rtcore_continuation_packet_kind_name(
         return "CONTINUATION";
     }
     return "UNKNOWN";
+}
+
+static bool rtcore_v04_live_handoff_packet_ready(
+    const rtcore_continuation_warp_boundary_state &state,
+    unsigned *armed_lane_mask, unsigned *committed_lane_mask)
+{
+    if (armed_lane_mask != NULL) {
+        *armed_lane_mask = 0;
+    }
+    if (committed_lane_mask != NULL) {
+        *committed_lane_mask = 0;
+    }
+    if (!rtcore_v04_live_handoff_publication_enabled()) {
+        return true;
+    }
+
+    unsigned armed = 0;
+    unsigned committed = 0;
+    for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator it =
+             g_rtcore_replay_lane_requests.begin();
+         it != g_rtcore_replay_lane_requests.end(); ++it) {
+        const rtcore_replay_lane_request &request = it->second;
+        if (!rtcore_continuation_request_matches_boundary_key(request,
+                                                              state)) {
+            continue;
+        }
+        const unsigned lane_mask = 1u << request.lane_id;
+        if ((state.boundary_reached_mask & state.active_mask & lane_mask) ==
+            0) {
+            continue;
+        }
+        if (request.v04_live_publication_armed) {
+            armed |= lane_mask;
+        }
+        if (request.v04_live_publication_committed) {
+            committed |= lane_mask;
+        }
+    }
+    if (armed_lane_mask != NULL) {
+        *armed_lane_mask = armed;
+    }
+    if (committed_lane_mask != NULL) {
+        *committed_lane_mask = committed;
+    }
+    const unsigned expected =
+        state.boundary_reached_mask & state.active_mask;
+    return armed == expected && committed == expected;
 }
 
 static bool rtcore_publish_continuation_return_packet(
@@ -7560,50 +7974,81 @@ static bool rtcore_publish_continuation_return_packet(
         rtcore_mark_resident_warp_continuation_wakeup(packet, service_cycle);
         return true;
     }
-    rtcore_populate_continuation_packet_handoff_summaries(&packet, *state);
-    packet.terminal_mask = 0;
-    packet.resume_required_mask = 0;
-    packet.shader_required_mask = 0;
-    for (unsigned lane = 0; lane < 32; ++lane) {
-        const unsigned lane_mask = 1u << lane;
-        if ((packet.boundary_reached_mask & lane_mask) == 0) {
-            continue;
-        }
-        const unsigned reason = packet.v_result[lane] & 0xffu;
-        if (reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED ||
-            reason ==
-                RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED) {
-            packet.resume_required_mask |= lane_mask;
-            packet.shader_required_mask |= lane_mask;
-        } else if (reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_MISS ||
-                   reason ==
-                       RTCORE_REPLAY_CONTINUATION_PACKET_REASON_CLOSEST_HIT_READY ||
-                   reason ==
-                       RTCORE_REPLAY_CONTINUATION_PACKET_REASON_TRACE_DONE_NO_SHADER) {
-            packet.terminal_mask |= lane_mask;
-        } else {
-            packet.reason_unsupported_mask |= lane_mask;
-        }
-        if (reason ==
-                RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED &&
-            (packet.handoff_software_return_valid_mask & lane_mask) != 0) {
-            const unsigned metadata = packet.handoff_words[lane][15];
-            const unsigned word_count = (metadata >> 8) & 0xffu;
-            const unsigned base_word = (metadata >> 16) & 0xffu;
-            const unsigned format = (metadata >> 24) & 0xffu;
-            const bool metadata_valid =
-                (word_count == 0 && base_word == 0 && format == 0) ||
-                (word_count > 0 && word_count <= 4 && base_word == 16 &&
-                 format == 2);
-            if (metadata_valid && word_count > 0) {
-                packet.reported_attribute_metadata_valid_mask |= lane_mask;
-                packet.inline_payload_location_valid_mask |= lane_mask;
+    if (state->pending_packet_valid) {
+        packet = state->pending_packet;
+    } else {
+        rtcore_populate_continuation_packet_handoff_summaries(
+            &packet, *state, service_cycle);
+        packet.terminal_mask = 0;
+        packet.resume_required_mask = 0;
+        packet.shader_required_mask = 0;
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            const unsigned lane_mask = 1u << lane;
+            if ((packet.boundary_reached_mask & lane_mask) == 0) {
+                continue;
+            }
+            const unsigned reason = packet.v_result[lane] & 0xffu;
+            if (reason ==
+                    RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED ||
+                reason ==
+                    RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED) {
+                packet.resume_required_mask |= lane_mask;
+                packet.shader_required_mask |= lane_mask;
+            } else if (reason ==
+                           RTCORE_REPLAY_CONTINUATION_PACKET_REASON_MISS ||
+                       reason ==
+                           RTCORE_REPLAY_CONTINUATION_PACKET_REASON_CLOSEST_HIT_READY ||
+                       reason ==
+                           RTCORE_REPLAY_CONTINUATION_PACKET_REASON_TRACE_DONE_NO_SHADER) {
+                packet.terminal_mask |= lane_mask;
+            } else {
+                packet.reason_unsupported_mask |= lane_mask;
+            }
+            if (reason ==
+                    RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED &&
+                (packet.handoff_software_return_valid_mask & lane_mask) != 0) {
+                const unsigned metadata = packet.handoff_words[lane][15];
+                const unsigned word_count = (metadata >> 8) & 0xffu;
+                const unsigned base_word = (metadata >> 16) & 0xffu;
+                const unsigned format = (metadata >> 24) & 0xffu;
+                const bool metadata_valid =
+                    (word_count == 0 && base_word == 0 && format == 0) ||
+                    (word_count > 0 && word_count <= 4 && base_word == 16 &&
+                     format == 2);
+                if (metadata_valid && word_count > 0) {
+                    packet.reported_attribute_metadata_valid_mask |=
+                        lane_mask;
+                    packet.inline_payload_location_valid_mask |= lane_mask;
+                }
             }
         }
+        packet.kind = packet.resume_required_mask == 0
+                          ? RTCORE_CONTINUATION_PACKET_FINAL
+                          : RTCORE_CONTINUATION_PACKET_CONTINUATION;
+        state->pending_packet = packet;
+        state->pending_packet_valid = true;
     }
-    packet.kind = packet.resume_required_mask == 0
-                      ? RTCORE_CONTINUATION_PACKET_FINAL
-                      : RTCORE_CONTINUATION_PACKET_CONTINUATION;
+
+    unsigned live_armed_lane_mask = 0;
+    unsigned live_committed_lane_mask = 0;
+    if (!rtcore_v04_live_handoff_packet_ready(
+            *state, &live_armed_lane_mask, &live_committed_lane_mask)) {
+        if (!state->live_publication_wait_logged) {
+            printf("GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_COMPLETION_WAIT "
+                   "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                   "active_mask=0x%08x boundary_reached_mask=0x%08x "
+                   "armed_lane_mask=0x%08x committed_lane_mask=0x%08x "
+                   "completion_packet_published=0 wait_reason=write_ack "
+                   "service_cycle=%llu\n",
+                   state->owner_hw_sid, state->warp_uid, state->warp_id,
+                   state->active_mask, state->boundary_reached_mask,
+                   live_armed_lane_mask, live_committed_lane_mask,
+                   service_cycle);
+            fflush(stdout);
+            state->live_publication_wait_logged = true;
+        }
+        return false;
+    }
     state->packet_published = true;
 
     g_rtcore_continuation_stats.rtcore_continuation_packet_count++;
@@ -7704,6 +8149,9 @@ static void rtcore_initialize_continuation_boundary_state_from_request(
     state->shader_required_mask = 0;
     state->continuation_depth = request.continuation_depth + 1;
     state->packet_published = false;
+    state->pending_packet_valid = false;
+    state->live_publication_wait_logged = false;
+    state->pending_packet = rtcore_continuation_return_packet();
     state->reason_oracle_anyhit_mask = 0;
     state->reason_oracle_intersection_mask = 0;
     state->reason_synthetic_split_mask = 0;
@@ -9236,6 +9684,95 @@ static const char *rtcore_resubmit_admission_test_failpoint_mode()
     return NULL;
 }
 
+static bool rtcore_restore_v04_live_trace_input_after_legacy_shader_return(
+    rtcore_replay_lane_request *request, unsigned long long refresh_cycle,
+    const char **failure_reason)
+{
+    if (!rtcore_v04_live_handoff_publication_enabled()) {
+        return true;
+    }
+
+    const char *failure = "accepted";
+    if (request == NULL || !request->valid ||
+        !request->v04_shadow_boundary_enabled ||
+        !request->v04_shadow_trace_input_valid ||
+        request->v04_live_handoff_memory == NULL ||
+        request->handoff_window_base == 0 || request->lane_id >= 32) {
+        failure = "V04_LIVE_TRACE_INPUT_RESTORE_CONTEXT_INVALID";
+    }
+
+    unsigned long long lane_address = 0;
+    if (strcmp(failure, "accepted") == 0) {
+        const unsigned long long lane_offset =
+            static_cast<unsigned long long>(request->lane_id) *
+            rtcore::abi_v04::kLaneSlotBytes;
+        lane_address = request->handoff_window_base + lane_offset;
+        if (lane_address < request->handoff_window_base) {
+            failure = "V04_LIVE_TRACE_INPUT_RESTORE_ADDRESS_OVERFLOW";
+        }
+    }
+
+    uint32_t changed_word_mask = 0;
+    uint32_t restored_word_mask = 0;
+    uint32_t post_restore_mismatch_mask = 0;
+    const uint32_t immutable_mask =
+        rtcore::abi_v04::shadow::trace_input_owned_word_mask();
+    if (strcmp(failure, "accepted") == 0) {
+        std::array<uint32_t, rtcore::abi_v04::kWordCount> preimage = {};
+        request->v04_live_handoff_memory->read_simulator_backing(
+            lane_address, sizeof(preimage), preimage.data());
+        for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+            const uint32_t word_bit = uint32_t{1} << word;
+            if ((immutable_mask & word_bit) == 0) {
+                continue;
+            }
+            const uint32_t expected =
+                request->v04_shadow_trace_input_words[word];
+            if (preimage[word] != expected) {
+                changed_word_mask |= word_bit;
+            }
+            request->v04_live_handoff_memory->write_simulator_backing(
+                lane_address + word * sizeof(uint32_t), sizeof(expected),
+                &expected);
+            restored_word_mask |= word_bit;
+        }
+
+        std::array<uint32_t, rtcore::abi_v04::kWordCount> postimage = {};
+        request->v04_live_handoff_memory->read_simulator_backing(
+            lane_address, sizeof(postimage), postimage.data());
+        for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+            const uint32_t word_bit = uint32_t{1} << word;
+            if ((immutable_mask & word_bit) != 0 &&
+                postimage[word] !=
+                    request->v04_shadow_trace_input_words[word]) {
+                post_restore_mismatch_mask |= word_bit;
+            }
+        }
+        if (post_restore_mismatch_mask != 0) {
+            failure = "V04_LIVE_TRACE_INPUT_RESTORE_VALIDATION_FAILED";
+        }
+    }
+
+    printf("GPGPU-Sim RTCORE_V04_LIVE_TRACE_INPUT_COMPATIBILITY_RESTORE "
+           "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
+           "lane_address=0x%llx immutable_word_mask=0x%08x "
+           "changed_word_mask=0x%08x restored_word_mask=0x%08x "
+           "post_restore_mismatch_mask=0x%08x "
+           "compatibility_restore=1 architectural_write=0 "
+           "rt_memory_unit_timing_charge=0 refresh_cycle=%llu result=%s\n",
+           request != NULL ? request->owner_hw_sid : 0u,
+           request != NULL ? request->thread_uid : 0u,
+           request != NULL ? request->lane_id : 0u,
+           request != NULL ? request->warp_uid : 0u, lane_address,
+           immutable_mask, changed_word_mask, restored_word_mask,
+           post_restore_mismatch_mask, refresh_cycle, failure);
+    fflush(stdout);
+    if (failure_reason != NULL && strcmp(failure, "accepted") != 0) {
+        *failure_reason = failure;
+    }
+    return strcmp(failure, "accepted") == 0;
+}
+
 extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
     unsigned owner_hw_sid, unsigned previous_warp_uid, unsigned warp_id,
     unsigned previous_active_mask, unsigned lane_id, ptx_thread_info *thread,
@@ -9370,6 +9907,13 @@ extern "C" bool rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
                    .input_attribute_word_count,
                refresh_cycle);
         fflush(stdout);
+    }
+
+    if (strcmp(reason, "accepted") == 0 &&
+        !rtcore_restore_v04_live_trace_input_after_legacy_shader_return(
+            request, refresh_cycle, &reason)) {
+        // The caller converts a failed refresh into the existing fail-closed
+        // resubmit path.
     }
 
     if (failure_reason != NULL) {
@@ -11275,6 +11819,11 @@ extern "C" bool rtcore_record_memory_unit_response(
     unsigned chunk_id, unsigned chunk_count, unsigned response_target,
     unsigned long long response_cycle)
 {
+    if (rtcore_record_v04_live_handoff_publication_response(
+            owner_hw_sid, rt_request_id, memory_op_seq, chunk_id,
+            chunk_count, response_target, response_cycle)) {
+        return true;
+    }
     return rtcore_record_memory_unit_response_wait_chunk(
         owner_hw_sid, rt_request_id, memory_op_seq, chunk_id, chunk_count,
         response_target, response_cycle);
@@ -12864,6 +13413,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             : 0u;
     rtcore_trace_export.v04_shadow_boundary_enabled =
         v04_shadow_boundary_enabled;
+    rtcore_trace_export.handoff_window_base =
+        rtcore_abi_entry != NULL ? rtcore_abi_entry->handoff_window_base : 0;
     rtcore_trace_export.v04_shadow_trace_input_valid =
         rtcore_trace_export.v04_shadow_boundary_enabled &&
         rtcore_abi_entry->v04_shadow_trace_input_valid;

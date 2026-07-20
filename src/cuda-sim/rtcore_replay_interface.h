@@ -106,6 +106,15 @@ struct rtcore_memory_unit_request_snapshot {
   unsigned long long issue_cycle;
 };
 
+static const unsigned RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE = 0xfffffff0u;
+static const unsigned RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT = 4u;
+
+inline bool rtcore_v04_live_publication_memory_op_seq(unsigned memory_op_seq) {
+  return memory_op_seq >= RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE &&
+         memory_op_seq < RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE +
+                             RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT;
+}
+
 extern "C" {
 
 bool rtcore_service_replay_cycle_for_sm_with_identity(
