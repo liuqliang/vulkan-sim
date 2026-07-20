@@ -12780,12 +12780,13 @@ void rt_unit::cycle() {
 	      RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid, it->second.warp_id(), it->first);
 	      if (retire_ack_ready || m_operand_collector->writeback(it->second)) {
 	        if (it->second.rt_subop == RT_CORE_SUBOP_SUBMIT) {
-	          rtcore_materialize_scoreboard_v_result(
-	              it->second, candidate_completion, current_cycle);
 	          std::map<unsigned, rtcore_synthetic_completion_event>::iterator
 	              release_event =
 	                  m_synthetic_warp_completion_entries.find(it->second.get_uid());
 	          if (release_event != m_synthetic_warp_completion_entries.end()) {
+	            if (candidate_scoreboard_handoff_release_allowed) {
+	              rtcore_materialize_scoreboard_v_result(
+	                  it->second, candidate_completion, current_cycle);
 	            rtcore_record_resident_warp_wakeup(
 	                it->second, &release_event->second,
 	                candidate_completion.packet_schema_version,
@@ -12909,6 +12910,7 @@ void rt_unit::cycle() {
 		                sbt_address_missing_mask,
 		                sbt_address_cohort_count,
 	                current_cycle);
+	            }
 	            rtcore_synthetic_release_snapshot release_snapshot =
 	                rtcore_make_synthetic_release_snapshot(
 	                    it->second, release_event->second, current_cycle);
