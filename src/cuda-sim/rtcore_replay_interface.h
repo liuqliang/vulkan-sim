@@ -84,6 +84,8 @@ struct rtcore_replay_warp_completion_entry_snapshot {
   unsigned bvh_format_profile_id[32];
   rtcore_boundary_candidate_snapshot boundary_candidates[32];
   unsigned handoff_words[32][32];
+  unsigned v04_shadow_boundary_image_valid_mask;
+  unsigned v04_shadow_handoff_words[32][32];
   bool scoreboard_handoff_ready;
   bool scoreboard_handoff_delivered;
   unsigned long long scoreboard_handoff_cycle;

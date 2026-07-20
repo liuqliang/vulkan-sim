@@ -657,7 +657,8 @@ struct rtcore_continuation_return_packet {
           handoff_software_return_valid_mask(0), context_profile_valid_mask(0),
           reported_attribute_metadata_valid_mask(0),
           inline_payload_location_valid_mask(0), inline_payload_base_word(16),
-          max_inline_attribute_words(4)
+          max_inline_attribute_words(4),
+          v04_shadow_boundary_image_valid_mask(0)
     {
         for (unsigned lane = 0; lane < 32; ++lane) {
             v_result[lane] = 0;
@@ -668,6 +669,7 @@ struct rtcore_continuation_return_packet {
             boundary_candidates[lane] = rtcore_boundary_candidate_snapshot();
             for (unsigned word = 0; word < 32; ++word) {
                 handoff_words[lane][word] = 0;
+                v04_shadow_handoff_words[lane][word] = 0;
             }
         }
     }
@@ -706,6 +708,8 @@ struct rtcore_continuation_return_packet {
     unsigned bvh_format_profile_id[32];
     rtcore_boundary_candidate_snapshot boundary_candidates[32];
     unsigned handoff_words[32][32];
+    unsigned v04_shadow_boundary_image_valid_mask;
+    unsigned v04_shadow_handoff_words[32][32];
 };
 
 struct rtcore_continuation_warp_boundary_state {
@@ -844,6 +848,8 @@ struct rtcore_replay_warp_completion_entry_state {
     unsigned bvh_format_profile_id[32];
     rtcore_boundary_candidate_snapshot boundary_candidates[32];
     unsigned handoff_words[32][32];
+    unsigned v04_shadow_boundary_image_valid_mask;
+    unsigned v04_shadow_handoff_words[32][32];
     bool all_active_lanes_complete;
     bool all_active_lanes_complete_logged;
     bool scoreboard_handoff_ready;
@@ -4301,8 +4307,12 @@ static bool rtcore_apply_v04_shadow_boundary_test_mutation(
 
 static bool rtcore_observe_v04_shadow_boundary_publication(
     const rtcore_replay_lane_request &request, unsigned reason,
-    const rtcore_boundary_candidate_snapshot *boundary_candidate)
+    const rtcore_boundary_candidate_snapshot *boundary_candidate,
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> *published_words)
 {
+    if (published_words != NULL) {
+        published_words->fill(0);
+    }
     if (!request.v04_shadow_boundary_enabled) {
         return true;
     }
@@ -4350,6 +4360,9 @@ static bool rtcore_observe_v04_shadow_boundary_publication(
             reason, values);
     const bool valid = mutation_valid && publication.valid() &&
                        validation.matches();
+    if (valid && published_words != NULL) {
+        *published_words = publication.words;
+    }
 
     printf("GPGPU-Sim RTCORE_V04_SHADOW_BOUNDARY_PUBLICATION "
            "valid=%u reason=%u owner_hw_sid=%u thread_uid=%u lane_id=%u "
@@ -4463,9 +4476,12 @@ static void rtcore_populate_continuation_packet_handoff_summaries(
         packet_fact.selector_valid =
             selector_required && request.valid && request.ray_sbt_inputs_valid;
         packet_fact.candidate_valid = candidate_required && candidate_available;
+        std::array<uint32_t, rtcore::abi_v04::kWordCount>
+            v04_shadow_handoff_words = {};
         if (!rtcore_observe_v04_shadow_boundary_publication(
                 request, packet_fact.reason,
-                shader_continuation_reason ? &boundary_candidate : NULL)) {
+                shader_continuation_reason ? &boundary_candidate : NULL,
+                &v04_shadow_handoff_words)) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_SHADOW_BOUNDARY_FAULT "
                     "owner_hw_sid=%u thread_uid=%u lane_id=%u warp_uid=%u "
@@ -4474,6 +4490,14 @@ static void rtcore_populate_continuation_packet_handoff_summaries(
                     request.warp_uid, packet_fact.reason);
             fflush(stderr);
             abort();
+        }
+        if (request.v04_shadow_boundary_enabled) {
+            packet->v04_shadow_boundary_image_valid_mask |= lane_mask;
+            for (unsigned word = 0; word < rtcore::abi_v04::kWordCount;
+                 ++word) {
+                packet->v04_shadow_handoff_words[lane][word] =
+                    v04_shadow_handoff_words[word];
+            }
         }
         rtcore_materialize_replay_continuation_packet_handoff_words(
             request,
@@ -4783,6 +4807,9 @@ static bool rtcore_publish_scoreboard_visible_continuation_packet(
     state.handoff_software_return_valid_mask =
         (state.handoff_software_return_valid_mask & ~completion_mask) |
         (packet.handoff_software_return_valid_mask & completion_mask);
+    state.v04_shadow_boundary_image_valid_mask =
+        (state.v04_shadow_boundary_image_valid_mask & ~completion_mask) |
+        (packet.v04_shadow_boundary_image_valid_mask & completion_mask);
     state.scoreboard_handoff_delivered = false;
     state.scoreboard_handoff_cycle = 0;
     state.all_active_lanes_complete_logged = false;
@@ -4811,6 +4838,8 @@ static bool rtcore_publish_scoreboard_visible_continuation_packet(
         for (unsigned word = 0; word < 32; ++word) {
             state.handoff_words[lane][word] =
                 packet.handoff_words[lane][word];
+            state.v04_shadow_handoff_words[lane][word] =
+                packet.v04_shadow_handoff_words[lane][word];
         }
     }
 
@@ -4996,12 +5025,14 @@ static void rtcore_record_replay_lane_completion_entry(
     if (packet_fact.software_return_valid) {
         state.handoff_software_return_valid_mask |= lane_mask;
     }
+    state.v04_shadow_boundary_image_valid_mask &= ~lane_mask;
     state.lane_completion_reason[request.lane_id] = packet_fact.reason;
     state.lane_continuation_depth[request.lane_id] =
         packet_fact.continuation_depth;
     for (unsigned word = 0; word < 32; ++word) {
         state.handoff_words[request.lane_id][word] =
             packet_fact.handoff_words[word];
+        state.v04_shadow_handoff_words[request.lane_id][word] = 0;
     }
     rtcore_update_replay_warp_completion_entry_state(&state);
     if (state.all_active_lanes_complete &&
@@ -11323,6 +11354,8 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
                 it->second.handoff_candidate_valid_mask;
             local_snapshot.handoff_software_return_valid_mask =
                 it->second.handoff_software_return_valid_mask;
+            local_snapshot.v04_shadow_boundary_image_valid_mask =
+                it->second.v04_shadow_boundary_image_valid_mask;
             for (unsigned lane = 0; lane < 32; ++lane) {
                 local_snapshot.result_data_slot[lane] =
                     it->second.result_data_slot[lane];
@@ -11344,6 +11377,8 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
                 for (unsigned word = 0; word < 32; ++word) {
                     local_snapshot.handoff_words[lane][word] =
                         it->second.handoff_words[lane][word];
+                    local_snapshot.v04_shadow_handoff_words[lane][word] =
+                        it->second.v04_shadow_handoff_words[lane][word];
                 }
             }
             local_snapshot.scoreboard_handoff_ready =

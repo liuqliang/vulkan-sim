@@ -9914,6 +9914,151 @@ static bool rtcore_validate_replay_completion_packet(
   return true;
 }
 
+static bool rtcore_decode_v04_shadow_boundary_values(
+    const std::array<uint32_t, rtcore::abi_v04::kWordCount> &words,
+    unsigned reason, rtcore::abi_v04::shadow::boundary_values *values) {
+  if (values == NULL) return false;
+  *values = rtcore::abi_v04::shadow::boundary_values();
+  if (reason == rtcore::abi_v04::kReasonMiss ||
+      reason == rtcore::abi_v04::kReasonTraceDoneNoShader) {
+    return true;
+  }
+  if (!rtcore::abi_v04::shadow::boundary_reason_has_candidate(reason)) {
+    return false;
+  }
+
+  values->candidate_valid = true;
+  values->instance_metadata_reference =
+      static_cast<uint64_t>(rtcore::abi_v04::extract_field(
+          words, rtcore::abi_v04::kInstanceMetadataReferenceLow32)) |
+      (static_cast<uint64_t>(rtcore::abi_v04::extract_field(
+           words, rtcore::abi_v04::kInstanceMetadataReferenceHigh32))
+       << 32);
+  values->instance_sbt_contribution = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kInstanceSbtContribution);
+  values->geometry_index = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kGeometryIndex);
+  values->boundary_ray_tmax_fp32 = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kBoundaryRayTmaxFp32);
+  values->primitive_index = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kPrimitiveIndex);
+  values->instance_index = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kInstanceIndex);
+  values->instance_custom_index = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kInstanceCustomIndex);
+  values->hit_kind = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kHitKind);
+  values->procedural_any_hit_eligible =
+      rtcore::abi_v04::extract_field(
+          words, rtcore::abi_v04::kProceduralAnyHitEligible) != 0;
+  values->input_attribute_word_count = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kInputAttributeWordCount);
+  values->input_attribute_location = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kInputAttributeLocation);
+  values->input_attribute_format = rtcore::abi_v04::extract_field(
+      words, rtcore::abi_v04::kInputAttributeFormat);
+  const rtcore::abi_v04::field_spec inline_attributes[] = {
+      rtcore::abi_v04::kInlineAttributeWord0,
+      rtcore::abi_v04::kInlineAttributeWord1,
+      rtcore::abi_v04::kInlineAttributeWord2,
+      rtcore::abi_v04::kInlineAttributeWord3,
+  };
+  for (unsigned word = 0; word < 4; ++word) {
+    values->inline_attribute_words[word] =
+        rtcore::abi_v04::extract_field(words, inline_attributes[word]);
+  }
+
+  if (reason == rtcore::abi_v04::kReasonAnyHitRequired) {
+    values->geometry_type =
+        rtcore::abi_v04::shadow::kBoundaryGeometryTriangle;
+  } else if (reason == rtcore::abi_v04::kReasonIntersectionRequired) {
+    values->geometry_type =
+        rtcore::abi_v04::shadow::kBoundaryGeometryProcedural;
+  } else {
+    values->geometry_type =
+        values->hit_kind == 0xfeu || values->hit_kind == 0xffu
+            ? rtcore::abi_v04::shadow::kBoundaryGeometryTriangle
+            : rtcore::abi_v04::shadow::kBoundaryGeometryProcedural;
+  }
+  return true;
+}
+
+static bool rtcore_validate_v04_shadow_completion_packet_image(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned expected_active_mask, const char **failure_reason) {
+  const unsigned valid_mask =
+      snapshot.v04_shadow_boundary_image_valid_mask;
+  if ((valid_mask & ~expected_active_mask) != 0 ||
+      (valid_mask != 0 && valid_mask != expected_active_mask)) {
+    rtcore_set_completion_packet_failure_reason(
+        failure_reason, "v04_shadow_boundary_image_mask");
+    return false;
+  }
+
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> words = {};
+    bool all_zero = true;
+    for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+      words[word] = snapshot.v04_shadow_handoff_words[lane][word];
+      all_zero = all_zero && words[word] == 0;
+    }
+    if ((valid_mask & lane_mask) == 0) {
+      if (!all_zero) {
+        rtcore_set_completion_packet_failure_reason(
+            failure_reason, "v04_shadow_boundary_image_without_valid");
+        return false;
+      }
+      continue;
+    }
+
+    rtcore::abi_v04::shadow::boundary_values values;
+    const unsigned reason = snapshot.lane_completion_reason[lane];
+    if (!rtcore_decode_v04_shadow_boundary_values(words, reason, &values)) {
+      rtcore_set_completion_packet_failure_reason(
+          failure_reason, "v04_shadow_boundary_image_reason");
+      return false;
+    }
+    const rtcore::abi_v04::shadow::boundary_validation validation =
+        rtcore::abi_v04::shadow::validate_boundary_publication(
+            words, words, reason, values);
+    if (!rtcore::abi_v04::validate_reserved_zero(words) ||
+        !validation.matches()) {
+      rtcore_set_completion_packet_failure_reason(
+          failure_reason, "v04_shadow_boundary_image_encoding");
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool rtcore_observe_v04_shadow_completion_packet_image(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned expected_active_mask, unsigned long long current_cycle,
+    const char **failure_reason) {
+  if (!rtcore_validate_v04_shadow_completion_packet_image(
+          snapshot, expected_active_mask, failure_reason)) {
+    return false;
+  }
+  if (snapshot.v04_shadow_boundary_image_valid_mask == 0) {
+    return true;
+  }
+  printf("GPGPU-Sim RTCORE_V04_SHADOW_COMPLETION_PACKET_IMAGE "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+         "image_valid_mask=0x%08x image_word_count=%u "
+         "scoreboard_handoff_delivered=1 observation_cycle=%llu "
+         "validation=valid observation_only=1 live_handoff_write=0 "
+         "functional_authority=0 v03_completion_authority=1\n",
+         snapshot.owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
+         expected_active_mask, snapshot.v04_shadow_boundary_image_valid_mask,
+         rtcore_count_active_mask_lanes(
+             snapshot.v04_shadow_boundary_image_valid_mask) *
+             rtcore::abi_v04::kWordCount,
+         current_cycle);
+  fflush(stdout);
+  return true;
+}
+
 static void rtcore_apply_replay_completion_packet_test_corruption(
     rtcore_replay_warp_completion_entry_snapshot *snapshot) {
   const char *mode = getenv("VULKAN_SIM_RTCORE_TEST_PACKET_CORRUPTION");
@@ -9954,6 +10099,19 @@ static void rtcore_apply_replay_completion_packet_test_corruption(
     }
     if (terminal_lane < 32) {
       snapshot->handoff_software_return_valid_mask |= 1u << terminal_lane;
+    }
+  } else if (strcmp(mode, "v04_mask") == 0) {
+    snapshot->v04_shadow_boundary_image_valid_mask ^=
+        active_lane < 32 ? (1u << active_lane) : 1u;
+  } else if (strcmp(mode, "v04_reserved") == 0) {
+    unsigned image_lane = 0;
+    while (image_lane < 32 &&
+           (snapshot->v04_shadow_boundary_image_valid_mask &
+            (1u << image_lane)) == 0) {
+      image_lane++;
+    }
+    if (image_lane < 32) {
+      snapshot->v04_shadow_handoff_words[image_lane][27] = 1u;
     }
   }
 }
@@ -12785,6 +12943,26 @@ void rt_unit::cycle() {
 	                  m_synthetic_warp_completion_entries.find(it->second.get_uid());
 	          if (release_event != m_synthetic_warp_completion_entries.end()) {
 	            if (candidate_scoreboard_handoff_release_allowed) {
+	              const char *v04_shadow_image_failure_reason = NULL;
+	              if (!rtcore_observe_v04_shadow_completion_packet_image(
+	                      candidate_completion,
+	                      release_event->second.issued_active_mask,
+	                      current_cycle,
+	                      &v04_shadow_image_failure_reason)) {
+	                fprintf(stderr,
+	                        "GPGPU-Sim "
+	                        "RTCORE_V04_SHADOW_COMPLETION_PACKET_INVALID "
+	                        "reason=%s owner_hw_sid=%u warp_uid=%u "
+	                        "warp_id=%u active_mask=0x%08x\n",
+	                        v04_shadow_image_failure_reason != NULL
+	                            ? v04_shadow_image_failure_reason
+	                            : "unknown",
+	                        m_sid, it->second.get_uid(),
+	                        it->second.warp_id(),
+	                        release_event->second.issued_active_mask);
+	                fflush(stderr);
+	                abort();
+	              }
 	              rtcore_materialize_scoreboard_v_result(
 	                  it->second, candidate_completion, current_cycle);
 	            rtcore_record_resident_warp_wakeup(
