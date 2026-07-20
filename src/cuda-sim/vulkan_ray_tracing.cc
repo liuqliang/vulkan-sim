@@ -13344,6 +13344,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                         leaf.PrimitiveIndex0;
                                     opaque_candidate.instance_index =
                                         instanceLeaf.InstanceID;
+                                    opaque_candidate.instance_id =
+                                        instanceLeaf.InstanceIndex;
                                     opaque_candidate.hitGroupIndex =
                                         instanceLeaf
                                             .InstanceContributionToHitGroupIndex;
@@ -13400,7 +13402,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 
                                 uint32_t hit_group_index = instanceLeaf.InstanceContributionToHitGroupIndex;
                                 uint32_t boundary_shader_counter = UINT_MAX;
-                                auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex0, instanceLeaf.InstanceID, pI, thread, &boundary_shader_counter); // TODO: switch these to device addresses
+                                auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex0, instanceLeaf.InstanceID, instanceLeaf.InstanceIndex, leaf.LeafDescriptor.GeometryIndex, pI, thread, &boundary_shader_counter); // TODO: switch these to device addresses
 
                                 for(auto & newTransaction : intersectionTransactions.first)
                                 {
@@ -13427,6 +13429,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 anyhit_hit_attributes.geometry_index = leaf.LeafDescriptor.GeometryIndex;
                                 anyhit_hit_attributes.primitive_index = leaf.PrimitiveIndex0;
                                 anyhit_hit_attributes.instance_index = instanceLeaf.InstanceID;
+                                anyhit_hit_attributes.instance_id = instanceLeaf.InstanceIndex;
                                 anyhit_hit_attributes.hitGroupIndex =
                                     hit_group_index;
 
@@ -13532,12 +13535,14 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             leaf.PrimitiveIndex[0];
                         traversal_data.closest_hit.instance_index =
                             instanceLeaf.InstanceID;
+                        traversal_data.closest_hit.instance_id =
+                            instanceLeaf.InstanceIndex;
                         traversal_data.closest_hit.hitGroupIndex =
                             hit_group_index;
 
                         warp_intersection_table* table = intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
                         uint32_t boundary_shader_counter = UINT_MAX;
-                        auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex[0], instanceLeaf.InstanceID, pI, thread, &boundary_shader_counter); // TODO: switch these to device addresses
+                        auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex[0], instanceLeaf.InstanceID, instanceLeaf.InstanceIndex, leaf.LeafDescriptor.GeometryIndex, pI, thread, &boundary_shader_counter); // TODO: switch these to device addresses
                         const unsigned boundary_event_seq =
                             rtcore_compact_trace.append_primitive_test(
                             (uint64_t)leaf_addr + device_offset, true,
@@ -13589,6 +13594,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         traversal_data.closest_hit.geometry_index = closest_leaf.LeafDescriptor.GeometryIndex;
         traversal_data.closest_hit.primitive_index = closest_leaf.PrimitiveIndex0;
         traversal_data.closest_hit.instance_index = closest_instanceLeaf.InstanceID;
+        traversal_data.closest_hit.instance_id = closest_instanceLeaf.InstanceIndex;
         traversal_data.closest_hit.hitGroupIndex =
             closest_instanceLeaf.InstanceContributionToHitGroupIndex;
         float3 intersection_point = ray.get_origin() + make_float3(ray.get_direction().x * min_thit, ray.get_direction().y * min_thit, ray.get_direction().z * min_thit);

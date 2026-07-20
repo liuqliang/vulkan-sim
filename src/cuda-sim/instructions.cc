@@ -6881,6 +6881,116 @@ void load_primitive_id_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
 }
 
+void load_ray_geometry_index_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data *traversal_data =
+      thread->RT_thread_data->traversal_data.back();
+
+  int32_t shader_counter;
+  mem->read(&(traversal_data->current_shader_counter),
+            sizeof(traversal_data->current_shader_counter), &shader_counter);
+  int32_t shader_type;
+  mem->read(&(traversal_data->current_shader_type),
+            sizeof(traversal_data->current_shader_type), &shader_type);
+
+  uint32_t geometry_index;
+  if (shader_counter == -1) {
+    mem->read(&(traversal_data->closest_hit.geometry_index),
+              sizeof(traversal_data->closest_hit.geometry_index),
+              &geometry_index);
+  } else {
+    warp_intersection_table *table;
+    if (shader_type == 1) {
+      table = VulkanRayTracing::intersection_table[thread->get_ctaid().x]
+                                                     [thread->get_ctaid().y];
+    } else if (shader_type == 2) {
+      table = VulkanRayTracing::anyhit_table[thread->get_ctaid().x]
+                                               [thread->get_ctaid().y];
+    } else {
+      printf("Unrecognized shader_type %d\n", shader_type);
+      abort();
+    }
+    geometry_index = table->get_geometryID(
+        shader_counter, thread->get_tid().x, pI, thread);
+  }
+
+  assert(pI->get_num_operands() == 1);
+  ptx_reg_t data;
+  data.u32 = geometry_index;
+  thread->set_operand_value(pI->dst(), data, U32_TYPE, thread, pI);
+}
+
+void load_ray_instance_id_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data *traversal_data =
+      thread->RT_thread_data->traversal_data.back();
+
+  int32_t shader_counter;
+  mem->read(&(traversal_data->current_shader_counter),
+            sizeof(traversal_data->current_shader_counter), &shader_counter);
+  int32_t shader_type;
+  mem->read(&(traversal_data->current_shader_type),
+            sizeof(traversal_data->current_shader_type), &shader_type);
+
+  uint32_t instance_id;
+  if (shader_counter == -1) {
+    mem->read(&(traversal_data->closest_hit.instance_id),
+              sizeof(traversal_data->closest_hit.instance_id),
+              &instance_id);
+  } else {
+    warp_intersection_table *table;
+    if (shader_type == 1) {
+      table = VulkanRayTracing::intersection_table[thread->get_ctaid().x]
+                                                     [thread->get_ctaid().y];
+    } else if (shader_type == 2) {
+      table = VulkanRayTracing::anyhit_table[thread->get_ctaid().x]
+                                               [thread->get_ctaid().y];
+    } else {
+      printf("Unrecognized shader_type %d\n", shader_type);
+      abort();
+    }
+    instance_id = table->get_instanceIndex(
+        shader_counter, thread->get_tid().x, pI, thread);
+  }
+
+  assert(pI->get_num_operands() == 1);
+  ptx_reg_t data;
+  data.u32 = instance_id;
+  thread->set_operand_value(pI->dst(), data, U32_TYPE, thread, pI);
+}
+
+void load_ray_hit_kind_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data *traversal_data =
+      thread->RT_thread_data->traversal_data.back();
+
+  int32_t shader_counter;
+  mem->read(&(traversal_data->current_shader_counter),
+            sizeof(traversal_data->current_shader_counter), &shader_counter);
+  int32_t shader_type;
+  mem->read(&(traversal_data->current_shader_type),
+            sizeof(traversal_data->current_shader_type), &shader_type);
+
+  uint32_t hit_kind;
+  if (shader_counter == -1) {
+    mem->read(&(traversal_data->closest_hit.hit_kind),
+              sizeof(traversal_data->closest_hit.hit_kind), &hit_kind);
+  } else if (shader_type == 2) {
+    assert(static_cast<size_t>(shader_counter) <
+           thread->RT_thread_data->all_hit_data.size());
+    mem->read(&(thread->RT_thread_data->all_hit_data[shader_counter]->hit_kind),
+              sizeof(hit_kind), &hit_kind);
+  } else {
+    printf("load_ray_hit_kind is invalid for shader_type %d\n", shader_type);
+    abort();
+  }
+
+  assert(pI->get_num_operands() == 1);
+  ptx_reg_t data;
+  data.u32 = hit_kind & 0xffu;
+  thread->set_operand_value(pI->dst(), data, U32_TYPE, thread, pI);
+}
+
 void load_ray_world_to_object_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   assert(pI->get_num_operands() == 2);
   const operand_info &dst = pI->dst();
@@ -7141,6 +7251,12 @@ void report_ray_intersection_impl(const ptx_instruction *pI, ptx_thread_info *th
     mem->write(&(traversal_data->closest_hit.instance_index),
                sizeof(traversal_data->closest_hit.instance_index),
                &instance_index, thread, pI);
+
+    uint32_t instance_id = table->get_instanceIndex(
+        shader_counter, thread->get_tid().x, pI, thread);
+    mem->write(&(traversal_data->closest_hit.instance_id),
+               sizeof(traversal_data->closest_hit.instance_id),
+               &instance_id, thread, pI);
   }
 
   data.pred =
@@ -13187,6 +13303,8 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
               shader_counter, thread->get_tid().x, pI, thread);
           const uint32_t instance_index = table->get_instanceID(
               shader_counter, thread->get_tid().x, pI, thread);
+          const uint32_t instance_id = table->get_instanceIndex(
+              shader_counter, thread->get_tid().x, pI, thread);
           const bool already_committed =
               hit_geometry && closest_hit.world_min_thit == reported_t &&
               closest_hit.geometryType == VK_GEOMETRY_TYPE_AABBS_KHR &&
@@ -13194,7 +13312,8 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
               closest_hit.hitGroupIndex == hit_group_index &&
               closest_hit.geometry_index == boundary_geometry_index &&
               closest_hit.primitive_index == primitive_index &&
-              closest_hit.instance_index == instance_index;
+              closest_hit.instance_index == instance_index &&
+              closest_hit.instance_id == instance_id;
           if (ordering == rtcore::RTCORE_PROCEDURAL_REPORT_KEEP_EXISTING) {
             action = already_committed
                          ? "intersection_reported_already_committed"
@@ -13227,6 +13346,9 @@ static bool rtcore_apply_shader_visible_resubmit_lane_return(
             mem->write(&(traversal_data->closest_hit.instance_index),
                        sizeof(traversal_data->closest_hit.instance_index),
                        &instance_index, thread, pI);
+            mem->write(&(traversal_data->closest_hit.instance_id),
+                       sizeof(traversal_data->closest_hit.instance_id),
+                       &instance_id, thread, pI);
             action = "intersection_reported_committed";
           }
           v04_commit_current_candidate = true;

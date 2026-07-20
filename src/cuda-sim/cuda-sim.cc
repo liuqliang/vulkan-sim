@@ -583,7 +583,10 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == GET_ELEMENT_32_OP) || (m_opcode == SET_ELEMENT_32_OP) ||
       (m_opcode == LOAD_RAY_WORLD_TO_OBJECT_OP) || (m_opcode == LOAD_RAY_OBJECT_TO_WORLD_OP) ||
       (m_opcode == LOAD_RAY_WORLD_DIRECTION_OP) || (m_opcode == LOAD_PRIMITIVE_ID_OP) ||
-      (m_opcode == LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) || (m_opcode == END_TRACE_RAY_OP) ||
+      (m_opcode == LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) ||
+      (m_opcode == LOAD_RAY_GEOMETRY_INDEX_OP) ||
+      (m_opcode == LOAD_RAY_INSTANCE_ID_OP) ||
+      (m_opcode == LOAD_RAY_HIT_KIND_OP) || (m_opcode == END_TRACE_RAY_OP) ||
       (m_opcode == LOAD_RAY_WORLD_ORIGIN_OP) || (m_opcode == LOAD_RAY_T_MAX_OP) ||
       (m_opcode == TXL_OP) || (m_opcode == SHADER_CLOCK_OP) || (m_opcode == IMG_DEREF_LD_OP) ||
       (m_opcode == RUN_INTERSECTION_OP) || (m_opcode == GET_INTERSECTION_INDEX_OP) ||
@@ -628,7 +631,10 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != GET_ELEMENT_32_OP) && (m_opcode != SET_ELEMENT_32_OP) &&
       (m_opcode != LOAD_RAY_WORLD_TO_OBJECT_OP) && (m_opcode != LOAD_RAY_OBJECT_TO_WORLD_OP) &&
       (m_opcode != LOAD_RAY_WORLD_DIRECTION_OP) && (m_opcode != LOAD_PRIMITIVE_ID_OP) &&
-      (m_opcode != LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) && (m_opcode != END_TRACE_RAY_OP) &&
+      (m_opcode != LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) &&
+      (m_opcode != LOAD_RAY_GEOMETRY_INDEX_OP) &&
+      (m_opcode != LOAD_RAY_INSTANCE_ID_OP) &&
+      (m_opcode != LOAD_RAY_HIT_KIND_OP) && (m_opcode != END_TRACE_RAY_OP) &&
       (m_opcode != LOAD_RAY_WORLD_ORIGIN_OP) && (m_opcode != LOAD_RAY_T_MAX_OP) &&
       (m_opcode != TXL_OP) && (m_opcode != SHADER_CLOCK_OP) && (m_opcode != IMG_DEREF_LD_OP) &&
       (m_opcode != RUN_INTERSECTION_OP) && (m_opcode != GET_INTERSECTION_INDEX_OP) &&
@@ -1377,6 +1383,10 @@ void ptx_instruction::set_input_output_registers() {
       operand_classification = {1, 1, 1};
       break;
     case LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP:
+    case LOAD_PRIMITIVE_ID_OP:
+    case LOAD_RAY_GEOMETRY_INDEX_OP:
+    case LOAD_RAY_INSTANCE_ID_OP:
+    case LOAD_RAY_HIT_KIND_OP:
       operand_classification = {2};
       break;
     case LOAD_RAY_WORLD_TO_OBJECT_OP:

@@ -42,6 +42,7 @@ Coalescing_warp_intersection_table::Coalescing_warp_intersection_table()
 
 std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
 Coalescing_warp_intersection_table::add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
+                                                    uint32_t instanceIndex, uint32_t geometryID,
                                                     const ptx_instruction *pI, ptx_thread_info *thread,
                                                     uint32_t *shader_counter)
 {
@@ -69,9 +70,11 @@ Coalescing_warp_intersection_table::add_intersection(uint32_t hit_group_index, u
                 mem->write(&(table[i].thread_mask[tid]), sizeof(bool), &thread_mask_tid, thread, pI);
                 mem->write(&(table[i].shader_data[tid].primitiveID), sizeof(uint32_t), &primitiveID, thread, pI);
                 mem->write(&(table[i].shader_data[tid].instanceID), sizeof(uint32_t), &instanceID, thread, pI);
+                mem->write(&(table[i].shader_data[tid].instanceIndex), sizeof(uint32_t), &instanceIndex, thread, pI);
+                mem->write(&(table[i].shader_data[tid].geometryID), sizeof(uint32_t), &geometryID, thread, pI);
 
                 stores.push_back(MemoryStoreTransactionRecord(&table[i].thread_mask[tid], 1, StoreTransactionType::Intersection_Table_Store));
-                stores.push_back(MemoryStoreTransactionRecord(&table[i].shader_data[tid], 8, StoreTransactionType::Intersection_Table_Store));
+                stores.push_back(MemoryStoreTransactionRecord(&table[i].shader_data[tid], 16, StoreTransactionType::Intersection_Table_Store));
                 *shader_counter = i;
                 return std::make_pair(loads, stores);
             }
@@ -83,10 +86,12 @@ Coalescing_warp_intersection_table::add_intersection(uint32_t hit_group_index, u
     mem->write(&(table[tableSize].thread_mask[tid]), sizeof(bool), &thread_mask_tid, thread, pI);
     mem->write(&(table[tableSize].shader_data[tid].primitiveID), sizeof(uint32_t), &primitiveID, thread, pI);
     mem->write(&(table[tableSize].shader_data[tid].instanceID), sizeof(uint32_t), &instanceID, thread, pI);
+    mem->write(&(table[tableSize].shader_data[tid].instanceIndex), sizeof(uint32_t), &instanceIndex, thread, pI);
+    mem->write(&(table[tableSize].shader_data[tid].geometryID), sizeof(uint32_t), &geometryID, thread, pI);
 
     stores.push_back(MemoryStoreTransactionRecord(&table[tableSize].hitGroupIndex, 4, StoreTransactionType::Intersection_Table_Store));
     stores.push_back(MemoryStoreTransactionRecord(&table[tableSize].thread_mask[tid], 1, StoreTransactionType::Intersection_Table_Store));
-    stores.push_back(MemoryStoreTransactionRecord(&table[tableSize].shader_data[tid], 8, StoreTransactionType::Intersection_Table_Store));
+    stores.push_back(MemoryStoreTransactionRecord(&table[tableSize].shader_data[tid], 16, StoreTransactionType::Intersection_Table_Store));
 
 
     *shader_counter = tableSize;
@@ -139,6 +144,20 @@ uint32_t Coalescing_warp_intersection_table::get_instanceID(uint32_t shader_coun
     return instanceID;
 }
 
+uint32_t Coalescing_warp_intersection_table::get_instanceIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) {
+    memory_space *mem = thread->get_global_memory();
+    uint32_t instanceIndex;
+    mem->read(&(table[shader_counter].shader_data[tid].instanceIndex), sizeof(uint32_t), &instanceIndex);
+    return instanceIndex;
+}
+
+uint32_t Coalescing_warp_intersection_table::get_geometryID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) {
+    memory_space *mem = thread->get_global_memory();
+    uint32_t geometryID;
+    mem->read(&(table[shader_counter].shader_data[tid].geometryID), sizeof(uint32_t), &geometryID);
+    return geometryID;
+}
+
 uint32_t Coalescing_warp_intersection_table::get_hitGroupIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) {
     memory_space *mem = thread->get_global_memory();
     uint32_t hitGroupIndex;
@@ -168,6 +187,7 @@ Baseline_warp_intersection_table::Baseline_warp_intersection_table()
 
 std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> > 
 Baseline_warp_intersection_table::add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
+                                                    uint32_t instanceIndex, uint32_t geometryID,
                                                     const ptx_instruction *pI, ptx_thread_info *thread,
                                                     uint32_t *shader_counter)
 {
@@ -184,9 +204,11 @@ Baseline_warp_intersection_table::add_intersection(uint32_t hit_group_index, uin
     mem->write(&(table[index[tid]].hitGroupIndex[tid]), sizeof(uint32_t), &hit_group_index, thread, pI);
     mem->write(&(table[index[tid]].shader_data[tid].primitiveID), sizeof(uint32_t), &primitiveID, thread, pI);
     mem->write(&(table[index[tid]].shader_data[tid].instanceID), sizeof(uint32_t), &instanceID, thread, pI);
+    mem->write(&(table[index[tid]].shader_data[tid].instanceIndex), sizeof(uint32_t), &instanceIndex, thread, pI);
+    mem->write(&(table[index[tid]].shader_data[tid].geometryID), sizeof(uint32_t), &geometryID, thread, pI);
 
     stores.push_back(MemoryStoreTransactionRecord(&table[index[tid]].hitGroupIndex[tid], 4, StoreTransactionType::Intersection_Table_Store));
-    stores.push_back(MemoryStoreTransactionRecord(&table[index[tid]].shader_data[tid], 8, StoreTransactionType::Intersection_Table_Store));
+    stores.push_back(MemoryStoreTransactionRecord(&table[index[tid]].shader_data[tid], 16, StoreTransactionType::Intersection_Table_Store));
 
     index[tid]++;
 
@@ -200,6 +222,7 @@ void Baseline_warp_intersection_table::clear(const ptx_instruction *pI, ptx_thre
 
 std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
 Baseline_warp_intersection_table::add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
+                                                    uint32_t instanceIndex, uint32_t geometryID,
                                                     const ptx_instruction *pI, ptx_thread_info *thread,
                                                     uint32_t *shader_counter);
 
@@ -223,6 +246,20 @@ uint32_t Baseline_warp_intersection_table::get_instanceID(uint32_t shader_counte
     uint32_t instanceID;
     mem->read(&(table[shader_counter].shader_data[tid].instanceID), sizeof(uint32_t), &instanceID);
     return instanceID;
+}
+
+uint32_t Baseline_warp_intersection_table::get_instanceIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) {
+    memory_space *mem = thread->get_global_memory();
+    uint32_t instanceIndex;
+    mem->read(&(table[shader_counter].shader_data[tid].instanceIndex), sizeof(uint32_t), &instanceIndex);
+    return instanceIndex;
+}
+
+uint32_t Baseline_warp_intersection_table::get_geometryID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) {
+    memory_space *mem = thread->get_global_memory();
+    uint32_t geometryID;
+    mem->read(&(table[shader_counter].shader_data[tid].geometryID), sizeof(uint32_t), &geometryID);
+    return geometryID;
 }
 
 uint32_t Baseline_warp_intersection_table::get_hitGroupIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) {

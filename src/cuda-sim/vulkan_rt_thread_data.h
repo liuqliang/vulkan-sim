@@ -36,7 +36,8 @@ typedef struct Hit_data{
     float3 barycentric_coordinates;
     int32_t hitGroupIndex; // Shader ID of the closest hit for procedural geometries
 
-    uint32_t instance_index;
+    uint32_t instance_index; // Legacy storage for gl_InstanceCustomIndexEXT.
+    uint32_t instance_id; // TLAS instance ordinal exposed by gl_InstanceID.
     float4x4 worldToObjectMatrix;
     float4x4 objectToWorldMatrix;
 } Hit_data;

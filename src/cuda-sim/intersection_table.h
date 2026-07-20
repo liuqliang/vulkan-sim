@@ -55,6 +55,7 @@ public:
     // virtual ~warp_intersection_table() {}
     virtual std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
             add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
+                            uint32_t instanceIndex, uint32_t geometryID,
                             const ptx_instruction *pI, ptx_thread_info *thread,
                             uint32_t *shader_counter) = 0;
     
@@ -63,6 +64,8 @@ public:
     virtual bool exit_shaders(uint32_t shader_counter, uint32_t tid) = 0;
     virtual uint32_t get_primitiveID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) = 0;
     virtual uint32_t get_instanceID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) = 0;
+    virtual uint32_t get_instanceIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) = 0;
+    virtual uint32_t get_geometryID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) = 0;
     virtual uint32_t get_hitGroupIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread) = 0;
     virtual void* get_shader_data_address(uint32_t shader_counter, uint32_t tid) = 0;
 };
@@ -81,6 +84,8 @@ typedef struct Coalescing_Entry {
     struct {
     uint32_t primitiveID;
     uint32_t instanceID;
+    uint32_t instanceIndex;
+    uint32_t geometryID;
     } shader_data[32];
 } Coalescing_Entry;
 
@@ -96,6 +101,7 @@ public:
 
     std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
             add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
+                            uint32_t instanceIndex, uint32_t geometryID,
                             const ptx_instruction *pI, ptx_thread_info *thread,
                             uint32_t *shader_counter);
     void clear(const ptx_instruction *pI, ptx_thread_info *thread);
@@ -103,6 +109,8 @@ public:
     bool exit_shaders(uint32_t shader_counter, uint32_t tid);
     uint32_t get_primitiveID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
     uint32_t get_instanceID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
+    uint32_t get_instanceIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
+    uint32_t get_geometryID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
     uint32_t get_hitGroupIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
     void* get_shader_data_address(uint32_t shader_counter, uint32_t tid);
 };
@@ -114,6 +122,8 @@ typedef struct Baseline_Entry {
     struct {
     uint32_t primitiveID;
     uint32_t instanceID;
+    uint32_t instanceIndex;
+    uint32_t geometryID;
     } shader_data[32];
 } Baseline_Entry;
 
@@ -131,12 +141,15 @@ public:
 
     std::pair<std::vector<MemoryTransactionRecord>, std::vector<MemoryStoreTransactionRecord> >
             add_intersection(uint32_t hit_group_index, uint32_t tid, uint32_t primitiveID, uint32_t instanceID,
+                            uint32_t instanceIndex, uint32_t geometryID,
                             const ptx_instruction *pI, ptx_thread_info *thread,
                             uint32_t *shader_counter);
     bool shader_exists(uint32_t tid, uint32_t shader_counter, const ptx_instruction *pI, ptx_thread_info *thread);
     bool exit_shaders(uint32_t shader_counter, uint32_t tid);
     uint32_t get_primitiveID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
     uint32_t get_instanceID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
+    uint32_t get_instanceIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
+    uint32_t get_geometryID(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
     uint32_t get_hitGroupIndex(uint32_t shader_counter, uint32_t tid, const ptx_instruction *pI, ptx_thread_info *thread);
     void* get_shader_data_address(uint32_t shader_counter, uint32_t tid);
 };
