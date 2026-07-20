@@ -29,6 +29,7 @@
 #include "vulkan_ray_tracing.h"
 #include "vulkan_rt_thread_data.h"
 #include "rtcore_replay_interface.h"
+#include "rtcore_tlas_binding_registry.h"
 
 #include <iostream>
 #include <vector>
@@ -176,6 +177,32 @@ void* VulkanRayTracing::launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_D
 std::vector<void*> VulkanRayTracing::child_addrs_from_driver;
 std::map<void*, void*> VulkanRayTracing::blas_addr_map;
 void* VulkanRayTracing::tlas_addr;
+
+namespace {
+
+static rtcore_tlas_binding_registry<rtcore_tlas_binding_snapshot>
+    g_rtcore_tlas_binding_registry;
+
+static void rtcore_fail_tlas_binding(const char *reason,
+                                     uint64_t host_root_address,
+                                     uint64_t device_base_address,
+                                     uint64_t size_bytes,
+                                     uint64_t driver_object_key = 0)
+{
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_TLAS_BINDING_FAULT reason=%s "
+            "driver_object_key=0x%llx host_root=0x%llx "
+            "device_base=0x%llx size=%llu\n",
+            reason != NULL ? reason : "unknown",
+            (unsigned long long)driver_object_key,
+            (unsigned long long)host_root_address,
+            (unsigned long long)device_base_address,
+            (unsigned long long)size_bytes);
+    fflush(stderr);
+    abort();
+}
+
+}  // namespace
 
 bool VulkanRayTracing::dumped = false;
 
@@ -483,6 +510,8 @@ struct rtcore_compact_trace_export_record {
     bool instance_sbt_contribution_valid;
     unsigned instance_sbt_contribution;
     bool v04_shadow_boundary_enabled;
+    bool v04_tlas_binding_enforcement_enabled;
+    rtcore_tlas_binding_snapshot v04_tlas_binding;
     bool v04_shadow_trace_input_valid;
     std::array<uint32_t, rtcore::abi_v04::kWordCount>
         v04_shadow_trace_input_words;
@@ -533,6 +562,8 @@ struct rtcore_replay_lane_request {
     bool instance_sbt_contribution_valid;
     unsigned instance_sbt_contribution;
     bool v04_shadow_boundary_enabled;
+    bool v04_tlas_binding_enforcement_enabled;
+    rtcore_tlas_binding_snapshot v04_tlas_binding;
     bool v04_shadow_trace_input_valid;
     std::array<uint32_t, rtcore::abi_v04::kWordCount>
         v04_shadow_trace_input_words;
@@ -3115,6 +3146,9 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.instance_sbt_contribution = record.instance_sbt_contribution;
     request.v04_shadow_boundary_enabled =
         record.v04_shadow_boundary_enabled;
+    request.v04_tlas_binding_enforcement_enabled =
+        record.v04_tlas_binding_enforcement_enabled;
+    request.v04_tlas_binding = record.v04_tlas_binding;
     request.v04_shadow_trace_input_valid =
         record.v04_shadow_trace_input_valid;
     request.v04_shadow_trace_input_words =
@@ -4325,6 +4359,8 @@ static bool rtcore_apply_v04_shadow_boundary_test_mutation(
         values->instance_metadata_reference = 0;
     } else if (strcmp(mutation, "metadata_misaligned") == 0) {
         values->instance_metadata_reference |= 0x08u;
+    } else if (strcmp(mutation, "metadata_out_of_range") == 0) {
+        values->instance_metadata_reference = UINT64_MAX & ~uint64_t{0x3f};
     } else if (strcmp(mutation, "sbt_overflow") == 0) {
         values->instance_sbt_contribution = 0x01000000u;
     } else if (strcmp(mutation, "hit_kind") == 0) {
@@ -4335,6 +4371,32 @@ static bool rtcore_apply_v04_shadow_boundary_test_mutation(
         if (mutate_reserved_word != NULL) {
             *mutate_reserved_word = true;
         }
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool rtcore_apply_v04_tlas_binding_test_mutation(
+    rtcore_tlas_binding_snapshot *snapshot)
+{
+    const char *mutation =
+        getenv("VULKAN_SIM_RTCORE_TEST_V04_TLAS_BINDING_MUTATION");
+    if (mutation == NULL || mutation[0] == '\0' ||
+        strcmp(mutation, "none") == 0) {
+        return true;
+    }
+    if (snapshot == NULL) {
+        return false;
+    }
+    if (strcmp(mutation, "stale_generation") == 0) {
+        snapshot->generation++;
+        if (snapshot->generation == 0) snapshot->generation = 1;
+    } else if (strcmp(mutation, "destroyed_binding") == 0) {
+        snapshot->live = false;
+    } else if (strcmp(mutation, "range_mismatch") == 0) {
+        snapshot->size_bytes += 64;
+        if (snapshot->size_bytes < 64) return false;
     } else {
         return false;
     }
@@ -4536,6 +4598,27 @@ static bool rtcore_observe_v04_shadow_boundary_publication(
     const bool mutation_valid =
         rtcore_apply_v04_shadow_boundary_test_mutation(
             &values, &mutate_reserved_word);
+    rtcore_tlas_binding_snapshot tlas_binding =
+        request.v04_tlas_binding;
+    const bool tlas_mutation_valid =
+        rtcore_apply_v04_tlas_binding_test_mutation(&tlas_binding);
+    const char *tlas_binding_failure =
+        request.v04_tlas_binding_enforcement_enabled ? "unvalidated"
+                                                     : "disabled";
+    bool tlas_binding_valid = true;
+    if (request.v04_tlas_binding_enforcement_enabled) {
+        const uint64_t instance_record_size =
+            rtcore::abi_v04::shadow::boundary_reason_has_candidate(reason)
+                ? 128u
+                : 0u;
+        tlas_binding_valid = tlas_mutation_valid &&
+            VulkanRayTracing::validateTlasBinding(
+                tlas_binding,
+                instance_record_size != 0
+                    ? values.instance_metadata_reference
+                    : 0,
+                instance_record_size, &tlas_binding_failure);
+    }
     rtcore::abi_v04::shadow::boundary_publication publication =
         rtcore::abi_v04::shadow::build_boundary_publication(
             request.v04_shadow_trace_input_words, reason, values);
@@ -4546,8 +4629,8 @@ static bool rtcore_observe_v04_shadow_boundary_publication(
         rtcore::abi_v04::shadow::validate_boundary_publication(
             publication.words, request.v04_shadow_trace_input_words,
             reason, values);
-    const bool valid = mutation_valid && publication.valid() &&
-                       validation.matches();
+    const bool valid = mutation_valid && tlas_binding_valid &&
+                       publication.valid() && validation.matches();
     if (valid && published_words != NULL) {
         *published_words = publication.words;
     }
@@ -4560,6 +4643,10 @@ static bool rtcore_observe_v04_shadow_boundary_publication(
            "warp_uid=%u fact_source=%s candidate_event_seq=%u "
            "instance_metadata_ref=0x%llx "
            "instance_metadata_source=gen_rt_tlas_instance_leaf_device_address "
+           "tlas_binding_enforcement=%u tlas_binding_valid=%u "
+           "tlas_binding_failure=%s tlas_object_id=%llu "
+           "tlas_generation=%u tlas_device_base=0x%llx "
+           "tlas_size=%llu "
            "boundary_ray_tmax_fp32=0x%08x written_word_mask=0x%08x "
            "compared_word_mask=0x%08x mismatch_word_mask=0x%08x "
            "error=%s "
@@ -4576,6 +4663,12 @@ static bool rtcore_observe_v04_shadow_boundary_publication(
            boundary_candidate != NULL ? boundary_candidate->event_seq : 0u,
            static_cast<unsigned long long>(
                values.instance_metadata_reference),
+           request.v04_tlas_binding_enforcement_enabled ? 1u : 0u,
+           tlas_binding_valid ? 1u : 0u, tlas_binding_failure,
+           (unsigned long long)tlas_binding.object_id,
+           tlas_binding.generation,
+           (unsigned long long)tlas_binding.device_base_address,
+           (unsigned long long)tlas_binding.size_bytes,
            values.boundary_ray_tmax_fp32, publication.written_word_mask,
            validation.compared_word_mask, validation.mismatch_word_mask,
            rtcore::abi_v04::shadow::boundary_error_name(
@@ -9979,6 +10072,34 @@ extern "C" bool rtcore_validate_shader_visible_resubmit_lane(
                    request->second.active_mask != resident->second.active_mask ||
                    request->second.lane_id != lane_id) {
             reason = "REQUEST_STATE_OWNER_MISMATCH";
+        } else if (request->second.v04_tlas_binding_enforcement_enabled) {
+            const char *binding_failure = "unvalidated";
+            const bool binding_valid =
+                VulkanRayTracing::validateTlasBinding(
+                    request->second.v04_tlas_binding, 0, 0,
+                    &binding_failure);
+            printf("GPGPU-Sim RTCORE_V04_TLAS_RESUBMIT_REVALIDATION "
+                   "owner_hw_sid=%u previous_warp_uid=%u warp_id=%u "
+                   "lane_id=%u tlas_object_id=%llu tlas_generation=%u "
+                   "result=%s failure=%s\n",
+                   owner_hw_sid, resident->second.current_warp_uid, warp_id,
+                   lane_id,
+                   (unsigned long long)
+                       request->second.v04_tlas_binding.object_id,
+                   request->second.v04_tlas_binding.generation,
+                   binding_valid ? "accepted" : "rejected",
+                   binding_failure);
+            fflush(stdout);
+            if (!binding_valid) {
+                reason = "TLAS_BINDING_STALE_OR_RELEASED";
+            } else if (inject_final_wait ||
+                       request->second.state ==
+                           RTCORE_REPLAY_FINAL_WAIT_RETIRE) {
+                reason = "FINAL_WAIT_RETIRE_RESUBMIT";
+            } else if (request->second.state != RTCORE_REPLAY_WAITING_SHADER ||
+                       !request->second.continuation_boundary_pending) {
+                reason = "REQUEST_STATE_NOT_WAITING_SHADER";
+            }
         } else if (inject_final_wait ||
                    request->second.state == RTCORE_REPLAY_FINAL_WAIT_RETIRE) {
             reason = "FINAL_WAIT_RETIRE_RESUBMIT";
@@ -12337,18 +12458,37 @@ bool VulkanRayTracing::traceRayFromRtcoreAbi(
     const bool v04_shadow_input_valid =
         !entry.v04_shadow_boundary_enabled ||
         entry.v04_shadow_trace_input_valid;
+    const bool v04_tlas_root_matches =
+        !entry.v04_tlas_binding_enforcement_enabled ||
+        (entry.v04_tlas_binding.valid && entry.v04_tlas_binding.live &&
+         entry.v04_tlas_binding.host_root_address == entry.top_level_as);
+    const char *v04_tlas_binding_failure =
+        entry.v04_tlas_binding_enforcement_enabled ? "unvalidated"
+                                                   : "disabled";
+    const bool v04_tlas_binding_valid =
+        !entry.v04_tlas_binding_enforcement_enabled ||
+        (v04_tlas_root_matches &&
+         validateTlasBinding(entry.v04_tlas_binding, 0, 0,
+                             &v04_tlas_binding_failure));
     if (!entry.valid || !source_valid || !root_valid || !context_valid ||
-        !authority_valid || !v04_shadow_input_valid || pI == nullptr ||
-        thread == nullptr) {
+        !authority_valid || !v04_shadow_input_valid ||
+        !v04_tlas_binding_valid || pI == nullptr || thread == nullptr) {
         printf("GPGPU-Sim PTX: RT_SUBMIT "
                "abi-native-trace-ray-entry-rejected=1, "
                "entry_valid=%u, source_valid=%u, root_valid=%u, "
                "context_valid=%u, authority_valid=%u, "
-               "v04_shadow_input_valid=%u\n",
+               "v04_shadow_input_valid=%u, "
+               "v04_tlas_binding_enforcement=%u, "
+               "v04_tlas_root_matches=%u, v04_tlas_binding_valid=%u, "
+               "v04_tlas_binding_failure=%s\n",
                entry.valid ? 1 : 0, source_valid ? 1 : 0,
                root_valid ? 1 : 0, context_valid ? 1 : 0,
                authority_valid ? 1 : 0,
-               v04_shadow_input_valid ? 1 : 0);
+               v04_shadow_input_valid ? 1 : 0,
+               entry.v04_tlas_binding_enforcement_enabled ? 1u : 0u,
+               v04_tlas_root_matches ? 1u : 0u,
+               v04_tlas_binding_valid ? 1u : 0u,
+               v04_tlas_binding_failure);
         fflush(stdout);
         return false;
     }
@@ -12357,12 +12497,19 @@ bool VulkanRayTracing::traceRayFromRtcoreAbi(
            "abi-native-trace-ray-entry=1, source=%s, "
            "top_level_as=0x%llx, root_node_reference=0x%llx, "
            "context_layout_version=%u, pipeline_profile_id=%u, "
-           "bvh_format_profile_id=%u\n",
+           "bvh_format_profile_id=%u, v04_tlas_binding_enforcement=%u, "
+           "tlas_object_id=%llu, tlas_generation=%u, "
+           "tlas_device_base=0x%llx, tlas_size=%llu\n",
            entry.source,
            (unsigned long long)entry.top_level_as,
            (unsigned long long)entry.root_node_reference,
            entry.context_layout_version, entry.pipeline_profile_id,
-           entry.bvh_format_profile_id);
+           entry.bvh_format_profile_id,
+           entry.v04_tlas_binding_enforcement_enabled ? 1u : 0u,
+           (unsigned long long)entry.v04_tlas_binding.object_id,
+           entry.v04_tlas_binding.generation,
+           (unsigned long long)entry.v04_tlas_binding.device_base_address,
+           (unsigned long long)entry.v04_tlas_binding.size_bytes);
     fflush(stdout);
 
     traceRay((VkAccelerationStructureKHR)entry.top_level_as,
@@ -12397,6 +12544,13 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     const bool v04_shadow_boundary_enabled =
         rtcore_abi_entry != NULL &&
         rtcore_abi_entry->v04_shadow_boundary_enabled;
+    const bool v04_tlas_binding_enforcement_enabled =
+        rtcore_abi_entry != NULL &&
+        rtcore_abi_entry->v04_tlas_binding_enforcement_enabled;
+    const uint64_t selected_tlas_device_base =
+        v04_tlas_binding_enforcement_enabled
+            ? rtcore_abi_entry->v04_tlas_binding.device_base_address
+            : (uint64_t)tlas_addr;
     // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
     //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
 
@@ -12411,7 +12565,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
     // Convert device address back to host address for func sim. This will break if the device address was modified then passed to traceRay. Should be fixable if I also record the size when I malloc then I can check the bounds of the device address.
     uint8_t* deviceAddress = nullptr;
-    int64_t device_offset = (uint64_t)tlas_addr - (uint64_t)_topLevelAS;
+    int64_t device_offset =
+        selected_tlas_device_base - (uint64_t)_topLevelAS;
     if (use_external_launcher)
     {
         deviceAddress = (uint8_t*)_topLevelAS;
@@ -12607,7 +12762,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         {
             next_node_addr = stack.back().addr;
             uint64_t tlas_stack_device_offset =
-                (uint64_t)tlas_addr - (uint64_t)_topLevelAS;
+                selected_tlas_device_base - (uint64_t)_topLevelAS;
             rtcore_compact_trace.append_stack_pop(
                 (uint64_t)stack.back().addr + tlas_stack_device_offset,
                 stack.back().topLevel, stack.back().leaf);
@@ -12617,7 +12772,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         while (next_node_addr != NULL)
         {
             // TLAS offset
-            device_offset = (uint64_t)tlas_addr - (uint64_t)_topLevelAS;
+            device_offset =
+                selected_tlas_device_base - (uint64_t)_topLevelAS;
 
             node_addr = next_node_addr;
             next_node_addr = NULL;
@@ -12728,7 +12884,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         while (!stack.empty() && stack.back().leaf)
         {
             // TLAS offset
-            device_offset = (uint64_t)tlas_addr - (uint64_t)_topLevelAS;
+            device_offset =
+                selected_tlas_device_base - (uint64_t)_topLevelAS;
 
             assert(stack.back().topLevel);
 
@@ -13413,6 +13570,12 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             : 0u;
     rtcore_trace_export.v04_shadow_boundary_enabled =
         v04_shadow_boundary_enabled;
+    rtcore_trace_export.v04_tlas_binding_enforcement_enabled =
+        v04_tlas_binding_enforcement_enabled;
+    if (v04_tlas_binding_enforcement_enabled) {
+        rtcore_trace_export.v04_tlas_binding =
+            rtcore_abi_entry->v04_tlas_binding;
+    }
     rtcore_trace_export.handoff_window_base =
         rtcore_abi_entry != NULL ? rtcore_abi_entry->handoff_window_base : 0;
     rtcore_trace_export.v04_shadow_trace_input_valid =
@@ -15782,9 +15945,72 @@ void VulkanRayTracing::allocBLAS(void* rootAddr, uint64_t bufferSize, void* gpgp
     blas_addr_map[rootAddr] = gpgpusimAddr;
 }
 
-void VulkanRayTracing::allocTLAS(void* rootAddr, uint64_t bufferSize, void* gpgpusimAddr) {
-    printf("gpgpusim: set TLAS address %p to %p\n", rootAddr, gpgpusimAddr);
+void VulkanRayTracing::allocTLAS(void* objectKey, void* rootAddr,
+                                 uint64_t bufferSize, void* gpgpusimAddr) {
+    const uint64_t driver_object_key = (uint64_t)objectKey;
+    const uint64_t host_root_address = (uint64_t)rootAddr;
+    const uint64_t device_base_address = (uint64_t)gpgpusimAddr;
+    rtcore_tlas_binding_snapshot snapshot;
+    const char *failure_reason = "unvalidated";
+    if (!g_rtcore_tlas_binding_registry.register_binding(
+            driver_object_key, host_root_address, device_base_address,
+            bufferSize, &snapshot, &failure_reason)) {
+        rtcore_fail_tlas_binding(failure_reason, host_root_address,
+                                device_base_address, bufferSize,
+                                driver_object_key);
+    }
+
+    printf("GPGPU-Sim RTCORE_TLAS_BINDING_REGISTERED "
+           "object_id=%llu generation=%u driver_object_key=0x%llx "
+           "host_root=0x%llx "
+           "device_base=0x%llx size=%llu live=1\n",
+           (unsigned long long)snapshot.object_id, snapshot.generation,
+           (unsigned long long)driver_object_key,
+           (unsigned long long)snapshot.host_root_address,
+           (unsigned long long)snapshot.device_base_address,
+           (unsigned long long)snapshot.size_bytes);
+    fflush(stdout);
     tlas_addr = gpgpusimAddr;
+}
+
+void VulkanRayTracing::releaseTLAS(void* objectKey, void* rootAddr,
+                                   void* gpgpusimAddr) {
+    const uint64_t driver_object_key = (uint64_t)objectKey;
+    const uint64_t host_root_address = (uint64_t)rootAddr;
+    const uint64_t device_base_address = (uint64_t)gpgpusimAddr;
+    rtcore_tlas_binding_snapshot released;
+    const char *failure_reason = "unvalidated";
+    if (!g_rtcore_tlas_binding_registry.release_binding(
+            driver_object_key, host_root_address, device_base_address,
+            &released, &failure_reason)) {
+        rtcore_fail_tlas_binding(failure_reason, host_root_address,
+                                device_base_address, 0, driver_object_key);
+    }
+    printf("GPGPU-Sim RTCORE_TLAS_BINDING_RELEASED "
+           "object_id=%llu generation=%u driver_object_key=0x%llx "
+           "host_root=0x%llx "
+           "device_base=0x%llx size=%llu live=0\n",
+           (unsigned long long)released.object_id, released.generation,
+           (unsigned long long)driver_object_key,
+           (unsigned long long)released.host_root_address,
+           (unsigned long long)released.device_base_address,
+           (unsigned long long)released.size_bytes);
+    fflush(stdout);
+}
+
+bool VulkanRayTracing::captureTlasBinding(
+    uint64_t hostRootAddress, rtcore_tlas_binding_snapshot *snapshot,
+    const char **failureReason) {
+    return g_rtcore_tlas_binding_registry.capture(
+        hostRootAddress, snapshot, failureReason);
+}
+
+bool VulkanRayTracing::validateTlasBinding(
+    const rtcore_tlas_binding_snapshot &snapshot,
+    uint64_t instanceMetadataReference, uint64_t recordSize,
+    const char **failureReason) {
+    return g_rtcore_tlas_binding_registry.validate(
+        snapshot, instanceMetadataReference, recordSize, failureReason);
 }
 
 void VulkanRayTracing::findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS)

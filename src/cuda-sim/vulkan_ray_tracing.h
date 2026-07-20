@@ -149,6 +149,16 @@ typedef struct Descriptor
     VkDescriptorType type;
 } Descriptor;
 
+struct rtcore_tlas_binding_snapshot {
+    bool valid;
+    bool live;
+    uint64_t object_id;
+    uint32_t generation;
+    uint64_t host_root_address;
+    uint64_t device_base_address;
+    uint64_t size_bytes;
+};
+
 struct rtcore_trace_ray_abi_entry {
     bool valid;
     const char *source;
@@ -177,6 +187,8 @@ struct rtcore_trace_ray_abi_entry {
     uint32_t bvh_format_profile_id;
     uint64_t handoff_window_base;
     bool v04_shadow_boundary_enabled;
+    bool v04_tlas_binding_enforcement_enabled;
+    rtcore_tlas_binding_snapshot v04_tlas_binding;
     bool v04_shadow_trace_input_valid;
     std::array<uint32_t, 32> v04_shadow_trace_input_words;
 };
@@ -428,7 +440,17 @@ public:
                                        uint32_t filter);
     static void pass_child_addr(void *address);
     static void allocBLAS(void* rootAddr, uint64_t bufferSize, void* gpgpusimAddr);
-    static void allocTLAS(void* rootAddr, uint64_t bufferSize, void* gpgpusimAddr);
+    static void allocTLAS(void* objectKey, void* rootAddr,
+                          uint64_t bufferSize, void* gpgpusimAddr);
+    static void releaseTLAS(void* objectKey, void* rootAddr,
+                            void* gpgpusimAddr);
+    static bool captureTlasBinding(
+        uint64_t hostRootAddress, rtcore_tlas_binding_snapshot *snapshot,
+        const char **failureReason = NULL);
+    static bool validateTlasBinding(
+        const rtcore_tlas_binding_snapshot &snapshot,
+        uint64_t instanceMetadataReference, uint64_t recordSize,
+        const char **failureReason);
     static void* allocBuffer(void* bufferAddr, uint64_t bufferSize);
     static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS);
     static void* gpgpusim_alloc(uint32_t size);

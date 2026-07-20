@@ -210,9 +210,17 @@ extern "C" void gpgpusim_allocBLAS(void* rootAddr, uint64_t bufferSize, void* gp
     VulkanRayTracing::allocBLAS(rootAddr, bufferSize, gpgpusimAddr);
 }
 
-extern "C" void gpgpusim_allocTLAS(void* rootAddr, uint64_t bufferSize, void* gpgpusimAddr)
+extern "C" void gpgpusim_allocTLAS(void* objectKey, void* rootAddr,
+                                    uint64_t bufferSize, void* gpgpusimAddr)
 {
-    VulkanRayTracing::allocTLAS(rootAddr, bufferSize, gpgpusimAddr);
+    VulkanRayTracing::allocTLAS(objectKey, rootAddr, bufferSize,
+                                gpgpusimAddr);
+}
+
+extern "C" void gpgpusim_releaseTLAS(void* objectKey, void* rootAddr,
+                                      void* gpgpusimAddr)
+{
+    VulkanRayTracing::releaseTLAS(objectKey, rootAddr, gpgpusimAddr);
 }
 
 extern "C" void* gpgpusim_allocBuffer(void* bufferAddr, uint64_t bufferSize)

@@ -7746,6 +7746,10 @@ static const char *rtcore_v04_live_handoff_publication_gate_name() {
   return "VULKAN_SIM_RTCORE_ABI_V04_LIVE_HANDOFF_PUBLICATION";
 }
 
+static const char *rtcore_v04_tlas_binding_enforcement_gate_name() {
+  return "VULKAN_SIM_RTCORE_ABI_V04_TLAS_BINDING_ENFORCEMENT";
+}
+
 static const char *rtcore_v04_shadow_shader_return_publication_gate_name() {
   return "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_SHADER_RETURN_PUBLICATION";
 }
@@ -7858,6 +7862,38 @@ static bool rtcore_v04_live_handoff_publication_configuration_valid(
              : "<unset>",
          boundary_publication_enabled ? 1u : 0u,
          memory_path_enabled ? 1u : 0u);
+  fflush(stdout);
+  return false;
+}
+
+static bool rtcore_v04_tlas_binding_enforcement_configuration_valid(
+    const ptx_instruction *pI, bool boundary_publication_enabled,
+    bool *tlas_binding_enforcement_enabled) {
+  const rtcore_v04_shadow_gate_state enforcement_state =
+      rtcore_v04_shadow_gate(
+          rtcore_v04_tlas_binding_enforcement_gate_name());
+  if (tlas_binding_enforcement_enabled != NULL) {
+    *tlas_binding_enforcement_enabled =
+        enforcement_state == RTCORE_V04_SHADOW_GATE_ENABLED;
+  }
+  const char *reason = NULL;
+  if (enforcement_state == RTCORE_V04_SHADOW_GATE_INVALID) {
+    reason = "V04_TLAS_BINDING_ENFORCEMENT_GATE_INVALID";
+  } else if (enforcement_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             !boundary_publication_enabled) {
+    reason = "V04_SHADOW_BOUNDARY_PUBLICATION_REQUIRED";
+  }
+  if (reason == NULL) {
+    return true;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), reason=%s, "
+         "tlas_binding_enforcement_gate=%s, "
+         "boundary_publication_enabled=%u\n",
+         pI->source_file(), pI->source_line(), reason,
+         getenv(rtcore_v04_tlas_binding_enforcement_gate_name()) != NULL
+             ? getenv(rtcore_v04_tlas_binding_enforcement_gate_name())
+             : "<unset>",
+         boundary_publication_enabled ? 1u : 0u);
   fflush(stdout);
   return false;
 }
@@ -14597,6 +14633,7 @@ struct rtcore_traversal_source_request {
         lane_slot_index(0),
         provider(RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL),
         v04_shadow_boundary_enabled(false),
+        v04_tlas_binding_enforcement_enabled(false),
         v04_shadow_trace_input_valid(false),
         from_provider_backend_input_snapshot(false),
         replay_backend_input_source_snapshot("unavailable"),
@@ -14701,6 +14738,7 @@ struct rtcore_traversal_source_request {
   ptx_thread_info::rtcore_current_warp_metadata warp_metadata;
   rtcore_traversal_source_provider provider;
   bool v04_shadow_boundary_enabled;
+  bool v04_tlas_binding_enforcement_enabled;
   bool v04_shadow_trace_input_valid;
   std::array<uint32_t, rtcore::abi_v04::kWordCount>
       v04_shadow_trace_input_words;
@@ -16416,6 +16454,27 @@ struct rtcore_traversal_provider_response {
   bool initialized_default_miss;
   bool hit_geometry;
 };
+
+static rtcore_traversal_provider_response
+rtcore_make_v04_tlas_binding_route_rejected_response(
+    const rtcore_traversal_source_request &request, const char *reason) {
+  rtcore_traversal_provider_response response;
+  response.provider = request.provider;
+  response.provider_supported = true;
+  response.provider_accepted = false;
+  response.reject_reason =
+      RTCORE_TRAVERSAL_PROVIDER_REJECT_WORK_DESCRIPTOR_REJECTED;
+  printf("GPGPU-Sim PTX: RT_SUBMIT "
+         "v04-tlas-binding-route-rejected=1, provider=%s, "
+         "context_ptr=0x%llx, handoff_window_base=0x%llx, "
+         "lane_slot_index=%u, traversal_backend_invocation_skipped=1, "
+         "reason=%s\n",
+         rtcore_traversal_source_provider_name(request.provider),
+         request.context_ptr, request.handoff_window_base,
+         request.lane_slot_index, reason != NULL ? reason : "unknown");
+  fflush(stdout);
+  return response;
+}
 
 static bool
 rtcore_try_build_existing_traversal_replay_request_from_provider_backend_input(
@@ -21037,6 +21096,25 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
   abi_entry.handoff_window_base = request.handoff_window_base;
   abi_entry.v04_shadow_boundary_enabled =
       request.v04_shadow_boundary_enabled;
+  abi_entry.v04_tlas_binding_enforcement_enabled =
+      request.v04_tlas_binding_enforcement_enabled;
+  const char *tlas_capture_failure = "disabled";
+  if (abi_entry.v04_tlas_binding_enforcement_enabled &&
+      !VulkanRayTracing::captureTlasBinding(
+          abi_entry.top_level_as, &abi_entry.v04_tlas_binding,
+          &tlas_capture_failure)) {
+    printf("GPGPU-Sim PTX: RT_SUBMIT "
+           "v04-tlas-binding-admission-rejected=1, "
+           "reason=TLAS_BINDING_CAPTURE_FAILED, capture_failure=%s, "
+           "top_level_as=0x%llx\n",
+           tlas_capture_failure,
+           (unsigned long long)abi_entry.top_level_as);
+    fflush(stdout);
+    if (failure_reason != NULL) {
+      *failure_reason = "v04_tlas_binding_capture_failed";
+    }
+    return false;
+  }
   abi_entry.v04_shadow_trace_input_valid =
       request.v04_shadow_trace_input_valid;
   abi_entry.v04_shadow_trace_input_words =
@@ -21673,6 +21751,12 @@ rtcore_make_custom_rtcore_existing_traversal_backend_response(
   const rtcore_producer_root_descriptor_traversal_authority_policy
       producer_root_descriptor_traversal_authority_policy =
           rtcore_make_producer_root_descriptor_traversal_authority_policy();
+  if (effective_request.v04_tlas_binding_enforcement_enabled &&
+      !producer_root_descriptor_traversal_authority_policy.requested) {
+    return rtcore_make_v04_tlas_binding_route_rejected_response(
+        effective_request,
+        "V04_TLAS_BINDING_REQUIRES_PRODUCER_ROOT_AUTHORITY");
+  }
   if (producer_root_descriptor_traversal_authority_policy.requested) {
     if (!rtcore_producer_root_descriptor_traversal_authority_request_ready(
             effective_request)) {
@@ -22284,6 +22368,13 @@ rtcore_make_traversal_provider_response(
     const rtcore_provider_facing_registry_payload_shadow *registry_payload_shadow,
     const rtcore_provider_decoded_input_observation
         *provider_decoded_input_observation) {
+  if (request.v04_tlas_binding_enforcement_enabled &&
+      request.provider !=
+          RTCORE_TRAVERSAL_SOURCE_PROVIDER_RTCORE_CUSTOM_EXISTING_TRAVERSAL) {
+    return rtcore_make_v04_tlas_binding_route_rejected_response(
+        request,
+        "V04_TLAS_BINDING_REQUIRES_CUSTOM_EXISTING_TRAVERSAL_PROVIDER");
+  }
   switch (request.provider) {
     case RTCORE_TRAVERSAL_SOURCE_PROVIDER_LEGACY_FUNCTIONAL:
       return rtcore_make_legacy_functional_traversal_provider_response(request);
@@ -32349,6 +32440,7 @@ bool rtcore_build_traversal_completion_event(
     const rtcore_runtime_context_window_allocation_record &allocation_record,
     const rtcore_launch_allocation_lifetime_record *lifetime_record,
     bool v04_shadow_boundary_enabled,
+    bool v04_tlas_binding_enforcement_enabled,
     const std::array<uint32_t, rtcore::abi_v04::kWordCount>
         *v04_shadow_trace_input_words,
     rtcore_traversal_completion_event *event) {
@@ -32397,6 +32489,8 @@ bool rtcore_build_traversal_completion_event(
           event->lane_slot_index, &event->warp_metadata);
   source_request.v04_shadow_boundary_enabled =
       v04_shadow_boundary_enabled;
+  source_request.v04_tlas_binding_enforcement_enabled =
+      v04_tlas_binding_enforcement_enabled;
   source_request.v04_shadow_trace_input_valid =
       v04_shadow_boundary_enabled && v04_shadow_trace_input_words != NULL;
   if (source_request.v04_shadow_trace_input_valid) {
@@ -32864,6 +32958,7 @@ void rtcore_traversal_completion_adapter_publish(
     const rtcore_runtime_context_window_allocation_record &allocation_record,
     const rtcore_launch_allocation_lifetime_record *lifetime_record,
     bool v04_shadow_boundary_enabled,
+    bool v04_tlas_binding_enforcement_enabled,
     const std::array<uint32_t, rtcore::abi_v04::kWordCount>
         *v04_shadow_trace_input_words) {
   const unsigned lane_slot_index = rtcore_lane_slot_index(thread);
@@ -32871,6 +32966,7 @@ void rtcore_traversal_completion_adapter_publish(
   if (!rtcore_build_traversal_completion_event(
           pI, thread, context_ptr, handoff_window_base, lane_slot_index,
           allocation_record, lifetime_record, v04_shadow_boundary_enabled,
+          v04_tlas_binding_enforcement_enabled,
           v04_shadow_trace_input_words, &event)) {
     inst_not_implemented(pI);
     return;
@@ -32972,6 +33068,13 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (!rtcore_v04_live_handoff_publication_configuration_valid(
           pI, v04_shadow_boundary_publication_enabled,
           &v04_live_handoff_publication_enabled)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+  bool v04_tlas_binding_enforcement_enabled = false;
+  if (!rtcore_v04_tlas_binding_enforcement_configuration_valid(
+          pI, v04_shadow_boundary_publication_enabled,
+          &v04_tlas_binding_enforcement_enabled)) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
@@ -33164,6 +33267,7 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       pI, thread, result, context_ptr_data.u64, handoff_window_base_data.u64,
       allocation_record, lifetime_record,
       v04_shadow_boundary_publication_enabled,
+      v04_tlas_binding_enforcement_enabled,
       v04_shadow_boundary_publication_enabled
           ? &v04_shadow_trace_input_words
           : NULL);
