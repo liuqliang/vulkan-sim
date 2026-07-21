@@ -74,7 +74,8 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
     unsigned instance_index, unsigned hit_kind,
     unsigned boundary_ray_tmax_fp32, bool boundary_ray_tmax_valid);
 extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
-    ptx_thread_info *thread, unsigned reason, unsigned lane_slot_index,
+    const ptx_instruction *source_inst, ptx_thread_info *thread,
+    unsigned reason, unsigned lane_slot_index,
     unsigned long long handoff_window_base);
 extern "C" int rtcore_compatibility_shader_target_kind(unsigned shader_id,
                                                          unsigned reason);
@@ -1172,7 +1173,7 @@ rtcore_service_shader_continuation_pseudo_op(
     }
     if (rtcore_v04_shader_builtin_consumer_runtime_enabled() &&
         !rtcore_validate_v04_shader_builtin_compatibility_context(
-            thread, entry.lane_reasons[lane], lane,
+            source_inst, thread, entry.lane_reasons[lane], lane,
             handoff_value.u64)) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_V04_SHADER_BUILTIN_COMPATIBILITY_FAULT "

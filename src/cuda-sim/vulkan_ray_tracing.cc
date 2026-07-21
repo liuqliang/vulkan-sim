@@ -14598,10 +14598,44 @@ extern "C" int rtcore_compatibility_shader_target_kind(unsigned shader_id,
                                                                   reason);
 }
 
+static bool rtcore_apply_v04_shader_builtin_compatibility_test_mutation(
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> *actual) {
+    const char *mutation = getenv(
+        "VULKAN_SIM_RTCORE_TEST_V04_SHADER_BUILTIN_COMPATIBILITY_MUTATION");
+    if (mutation == NULL || mutation[0] == '\0' ||
+        strcmp(mutation, "none") == 0) {
+        return true;
+    }
+    if (actual == NULL) {
+        return false;
+    }
+
+    unsigned word = rtcore::abi_v04::kWordCount;
+    if (strcmp(mutation, "launch_tmax") == 0) {
+        word = rtcore::abi_v04::kLaunchRayTmaxFp32.word;
+    } else if (strcmp(mutation, "geometry_index") == 0) {
+        word = rtcore::abi_v04::kGeometryIndex.word;
+    } else if (strcmp(mutation, "primitive_index") == 0) {
+        word = rtcore::abi_v04::kPrimitiveIndex.word;
+    } else if (strcmp(mutation, "instance_index") == 0) {
+        word = rtcore::abi_v04::kInstanceIndex.word;
+    } else if (strcmp(mutation, "instance_custom_index") == 0) {
+        word = rtcore::abi_v04::kInstanceCustomIndex.word;
+    } else if (strcmp(mutation, "hit_kind") == 0) {
+        word = rtcore::abi_v04::kHitKind.word;
+    } else {
+        return false;
+    }
+    (*actual)[word] ^= 1u;
+    return true;
+}
+
 extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
-    ptx_thread_info *thread, unsigned reason, unsigned lane_slot_index,
+    const ptx_instruction *source_inst, ptx_thread_info *thread,
+    unsigned reason, unsigned lane_slot_index,
     unsigned long long handoff_window_base) {
-    if (thread == NULL || thread->RT_thread_data == NULL ||
+    if (source_inst == NULL || thread == NULL ||
+        thread->RT_thread_data == NULL ||
         thread->RT_thread_data->traversal_data.empty() ||
         lane_slot_index >= 32 || handoff_window_base == 0) {
         return 0;
@@ -14618,6 +14652,16 @@ extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
     std::array<uint32_t, rtcore::abi_v04::kWordCount> actual = {};
     memory_space *mem = thread->get_global_memory();
     mem->read_simulator_backing(lane_address, sizeof(actual), actual.data());
+    if (!rtcore_apply_v04_shader_builtin_compatibility_test_mutation(
+            &actual)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHADER_BUILTIN_COMPATIBILITY_FAULT "
+                "thread_uid=%u lane_id=%u reason=%u "
+                "fault=unknown_test_mutation\n",
+                thread->get_uid(), lane_slot_index, reason);
+        fflush(stderr);
+        return 0;
+    }
 
     Traversal_data *traversal_data =
         thread->RT_thread_data->traversal_data.back();
@@ -14670,6 +14714,10 @@ extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
         (cull_mask & 0xffu)) {
         mismatch_mask |= uint32_t{1} << 9;
     }
+    if (actual[rtcore::abi_v04::kLaunchRayTmaxFp32.word] !=
+        rtcore_v04_fp32_bits(launch_ray_tmax)) {
+        mismatch_mask |= uint32_t{1} << 12;
+    }
 
     const bool boundary_tmax_is_consumed =
         reason != RTCORE_REPLAY_CONTINUATION_PACKET_REASON_MISS;
@@ -14699,19 +14747,101 @@ extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
     const bool terminal_closest_hit =
         reason ==
         RTCORE_REPLAY_CONTINUATION_PACKET_REASON_CLOSEST_HIT_READY;
+    const bool anyhit =
+        reason == RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED;
+    const bool intersection =
+        reason ==
+        RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED;
+    const bool identity_fields_consumed =
+        terminal_closest_hit || anyhit || intersection;
+    const bool hit_kind_consumed = terminal_closest_hit || anyhit;
+    uint32_t expected_geometry_index = 0;
+    uint32_t expected_primitive_index = 0;
+    uint32_t expected_instance_index = 0;
+    uint32_t expected_instance_custom_index = 0;
+    uint32_t expected_hit_kind = 0;
+    bool identity_source_valid = !identity_fields_consumed;
     if (terminal_closest_hit) {
-        if (!hit_geometry ||
+        identity_source_valid = hit_geometry;
+        if (identity_source_valid) {
+            expected_geometry_index = closest_hit.geometry_index;
+            expected_primitive_index = closest_hit.primitive_index;
+            expected_instance_index = closest_hit.instance_id;
+            expected_instance_custom_index = closest_hit.instance_index;
+            expected_hit_kind = closest_hit.hit_kind & 0xffu;
+        }
+    } else if (anyhit || intersection) {
+        int32_t shader_counter = -1;
+        int32_t shader_type = -1;
+        mem->read(&(traversal_data->current_shader_counter),
+                  sizeof(shader_counter), &shader_counter);
+        mem->read(&(traversal_data->current_shader_type),
+                  sizeof(shader_type), &shader_type);
+        const int32_t expected_shader_type = intersection ? 1 : 2;
+        const uint32_t cta_x = thread->get_ctaid().x;
+        const uint32_t cta_y = thread->get_ctaid().y;
+        warp_intersection_table *table =
+            intersection ? VulkanRayTracing::intersection_table[cta_x][cta_y]
+                         : VulkanRayTracing::anyhit_table[cta_x][cta_y];
+        const uint32_t tid = thread->get_tid().x;
+        identity_source_valid =
+            shader_counter >= 0 && shader_type == expected_shader_type &&
+            table != NULL &&
+            static_cast<unsigned>(shader_counter) <
+                INTERSECTION_TABLE_MAX_LENGTH &&
+            table->shader_exists(tid, static_cast<unsigned>(shader_counter),
+                                 source_inst, thread);
+        if (identity_source_valid) {
+            const unsigned counter = static_cast<unsigned>(shader_counter);
+            expected_geometry_index = table->get_geometryID(
+                counter, tid, source_inst, thread);
+            expected_primitive_index = table->get_primitiveID(
+                counter, tid, source_inst, thread);
+            expected_instance_index = table->get_instanceIndex(
+                counter, tid, source_inst, thread);
+            expected_instance_custom_index = table->get_instanceID(
+                counter, tid, source_inst, thread);
+            if (anyhit) {
+                identity_source_valid =
+                    counter < thread->RT_thread_data->all_hit_data.size() &&
+                    thread->RT_thread_data->all_hit_data[counter] != NULL;
+                if (identity_source_valid) {
+                    Hit_data candidate = {};
+                    mem->read(thread->RT_thread_data->all_hit_data[counter],
+                              sizeof(candidate), &candidate);
+                    expected_hit_kind = candidate.hit_kind & 0xffu;
+                }
+            }
+        }
+    }
+    if (identity_fields_consumed) {
+        if (!identity_source_valid ||
             actual[rtcore::abi_v04::kPrimitiveIndex.word] !=
-                closest_hit.primitive_index) {
+                expected_primitive_index) {
             mismatch_mask |= uint32_t{1} << 10;
         }
-        // Vulkan-Sim's legacy load_ray_instance_custom_index pseudo-op reads
-        // Hit_data::instance_index, which contains the Vulkan custom index.
-        if (!hit_geometry ||
+        if (!identity_source_valid ||
             actual[rtcore::abi_v04::kInstanceCustomIndex.word] !=
-                closest_hit.instance_index) {
+                expected_instance_custom_index) {
             mismatch_mask |= uint32_t{1} << 11;
         }
+        if (!identity_source_valid ||
+            actual[rtcore::abi_v04::kGeometryIndex.word] !=
+                expected_geometry_index) {
+            mismatch_mask |= uint32_t{1} << 13;
+        }
+        if (!identity_source_valid ||
+            actual[rtcore::abi_v04::kInstanceIndex.word] !=
+                expected_instance_index) {
+            mismatch_mask |= uint32_t{1} << 14;
+        }
+    }
+    if (hit_kind_consumed &&
+        (!identity_source_valid ||
+         rtcore::abi_v04::extract_field(actual,
+                                        rtcore::abi_v04::kHitKind) !=
+             expected_hit_kind)) {
+        mismatch_mask |= uint32_t{1} << 15;
     }
 
     if (mismatch_mask != 0) {
@@ -14724,27 +14854,40 @@ extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
                 "handoff_direction={0x%08x,0x%08x,0x%08x} "
                 "legacy_direction={0x%08x,0x%08x,0x%08x} "
                 "handoff_tmin=0x%08x legacy_tmin=0x%08x "
+                "handoff_launch_tmax=0x%08x legacy_launch_tmax=0x%08x "
                 "handoff_boundary_tmax=0x%08x legacy_tmax=0x%08x "
                 "handoff_flags=0x%08x legacy_flags=0x%08x "
                 "handoff_cull=0x%02x legacy_cull=0x%02x "
+                "handoff_geometry=%u legacy_geometry=%u "
                 "handoff_primitive=%u legacy_primitive=%u "
-                "handoff_instance_custom=%u legacy_instance_custom=%u\n",
+                "handoff_instance=%u legacy_instance=%u "
+                "handoff_instance_custom=%u legacy_instance_custom=%u "
+                "handoff_hit_kind=%u legacy_hit_kind=%u\n",
                 thread->get_uid(), lane_slot_index, reason, lane_address,
                 mismatch_mask, actual[4], actual[5], actual[6],
                 expected_words[0], expected_words[1], expected_words[2],
                 actual[8], actual[9], actual[10], expected_words[4],
                 expected_words[5], expected_words[6], actual[7],
                 expected_words[3],
+                actual[rtcore::abi_v04::kLaunchRayTmaxFp32.word],
+                rtcore_v04_fp32_bits(launch_ray_tmax),
                 actual[rtcore::abi_v04::kBoundaryRayTmaxFp32.word],
                 rtcore_v04_fp32_bits(legacy_ray_tmax),
                 actual[rtcore::abi_v04::kRayFlags.word], ray_flags,
                 rtcore::abi_v04::extract_field(actual,
                                                rtcore::abi_v04::kCullMask),
                 cull_mask & 0xffu,
+                actual[rtcore::abi_v04::kGeometryIndex.word],
+                expected_geometry_index,
                 actual[rtcore::abi_v04::kPrimitiveIndex.word],
-                hit_geometry ? closest_hit.primitive_index : 0u,
+                expected_primitive_index,
+                actual[rtcore::abi_v04::kInstanceIndex.word],
+                expected_instance_index,
                 actual[rtcore::abi_v04::kInstanceCustomIndex.word],
-                hit_geometry ? closest_hit.instance_index : 0u);
+                expected_instance_custom_index,
+                rtcore::abi_v04::extract_field(actual,
+                                               rtcore::abi_v04::kHitKind),
+                expected_hit_kind);
         fflush(stderr);
         return 0;
     }
