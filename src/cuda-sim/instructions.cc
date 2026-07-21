@@ -7063,11 +7063,22 @@ void load_ray_world_origin_impl(const ptx_instruction *pI, ptx_thread_info *thre
 void load_ray_t_max_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const operand_info &dst0 = pI->dst();
 
-  float t_max;
-
   memory_space *mem = thread->get_global_memory();
   Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+  uint32_t current_shader_ray_tmax_valid = 0;
+  mem->read(&(traversal_data->current_shader_ray_tmax_valid),
+            sizeof(current_shader_ray_tmax_valid),
+            &current_shader_ray_tmax_valid);
 
+  ptx_reg_t data;
+  if (current_shader_ray_tmax_valid != 0) {
+    mem->read(&(traversal_data->current_shader_ray_tmax_fp32),
+              sizeof(data.u32), &data.u32);
+    thread->set_operand_value(dst0, data, F32_TYPE, thread, pI);
+    return;
+  }
+
+  float t_max;
   bool hit_geometry;
   mem->read(&(traversal_data->hit_geometry), sizeof(traversal_data->hit_geometry), &hit_geometry);
   if(hit_geometry)
@@ -7075,7 +7086,6 @@ void load_ray_t_max_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   else
     mem->read(&(traversal_data->Tmax), sizeof(t_max), &t_max);
 
-  ptx_reg_t data;
   data.f32 = t_max;
   thread->set_operand_value(dst0, data, F32_TYPE, thread, pI);
 }

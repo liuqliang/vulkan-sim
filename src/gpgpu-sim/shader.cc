@@ -71,7 +71,11 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
     unsigned long long boundary_hit_data_ref,
     unsigned boundary_hit_group_index, unsigned boundary_geometry_type,
     unsigned boundary_geometry_index, unsigned primitive_index,
-    unsigned instance_index, unsigned hit_kind);
+    unsigned instance_index, unsigned hit_kind,
+    unsigned boundary_ray_tmax_fp32, bool boundary_ray_tmax_valid);
+extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
+    ptx_thread_info *thread, unsigned reason, unsigned lane_slot_index,
+    unsigned long long handoff_window_base);
 extern "C" int rtcore_compatibility_shader_target_kind(unsigned shader_id,
                                                          unsigned reason);
 extern "C" bool rtcore_retire_lifecycle_busy_for_owner(
@@ -486,6 +490,8 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
       lane_hit_group_indices[index] = 0;
       lane_geometry_types[index] = 0;
       lane_geometry_indices[index] = 0;
+      lane_v04_boundary_ray_tmax_fp32[index] = 0;
+      lane_v04_boundary_ray_tmax_valid[index] = false;
       lane_boundary_candidates[index] = {};
     }
   }
@@ -528,6 +534,8 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   unsigned lane_hit_group_indices[32];
   unsigned lane_geometry_types[32];
   unsigned lane_geometry_indices[32];
+  unsigned lane_v04_boundary_ray_tmax_fp32[32];
+  bool lane_v04_boundary_ray_tmax_valid[32];
   rtcore_boundary_candidate_snapshot lane_boundary_candidates[32];
   unsigned long long enqueue_cycle;
 };
@@ -617,6 +625,11 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
     entry.lane_geometry_types[lane] =
         (snapshot.handoff_words[lane][9] >> 8) & 0xffu;
     entry.lane_geometry_indices[lane] = snapshot.handoff_words[lane][4];
+    entry.lane_v04_boundary_ray_tmax_fp32[lane] =
+        snapshot.v04_shadow_handoff_words[lane]
+                                           [rtcore::abi_v04::kBoundaryRayTmaxFp32.word];
+    entry.lane_v04_boundary_ray_tmax_valid[lane] =
+        (snapshot.v04_shadow_boundary_image_valid_mask & (1u << lane)) != 0;
     entry.lane_boundary_candidates[lane] =
         snapshot.boundary_candidates[lane];
   }
@@ -1131,7 +1144,10 @@ rtcore_service_shader_continuation_pseudo_op(
             requires_handoff_return ? boundary_candidate.geometry_index
                                     : entry.lane_geometry_indices[lane],
             entry.lane_primitive_indices[lane],
-            entry.lane_instance_indices[lane], entry.lane_hit_kinds[lane])) {
+            entry.lane_instance_indices[lane], entry.lane_hit_kinds[lane],
+            entry.lane_v04_boundary_ray_tmax_fp32[lane],
+            requires_handoff_return &&
+                entry.lane_v04_boundary_ray_tmax_valid[lane])) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
               "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
@@ -1152,6 +1168,19 @@ rtcore_service_shader_continuation_pseudo_op(
               "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
               "fault=cohort_handoff_base_mismatch_fail_closed\n",
               owner_hw_sid, entry.warp_uid, entry.warp_id, lane);
+      abort();
+    }
+    if (rtcore_v04_shader_builtin_consumer_runtime_enabled() &&
+        !rtcore_validate_v04_shader_builtin_compatibility_context(
+            thread, entry.lane_reasons[lane], lane,
+            handoff_value.u64)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_SHADER_BUILTIN_COMPATIBILITY_FAULT "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+              "cohort_index=%u cohort_shader_id=%u "
+              "fault=legacy_source_mismatch_fail_closed\n",
+              owner_hw_sid, entry.warp_uid, entry.warp_id, lane,
+              cohort_index, cohort_shader_id);
       abort();
     }
   }

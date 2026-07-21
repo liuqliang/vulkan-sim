@@ -2568,12 +2568,15 @@ static unsigned rtcore_trace_stack_flags(bool top_level, bool leaf,
            (clear ? 0x8u : 0u);
 }
 
+static const unsigned RTCORE_TRACE_PRIMITIVE_FLAG_OPAQUE_COMMIT = 0x40u;
+
 static unsigned rtcore_trace_primitive_flags(
     rtcore_compact_trace_primitive_kind primitive_kind, bool hit,
-    bool deferred)
+    bool deferred, bool opaque_commit = false)
 {
     return (static_cast<unsigned>(primitive_kind) & 0x0fu) |
-           (hit ? 0x10u : 0u) | (deferred ? 0x20u : 0u);
+           (hit ? 0x10u : 0u) | (deferred ? 0x20u : 0u) |
+           (opaque_commit ? RTCORE_TRACE_PRIMITIVE_FLAG_OPAQUE_COMMIT : 0u);
 }
 
 static unsigned rtcore_trace_hit_update_flags(
@@ -2588,10 +2591,15 @@ static bool rtcore_compact_trace_event_is_semantic_boundary(
     if (event_type == RTCORE_TRACE_HIT_UPDATE) {
         return (flags & 0xffu) == RTCORE_TRACE_HIT_UPDATE_KIND_ANY_HIT;
     }
-    return event_type == RTCORE_TRACE_PRIMITIVE_TEST &&
-           (flags & 0x0fu) ==
-               RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED &&
-           (flags & 0x20u) != 0;
+    if (event_type != RTCORE_TRACE_PRIMITIVE_TEST) {
+        return false;
+    }
+    const unsigned primitive_kind = flags & 0x0fu;
+    return (primitive_kind ==
+                RTCORE_TRACE_PRIMITIVE_KIND_PROCEDURAL_DEFERRED &&
+            (flags & 0x20u) != 0) ||
+           (primitive_kind == RTCORE_TRACE_PRIMITIVE_KIND_TRIANGLE_TEST &&
+            (flags & RTCORE_TRACE_PRIMITIVE_FLAG_OPAQUE_COMMIT) != 0);
 }
 
 struct rtcore_bounded_trace_collector {
@@ -2974,6 +2982,11 @@ static void rtcore_compact_trace_boundary_overflow_self_test()
         RTCORE_TRACE_HIT_UPDATE, RTCORE_TRACE_RESOURCE_COMPLETION, 0x68, 0,
         1, rtcore_trace_hit_update_flags(
                RTCORE_TRACE_HIT_UPDATE_KIND_ANY_HIT));
+    collector.append(
+        RTCORE_TRACE_PRIMITIVE_TEST, RTCORE_TRACE_RESOURCE_PRIMITIVE, 0x6c,
+        0, 1,
+        rtcore_trace_primitive_flags(
+            RTCORE_TRACE_PRIMITIVE_KIND_TRIANGLE_TEST, true, false, true));
     collector.append(RTCORE_TRACE_NODE_FETCH, RTCORE_TRACE_RESOURCE_NODE,
                      0x70, 64, 1, 0);
 
@@ -2984,6 +2997,7 @@ static void rtcore_compact_trace_boundary_overflow_self_test()
         RTCORE_TRACE_HIT_UPDATE,
         RTCORE_TRACE_PRIMITIVE_TEST,
         RTCORE_TRACE_HIT_UPDATE,
+        RTCORE_TRACE_PRIMITIVE_TEST,
         RTCORE_TRACE_OVERFLOW_SUMMARY,
     };
     const unsigned expected_event_count =
@@ -3010,6 +3024,11 @@ static void rtcore_compact_trace_boundary_overflow_self_test()
         collector.overflow_summary.overflow_primitive_fetch_count == 1 &&
             collector.overflow_summary.overflow_node_fetch_count == 1,
         "overflow_counters_mismatch");
+    rtcore_compact_trace_self_test_require(
+        (rtcore_unpack_compact_trace_flags(
+             collector.events[expected_event_count - 2]) &
+         RTCORE_TRACE_PRIMITIVE_FLAG_OPAQUE_COMMIT) != 0,
+        "opaque_commit_semantic_event_not_retained");
 
     printf("GPGPU-Sim RTCORE_COMPACT_TRACE_BOUNDARY_OVERFLOW_SELF_TEST ok "
            "ordinary_timing_event_count=%u retained_event_count=%u "
@@ -13291,6 +13310,13 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         bool hit = VulkanRayTracing::mt_ray_triangle_test(
                             p[0], p[1], p[2], objectRay, &thit,
                             &counter_clockwise_facing);
+                        const float world_thit =
+                            hit ? thit / worldToObject_tMultiplier : 0.0f;
+                        const bool opaque_hit_selected =
+                            hit && Tmin <= world_thit && world_thit <= Tmax &&
+                            skipAnyHitShader && world_thit < min_thit;
+                        const bool opaque_commit =
+                            v04_shadow_boundary_enabled && opaque_hit_selected;
                         const bool front_facing =
                             (instanceLeaf.InstanceFlags &
                              TRIANGLE_FRONT_COUNTERCLOCKWISE)
@@ -13303,7 +13329,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             (uint64_t)leaf_addr + device_offset, hit,
                             rtcore_trace_primitive_flags(
                                 RTCORE_TRACE_PRIMITIVE_KIND_TRIANGLE_TEST,
-                                hit, false));
+                                hit, false, opaque_commit));
 
                         assert(leaf.PrimitiveIndex1Delta == 0);
 
@@ -13321,8 +13347,6 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             traversalFile << "p[3] = (" << p[3].x << ", " << p[3].y << ", " << p[3].z << ")" << std::endl;
                         }
 
-                        float world_thit = thit / worldToObject_tMultiplier;
-
                         //TODO: why the Tmin Tmax consition wasn't handled in the object coordinates?
                         if(hit && Tmin <= world_thit && world_thit <= Tmax)
                         {
@@ -13331,7 +13355,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 traversalFile << "quad node " << (void *)leaf_addr << ", primitiveID " << leaf.PrimitiveIndex0 << " is the closest hit. world_thit " << thit / worldToObject_tMultiplier;
                             }
 
-                            if (skipAnyHitShader && world_thit < min_thit) {
+                            if (opaque_hit_selected) {
                                 min_thit = world_thit;
                                 if (v04_shadow_boundary_enabled) {
                                     Hit_data opaque_candidate = {};
@@ -13381,16 +13405,23 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                                 true));
                                 }
                             }
-                            min_thit_object = thit;
-                            closest_leaf = leaf;
-                            closest_instanceLeaf = instanceLeaf;
-                            closest_instance_metadata_ref =
-                                instance_metadata_ref;
-                            closest_worldToObject = worldToObjectMatrix;
-                            closest_objectToWorld = objectToWorldMatrix;
-                            closest_objectRay = objectRay;
-                            closest_hit_kind = triangle_hit_kind;
-                            min_thit_object = thit;
+                            // The legacy functional path overwrites these
+                            // fields for every valid hit, even when min_thit
+                            // did not change. Keep that behavior for V0.3,
+                            // but make the default-off V0.4 candidate pair
+                            // distance and identity from the same commit.
+                            if (!v04_shadow_boundary_enabled ||
+                                !skipAnyHitShader || opaque_hit_selected) {
+                                min_thit_object = thit;
+                                closest_leaf = leaf;
+                                closest_instanceLeaf = instanceLeaf;
+                                closest_instance_metadata_ref =
+                                    instance_metadata_ref;
+                                closest_worldToObject = worldToObjectMatrix;
+                                closest_objectToWorld = objectToWorldMatrix;
+                                closest_objectRay = objectRay;
+                                closest_hit_kind = triangle_hit_kind;
+                            }
                             thread->add_ray_intersect();
                             transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
                             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF_HIT)]++;
@@ -14567,6 +14598,159 @@ extern "C" int rtcore_compatibility_shader_target_kind(unsigned shader_id,
                                                                   reason);
 }
 
+extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
+    ptx_thread_info *thread, unsigned reason, unsigned lane_slot_index,
+    unsigned long long handoff_window_base) {
+    if (thread == NULL || thread->RT_thread_data == NULL ||
+        thread->RT_thread_data->traversal_data.empty() ||
+        lane_slot_index >= 32 || handoff_window_base == 0) {
+        return 0;
+    }
+
+    const unsigned long long lane_address =
+        handoff_window_base +
+        static_cast<unsigned long long>(lane_slot_index) *
+            rtcore::abi_v04::kLaneSlotBytes;
+    if (lane_address < handoff_window_base) {
+        return 0;
+    }
+
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> actual = {};
+    memory_space *mem = thread->get_global_memory();
+    mem->read_simulator_backing(lane_address, sizeof(actual), actual.data());
+
+    Traversal_data *traversal_data =
+        thread->RT_thread_data->traversal_data.back();
+    float3 world_origin = {};
+    float3 world_direction = {};
+    float ray_tmin = 0.0f;
+    float launch_ray_tmax = 0.0f;
+    uint32_t ray_flags = 0;
+    uint32_t cull_mask = 0;
+    bool hit_geometry = false;
+    Hit_data closest_hit = {};
+    mem->read(&(traversal_data->ray_world_origin), sizeof(world_origin),
+              &world_origin);
+    mem->read(&(traversal_data->ray_world_direction), sizeof(world_direction),
+              &world_direction);
+    mem->read(&(traversal_data->Tmin), sizeof(ray_tmin), &ray_tmin);
+    mem->read(&(traversal_data->Tmax), sizeof(launch_ray_tmax),
+              &launch_ray_tmax);
+    mem->read(&(traversal_data->rayFlags), sizeof(ray_flags), &ray_flags);
+    mem->read(&(traversal_data->cullMask), sizeof(cull_mask), &cull_mask);
+    mem->read(&(traversal_data->hit_geometry), sizeof(hit_geometry),
+              &hit_geometry);
+    if (hit_geometry) {
+        mem->read(&(traversal_data->closest_hit), sizeof(closest_hit),
+                  &closest_hit);
+    }
+
+    const uint32_t expected_words[] = {
+        rtcore_v04_fp32_bits(world_origin.x),
+        rtcore_v04_fp32_bits(world_origin.y),
+        rtcore_v04_fp32_bits(world_origin.z),
+        rtcore_v04_fp32_bits(ray_tmin),
+        rtcore_v04_fp32_bits(world_direction.x),
+        rtcore_v04_fp32_bits(world_direction.y),
+        rtcore_v04_fp32_bits(world_direction.z),
+    };
+    const unsigned actual_word_indices[] = {4, 5, 6, 7, 8, 9, 10};
+    uint32_t mismatch_mask = 0;
+    for (unsigned index = 0;
+         index < sizeof(expected_words) / sizeof(expected_words[0]); ++index) {
+        if (actual[actual_word_indices[index]] != expected_words[index]) {
+            mismatch_mask |= uint32_t{1} << index;
+        }
+    }
+    if (actual[rtcore::abi_v04::kRayFlags.word] != ray_flags) {
+        mismatch_mask |= uint32_t{1} << 8;
+    }
+    if (rtcore::abi_v04::extract_field(actual,
+                                       rtcore::abi_v04::kCullMask) !=
+        (cull_mask & 0xffu)) {
+        mismatch_mask |= uint32_t{1} << 9;
+    }
+
+    const bool boundary_tmax_is_consumed =
+        reason != RTCORE_REPLAY_CONTINUATION_PACKET_REASON_MISS;
+    const float legacy_ray_tmax =
+        [&]() {
+            uint32_t override_valid = 0;
+            uint32_t override_bits = 0;
+            mem->read(&(traversal_data->current_shader_ray_tmax_valid),
+                      sizeof(override_valid), &override_valid);
+            if (override_valid != 0) {
+                mem->read(&(traversal_data->current_shader_ray_tmax_fp32),
+                          sizeof(override_bits), &override_bits);
+                float override_value = 0.0f;
+                memcpy(&override_value, &override_bits,
+                       sizeof(override_value));
+                return override_value;
+            }
+            return hit_geometry ? closest_hit.world_min_thit
+                                : launch_ray_tmax;
+        }();
+    if (boundary_tmax_is_consumed &&
+        actual[rtcore::abi_v04::kBoundaryRayTmaxFp32.word] !=
+            rtcore_v04_fp32_bits(legacy_ray_tmax)) {
+        mismatch_mask |= uint32_t{1} << 7;
+    }
+
+    const bool terminal_closest_hit =
+        reason ==
+        RTCORE_REPLAY_CONTINUATION_PACKET_REASON_CLOSEST_HIT_READY;
+    if (terminal_closest_hit) {
+        if (!hit_geometry ||
+            actual[rtcore::abi_v04::kPrimitiveIndex.word] !=
+                closest_hit.primitive_index) {
+            mismatch_mask |= uint32_t{1} << 10;
+        }
+        // Vulkan-Sim's legacy load_ray_instance_custom_index pseudo-op reads
+        // Hit_data::instance_index, which contains the Vulkan custom index.
+        if (!hit_geometry ||
+            actual[rtcore::abi_v04::kInstanceCustomIndex.word] !=
+                closest_hit.instance_index) {
+            mismatch_mask |= uint32_t{1} << 11;
+        }
+    }
+
+    if (mismatch_mask != 0) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHADER_BUILTIN_COMPATIBILITY_FAULT "
+                "thread_uid=%u lane_id=%u reason=%u lane_address=0x%llx "
+                "mismatch_mask=0x%08x "
+                "handoff_origin={0x%08x,0x%08x,0x%08x} "
+                "legacy_origin={0x%08x,0x%08x,0x%08x} "
+                "handoff_direction={0x%08x,0x%08x,0x%08x} "
+                "legacy_direction={0x%08x,0x%08x,0x%08x} "
+                "handoff_tmin=0x%08x legacy_tmin=0x%08x "
+                "handoff_boundary_tmax=0x%08x legacy_tmax=0x%08x "
+                "handoff_flags=0x%08x legacy_flags=0x%08x "
+                "handoff_cull=0x%02x legacy_cull=0x%02x "
+                "handoff_primitive=%u legacy_primitive=%u "
+                "handoff_instance_custom=%u legacy_instance_custom=%u\n",
+                thread->get_uid(), lane_slot_index, reason, lane_address,
+                mismatch_mask, actual[4], actual[5], actual[6],
+                expected_words[0], expected_words[1], expected_words[2],
+                actual[8], actual[9], actual[10], expected_words[4],
+                expected_words[5], expected_words[6], actual[7],
+                expected_words[3],
+                actual[rtcore::abi_v04::kBoundaryRayTmaxFp32.word],
+                rtcore_v04_fp32_bits(legacy_ray_tmax),
+                actual[rtcore::abi_v04::kRayFlags.word], ray_flags,
+                rtcore::abi_v04::extract_field(actual,
+                                               rtcore::abi_v04::kCullMask),
+                cull_mask & 0xffu,
+                actual[rtcore::abi_v04::kPrimitiveIndex.word],
+                hit_geometry ? closest_hit.primitive_index : 0u,
+                actual[rtcore::abi_v04::kInstanceCustomIndex.word],
+                hit_geometry ? closest_hit.instance_index : 0u);
+        fflush(stderr);
+        return 0;
+    }
+    return 1;
+}
+
 extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
     const ptx_instruction *pI, ptx_thread_info *thread, unsigned reason,
     unsigned hit_record_selector, unsigned boundary_event_seq,
@@ -14574,7 +14758,8 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
     unsigned long long boundary_hit_data_ref,
     unsigned boundary_hit_group_index, unsigned boundary_geometry_type,
     unsigned boundary_geometry_index, unsigned primitive_index,
-    unsigned instance_index, unsigned hit_kind) {
+    unsigned instance_index, unsigned hit_kind,
+    unsigned boundary_ray_tmax_fp32, bool boundary_ray_tmax_valid) {
     if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
         thread->RT_thread_data->traversal_data.empty()) {
         return 0;
@@ -14686,6 +14871,10 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
         mem->write(&(traversal_data->current_shader_type),
                    sizeof(traversal_data->current_shader_type),
                    &current_shader_type, thread, pI);
+        const uint32_t current_shader_ray_tmax_valid = 0;
+        mem->write(&(traversal_data->current_shader_ray_tmax_valid),
+                   sizeof(traversal_data->current_shader_ray_tmax_valid),
+                   &current_shader_ray_tmax_valid, thread, pI);
         printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_COMPAT_CONTEXT_PREPARE "
                "lane_id=%u reason=%u hit_record_selector=%u "
                "terminal_kind=%s shader_counter=-1 shader_type=-1 "
@@ -14736,6 +14925,14 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
     mem->write(&(traversal_data->current_shader_type),
                sizeof(traversal_data->current_shader_type),
                &current_shader_type, thread, pI);
+    const uint32_t current_shader_ray_tmax_valid =
+        boundary_ray_tmax_valid ? 1u : 0u;
+    mem->write(&(traversal_data->current_shader_ray_tmax_fp32),
+               sizeof(traversal_data->current_shader_ray_tmax_fp32),
+               &boundary_ray_tmax_fp32, thread, pI);
+    mem->write(&(traversal_data->current_shader_ray_tmax_valid),
+               sizeof(traversal_data->current_shader_ray_tmax_valid),
+               &current_shader_ray_tmax_valid, thread, pI);
 
     if (anyhit) {
         if (shader_counter >= thread->RT_thread_data->all_hit_data.size() ||
@@ -14769,12 +14966,15 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
            "boundary_shader_counter=%u boundary_hit_data_ref=0x%llx "
            "boundary_hit_group_index=%u boundary_geometry_type=%u "
            "boundary_geometry_index=%u primitive_index=%u instance_index=%u "
-           "hit_kind=%u context_source=boundary_event_local_candidate\n",
+           "hit_kind=%u boundary_ray_tmax_fp32=0x%08x "
+           "boundary_ray_tmax_valid=%u "
+           "context_source=boundary_event_local_candidate\n",
            tid, reason, shader_counter, current_shader_type,
            hit_record_selector, boundary_event_seq, shader_counter,
            boundary_hit_data_ref, boundary_hit_group_index,
            boundary_geometry_type, boundary_geometry_index, primitive_index,
-           instance_index, hit_kind);
+           instance_index, hit_kind, boundary_ray_tmax_fp32,
+           boundary_ray_tmax_valid ? 1u : 0u);
     fflush(stdout);
     return 1;
 }
