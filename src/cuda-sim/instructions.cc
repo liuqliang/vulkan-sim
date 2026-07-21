@@ -6991,6 +6991,29 @@ void load_ray_hit_kind_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   thread->set_operand_value(pI->dst(), data, U32_TYPE, thread, pI);
 }
 
+void load_ray_flags_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(pI->get_num_operands() == 1);
+  Traversal_data *traversal_data =
+      thread->RT_thread_data->traversal_data.back();
+
+  ptx_reg_t data;
+  thread->get_global_memory()->read(
+      &(traversal_data->rayFlags), sizeof(data.u32), &(data.u32));
+  thread->set_operand_value(pI->dst(), data, U32_TYPE, thread, pI);
+}
+
+void load_ray_cull_mask_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(pI->get_num_operands() == 1);
+  Traversal_data *traversal_data =
+      thread->RT_thread_data->traversal_data.back();
+
+  ptx_reg_t data;
+  thread->get_global_memory()->read(
+      &(traversal_data->cullMask), sizeof(data.u32), &(data.u32));
+  data.u32 &= 0xffu;
+  thread->set_operand_value(pI->dst(), data, U32_TYPE, thread, pI);
+}
+
 void load_ray_world_to_object_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   assert(pI->get_num_operands() == 2);
   const operand_info &dst = pI->dst();
