@@ -1908,6 +1908,16 @@ static bool rtcore_v04_typed_primitive_candidate_kernel_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_typed_procedural_boundary_seed_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_TYPED_PROCEDURAL_BOUNDARY_SEED") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
 {
     static int enabled = []() {
@@ -14253,6 +14263,92 @@ static void rtcore_v04_observe_typed_primitive_candidate(
     }
 }
 
+struct rtcore_v04_typed_procedural_boundary_stats {
+    unsigned leaves;
+    unsigned mask_visible;
+    unsigned mismatches;
+
+    rtcore_v04_typed_procedural_boundary_stats()
+        : leaves(0), mask_visible(0), mismatches(0) {}
+};
+
+static void rtcore_v04_observe_typed_procedural_boundary_seed(
+    const uint8_t *raw_leaf,
+    const GEN_RT_BVH_PROCEDURAL_LEAF &legacy_leaf, uint32_t cull_mask,
+    rtcore_v04_typed_procedural_boundary_stats *stats)
+{
+    namespace typed_primitive = rtcore::v04::typed_primitive;
+    assert(raw_leaf != NULL);
+    assert(stats != NULL);
+
+    typed_primitive::procedural_input_v0 input = {};
+    input.profile_id = typed_primitive::kGenRtDerivedProfileId;
+    input.cull_mask = cull_mask;
+    if (!typed_primitive::make_raw_procedural_payload(
+            raw_leaf, &input.raw_primitive)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PROCEDURAL_BOUNDARY "
+               "adapter_failure=1 raw_leaf=%p\n",
+               static_cast<const void *>(raw_leaf));
+        fflush(stdout);
+        abort();
+    }
+
+    const typed_primitive::procedural_result_v0 result =
+        typed_primitive::execute_procedural(input);
+    if (result.status != typed_primitive::kStatusOk) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PROCEDURAL_BOUNDARY "
+               "kernel_failure=1 status=%s raw_leaf=%p raw_control=0x%08x\n",
+               typed_primitive::status_name(
+                   static_cast<typed_primitive::status_kind>(result.status)),
+               static_cast<const void *>(raw_leaf), result.raw_control);
+        fflush(stdout);
+        abort();
+    }
+
+    const bool legacy_mask_visible =
+        (legacy_leaf.LeafDescriptor.GeometryRayMask & cull_mask) != 0;
+    const bool mismatch =
+        result.shader_index != legacy_leaf.LeafDescriptor.ShaderIndex ||
+        result.geometry_ray_mask !=
+            legacy_leaf.LeafDescriptor.GeometryRayMask ||
+        result.geometry_index != legacy_leaf.LeafDescriptor.GeometryIndex ||
+        result.leaf_type != legacy_leaf.LeafDescriptor.LeafType ||
+        result.geometry_flags != legacy_leaf.LeafDescriptor.GeometryFlags ||
+        result.primitive_count != legacy_leaf.NumPrimitives ||
+        result.last_primitive != legacy_leaf.LastPrimitive ||
+        result.primitive_index != legacy_leaf.PrimitiveIndex[0] ||
+        result.mask_visible != (legacy_mask_visible ? 1u : 0u);
+
+    ++stats->leaves;
+    stats->mask_visible += legacy_mask_visible ? 1u : 0u;
+    if (mismatch) {
+        ++stats->mismatches;
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PROCEDURAL_BOUNDARY "
+               "mismatch=1 raw_leaf=%p typed_shader=%u legacy_shader=%u "
+               "typed_mask=0x%02x legacy_mask=0x%02x "
+               "typed_geometry=%u legacy_geometry=%u "
+               "typed_flags=%u legacy_flags=%u "
+               "typed_count=%u legacy_count=%u "
+               "typed_last=%u legacy_last=%u "
+               "typed_primitive=%u legacy_primitive=%u "
+               "typed_visible=%u legacy_visible=%u\n",
+               static_cast<const void *>(raw_leaf), result.shader_index,
+               legacy_leaf.LeafDescriptor.ShaderIndex,
+               result.geometry_ray_mask,
+               legacy_leaf.LeafDescriptor.GeometryRayMask,
+               result.geometry_index,
+               legacy_leaf.LeafDescriptor.GeometryIndex,
+               result.geometry_flags,
+               legacy_leaf.LeafDescriptor.GeometryFlags,
+               result.primitive_count, legacy_leaf.NumPrimitives,
+               result.last_primitive, legacy_leaf.LastPrimitive,
+               result.primitive_index, legacy_leaf.PrimitiveIndex[0],
+               result.mask_visible, legacy_mask_visible ? 1u : 0u);
+        fflush(stdout);
+        abort();
+    }
+}
+
 typedef struct StackEntry {
     uint8_t* addr;
     bool topLevel;
@@ -14661,9 +14757,43 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         fflush(stdout);
         abort();
     }
+    const bool v04_typed_procedural_boundary_enabled =
+        rtcore_v04_typed_procedural_boundary_seed_enabled();
+    if (v04_typed_procedural_boundary_enabled &&
+        (rtcore_abi_entry == NULL || !v04_shadow_boundary_enabled ||
+         !rtcore_abi_entry->v04_shadow_trace_input_valid ||
+         !v04_tlas_binding_enforcement_enabled ||
+         !rtcore_abi_entry->v04_tlas_binding.valid ||
+         !rtcore_abi_entry->v04_tlas_binding.live ||
+         bvh_format_profile_id != 1)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PROCEDURAL_BOUNDARY "
+               "configuration_invalid=1 abi_entry=%u boundary=%u "
+               "trace_input=%u tlas_enforcement=%u tlas_valid=%u "
+               "tlas_live=%u bvh_format_profile=%u\n",
+               rtcore_abi_entry != NULL ? 1u : 0u,
+               v04_shadow_boundary_enabled ? 1u : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_shadow_trace_input_valid
+                   ? 1u
+                   : 0u,
+               v04_tlas_binding_enforcement_enabled ? 1u : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_tlas_binding.valid
+                   ? 1u
+                   : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_tlas_binding.live
+                   ? 1u
+                   : 0u,
+               bvh_format_profile_id);
+        fflush(stdout);
+        abort();
+    }
     rtcore_v04_typed_node_candidate_stats v04_typed_node_candidate_stats;
     rtcore_v04_typed_primitive_candidate_stats
         v04_typed_primitive_candidate_stats;
+    rtcore_v04_typed_procedural_boundary_stats
+        v04_typed_procedural_boundary_stats;
     // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
     //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
 
@@ -15528,6 +15658,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         hit_procedural = true;
                         struct GEN_RT_BVH_PROCEDURAL_LEAF leaf;
                         GEN_RT_BVH_PROCEDURAL_LEAF_unpack(&leaf, leaf_addr);
+                        if (v04_typed_procedural_boundary_enabled) {
+                            rtcore_v04_observe_typed_procedural_boundary_seed(
+                                leaf_addr, leaf, cullMask,
+                                &v04_typed_procedural_boundary_stats);
+                        }
                         transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
                         ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PROCEDURAL_LEAF)]++;
                         total_nodes_accessed++;
@@ -15705,6 +15840,15 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                v04_typed_primitive_candidate_stats.geometric_hits,
                v04_typed_primitive_candidate_stats.candidate_hits,
                v04_typed_primitive_candidate_stats.mismatches);
+        fflush(stdout);
+    }
+    if (v04_typed_procedural_boundary_enabled) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PROCEDURAL_BOUNDARY summary=1 "
+               "thread_uid=%u leaves=%u mask_visible=%u mismatches=%u "
+               "functional_authority=0 timing_authority=0\n",
+               thread->get_uid(), v04_typed_procedural_boundary_stats.leaves,
+               v04_typed_procedural_boundary_stats.mask_visible,
+               v04_typed_procedural_boundary_stats.mismatches);
         fflush(stdout);
     }
 

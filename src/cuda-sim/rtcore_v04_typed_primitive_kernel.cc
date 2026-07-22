@@ -101,6 +101,19 @@ bool make_raw_primitive_payload(const void *raw_primitive_bytes,
   return true;
 }
 
+bool make_raw_procedural_payload(const void *raw_primitive_bytes,
+                                 raw_primitive_payload_v0 *payload) {
+  if (raw_primitive_bytes == NULL || payload == NULL) return false;
+  std::memset(payload, 0, sizeof(*payload));
+  payload->header.expected_payload_kind = kProceduralPayloadKind;
+  payload->header.expected_chunk_count = 2;
+  payload->header.payload_byte_count = 64;
+  payload->header.received_chunk_mask = 0x03;
+  std::memcpy(payload->raw_bytes, raw_primitive_bytes,
+              sizeof(payload->raw_bytes));
+  return true;
+}
+
 candidate_result_v0 execute(const candidate_input_v0 &input) {
   candidate_result_v0 result = {};
   result.status = kStatusInvalidArgument;
@@ -237,6 +250,60 @@ candidate_result_v0 execute(const candidate_input_v0 &input) {
   result.candidate_hit =
       world_t >= input.world_t_min && world_t <= input.world_t_max &&
               world_t < input.committed_world_t
+          ? 1
+          : 0;
+  result.status = kStatusOk;
+  return result;
+}
+
+procedural_result_v0 execute_procedural(const procedural_input_v0 &input) {
+  procedural_result_v0 result = {};
+  result.status = kStatusInvalidArgument;
+
+  if (input.profile_id != kGenRtDerivedProfileId) {
+    result.status = kStatusUnsupportedProfile;
+    return result;
+  }
+  if (input.cull_mask > 0xffu ||
+      !bytes_are_zero(input.reserved_zero, sizeof(input.reserved_zero))) {
+    return result;
+  }
+
+  const raw_payload_header_v0 &header = input.raw_primitive.header;
+  if (header.expected_payload_kind != kProceduralPayloadKind ||
+      header.expected_chunk_count != 2 || header.payload_byte_count != 64 ||
+      header.received_chunk_mask != 0x03 ||
+      !bytes_are_zero(header.reserved_zero, sizeof(header.reserved_zero))) {
+    result.status = kStatusMalformedEnvelope;
+    return result;
+  }
+
+  const uint8_t *raw = input.raw_primitive.raw_bytes;
+  const uint32_t descriptor0 = read_le_u32(raw + 0);
+  const uint32_t descriptor1 = read_le_u32(raw + 4);
+  result.shader_index = descriptor0 & 0x00ffffffu;
+  result.geometry_ray_mask = static_cast<uint8_t>(descriptor0 >> 24);
+  result.geometry_index = descriptor1 & 0x1fffffffu;
+  result.leaf_type = static_cast<uint8_t>((descriptor1 >> 29) & 0x1u);
+  result.geometry_flags = static_cast<uint8_t>((descriptor1 >> 30) & 0x3u);
+  result.raw_control = read_le_u32(raw + 8);
+  result.primitive_count = static_cast<uint8_t>(result.raw_control & 0x0fu);
+  result.last_primitive =
+      static_cast<uint16_t>((result.raw_control >> 19) & 0x1fffu);
+  result.primitive_index = read_le_u32(raw + 12);
+
+  if (result.leaf_type != 1u || result.geometry_flags > 1u) {
+    result.status = kStatusMalformedLeaf;
+    return result;
+  }
+  if (result.raw_control != 1u ||
+      !bytes_are_zero(raw + 16, sizeof(input.raw_primitive.raw_bytes) - 16)) {
+    result.status = kStatusUnsupportedLeafEncoding;
+    return result;
+  }
+
+  result.mask_visible =
+      (result.geometry_ray_mask & static_cast<uint8_t>(input.cull_mask)) != 0
           ? 1
           : 0;
   result.status = kStatusOk;
