@@ -17,6 +17,11 @@ static uint32_t read_le_u32(const uint8_t *bytes) {
          (static_cast<uint32_t>(bytes[3]) << 24);
 }
 
+static uint64_t read_le_u64(const uint8_t *bytes) {
+  return static_cast<uint64_t>(read_le_u32(bytes)) |
+         (static_cast<uint64_t>(read_le_u32(bytes + 4)) << 32);
+}
+
 static int32_t read_le_i32(const uint8_t *bytes) {
   const uint32_t bits = read_le_u32(bytes);
   int32_t value = 0;
@@ -55,6 +60,65 @@ static bool supported_child_kind(uint8_t level, uint8_t child_kind) {
            child_kind == kQuadPayloadKind;
   }
   return false;
+}
+
+static bool valid_decode_context(
+    const typed_blas::as_decode_context_v0 &context, uint8_t level) {
+  const uint8_t expected_as_type =
+      level == kLevelTlas ? uint8_t{1} : typed_blas::kAsTypeBlas;
+  return context.bvh_format_profile_id == kGenRtDerivedProfileId &&
+         context.reserved_zero == 0 && context.as_object.object_id != 0 &&
+         context.as_object.generation != 0 &&
+         context.as_object.as_type == expected_as_type &&
+         bytes_are_zero(context.as_object.reserved_zero,
+                        sizeof(context.as_object.reserved_zero)) &&
+         context.device_base != 0 && context.device_range_bytes >= 64 &&
+         context.device_range_bytes <=
+             std::numeric_limits<uint64_t>::max() - context.device_base;
+}
+
+static bool checked_add_u64(uint64_t lhs, uint64_t rhs, uint64_t *result) {
+  if (result == NULL || lhs > std::numeric_limits<uint64_t>::max() - rhs) {
+    return false;
+  }
+  *result = lhs + rhs;
+  return true;
+}
+
+static bool checked_add_signed_blocks(uint64_t base, int32_t blocks,
+                                      uint64_t *result) {
+  const int64_t byte_delta = static_cast<int64_t>(blocks) * int64_t{64};
+  if (byte_delta >= 0) {
+    return checked_add_u64(base, static_cast<uint64_t>(byte_delta), result);
+  }
+  const uint64_t magnitude = static_cast<uint64_t>(-byte_delta);
+  if (result == NULL || base < magnitude) return false;
+  *result = base - magnitude;
+  return true;
+}
+
+static bool expected_child_layout(uint8_t kind, uint8_t *blocks,
+                                  uint16_t *bytes) {
+  if (blocks == NULL || bytes == NULL) return false;
+  switch (kind) {
+    case kInternalPayloadKind:
+    case kProceduralPayloadKind:
+    case kQuadPayloadKind:
+      *blocks = 1;
+      *bytes = 64;
+      return true;
+    case kInstancePayloadKind:
+      *blocks = 2;
+      *bytes = 128;
+      return true;
+  }
+  return false;
+}
+
+static bool payload_in_range(uint64_t offset, uint16_t bytes,
+                             uint64_t range_bytes) {
+  return offset <= range_bytes &&
+         static_cast<uint64_t>(bytes) <= range_bytes - offset;
 }
 
 static bool finite_ray(const ray_state_v0 &ray, float committed_t) {
@@ -276,6 +340,121 @@ candidate_result_v0 execute(const candidate_input_v0 &input) {
   return result;
 }
 
+root_reference_seed_result_v0 execute_root_reference_seed(
+    const root_reference_seed_input_v0 &input) {
+  root_reference_seed_result_v0 result = {};
+  result.status = kStatusInvalidArgument;
+
+  if (!valid_decode_context(input.decode_context, kLevelTlas)) {
+    result.status = kStatusInvalidDecodeContext;
+    return result;
+  }
+  const typed_blas::raw_header_envelope_v0 &envelope =
+      input.raw_header.envelope;
+  if (envelope.expected_chunk_count != 2 ||
+      envelope.received_chunk_mask != 0x03 ||
+      envelope.payload_byte_count != 64 || envelope.reserved_zero != 0) {
+    result.status = kStatusMalformedRootHeader;
+    return result;
+  }
+
+  result.root_payload_offset = read_le_u64(input.raw_header.raw_bytes);
+  if (result.root_payload_offset < 64 ||
+      (result.root_payload_offset & uint64_t{0x3f}) != 0 ||
+      !payload_in_range(result.root_payload_offset, 64,
+                        input.decode_context.device_range_bytes)) {
+    result.root_payload_offset = 0;
+    result.status = kStatusMalformedRootHeader;
+    return result;
+  }
+
+  result.status = kStatusOk;
+  return result;
+}
+
+route_result_v0 execute_route(const route_input_v0 &input) {
+  route_result_v0 result = {};
+  result.status = kStatusInvalidArgument;
+
+  const candidate_result_v0 candidates = execute(input.candidate);
+  if (candidates.status != kStatusOk) {
+    result.status = candidates.status;
+    return result;
+  }
+  if (!valid_decode_context(input.decode_context, input.candidate.level)) {
+    result.status = kStatusInvalidDecodeContext;
+    return result;
+  }
+  if ((input.current_payload_offset & uint64_t{0x3f}) != 0 ||
+      !payload_in_range(input.current_payload_offset, 64,
+                        input.decode_context.device_range_bytes)) {
+    result.status = kStatusInvalidCurrentReference;
+    return result;
+  }
+
+  uint64_t first_child_offset = 0;
+  if (!checked_add_signed_blocks(input.current_payload_offset,
+                                 candidates.child_offset_blocks,
+                                 &first_child_offset)) {
+    result.status = kStatusChildReferenceOutOfRange;
+    return result;
+  }
+
+  compact_child_work_item_v0 children[kMaxChildren] = {};
+  uint64_t child_offset = first_child_offset;
+  for (unsigned child = 0; child < kMaxChildren; ++child) {
+    if ((candidates.evaluated_child_mask & (1u << child)) == 0) continue;
+
+    uint8_t expected_blocks = 0;
+    uint16_t expected_bytes = 0;
+    if (!expected_child_layout(candidates.child_kind[child],
+                               &expected_blocks, &expected_bytes) ||
+        candidates.child_size[child] != expected_blocks) {
+      result.status = kStatusInvalidChildLayout;
+      return result;
+    }
+    if (!payload_in_range(child_offset, expected_bytes,
+                          input.decode_context.device_range_bytes)) {
+      result.status = kStatusChildReferenceOutOfRange;
+      return result;
+    }
+
+    children[child].payload_offset = child_offset;
+    children[child].near_t_bits = candidates.near_t_bits[child];
+    children[child].payload_byte_count = expected_bytes;
+    children[child].payload_kind = candidates.child_kind[child];
+    children[child].child_slot = static_cast<uint8_t>(child);
+
+    const uint64_t child_bytes =
+        static_cast<uint64_t>(candidates.child_size[child]) * uint64_t{64};
+    if (!checked_add_u64(child_offset, child_bytes, &child_offset)) {
+      result.status = kStatusChildReferenceOutOfRange;
+      return result;
+    }
+  }
+
+  result.status = kStatusOk;
+  if (candidates.candidate_count == 0) {
+    result.result_kind = kRouteResultMiss;
+    return result;
+  }
+
+  const uint8_t selected_slot = candidates.ordered_child_slots[0];
+  result.result_kind = kRouteResultSelected;
+  result.output_valid_mask = kSelectedFetchValid;
+  result.selected_fetch.child = children[selected_slot];
+  result.selected_fetch.decode_context = input.decode_context;
+  result.frontier_count = candidates.candidate_count - 1;
+  for (unsigned index = 0; index < result.frontier_count; ++index) {
+    const uint8_t slot = candidates.ordered_child_slots[index + 1];
+    result.frontier[index] = children[slot];
+  }
+  if (result.frontier_count != 0) {
+    result.output_valid_mask |= kFrontierItemsValid;
+  }
+  return result;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:
@@ -290,6 +469,16 @@ const char *status_name(status_kind status) {
       return "malformed_node";
     case kStatusInvalidNumericInput:
       return "invalid_numeric_input";
+    case kStatusInvalidDecodeContext:
+      return "invalid_decode_context";
+    case kStatusInvalidCurrentReference:
+      return "invalid_current_reference";
+    case kStatusInvalidChildLayout:
+      return "invalid_child_layout";
+    case kStatusChildReferenceOutOfRange:
+      return "child_reference_out_of_range";
+    case kStatusMalformedRootHeader:
+      return "malformed_root_header";
   }
   return "unknown";
 }
