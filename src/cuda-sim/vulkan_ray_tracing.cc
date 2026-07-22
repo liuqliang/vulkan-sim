@@ -2002,6 +2002,16 @@ static bool rtcore_v04_producer_backed_instance_blas_reference_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_typed_instance_enter_transition_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_TYPED_INSTANCE_ENTER_TRANSITION_KERNEL") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_v04_tlas_binding_enforcement_gate_enabled()
 {
     return rtcore_candidate_gate_state_for(
@@ -2015,6 +2025,12 @@ static bool rtcore_v04_instance_blas_reference_prerequisites_enabled()
            rtcore_v04_typed_blas_decode_context_bridge_enabled() &&
            rtcore_v04_producer_backed_blas_root_descriptor_enabled() &&
            rtcore_v04_tlas_binding_enforcement_gate_enabled();
+}
+
+static bool rtcore_v04_typed_instance_enter_prerequisites_enabled()
+{
+    return rtcore_v04_producer_backed_instance_blas_reference_enabled() &&
+           rtcore_v04_instance_blas_reference_prerequisites_enabled();
 }
 
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
@@ -14616,6 +14632,250 @@ static bool rtcore_v04_resolve_instance_blas_reference(
     return true;
 }
 
+struct rtcore_v04_typed_instance_enter_stats {
+    unsigned observations;
+    unsigned culled;
+    unsigned blas_roots;
+    unsigned mismatches;
+
+    rtcore_v04_typed_instance_enter_stats()
+        : observations(0), culled(0), blas_roots(0), mismatches(0) {}
+};
+
+static bool rtcore_v04_typed_instance_fp32_matches(float typed,
+                                                    float legacy)
+{
+    static const float kAbsoluteTolerance = 2.0e-5f;
+    const float scale = fmaxf(1.0f, fmaxf(fabsf(typed), fabsf(legacy)));
+    return std::isfinite(typed) && std::isfinite(legacy) &&
+           fabsf(typed - legacy) <= kAbsoluteTolerance * scale;
+}
+
+static void rtcore_v04_observe_typed_instance_enter_transition(
+    const uint8_t *raw_instance,
+    const GEN_RT_BVH_INSTANCE_LEAF &legacy_instance,
+    const rtcore_tlas_binding_snapshot &tlas_binding,
+    uint64_t instance_metadata_reference, const Ray &world_ray,
+    uint32_t ray_flags, uint32_t cull_mask,
+    rtcore_v04_typed_instance_enter_stats *stats)
+{
+    namespace typed_blas = rtcore::v04::typed_blas;
+    namespace typed_instance = rtcore::v04::typed_instance;
+    assert(raw_instance != NULL);
+    assert(stats != NULL);
+
+    rtcore_blas_binding_snapshot blas_binding;
+    rtcore_v04_instance_blas_reference_snapshot relation;
+    const char *capture_failure = "unvalidated";
+    if (!rtcore_v04_resolve_instance_blas_reference(
+            tlas_binding, instance_metadata_reference, &blas_binding,
+            &relation, &capture_failure)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
+               "capture_failure=1 reason=%s metadata_ref=0x%llx\n",
+               capture_failure,
+               static_cast<unsigned long long>(
+                   instance_metadata_reference));
+        fflush(stdout);
+        abort();
+    }
+    if ((cull_mask & ~0xffu) != 0) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
+               "adapter_failure=1 reason=cull_mask_width cull_mask=0x%x\n",
+               cull_mask);
+        fflush(stdout);
+        abort();
+    }
+
+    typed_instance::enter_input_v0 input = {};
+    input.profile_id = typed_instance::kGenRtDerivedProfileId;
+    input.current_level = typed_instance::kLevelTlas;
+    const float world_origin[] = {world_ray.get_origin().x,
+                                  world_ray.get_origin().y,
+                                  world_ray.get_origin().z};
+    const float world_direction[] = {world_ray.get_direction().x,
+                                     world_ray.get_direction().y,
+                                     world_ray.get_direction().z};
+    if (!typed_instance::make_mutable_ray_state(
+            world_origin, world_direction, world_ray.get_tmin(),
+            world_ray.get_tmax(), &input.world_ray) ||
+        !typed_instance::make_raw_instance_payload(
+            raw_instance, &input.raw_instance)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
+               "adapter_failure=1 reason=ray_or_raw_payload\n");
+        fflush(stdout);
+        abort();
+    }
+    input.policy.ray_flags = ray_flags;
+    input.policy.cull_mask = static_cast<uint8_t>(cull_mask);
+
+    input.instance_blas_reference.tlas_object_id =
+        relation.tlas_object_id;
+    input.instance_blas_reference.instance_metadata_reference =
+        relation.instance_metadata_reference;
+    input.instance_blas_reference.blas_object_id = relation.blas_object_id;
+    input.instance_blas_reference.tlas_generation =
+        relation.tlas_generation;
+    input.instance_blas_reference.tlas_build_generation =
+        relation.tlas_build_generation;
+    input.instance_blas_reference.blas_generation =
+        relation.blas_generation;
+    input.instance_blas_reference.valid = relation.valid ? 1 : 0;
+
+    input.tlas_decode_context.bvh_format_profile_id =
+        typed_instance::kGenRtDerivedProfileId;
+    input.tlas_decode_context.as_object.object_id = tlas_binding.object_id;
+    input.tlas_decode_context.as_object.generation = tlas_binding.generation;
+    input.tlas_decode_context.as_object.as_type =
+        typed_instance::kAsTypeTlas;
+    input.tlas_decode_context.device_base =
+        tlas_binding.device_base_address;
+    input.tlas_decode_context.device_range_bytes = tlas_binding.size_bytes;
+
+    input.blas_decode_context.bvh_format_profile_id =
+        typed_instance::kGenRtDerivedProfileId;
+    input.blas_decode_context.as_object.object_id = blas_binding.object_id;
+    input.blas_decode_context.as_object.generation =
+        blas_binding.generation;
+    input.blas_decode_context.as_object.as_type =
+        typed_instance::kAsTypeBlas;
+    input.blas_decode_context.device_base =
+        blas_binding.device_base_address;
+    input.blas_decode_context.device_range_bytes = blas_binding.size_bytes;
+
+    input.blas_root_descriptor.object_id = blas_binding.object_id;
+    input.blas_root_descriptor.root_payload_offset =
+        blas_binding.root_payload_offset;
+    input.blas_root_descriptor.object_generation =
+        blas_binding.generation;
+    input.blas_root_descriptor.build_generation =
+        blas_binding.root_build_generation;
+    input.blas_root_descriptor.bvh_format_profile_id =
+        blas_binding.root_bvh_profile_id;
+    input.blas_root_descriptor.payload_format_id =
+        blas_binding.root_payload_format_id;
+    input.blas_root_descriptor.as_type = typed_blas::kAsTypeBlas;
+    input.blas_root_descriptor.root_payload_kind =
+        blas_binding.root_payload_kind;
+    input.blas_root_descriptor.valid =
+        blas_binding.root_descriptor_valid ? 1 : 0;
+
+    const typed_instance::enter_result_v0 result =
+        typed_instance::execute_enter(input);
+    if (result.status != typed_instance::kStatusOk) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
+               "kernel_failure=1 status=%s metadata_ref=0x%llx\n",
+               typed_instance::status_name(
+                   static_cast<typed_instance::status_kind>(result.status)),
+               static_cast<unsigned long long>(
+                   instance_metadata_reference));
+        fflush(stdout);
+        abort();
+    }
+
+    ++stats->observations;
+    const bool expected_visible =
+        (legacy_instance.GeometryRayMask & cull_mask) != 0;
+    bool mismatch = result.mask_visible != (expected_visible ? 1u : 0u);
+    if (!expected_visible) {
+        ++stats->culled;
+        mismatch = mismatch ||
+                   result.result_kind !=
+                       typed_instance::kEnterResultCulled ||
+                   result.output_valid_mask != 0;
+    } else {
+        ++stats->blas_roots;
+        Ray mutable_world_ray = world_ray;
+        GEN_RT_BVH_INSTANCE_LEAF legacy_instance_copy = legacy_instance;
+        const float4x4 legacy_matrix = instance_leaf_matrix_to_float4x4(
+            &legacy_instance_copy.WorldToObjectm00);
+        float legacy_multiplier = 0.0f;
+        const Ray legacy_object_ray = make_transformed_ray(
+            mutable_world_ray, legacy_matrix, &legacy_multiplier);
+        const float legacy_raw_direction[] = {
+            legacy_object_ray.get_direction().x * legacy_multiplier,
+            legacy_object_ray.get_direction().y * legacy_multiplier,
+            legacy_object_ray.get_direction().z * legacy_multiplier,
+        };
+        const uint64_t legacy_host_blas =
+            reinterpret_cast<uint64_t>(raw_instance) +
+            legacy_instance.BVHAddress;
+        GEN_RT_BVH legacy_header = {};
+        GEN_RT_BVH_unpack(
+            &legacy_header,
+            reinterpret_cast<uint8_t *>(legacy_host_blas));
+        const uint64_t typed_root_device =
+            result.root_fetch.decode_context.device_base +
+            result.root_fetch.encoded_reference;
+        const uint64_t legacy_root_device =
+            blas_binding.device_base_address + legacy_header.RootNodeOffset;
+
+        mismatch = mismatch ||
+            result.result_kind != typed_instance::kEnterResultBlasRoot ||
+            result.output_valid_mask !=
+                (typed_instance::kObjectRayValid |
+                 typed_instance::kInstanceProjectionValid |
+                 typed_instance::kRootFetchValid) ||
+            result.instance_projection.instance_metadata_reference !=
+                instance_metadata_reference ||
+            result.instance_projection.shader_index !=
+                legacy_instance.ShaderIndex ||
+            result.instance_projection.instance_sbt_contribution !=
+                legacy_instance.InstanceContributionToHitGroupIndex ||
+            result.instance_projection.instance_custom_index !=
+                legacy_instance.InstanceID ||
+            result.instance_projection.instance_index !=
+                legacy_instance.InstanceIndex ||
+            result.instance_projection.instance_flags !=
+                legacy_instance.InstanceFlags ||
+            result.instance_projection.geometry_flags !=
+                legacy_instance.GeometryFlags ||
+            result.root_fetch.decode_context.as_object.object_id !=
+                relation.blas_object_id ||
+            result.root_fetch.decode_context.as_object.generation !=
+                relation.blas_generation ||
+            result.root_fetch.build_generation !=
+                blas_binding.root_build_generation ||
+            result.root_fetch.expected_payload_kind !=
+                blas_binding.root_payload_kind ||
+            typed_root_device != legacy_root_device;
+        for (unsigned component = 0; component < 3; ++component) {
+            const float legacy_origin = component == 0
+                ? legacy_object_ray.get_origin().x
+                : (component == 1 ? legacy_object_ray.get_origin().y
+                                  : legacy_object_ray.get_origin().z);
+            mismatch = mismatch ||
+                !rtcore_v04_typed_instance_fp32_matches(
+                    result.object_ray.origin[component], legacy_origin) ||
+                !rtcore_v04_typed_instance_fp32_matches(
+                    result.object_ray.direction[component],
+                    legacy_raw_direction[component]);
+        }
+        mismatch = mismatch ||
+            !rtcore_v04_typed_instance_fp32_matches(
+                result.object_ray.t_min * legacy_multiplier,
+                legacy_object_ray.get_tmin()) ||
+            !rtcore_v04_typed_instance_fp32_matches(
+                result.object_ray.t_max * legacy_multiplier,
+                legacy_object_ray.get_tmax());
+    }
+
+    if (mismatch) {
+        ++stats->mismatches;
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
+               "mismatch=1 metadata_ref=0x%llx visible=%u kind=%u "
+               "valid_mask=0x%x typed_root=0x%llx\n",
+               static_cast<unsigned long long>(
+                   instance_metadata_reference),
+               result.mask_visible, result.result_kind,
+               result.output_valid_mask,
+               static_cast<unsigned long long>(
+                   result.root_fetch.decode_context.device_base +
+                   result.root_fetch.encoded_reference));
+        fflush(stdout);
+        abort();
+    }
+}
+
 static void rtcore_v04_observe_typed_blas_decode_context(
     const uint8_t *raw_instance,
     const GEN_RT_BVH_INSTANCE_LEAF &legacy_instance,
@@ -15337,6 +15597,22 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         rtcore_v04_producer_backed_blas_root_descriptor_enabled();
     const bool v04_producer_backed_instance_blas_reference_enabled =
         rtcore_v04_producer_backed_instance_blas_reference_enabled();
+    const bool v04_typed_instance_enter_enabled =
+        rtcore_v04_typed_instance_enter_transition_enabled();
+    if (v04_typed_instance_enter_enabled &&
+        !rtcore_v04_typed_instance_enter_prerequisites_enabled()) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
+               "configuration_invalid=1 relation=%u instance_boundary=%u "
+               "context_bridge=%u root_descriptor=%u "
+               "tlas_binding_enforcement=%u\n",
+               v04_producer_backed_instance_blas_reference_enabled ? 1u : 0u,
+               v04_typed_instance_boundary_enabled ? 1u : 0u,
+               v04_typed_blas_decode_context_enabled ? 1u : 0u,
+               v04_producer_backed_blas_root_descriptor_enabled ? 1u : 0u,
+               rtcore_v04_tlas_binding_enforcement_gate_enabled() ? 1u : 0u);
+        fflush(stdout);
+        abort();
+    }
     if (v04_producer_backed_instance_blas_reference_enabled &&
         !rtcore_v04_instance_blas_reference_prerequisites_enabled()) {
         printf("GPGPU-Sim PTX: "
@@ -15400,6 +15676,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         v04_typed_instance_boundary_stats;
     rtcore_v04_typed_blas_decode_context_stats
         v04_typed_blas_decode_context_stats;
+    rtcore_v04_typed_instance_enter_stats v04_typed_instance_enter_stats;
     // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
     //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
 
@@ -15767,6 +16044,13 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     rtcore_abi_entry->v04_tlas_binding,
                     instance_metadata_ref,
                     &v04_typed_blas_decode_context_stats);
+            }
+            if (v04_typed_instance_enter_enabled) {
+                rtcore_v04_observe_typed_instance_enter_transition(
+                    leaf_addr, instanceLeaf,
+                    rtcore_abi_entry->v04_tlas_binding,
+                    instance_metadata_ref, ray, rayFlags, cullMask,
+                    &v04_typed_instance_enter_stats);
             }
             transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
@@ -16514,6 +16798,19 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                v04_typed_blas_decode_context_stats.instance_references,
                v04_typed_blas_decode_context_stats
                    .instance_reference_mismatches);
+        fflush(stdout);
+    }
+    if (v04_typed_instance_enter_enabled) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
+               "summary=1 thread_uid=%u observations=%u culled=%u "
+               "blas_roots=%u mismatches=%u transform_authority=0 "
+               "blas_transition_authority=0 memory_issue_authority=0 "
+               "private_state_authority=0 functional_authority=0 "
+               "timing_authority=0\n",
+               thread->get_uid(), v04_typed_instance_enter_stats.observations,
+               v04_typed_instance_enter_stats.culled,
+               v04_typed_instance_enter_stats.blas_roots,
+               v04_typed_instance_enter_stats.mismatches);
         fflush(stdout);
     }
 
