@@ -33,6 +33,7 @@
 #include "rtcore_tlas_binding_registry.h"
 #include "rtcore_v04_shadow_shader_return.h"
 #include "rtcore_v04_typed_node_kernel.h"
+#include "rtcore_v04_typed_primitive_kernel.h"
 
 #include <iostream>
 #include <vector>
@@ -1892,6 +1893,16 @@ static bool rtcore_v04_typed_node_candidate_kernel_enabled()
     static int enabled = []() {
         return rtcore_candidate_gate_state_for(
                    "VULKAN_SIM_RTCORE_ABI_V04_TYPED_NODE_CANDIDATE_KERNEL") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v04_typed_primitive_candidate_kernel_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_TYPED_PRIMITIVE_CANDIDATE_KERNEL") ==
                RTCORE_CANDIDATE_GATE_ENABLED;
     }();
     return enabled != 0;
@@ -14095,6 +14106,153 @@ static void rtcore_v04_observe_typed_node_candidates(
     }
 }
 
+struct rtcore_v04_typed_primitive_candidate_stats {
+    unsigned leaves;
+    unsigned geometric_hits;
+    unsigned candidate_hits;
+    unsigned mismatches;
+
+    rtcore_v04_typed_primitive_candidate_stats()
+        : leaves(0), geometric_hits(0), candidate_hits(0), mismatches(0) {}
+};
+
+static float rtcore_v04_typed_primitive_fp32_value(uint32_t bits)
+{
+    float value = 0.0f;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static bool rtcore_v04_typed_primitive_bary_matches(float typed,
+                                                     float legacy)
+{
+    static const float kLegacyBarycentricAbsoluteTolerance = 2.0e-5f;
+    return std::isfinite(typed) && std::isfinite(legacy) &&
+           fabsf(typed - legacy) <= kLegacyBarycentricAbsoluteTolerance;
+}
+
+static void rtcore_v04_observe_typed_primitive_candidate(
+    const uint8_t *raw_leaf, const GEN_RT_BVH_QUAD_LEAF &legacy_leaf,
+    const Ray &object_ray, float world_to_object_t_multiplier,
+    float world_t_min, float world_t_max, float committed_world_t,
+    uint32_t instance_flags, bool legacy_hit, float legacy_object_t,
+    bool legacy_counter_clockwise,
+    bool legacy_front_facing, uint32_t legacy_hit_kind,
+    const float3 &legacy_barycentric,
+    rtcore_v04_typed_primitive_candidate_stats *stats)
+{
+    namespace typed_primitive = rtcore::v04::typed_primitive;
+    assert(raw_leaf != NULL);
+    assert(stats != NULL);
+
+    typed_primitive::candidate_input_v0 input = {};
+    input.profile_id = typed_primitive::kGenRtDerivedProfileId;
+    input.instance_flags = instance_flags;
+    input.object_ray.origin[0] = object_ray.get_origin().x;
+    input.object_ray.origin[1] = object_ray.get_origin().y;
+    input.object_ray.origin[2] = object_ray.get_origin().z;
+    input.object_ray.direction[0] = object_ray.get_direction().x;
+    input.object_ray.direction[1] = object_ray.get_direction().y;
+    input.object_ray.direction[2] = object_ray.get_direction().z;
+    input.object_ray.t_min = object_ray.get_tmin();
+    input.object_ray.t_max = object_ray.get_tmax();
+    input.world_to_object_t_multiplier = world_to_object_t_multiplier;
+    input.committed_world_t = committed_world_t;
+    input.world_t_min = world_t_min;
+    input.world_t_max = world_t_max;
+    if (!typed_primitive::make_raw_primitive_payload(
+            raw_leaf, &input.raw_primitive)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL "
+               "adapter_failure=1 raw_leaf=%p\n",
+               static_cast<const void *>(raw_leaf));
+        fflush(stdout);
+        abort();
+    }
+
+    const typed_primitive::candidate_result_v0 result =
+        typed_primitive::execute(input);
+    if (result.status != typed_primitive::kStatusOk) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL "
+               "kernel_failure=1 status=%s raw_leaf=%p raw_control=0x%08x\n",
+               typed_primitive::status_name(
+                   static_cast<typed_primitive::status_kind>(result.status)),
+               static_cast<const void *>(raw_leaf), result.raw_quad_control);
+        fflush(stdout);
+        abort();
+    }
+
+    const float legacy_world_t =
+        legacy_hit ? legacy_object_t / world_to_object_t_multiplier : 0.0f;
+    const bool legacy_candidate =
+        legacy_hit && world_t_min <= legacy_world_t &&
+        legacy_world_t <= world_t_max &&
+        legacy_world_t < committed_world_t;
+    const bool descriptor_mismatch =
+        result.shader_index != legacy_leaf.LeafDescriptor.ShaderIndex ||
+        result.geometry_ray_mask !=
+            legacy_leaf.LeafDescriptor.GeometryRayMask ||
+        result.geometry_index != legacy_leaf.LeafDescriptor.GeometryIndex ||
+        result.geometry_flags != legacy_leaf.LeafDescriptor.GeometryFlags ||
+        result.primitive_index != legacy_leaf.PrimitiveIndex0;
+    bool t_mismatch = false;
+    bool facing_mismatch = false;
+    bool barycentric_mismatch = false;
+    if (legacy_hit) {
+        t_mismatch =
+            result.object_t_bits != rtcore_v04_fp32_bits(legacy_object_t) ||
+            result.world_t_bits != rtcore_v04_fp32_bits(legacy_world_t);
+        facing_mismatch =
+            result.counter_clockwise_facing !=
+                (legacy_counter_clockwise ? 1u : 0u) ||
+            result.front_facing != (legacy_front_facing ? 1u : 0u) ||
+            result.hit_kind != legacy_hit_kind;
+        const float typed_bary1 = rtcore_v04_typed_primitive_fp32_value(
+            result.bary_vertex1_bits);
+        const float typed_bary2 = rtcore_v04_typed_primitive_fp32_value(
+            result.bary_vertex2_bits);
+        barycentric_mismatch =
+            !rtcore_v04_typed_primitive_bary_matches(
+                typed_bary1, legacy_barycentric.x) ||
+            !rtcore_v04_typed_primitive_bary_matches(
+                typed_bary2, legacy_barycentric.y);
+    }
+    const bool mismatch =
+        descriptor_mismatch ||
+        result.geometric_hit != (legacy_hit ? 1u : 0u) ||
+        result.candidate_hit != (legacy_candidate ? 1u : 0u) || t_mismatch ||
+        facing_mismatch || barycentric_mismatch;
+
+    ++stats->leaves;
+    stats->geometric_hits += legacy_hit ? 1u : 0u;
+    stats->candidate_hits += legacy_candidate ? 1u : 0u;
+    if (mismatch) {
+        ++stats->mismatches;
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL "
+               "mismatch=1 raw_leaf=%p descriptor_mismatch=%u "
+               "typed_geometric=%u legacy_geometric=%u "
+               "typed_candidate=%u legacy_candidate=%u "
+               "t_mismatch=%u facing_mismatch=%u bary_mismatch=%u "
+               "typed_object_t=0x%08x legacy_object_t=0x%08x "
+               "typed_world_t=0x%08x legacy_world_t=0x%08x "
+               "typed_bary=0x%08x,0x%08x legacy_bary=0x%08x,0x%08x "
+               "typed_hit_kind=0x%02x legacy_hit_kind=0x%02x\n",
+               static_cast<const void *>(raw_leaf),
+               descriptor_mismatch ? 1u : 0u, result.geometric_hit,
+               legacy_hit ? 1u : 0u, result.candidate_hit,
+               legacy_candidate ? 1u : 0u, t_mismatch ? 1u : 0u,
+               facing_mismatch ? 1u : 0u,
+               barycentric_mismatch ? 1u : 0u, result.object_t_bits,
+               rtcore_v04_fp32_bits(legacy_object_t), result.world_t_bits,
+               rtcore_v04_fp32_bits(legacy_world_t),
+               result.bary_vertex1_bits, result.bary_vertex2_bits,
+               rtcore_v04_fp32_bits(legacy_barycentric.x),
+               rtcore_v04_fp32_bits(legacy_barycentric.y), result.hit_kind,
+               legacy_hit_kind);
+        fflush(stdout);
+        abort();
+    }
+}
+
 typedef struct StackEntry {
     uint8_t* addr;
     bool topLevel;
@@ -14471,7 +14629,41 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         fflush(stdout);
         abort();
     }
+    const bool v04_typed_primitive_candidate_enabled =
+        rtcore_v04_typed_primitive_candidate_kernel_enabled();
+    if (v04_typed_primitive_candidate_enabled &&
+        (rtcore_abi_entry == NULL || !v04_shadow_boundary_enabled ||
+         !rtcore_abi_entry->v04_shadow_trace_input_valid ||
+         !v04_tlas_binding_enforcement_enabled ||
+         !rtcore_abi_entry->v04_tlas_binding.valid ||
+         !rtcore_abi_entry->v04_tlas_binding.live ||
+         bvh_format_profile_id != 1)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL "
+               "configuration_invalid=1 abi_entry=%u boundary=%u "
+               "trace_input=%u tlas_enforcement=%u tlas_valid=%u "
+               "tlas_live=%u bvh_format_profile=%u\n",
+               rtcore_abi_entry != NULL ? 1u : 0u,
+               v04_shadow_boundary_enabled ? 1u : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_shadow_trace_input_valid
+                   ? 1u
+                   : 0u,
+               v04_tlas_binding_enforcement_enabled ? 1u : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_tlas_binding.valid
+                   ? 1u
+                   : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_tlas_binding.live
+                   ? 1u
+                   : 0u,
+               bvh_format_profile_id);
+        fflush(stdout);
+        abort();
+    }
     rtcore_v04_typed_node_candidate_stats v04_typed_node_candidate_stats;
+    rtcore_v04_typed_primitive_candidate_stats
+        v04_typed_primitive_candidate_stats;
     // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
     //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
 
@@ -15093,6 +15285,28 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 : !counter_clockwise_facing;
                         const uint32_t triangle_hit_kind =
                             front_facing ? 0xfeu : 0xffu;
+                        if (v04_typed_primitive_candidate_enabled) {
+                            float3 legacy_barycentric = {};
+                            if (hit) {
+                                const float3 object_intersection_point =
+                                    objectRay.get_origin() +
+                                    make_float3(
+                                        objectRay.get_direction().x * thit,
+                                        objectRay.get_direction().y * thit,
+                                        objectRay.get_direction().z * thit);
+                                legacy_barycentric = Barycentric(
+                                    object_intersection_point, p[0], p[1],
+                                    p[2]);
+                            }
+                            rtcore_v04_observe_typed_primitive_candidate(
+                                leaf_addr, leaf, objectRay,
+                                worldToObject_tMultiplier, Tmin, Tmax,
+                                min_thit,
+                                instanceLeaf.InstanceFlags, hit, thit,
+                                counter_clockwise_facing, front_facing,
+                                triangle_hit_kind, legacy_barycentric,
+                                &v04_typed_primitive_candidate_stats);
+                        }
                         const unsigned primitive_test_event_seq =
                             rtcore_compact_trace.append_primitive_test(
                             (uint64_t)leaf_addr + device_offset, hit,
@@ -15479,6 +15693,18 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                v04_typed_node_candidate_stats.evaluated_children,
                v04_typed_node_candidate_stats.hit_candidates,
                v04_typed_node_candidate_stats.mismatches);
+        fflush(stdout);
+    }
+    if (v04_typed_primitive_candidate_enabled) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL summary=1 "
+               "thread_uid=%u leaves=%u geometric_hits=%u "
+               "candidate_hits=%u mismatches=%u "
+               "functional_authority=0 timing_authority=0\n",
+               thread->get_uid(),
+               v04_typed_primitive_candidate_stats.leaves,
+               v04_typed_primitive_candidate_stats.geometric_hits,
+               v04_typed_primitive_candidate_stats.candidate_hits,
+               v04_typed_primitive_candidate_stats.mismatches);
         fflush(stdout);
     }
 
