@@ -1961,6 +1961,16 @@ static bool rtcore_v04_typed_blas_decode_context_bridge_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_producer_backed_blas_root_descriptor_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_PRODUCER_BACKED_BLAS_ROOT_DESCRIPTOR") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
 {
     static int enabled = []() {
@@ -14510,9 +14520,12 @@ static void rtcore_v04_observe_typed_instance_boundary_seed(
 struct rtcore_v04_typed_blas_decode_context_stats {
     unsigned contexts;
     unsigned mismatches;
+    unsigned root_descriptors;
+    unsigned root_descriptor_mismatches;
 
     rtcore_v04_typed_blas_decode_context_stats()
-        : contexts(0), mismatches(0) {}
+        : contexts(0), mismatches(0), root_descriptors(0),
+          root_descriptor_mismatches(0) {}
 };
 
 static void rtcore_v04_observe_typed_blas_decode_context(
@@ -14643,6 +14656,78 @@ static void rtcore_v04_observe_typed_blas_decode_context(
                bounds_mismatch ? 1u : 0u);
         fflush(stdout);
         abort();
+    }
+
+    if (rtcore_v04_producer_backed_blas_root_descriptor_enabled()) {
+        typed_blas::root_binding_input_v0 root_input = {};
+        root_input.decode_context = context;
+        root_input.root_descriptor.object_id = binding.object_id;
+        root_input.root_descriptor.root_payload_offset =
+            binding.root_payload_offset;
+        root_input.root_descriptor.object_generation = binding.generation;
+        root_input.root_descriptor.build_generation =
+            binding.root_build_generation;
+        root_input.root_descriptor.bvh_format_profile_id =
+            binding.root_bvh_profile_id;
+        root_input.root_descriptor.payload_format_id =
+            binding.root_payload_format_id;
+        root_input.root_descriptor.as_type = typed_blas::kAsTypeBlas;
+        root_input.root_descriptor.root_payload_kind =
+            binding.root_payload_kind;
+        root_input.root_descriptor.valid =
+            binding.root_descriptor_valid ? 1 : 0;
+
+        const typed_blas::root_binding_result_v0 root_result =
+            typed_blas::execute_root_binding(root_input);
+        const char *root_range_failure = "unvalidated";
+        const bool root_range_valid =
+            root_result.status == typed_blas::kStatusOk &&
+            VulkanRayTracing::validateBlasBinding(
+                binding, root_result.root_device_address, 64,
+                &root_range_failure);
+        const bool root_mismatch =
+            root_result.status != typed_blas::kStatusOk ||
+            !binding.root_descriptor_valid ||
+            binding.root_reserved_zero != 0 ||
+            root_result.root_payload_kind_valid != 1 ||
+            root_result.root_payload_kind != binding.root_payload_kind ||
+            root_result.root_payload_offset !=
+                legacy_header.RootNodeOffset ||
+            root_result.root_payload_offset != binding.root_payload_offset ||
+            root_result.root_device_address !=
+                binding.device_base_address + legacy_header.RootNodeOffset ||
+            root_result.build_generation !=
+                binding.root_build_generation ||
+            !root_range_valid;
+
+        ++stats->root_descriptors;
+        if (root_mismatch) {
+            ++stats->root_descriptor_mismatches;
+            printf("GPGPU-Sim PTX: "
+                   "RTCORE_V04_PRODUCER_BACKED_BLAS_ROOT_DESCRIPTOR "
+                   "mismatch=1 host_blas=0x%llx object_id=%llu "
+                   "generation=%u build_generation=%u status=%s "
+                   "typed_root=0x%llx producer_root=0x%llx "
+                   "legacy_root=0x%llx typed_kind=%u producer_kind=%u "
+                   "range_valid=%u range_reason=%s\n",
+                   static_cast<unsigned long long>(host_blas_header),
+                   static_cast<unsigned long long>(binding.object_id),
+                   binding.generation, binding.root_build_generation,
+                   typed_blas::status_name(
+                       static_cast<typed_blas::status_kind>(
+                           root_result.status)),
+                   static_cast<unsigned long long>(
+                       root_result.root_payload_offset),
+                   static_cast<unsigned long long>(
+                       binding.root_payload_offset),
+                   static_cast<unsigned long long>(
+                       legacy_header.RootNodeOffset),
+                   static_cast<unsigned>(root_result.root_payload_kind),
+                   static_cast<unsigned>(binding.root_payload_kind),
+                   root_range_valid ? 1u : 0u, root_range_failure);
+            fflush(stdout);
+            abort();
+        }
     }
 }
 
@@ -15120,6 +15205,16 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     }
     const bool v04_typed_blas_decode_context_enabled =
         rtcore_v04_typed_blas_decode_context_bridge_enabled();
+    const bool v04_producer_backed_blas_root_descriptor_enabled =
+        rtcore_v04_producer_backed_blas_root_descriptor_enabled();
+    if (v04_producer_backed_blas_root_descriptor_enabled &&
+        !v04_typed_blas_decode_context_enabled) {
+        printf("GPGPU-Sim PTX: "
+               "RTCORE_V04_PRODUCER_BACKED_BLAS_ROOT_DESCRIPTOR "
+               "configuration_invalid=1 context_bridge=0\n");
+        fflush(stdout);
+        abort();
+    }
     if (v04_typed_blas_decode_context_enabled &&
         (!v04_typed_instance_boundary_enabled || rtcore_abi_entry == NULL ||
          !v04_shadow_boundary_enabled ||
@@ -16246,6 +16341,19 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                thread->get_uid(),
                v04_typed_blas_decode_context_stats.contexts,
                v04_typed_blas_decode_context_stats.mismatches);
+        fflush(stdout);
+    }
+    if (v04_producer_backed_blas_root_descriptor_enabled) {
+        printf("GPGPU-Sim PTX: "
+               "RTCORE_V04_PRODUCER_BACKED_BLAS_ROOT_DESCRIPTOR "
+               "summary=1 thread_uid=%u descriptors=%u mismatches=%u "
+               "transform_authority=0 blas_transition_authority=0 "
+               "memory_issue_authority=0 private_state_authority=0 "
+               "functional_authority=0 timing_authority=0\n",
+               thread->get_uid(),
+               v04_typed_blas_decode_context_stats.root_descriptors,
+               v04_typed_blas_decode_context_stats
+                   .root_descriptor_mismatches);
         fflush(stdout);
     }
 
@@ -19070,6 +19178,13 @@ void VulkanRayTracing::allocBLAS(void* objectKey, void* rootAddr,
                                  uint64_t bufferSize, void* gpgpusimAddr) {
     printf("gpgpusim: set BLAS address for 0x%lx at %p to %p\n", bufferSize, rootAddr, gpgpusimAddr);
     blas_addr_map[rootAddr] = gpgpusimAddr;
+    if (rtcore_v04_producer_backed_blas_root_descriptor_enabled() &&
+        !rtcore_v04_typed_blas_decode_context_bridge_enabled()) {
+        rtcore_fail_blas_binding("root_descriptor_requires_context_bridge",
+                                (uint64_t)rootAddr,
+                                (uint64_t)gpgpusimAddr, bufferSize,
+                                (uint64_t)objectKey);
+    }
     if (!rtcore_v04_typed_blas_decode_context_bridge_enabled()) {
         return;
     }
@@ -19094,6 +19209,49 @@ void VulkanRayTracing::allocBLAS(void* objectKey, void* rootAddr,
            (unsigned long long)snapshot.host_root_address,
            (unsigned long long)snapshot.device_base_address,
            (unsigned long long)snapshot.size_bytes);
+    fflush(stdout);
+}
+
+void VulkanRayTracing::publishBLASRootDescriptor(
+    void* objectKey, uint64_t rootPayloadOffset, uint32_t rootPayloadKind) {
+    namespace typed_blas = rtcore::v04::typed_blas;
+    if (!rtcore_v04_producer_backed_blas_root_descriptor_enabled()) {
+        return;
+    }
+    if (!rtcore_v04_typed_blas_decode_context_bridge_enabled()) {
+        rtcore_fail_blas_binding("root_descriptor_requires_context_bridge",
+                                0, 0, 0, (uint64_t)objectKey);
+    }
+    if (rootPayloadKind > UINT8_MAX ||
+        (rootPayloadKind != typed_blas::kInternalPayloadKind &&
+         rootPayloadKind != typed_blas::kProceduralPayloadKind &&
+         rootPayloadKind != typed_blas::kQuadPayloadKind)) {
+        rtcore_fail_blas_binding("invalid_root_payload_kind", 0, 0,
+                                rootPayloadOffset, (uint64_t)objectKey);
+    }
+
+    rtcore_blas_binding_snapshot snapshot;
+    const char *failure_reason = "unvalidated";
+    if (!g_rtcore_blas_binding_registry.publish_root_descriptor(
+            (uint64_t)objectKey, typed_blas::kGenRtDerivedProfileId,
+            typed_blas::kGenRtPayloadFormatId, rootPayloadOffset,
+            static_cast<uint8_t>(rootPayloadKind), &snapshot,
+            &failure_reason)) {
+        rtcore_fail_blas_binding(failure_reason, snapshot.host_root_address,
+                                snapshot.device_base_address,
+                                snapshot.size_bytes, (uint64_t)objectKey);
+    }
+    printf("GPGPU-Sim RTCORE_BLAS_ROOT_DESCRIPTOR_PUBLISHED "
+           "object_id=%llu generation=%u build_generation=%u "
+           "driver_object_key=0x%llx profile=%u payload_format=%u "
+           "root_offset=%llu root_kind=%u valid=1\n",
+           (unsigned long long)snapshot.object_id, snapshot.generation,
+           snapshot.root_build_generation,
+           (unsigned long long)(uint64_t)objectKey,
+           snapshot.root_bvh_profile_id,
+           snapshot.root_payload_format_id,
+           (unsigned long long)snapshot.root_payload_offset,
+           (unsigned)snapshot.root_payload_kind);
     fflush(stdout);
 }
 

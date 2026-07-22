@@ -48,6 +48,54 @@ class rtcore_tlas_binding_registry {
     return succeed(failure_reason);
   }
 
+  bool publish_root_descriptor(uint64_t driver_object_key,
+                               uint32_t bvh_profile_id,
+                               uint32_t payload_format_id,
+                               uint64_t root_payload_offset,
+                               uint8_t root_payload_kind,
+                               Snapshot *published,
+                               const char **failure_reason) {
+    reset_snapshot(published);
+    typename std::map<uint64_t, uint64_t>::iterator object =
+        object_id_by_driver_object_.find(driver_object_key);
+    typename std::map<uint64_t, record>::iterator binding =
+        object != object_id_by_driver_object_.end()
+            ? bindings_by_object_id_.find(object->second)
+            : bindings_by_object_id_.end();
+    if (published == nullptr || object == object_id_by_driver_object_.end() ||
+        binding == bindings_by_object_id_.end() ||
+        !binding->second.snapshot.valid || !binding->second.snapshot.live ||
+        binding->second.driver_object_key != driver_object_key) {
+      return fail("root_publish_binding_mismatch", failure_reason);
+    }
+    if (bvh_profile_id == 0 || payload_format_id == 0 ||
+        root_payload_offset < 64 ||
+        (root_payload_offset & uint64_t{0x3f}) != 0 ||
+        root_payload_offset > binding->second.snapshot.size_bytes ||
+        uint64_t{64} >
+            binding->second.snapshot.size_bytes - root_payload_offset) {
+      return fail("root_descriptor_out_of_range", failure_reason);
+    }
+    if (binding->second.snapshot.root_descriptor_valid &&
+        binding->second.snapshot.root_build_generation == UINT32_MAX) {
+      return fail("root_build_generation_exhausted", failure_reason);
+    }
+
+    Snapshot &snapshot = binding->second.snapshot;
+    snapshot.root_descriptor_valid = true;
+    snapshot.root_payload_kind = root_payload_kind;
+    snapshot.root_reserved_zero = 0;
+    snapshot.root_build_generation =
+        snapshot.root_build_generation == 0
+            ? 1
+            : snapshot.root_build_generation + 1;
+    snapshot.root_bvh_profile_id = bvh_profile_id;
+    snapshot.root_payload_format_id = payload_format_id;
+    snapshot.root_payload_offset = root_payload_offset;
+    *published = snapshot;
+    return succeed(failure_reason);
+  }
+
   bool release_binding(uint64_t driver_object_key,
                        uint64_t host_root_address,
                        uint64_t device_base_address, Snapshot *released,
@@ -69,6 +117,7 @@ class rtcore_tlas_binding_registry {
     }
 
     binding->second.snapshot.live = false;
+    clear_root_descriptor(&binding->second.snapshot);
     *released = binding->second.snapshot;
     object_id_by_driver_object_.erase(object);
     return succeed(failure_reason);
@@ -130,6 +179,22 @@ class rtcore_tlas_binding_registry {
         current->second.snapshot.size_bytes != snapshot.size_bytes) {
       return fail("binding_range_mismatch", failure_reason);
     }
+    if (current->second.snapshot.root_descriptor_valid !=
+            snapshot.root_descriptor_valid ||
+        current->second.snapshot.root_payload_kind !=
+            snapshot.root_payload_kind ||
+        current->second.snapshot.root_reserved_zero !=
+            snapshot.root_reserved_zero ||
+        current->second.snapshot.root_build_generation !=
+            snapshot.root_build_generation ||
+        current->second.snapshot.root_bvh_profile_id !=
+            snapshot.root_bvh_profile_id ||
+        current->second.snapshot.root_payload_format_id !=
+            snapshot.root_payload_format_id ||
+        current->second.snapshot.root_payload_offset !=
+            snapshot.root_payload_offset) {
+      return fail("root_descriptor_mismatch", failure_reason);
+    }
 
     if (record_size != 0) {
       if (instance_metadata_reference == 0 ||
@@ -161,6 +226,16 @@ class rtcore_tlas_binding_registry {
     if (snapshot != nullptr) {
       *snapshot = Snapshot();
     }
+  }
+
+  static void clear_root_descriptor(Snapshot *snapshot) {
+    snapshot->root_descriptor_valid = false;
+    snapshot->root_payload_kind = 0;
+    snapshot->root_reserved_zero = 0;
+    snapshot->root_build_generation = 0;
+    snapshot->root_bvh_profile_id = 0;
+    snapshot->root_payload_format_id = 0;
+    snapshot->root_payload_offset = 0;
   }
 
   static bool fail(const char *reason, const char **failure_reason) {

@@ -218,6 +218,13 @@ extern "C" void gpgpusim_releaseBLAS(void* objectKey, void* rootAddr,
     VulkanRayTracing::releaseBLAS(objectKey, rootAddr, gpgpusimAddr);
 }
 
+extern "C" void gpgpusim_publishBLASRootDescriptor(
+    void* objectKey, uint64_t rootPayloadOffset, uint32_t rootPayloadKind)
+{
+    VulkanRayTracing::publishBLASRootDescriptor(
+        objectKey, rootPayloadOffset, rootPayloadKind);
+}
+
 extern "C" void gpgpusim_allocTLAS(void* objectKey, void* rootAddr,
                                     uint64_t bufferSize, void* gpgpusimAddr)
 {

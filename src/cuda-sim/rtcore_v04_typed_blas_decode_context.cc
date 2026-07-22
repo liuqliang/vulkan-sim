@@ -41,6 +41,11 @@ static float fp32_from_bits(uint32_t bits) {
   return value;
 }
 
+static bool valid_blas_root_payload_kind(uint8_t kind) {
+  return kind == kInternalPayloadKind || kind == kProceduralPayloadKind ||
+         kind == kQuadPayloadKind;
+}
+
 }  // namespace
 
 bool make_raw_bvh_header(const void *raw_header_bytes,
@@ -127,6 +132,52 @@ boundary_result_v0 execute(const boundary_input_v0 &input) {
   return result;
 }
 
+root_binding_result_v0 execute_root_binding(
+    const root_binding_input_v0 &input) {
+  root_binding_result_v0 result = {};
+  result.status = kStatusInvalidRootDescriptor;
+
+  const as_decode_context_v0 &context = input.decode_context;
+  const root_descriptor_v0 &descriptor = input.root_descriptor;
+  if (context.bvh_format_profile_id != kGenRtDerivedProfileId ||
+      context.reserved_zero != 0 || context.as_object.object_id == 0 ||
+      context.as_object.generation == 0 ||
+      context.as_object.as_type != kAsTypeBlas ||
+      !bytes_are_zero(context.as_object.reserved_zero,
+                      sizeof(context.as_object.reserved_zero)) ||
+      context.device_base == 0 || context.device_range_bytes < 64 ||
+      context.device_range_bytes >
+          std::numeric_limits<uint64_t>::max() - context.device_base) {
+    return result;
+  }
+  if (descriptor.valid != 1 ||
+      !bytes_are_zero(descriptor.reserved_zero,
+                      sizeof(descriptor.reserved_zero)) ||
+      descriptor.object_id != context.as_object.object_id ||
+      descriptor.object_generation != context.as_object.generation ||
+      descriptor.build_generation == 0 ||
+      descriptor.bvh_format_profile_id != context.bvh_format_profile_id ||
+      descriptor.payload_format_id != kGenRtPayloadFormatId ||
+      descriptor.as_type != context.as_object.as_type ||
+      !valid_blas_root_payload_kind(descriptor.root_payload_kind) ||
+      descriptor.root_payload_offset < 64 ||
+      (descriptor.root_payload_offset & uint64_t{0x3f}) != 0 ||
+      descriptor.root_payload_offset > context.device_range_bytes ||
+      uint64_t{64} >
+          context.device_range_bytes - descriptor.root_payload_offset) {
+    return result;
+  }
+
+  result.root_payload_kind_valid = 1;
+  result.root_payload_kind = descriptor.root_payload_kind;
+  result.root_device_address =
+      context.device_base + descriptor.root_payload_offset;
+  result.root_payload_offset = descriptor.root_payload_offset;
+  result.build_generation = descriptor.build_generation;
+  result.status = kStatusOk;
+  return result;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:
@@ -143,6 +194,8 @@ const char *status_name(status_kind status) {
       return "malformed_header";
     case kStatusInvalidNumericInput:
       return "invalid_numeric_input";
+    case kStatusInvalidRootDescriptor:
+      return "invalid_root_descriptor";
   }
   return "unknown";
 }

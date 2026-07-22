@@ -152,21 +152,35 @@ typedef struct Descriptor
 struct rtcore_tlas_binding_snapshot {
     bool valid;
     bool live;
+    bool root_descriptor_valid;
+    uint8_t root_payload_kind;
+    uint16_t root_reserved_zero;
     uint64_t object_id;
     uint32_t generation;
+    uint32_t root_build_generation;
+    uint32_t root_bvh_profile_id;
+    uint32_t root_payload_format_id;
     uint64_t host_root_address;
     uint64_t device_base_address;
     uint64_t size_bytes;
+    uint64_t root_payload_offset;
 };
 
 struct rtcore_blas_binding_snapshot {
     bool valid;
     bool live;
+    bool root_descriptor_valid;
+    uint8_t root_payload_kind;
+    uint16_t root_reserved_zero;
     uint64_t object_id;
     uint32_t generation;
+    uint32_t root_build_generation;
+    uint32_t root_bvh_profile_id;
+    uint32_t root_payload_format_id;
     uint64_t host_root_address;
     uint64_t device_base_address;
     uint64_t size_bytes;
+    uint64_t root_payload_offset;
 };
 
 struct rtcore_trace_ray_abi_entry {
@@ -453,6 +467,9 @@ public:
                           uint64_t bufferSize, void* gpgpusimAddr);
     static void releaseBLAS(void* objectKey, void* rootAddr,
                             void* gpgpusimAddr);
+    static void publishBLASRootDescriptor(void* objectKey,
+                                          uint64_t rootPayloadOffset,
+                                          uint32_t rootPayloadKind);
     static void allocTLAS(void* objectKey, void* rootAddr,
                           uint64_t bufferSize, void* gpgpusimAddr);
     static void releaseTLAS(void* objectKey, void* rootAddr,
