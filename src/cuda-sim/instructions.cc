@@ -55,6 +55,7 @@ class ptx_recognizer;
 #include "ptx.tab.h"
 #include "ptx_loader.h"
 #include "rtcore_procedural_hit_ordering.h"
+#include "rtcore_replay_interface.h"
 #include "rtcore_v04_shadow_boundary.h"
 #include "rtcore_v04_shadow_shader_return.h"
 #include "rtcore_v04_shadow_trace_input.h"
@@ -7862,18 +7863,12 @@ enum rtcore_v04_shadow_gate_state {
 };
 
 static rtcore_v04_shadow_gate_state rtcore_v04_shadow_gate(const char *name) {
-  const char *value = getenv(name);
-  if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0 ||
-      rtcore_path_mode_is(value, "false") ||
-      rtcore_path_mode_is(value, "off") ||
-      rtcore_path_mode_is(value, "no") ||
-      rtcore_path_mode_is(value, "disabled")) {
+  const rtcore_candidate_gate_state state =
+      rtcore_candidate_gate_state_for(name);
+  if (state == RTCORE_CANDIDATE_GATE_DISABLED) {
     return RTCORE_V04_SHADOW_GATE_DISABLED;
   }
-  if (strcmp(value, "1") == 0 || rtcore_path_mode_is(value, "true") ||
-      rtcore_path_mode_is(value, "on") ||
-      rtcore_path_mode_is(value, "yes") ||
-      rtcore_path_mode_is(value, "enabled")) {
+  if (state == RTCORE_CANDIDATE_GATE_ENABLED) {
     return RTCORE_V04_SHADOW_GATE_ENABLED;
   }
   return RTCORE_V04_SHADOW_GATE_INVALID;
@@ -7905,6 +7900,10 @@ static const char *rtcore_v04_shadow_shader_return_publication_gate_name() {
 
 static const char *rtcore_v04_shadow_shader_return_consumer_gate_name() {
   return "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_SHADER_RETURN_CONSUMER";
+}
+
+static const char *rtcore_v04_functional_shader_return_authority_gate_name() {
+  return "VULKAN_SIM_RTCORE_ABI_V04_FUNCTIONAL_SHADER_RETURN_AUTHORITY";
 }
 
 static bool rtcore_v04_shadow_consumer_configuration_valid(
@@ -8084,6 +8083,73 @@ static bool rtcore_v04_shadow_shader_return_configuration_valid(
              ? getenv(rtcore_v04_shadow_shader_return_consumer_gate_name())
              : "<unset>",
          boundary_publication_enabled ? 1u : 0u);
+  fflush(stdout);
+  return false;
+}
+
+static bool rtcore_v04_functional_shader_return_configuration_valid(
+    const ptx_instruction *pI, bool shadow_consumer_enabled,
+    bool boundary_publication_enabled, bool live_publication_enabled,
+    bool tlas_binding_enforcement_enabled) {
+  const rtcore_v04_shadow_gate_state authority_state =
+      rtcore_v04_shadow_gate(
+          rtcore_v04_functional_shader_return_authority_gate_name());
+  const rtcore_v04_shadow_gate_state return_publication_state =
+      rtcore_v04_shadow_gate(
+          rtcore_v04_shadow_shader_return_publication_gate_name());
+  const rtcore_v04_shadow_gate_state return_consumer_state =
+      rtcore_v04_shadow_gate(
+          rtcore_v04_shadow_shader_return_consumer_gate_name());
+  const char *reason = NULL;
+  if (authority_state == RTCORE_V04_SHADOW_GATE_INVALID) {
+    reason = "V04_FUNCTIONAL_SHADER_RETURN_AUTHORITY_GATE_INVALID";
+  } else if (authority_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             !shadow_consumer_enabled) {
+    reason = "V04_SHADOW_TRACE_INPUT_CONSUMER_REQUIRED";
+  } else if (authority_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             !boundary_publication_enabled) {
+    reason = "V04_SHADOW_BOUNDARY_PUBLICATION_REQUIRED";
+  } else if (authority_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             !live_publication_enabled) {
+    reason = "V04_LIVE_HANDOFF_PUBLICATION_REQUIRED";
+  } else if (authority_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             !tlas_binding_enforcement_enabled) {
+    reason = "V04_TLAS_BINDING_ENFORCEMENT_REQUIRED";
+  } else if (authority_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             return_publication_state != RTCORE_V04_SHADOW_GATE_ENABLED) {
+    reason = "V04_SHADOW_SHADER_RETURN_PUBLICATION_REQUIRED";
+  } else if (authority_state == RTCORE_V04_SHADOW_GATE_ENABLED &&
+             return_consumer_state != RTCORE_V04_SHADOW_GATE_ENABLED) {
+    reason = "V04_SHADOW_SHADER_RETURN_CONSUMER_REQUIRED";
+  }
+  if (reason == NULL) {
+    return true;
+  }
+  printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), reason=%s, "
+         "functional_shader_return_authority_gate=%s, "
+         "shadow_consumer_enabled=%u, boundary_publication_enabled=%u, "
+         "live_publication_enabled=%u, "
+         "tlas_binding_enforcement_enabled=%u, "
+         "shader_return_publication_gate=%s, "
+         "shader_return_consumer_gate=%s\n",
+         pI->source_file(), pI->source_line(), reason,
+         getenv(rtcore_v04_functional_shader_return_authority_gate_name()) !=
+                 NULL
+             ? getenv(
+                   rtcore_v04_functional_shader_return_authority_gate_name())
+             : "<unset>",
+         shadow_consumer_enabled ? 1u : 0u,
+         boundary_publication_enabled ? 1u : 0u,
+         live_publication_enabled ? 1u : 0u,
+         tlas_binding_enforcement_enabled ? 1u : 0u,
+         getenv(rtcore_v04_shadow_shader_return_publication_gate_name()) !=
+                 NULL
+             ? getenv(
+                   rtcore_v04_shadow_shader_return_publication_gate_name())
+             : "<unset>",
+         getenv(rtcore_v04_shadow_shader_return_consumer_gate_name()) != NULL
+             ? getenv(rtcore_v04_shadow_shader_return_consumer_gate_name())
+             : "<unset>");
   fflush(stdout);
   return false;
 }
@@ -13606,6 +13672,17 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
   const char *shader_return_apply_failure = "accepted";
   bool terminal_facts_refreshed = true;
   const char *terminal_facts_refresh_failure = "accepted";
+  unsigned committed_previous_active_mask = 0;
+  unsigned released_lane_mask = 0;
+  unsigned reactivated_lane_mask = 0;
+  unsigned resident_occupancy_before = 0;
+  unsigned resident_occupancy_after = 0;
+  const char *commit_failure = "accepted";
+  bool committed = false;
+  const bool v04_functional_shader_return_authority_enabled =
+      rtcore_v04_shadow_gate(
+          rtcore_v04_functional_shader_return_authority_gate_name()) ==
+      RTCORE_V04_SHADOW_GATE_ENABLED;
   if (rtcore_shader_return_application_required()) {
     const bool v04_shadow_boundary_return_enabled =
         rtcore_v04_shadow_gate(
@@ -13615,47 +13692,66 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
         rtcore_v04_shadow_gate(
             rtcore_v04_shadow_shader_return_consumer_gate_name()) ==
         RTCORE_V04_SHADOW_GATE_ENABLED;
-    for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
-      if ((metadata.active_mask & rtcore_lane_thread_mask(lane)) == 0) {
-        continue;
-      }
-      rtcore::abi_v04::shadow::boundary_return_update v04_return_update;
-      uint32_t v04_boundary_reason =
-          rtcore::abi_v04::kReasonNoneOrInvalid;
-      if (transaction.lane_thread[lane] == NULL ||
-          !rtcore_apply_shader_visible_resubmit_lane_return(
-              pI, transaction.lane_thread[lane], metadata.owner_hw_sid,
-              transaction.previous_warp_uid, metadata.warp_uid,
-              metadata.warp_id, lane, transaction.handoff_window_base,
+    if (v04_functional_shader_return_authority_enabled) {
+      committed =
+          rtcore_commit_v04_functional_shader_visible_resubmit_admission(
+              pI, metadata.owner_hw_sid, metadata.warp_uid,
+              metadata.warp_id, metadata.static_inst_uid,
+              metadata.active_mask, transaction.previous_warp_uid,
+              transaction.resident_generation, previous_active_mask,
+              transaction.handoff_window_base, transaction.lane_thread,
               rtcore_v02_lsu_issue_cycle(thread),
-              v04_shadow_boundary_return_enabled ? &v04_return_update : NULL,
-              v04_shadow_shader_return_consumer_enabled
-                  ? &v04_boundary_reason
-                  : NULL,
-              &shader_return_apply_failure)) {
-        shader_return_decisions_applied = false;
-        break;
-      }
-      if (v04_shadow_shader_return_consumer_enabled &&
-          !rtcore_observe_v04_shadow_shader_return(
-              transaction.lane_thread[lane], lane,
-              transaction.handoff_window_base, v04_boundary_reason,
-              v04_return_update, rtcore_v02_lsu_issue_cycle(thread),
-              &shader_return_apply_failure)) {
-        shader_return_decisions_applied = false;
-        break;
-      }
-      if (!rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
-              metadata.owner_hw_sid, transaction.previous_warp_uid,
-              metadata.warp_id, previous_active_mask, lane,
-              transaction.lane_thread[lane],
-              v04_shadow_boundary_return_enabled ? &v04_return_update : NULL,
-              rtcore_v02_lsu_issue_cycle(thread),
-              &terminal_facts_refresh_failure)) {
-        terminal_facts_refreshed = false;
-        break;
+              &committed_previous_active_mask, &released_lane_mask,
+              &reactivated_lane_mask, &resident_occupancy_before,
+              &resident_occupancy_after, &shader_return_apply_failure);
+      shader_return_decisions_applied = committed;
+    } else {
+      for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+        if ((metadata.active_mask & rtcore_lane_thread_mask(lane)) == 0) {
+          continue;
+        }
+        rtcore::abi_v04::shadow::boundary_return_update v04_return_update;
+        uint32_t v04_boundary_reason =
+            rtcore::abi_v04::kReasonNoneOrInvalid;
+        if (transaction.lane_thread[lane] == NULL ||
+            !rtcore_apply_shader_visible_resubmit_lane_return(
+                pI, transaction.lane_thread[lane], metadata.owner_hw_sid,
+                transaction.previous_warp_uid, metadata.warp_uid,
+                metadata.warp_id, lane, transaction.handoff_window_base,
+                rtcore_v02_lsu_issue_cycle(thread),
+                v04_shadow_boundary_return_enabled ? &v04_return_update : NULL,
+                v04_shadow_shader_return_consumer_enabled
+                    ? &v04_boundary_reason
+                    : NULL,
+                &shader_return_apply_failure)) {
+          shader_return_decisions_applied = false;
+          break;
+        }
+        if (v04_shadow_shader_return_consumer_enabled &&
+            !rtcore_observe_v04_shadow_shader_return(
+                transaction.lane_thread[lane], lane,
+                transaction.handoff_window_base, v04_boundary_reason,
+                v04_return_update, rtcore_v02_lsu_issue_cycle(thread),
+                &shader_return_apply_failure)) {
+          shader_return_decisions_applied = false;
+          break;
+        }
+        if (!rtcore_refresh_shader_visible_resubmit_lane_terminal_facts(
+                metadata.owner_hw_sid, transaction.previous_warp_uid,
+                metadata.warp_id, previous_active_mask, lane,
+                transaction.lane_thread[lane],
+                v04_shadow_boundary_return_enabled ? &v04_return_update : NULL,
+                rtcore_v02_lsu_issue_cycle(thread),
+                &terminal_facts_refresh_failure)) {
+          terminal_facts_refreshed = false;
+          break;
+        }
       }
     }
+  } else if (v04_functional_shader_return_authority_enabled) {
+    shader_return_apply_failure =
+        "V04_FUNCTIONAL_SHADER_RETURN_APPLICATION_REQUIRED";
+    shader_return_decisions_applied = false;
   }
   if (!shader_return_decisions_applied || !terminal_facts_refreshed) {
     fprintf(stderr,
@@ -13674,19 +13770,16 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
     abort();
   }
 
-  unsigned committed_previous_active_mask = 0;
-  unsigned released_lane_mask = 0;
-  unsigned reactivated_lane_mask = 0;
-  unsigned resident_occupancy_before = 0;
-  unsigned resident_occupancy_after = 0;
-  const char *commit_failure = "accepted";
-  const bool committed = rtcore_commit_shader_visible_resubmit_admission(
-      metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
-      metadata.static_inst_uid, metadata.active_mask,
-      transaction.previous_warp_uid, transaction.resident_generation,
-      rtcore_v02_lsu_issue_cycle(thread), &committed_previous_active_mask,
-      &released_lane_mask, &reactivated_lane_mask,
-      &resident_occupancy_before, &resident_occupancy_after, &commit_failure);
+  if (!committed) {
+    committed = rtcore_commit_shader_visible_resubmit_admission(
+        metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
+        metadata.static_inst_uid, metadata.active_mask,
+        transaction.previous_warp_uid, transaction.resident_generation,
+        rtcore_v02_lsu_issue_cycle(thread), &committed_previous_active_mask,
+        &released_lane_mask, &reactivated_lane_mask,
+        &resident_occupancy_before, &resident_occupancy_after,
+        &commit_failure);
+  }
   if (!committed) {
     g_rtcore_symbolic_resubmit_lane_transactions.erase(metadata.warp_uid);
     return rtcore_reject_symbolic_resubmit(
@@ -33238,7 +33331,14 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }
-  (void)v04_live_handoff_publication_enabled;
+  if (!rtcore_v04_functional_shader_return_configuration_valid(
+          pI, v04_shadow_consumer_enabled,
+          v04_shadow_boundary_publication_enabled,
+          v04_live_handoff_publication_enabled,
+          v04_tlas_binding_enforcement_enabled)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
 
   const operand_info &result = pI->operand_lookup(0);
   const operand_info &context_ptr = pI->operand_lookup(1);

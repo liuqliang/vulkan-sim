@@ -45,6 +45,7 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include "../cuda-sim/ptx-stats.h"
 #include "../cuda-sim/ptx_sim.h"
 #include "../cuda-sim/rtcore_replay_interface.h"
+#include "../cuda-sim/rtcore_v04_shadow_shader_return.h"
 #include "../statwrapper.h"
 #include "addrdec.h"
 #include "dram.h"
@@ -10182,8 +10183,36 @@ static bool rtcore_validate_v04_shadow_completion_packet_image(
       continue;
     }
 
-    rtcore::abi_v04::shadow::boundary_values values;
     const unsigned reason = snapshot.lane_completion_reason[lane];
+    // The completion image is observed before the resumed shader executes.
+    // A return consumer must arm exactly one sentinel for a shader boundary;
+    // every other reason and every consumer-disabled path requires zero.
+    const uint32_t unpublished_return_sentinel =
+        rtcore::abi_v04::kReservedMasks[
+            rtcore::abi_v04::kCommitRetainedCandidate.word];
+    const uint32_t return_control =
+        words[rtcore::abi_v04::kCommitRetainedCandidate.word];
+    const bool return_consumer_enabled =
+        rtcore_candidate_gate_state_for(
+            "VULKAN_SIM_RTCORE_ABI_V04_SHADOW_SHADER_RETURN_CONSUMER") ==
+        RTCORE_CANDIDATE_GATE_ENABLED;
+    const bool shader_return_required =
+        rtcore::abi_v04::shadow::
+            shader_return_reason_requires_publication(reason);
+    const uint32_t expected_return_control =
+        return_consumer_enabled && shader_return_required
+            ? unpublished_return_sentinel
+            : 0u;
+    if (return_control != expected_return_control ||
+        words[rtcore::abi_v04::kReportedTFp32.word] != 0u ||
+        words[rtcore::abi_v04::kReportedHitKind.word] != 0u) {
+      rtcore_set_completion_packet_failure_reason(
+          failure_reason, "v04_shadow_shader_return_prepublication");
+      return false;
+    }
+    words[rtcore::abi_v04::kCommitRetainedCandidate.word] = 0u;
+
+    rtcore::abi_v04::shadow::boundary_values values;
     if (!rtcore_decode_v04_shadow_boundary_values(words, reason, &values)) {
       rtcore_set_completion_packet_failure_reason(
           failure_reason, "v04_shadow_boundary_image_reason");

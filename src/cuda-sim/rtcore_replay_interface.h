@@ -2,8 +2,57 @@
 #define RTCORE_REPLAY_INTERFACE_H
 
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "rtcore_v04_shadow_boundary.h"
+
+class ptx_instruction;
+class ptx_thread_info;
+
+enum rtcore_candidate_gate_state {
+  RTCORE_CANDIDATE_GATE_DISABLED = 0,
+  RTCORE_CANDIDATE_GATE_ENABLED,
+  RTCORE_CANDIDATE_GATE_INVALID,
+};
+
+inline char rtcore_candidate_gate_ascii_lower(char value) {
+  return value >= 'A' && value <= 'Z' ? value - 'A' + 'a' : value;
+}
+
+inline bool rtcore_candidate_gate_value_is(const char *value,
+                                           const char *expected) {
+  if (value == NULL || expected == NULL) return value == expected;
+  while (*value != '\0' && *expected != '\0') {
+    if (rtcore_candidate_gate_ascii_lower(*value) !=
+        rtcore_candidate_gate_ascii_lower(*expected)) {
+      return false;
+    }
+    ++value;
+    ++expected;
+  }
+  return *value == '\0' && *expected == '\0';
+}
+
+inline rtcore_candidate_gate_state rtcore_candidate_gate_state_for(
+    const char *name) {
+  const char *value = getenv(name);
+  if (value == NULL || *value == '\0' || strcmp(value, "0") == 0 ||
+      rtcore_candidate_gate_value_is(value, "false") ||
+      rtcore_candidate_gate_value_is(value, "off") ||
+      rtcore_candidate_gate_value_is(value, "no") ||
+      rtcore_candidate_gate_value_is(value, "disabled")) {
+    return RTCORE_CANDIDATE_GATE_DISABLED;
+  }
+  if (strcmp(value, "1") == 0 ||
+      rtcore_candidate_gate_value_is(value, "true") ||
+      rtcore_candidate_gate_value_is(value, "on") ||
+      rtcore_candidate_gate_value_is(value, "yes") ||
+      rtcore_candidate_gate_value_is(value, "enabled")) {
+    return RTCORE_CANDIDATE_GATE_ENABLED;
+  }
+  return RTCORE_CANDIDATE_GATE_INVALID;
+}
 
 // Snapshot types crossing the cuda-sim/gpgpu-sim translation-unit boundary
 // live here so producer and consumer cannot silently drift in size or layout.
@@ -144,6 +193,20 @@ bool rtcore_query_replay_warp_completion_entry(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask,
     rtcore_replay_warp_completion_entry_snapshot *snapshot);
+
+bool rtcore_commit_v04_functional_shader_visible_resubmit_admission(
+    const ptx_instruction *pI, unsigned owner_hw_sid,
+    unsigned new_warp_uid, unsigned warp_id,
+    unsigned new_static_inst_uid, unsigned next_active_mask,
+    unsigned expected_previous_warp_uid,
+    unsigned expected_resident_generation,
+    unsigned expected_previous_active_mask,
+    unsigned long long handoff_window_base,
+    ptx_thread_info *const *lane_threads,
+    unsigned long long service_cycle, unsigned *previous_active_mask,
+    unsigned *released_lane_mask, unsigned *reactivated_lane_mask,
+    unsigned *resident_occupancy_before, unsigned *resident_occupancy_after,
+    const char **failure_reason);
 
 }
 
