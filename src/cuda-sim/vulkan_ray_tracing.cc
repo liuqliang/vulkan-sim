@@ -32,6 +32,7 @@
 #include "rtcore_procedural_hit_ordering.h"
 #include "rtcore_tlas_binding_registry.h"
 #include "rtcore_v04_shadow_shader_return.h"
+#include "rtcore_v04_typed_node_kernel.h"
 
 #include <iostream>
 #include <vector>
@@ -1881,6 +1882,16 @@ static bool rtcore_v04_functional_shader_return_authority_enabled()
     static int enabled = []() {
         return rtcore_candidate_gate_state_for(
                    "VULKAN_SIM_RTCORE_ABI_V04_FUNCTIONAL_SHADER_RETURN_AUTHORITY") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v04_typed_node_candidate_kernel_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_TYPED_NODE_CANDIDATE_KERNEL") ==
                RTCORE_CANDIDATE_GATE_ENABLED;
     }();
     return enabled != 0;
@@ -13891,6 +13902,199 @@ bool ray_box_test(float3 low, float3 high, float3 idirection, float3 origin, flo
     return (min <= max);
 }
 
+struct rtcore_v04_typed_node_candidate_stats {
+    unsigned tlas_nodes;
+    unsigned blas_nodes;
+    unsigned evaluated_children;
+    unsigned hit_candidates;
+    unsigned mismatches;
+
+    rtcore_v04_typed_node_candidate_stats()
+        : tlas_nodes(0), blas_nodes(0), evaluated_children(0),
+          hit_candidates(0), mismatches(0) {}
+};
+
+static uint8_t rtcore_v04_popcount6(uint8_t value)
+{
+    unsigned count = 0;
+    for (unsigned bit = 0; bit < 6; ++bit) {
+        count += (value >> bit) & 1u;
+    }
+    return static_cast<uint8_t>(count);
+}
+
+static void rtcore_v04_observe_typed_node_candidates(
+    const uint8_t *raw_node, const GEN_RT_BVH_INTERNAL_NODE &legacy_node,
+    const float3 &origin, const float3 &direction, float t_min, float t_max,
+    float committed_t, uint32_t ray_flags, uint32_t cull_mask, bool top_level,
+    const bool legacy_child_hit[6], const float legacy_near_t[6],
+    rtcore_v04_typed_node_candidate_stats *stats)
+{
+    namespace typed_node = rtcore::v04::typed_node;
+    assert(raw_node != NULL);
+    assert(stats != NULL);
+
+    typed_node::candidate_input_v0 input = {};
+    input.profile_id = typed_node::kGenRtDerivedProfileId;
+    input.level = top_level ? typed_node::kLevelTlas
+                            : typed_node::kLevelBlas;
+    input.ray.origin[0] = origin.x;
+    input.ray.origin[1] = origin.y;
+    input.ray.origin[2] = origin.z;
+    input.ray.direction[0] = direction.x;
+    input.ray.direction[1] = direction.y;
+    input.ray.direction[2] = direction.z;
+    input.ray.t_min = t_min;
+    input.ray.t_max = t_max;
+    input.policy.ray_flags = ray_flags;
+    input.policy.cull_mask = static_cast<uint8_t>(cull_mask & 0xffu);
+    input.committed_t = committed_t;
+    if (!typed_node::make_raw_node_payload(raw_node, &input.raw_node)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_NODE_KERNEL "
+               "adapter_failure=1 level=%s\n",
+               top_level ? "tlas" : "blas");
+        fflush(stdout);
+        abort();
+    }
+
+    const typed_node::candidate_result_v0 result = typed_node::execute(input);
+    if (result.status != typed_node::kStatusOk) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_NODE_KERNEL "
+               "kernel_failure=1 level=%s status=%s raw_node=%p\n",
+               top_level ? "tlas" : "blas",
+               typed_node::status_name(
+                   static_cast<typed_node::status_kind>(result.status)),
+               static_cast<const void *>(raw_node));
+        fflush(stdout);
+        abort();
+    }
+
+    uint8_t expected_evaluated_mask = 0;
+    uint8_t expected_hit_mask = 0;
+    uint8_t expected_order[6] = {};
+    uint32_t legacy_near_t_bits[6] = {};
+    uint8_t child_descriptor_mismatch_mask = 0;
+    uint8_t near_t_mismatch_mask = 0;
+    uint8_t order_mismatch_mask = 0;
+    unsigned expected_count = 0;
+    const bool legacy_node_visible =
+        (legacy_node.NodeRayMask & (cull_mask & 0xffu)) != 0;
+    const bool node_descriptor_mismatch =
+        result.child_offset_blocks != legacy_node.ChildOffset ||
+        result.node_ray_mask != legacy_node.NodeRayMask;
+    bool mismatch = node_descriptor_mismatch;
+    for (unsigned child = 0; child < 6; ++child) {
+        const uint8_t legacy_size =
+            static_cast<uint8_t>(legacy_node.ChildSize[child]);
+        const uint8_t legacy_kind =
+            static_cast<uint8_t>(legacy_node.ChildType[child]);
+        if (result.child_size[child] != legacy_size ||
+            result.child_kind[child] != legacy_kind) {
+            mismatch = true;
+            child_descriptor_mismatch_mask |=
+                static_cast<uint8_t>(1u << child);
+        }
+        if (legacy_size == 0) continue;
+        expected_evaluated_mask |= static_cast<uint8_t>(1u << child);
+        legacy_near_t_bits[child] =
+            rtcore_v04_fp32_bits(legacy_near_t[child]);
+        const bool legacy_candidate_hit =
+            legacy_child_hit[child] && legacy_node_visible;
+        if (legacy_candidate_hit &&
+            result.near_t_bits[child] != legacy_near_t_bits[child]) {
+            mismatch = true;
+            near_t_mismatch_mask |= static_cast<uint8_t>(1u << child);
+        }
+        if (legacy_candidate_hit) {
+            expected_hit_mask |= static_cast<uint8_t>(1u << child);
+            expected_order[expected_count++] = static_cast<uint8_t>(child);
+        }
+    }
+
+    for (unsigned lhs = 1; lhs < expected_count; ++lhs) {
+        const uint8_t slot = expected_order[lhs];
+        unsigned rhs = lhs;
+        while (rhs > 0) {
+            const uint8_t previous_slot = expected_order[rhs - 1];
+            if (legacy_near_t[previous_slot] < legacy_near_t[slot] ||
+                (legacy_near_t[previous_slot] == legacy_near_t[slot] &&
+                 previous_slot < slot)) {
+                break;
+            }
+            expected_order[rhs] = previous_slot;
+            --rhs;
+        }
+        expected_order[rhs] = slot;
+    }
+
+    if (result.evaluated_child_mask != expected_evaluated_mask ||
+        result.hit_child_mask != expected_hit_mask ||
+        result.candidate_count != expected_count) {
+        mismatch = true;
+    }
+    for (unsigned index = 0; index < expected_count; ++index) {
+        if (result.ordered_child_slots[index] != expected_order[index]) {
+            mismatch = true;
+            order_mismatch_mask |= static_cast<uint8_t>(1u << index);
+        }
+    }
+
+    if (top_level) {
+        ++stats->tlas_nodes;
+    } else {
+        ++stats->blas_nodes;
+    }
+    stats->evaluated_children += rtcore_v04_popcount6(expected_evaluated_mask);
+    stats->hit_candidates += expected_count;
+    if (mismatch) {
+        ++stats->mismatches;
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_NODE_KERNEL "
+               "mismatch=1 level=%s raw_node=%p "
+               "typed_evaluated=0x%02x legacy_evaluated=0x%02x "
+               "typed_hits=0x%02x legacy_hits=0x%02x "
+               "typed_count=%u legacy_count=%u "
+               "node_descriptor_mismatch=%u "
+               "child_descriptor_mismatch_mask=0x%02x "
+               "near_t_mismatch_mask=0x%02x "
+               "order_mismatch_mask=0x%02x "
+               "legacy_node_visible=%u cull_mask=0x%02x "
+               "typed_offset=%d legacy_offset=%d "
+               "typed_node_mask=0x%02x legacy_node_mask=0x%02x "
+               "typed_near=%08x,%08x,%08x,%08x,%08x,%08x "
+               "legacy_near=%08x,%08x,%08x,%08x,%08x,%08x "
+               "typed_order=%u,%u,%u,%u,%u,%u "
+               "legacy_order=%u,%u,%u,%u,%u,%u\n",
+               top_level ? "tlas" : "blas",
+               static_cast<const void *>(raw_node),
+               result.evaluated_child_mask, expected_evaluated_mask,
+               result.hit_child_mask, expected_hit_mask,
+               result.candidate_count, expected_count,
+               node_descriptor_mismatch ? 1u : 0u,
+               child_descriptor_mismatch_mask, near_t_mismatch_mask,
+               order_mismatch_mask, legacy_node_visible ? 1u : 0u,
+               static_cast<unsigned>(cull_mask & 0xffu),
+               result.child_offset_blocks,
+               legacy_node.ChildOffset, result.node_ray_mask,
+               static_cast<unsigned>(legacy_node.NodeRayMask),
+               result.near_t_bits[0], result.near_t_bits[1],
+               result.near_t_bits[2], result.near_t_bits[3],
+               result.near_t_bits[4], result.near_t_bits[5],
+               legacy_near_t_bits[0], legacy_near_t_bits[1],
+               legacy_near_t_bits[2], legacy_near_t_bits[3],
+               legacy_near_t_bits[4], legacy_near_t_bits[5],
+               result.ordered_child_slots[0],
+               result.ordered_child_slots[1],
+               result.ordered_child_slots[2],
+               result.ordered_child_slots[3],
+               result.ordered_child_slots[4],
+               result.ordered_child_slots[5], expected_order[0],
+               expected_order[1], expected_order[2], expected_order[3],
+               expected_order[4], expected_order[5]);
+        fflush(stdout);
+        abort();
+    }
+}
+
 typedef struct StackEntry {
     uint8_t* addr;
     bool topLevel;
@@ -14235,6 +14439,39 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         v04_tlas_binding_enforcement_enabled
             ? rtcore_abi_entry->v04_tlas_binding.device_base_address
             : (uint64_t)tlas_addr;
+    const bool v04_typed_node_candidate_enabled =
+        rtcore_v04_typed_node_candidate_kernel_enabled();
+    if (v04_typed_node_candidate_enabled &&
+        (rtcore_abi_entry == NULL || !v04_shadow_boundary_enabled ||
+         !rtcore_abi_entry->v04_shadow_trace_input_valid ||
+         !v04_tlas_binding_enforcement_enabled ||
+         !rtcore_abi_entry->v04_tlas_binding.valid ||
+         !rtcore_abi_entry->v04_tlas_binding.live ||
+         bvh_format_profile_id != 1)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_NODE_KERNEL "
+               "configuration_invalid=1 abi_entry=%u boundary=%u "
+               "trace_input=%u tlas_enforcement=%u tlas_valid=%u "
+               "tlas_live=%u bvh_format_profile=%u\n",
+               rtcore_abi_entry != NULL ? 1u : 0u,
+               v04_shadow_boundary_enabled ? 1u : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_shadow_trace_input_valid
+                   ? 1u
+                   : 0u,
+               v04_tlas_binding_enforcement_enabled ? 1u : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_tlas_binding.valid
+                   ? 1u
+                   : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_tlas_binding.live
+                   ? 1u
+                   : 0u,
+               bvh_format_profile_id);
+        fflush(stdout);
+        abort();
+    }
+    rtcore_v04_typed_node_candidate_stats v04_typed_node_candidate_stats;
     // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
     //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
 
@@ -14513,6 +14750,14 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     child_hit[i] = false;
             }
 
+            if (v04_typed_node_candidate_enabled) {
+                rtcore_v04_observe_typed_node_candidates(
+                    node_addr, node, ray.get_origin(), ray.get_direction(),
+                    ray.get_tmin(), ray.get_tmax(), min_thit, rayFlags,
+                    cullMask, true, child_hit, thit,
+                    &v04_typed_node_candidate_stats);
+            }
+
             uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
             for(int i = 0; i < 6; i++)
             {
@@ -14720,6 +14965,16 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         }
                         else
                             child_hit[i] = false;
+                    }
+
+                    if (v04_typed_node_candidate_enabled) {
+                        rtcore_v04_observe_typed_node_candidates(
+                            node_addr, node, objectRay.get_origin(),
+                            objectRay.get_direction(), objectRay.get_tmin(),
+                            objectRay.get_tmax(),
+                            min_thit * worldToObject_tMultiplier, rayFlags,
+                            cullMask, false, child_hit, thit,
+                            &v04_typed_node_candidate_stats);
                     }
 
                     uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
@@ -15212,6 +15467,19 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                    hit_procedural ? "procedural-deferred" : "miss",
                    total_nodes_accessed, total_primitive_tests);
         }
+    }
+
+    if (v04_typed_node_candidate_enabled) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_NODE_KERNEL summary=1 "
+               "thread_uid=%u tlas_nodes=%u blas_nodes=%u "
+               "evaluated_children=%u hit_candidates=%u mismatches=%u "
+               "functional_authority=0 timing_authority=0\n",
+               thread->get_uid(), v04_typed_node_candidate_stats.tlas_nodes,
+               v04_typed_node_candidate_stats.blas_nodes,
+               v04_typed_node_candidate_stats.evaluated_children,
+               v04_typed_node_candidate_stats.hit_candidates,
+               v04_typed_node_candidate_stats.mismatches);
+        fflush(stdout);
     }
 
     memory_space *mem = thread->get_global_memory();
