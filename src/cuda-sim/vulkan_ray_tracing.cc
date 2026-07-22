@@ -1964,6 +1964,16 @@ static bool rtcore_v04_typed_stack_push_remainder_kernel_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_typed_stack_pop_next_kernel_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_TYPED_STACK_POP_NEXT_KERNEL") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_v04_typed_primitive_candidate_kernel_enabled()
 {
     static int enabled = []() {
@@ -2066,6 +2076,12 @@ static bool rtcore_v04_typed_stack_push_remainder_prerequisites_enabled()
 {
     return rtcore_v04_typed_node_child_route_kernel_enabled() &&
            rtcore_v04_typed_node_child_route_prerequisites_enabled();
+}
+
+static bool rtcore_v04_typed_stack_pop_next_prerequisites_enabled()
+{
+    return rtcore_v04_typed_stack_push_remainder_kernel_enabled() &&
+           rtcore_v04_typed_stack_push_remainder_prerequisites_enabled();
 }
 
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
@@ -14459,10 +14475,105 @@ struct rtcore_v04_typed_stack_push_remainder_stats {
           pruned_items(0), mismatches(0) {}
 };
 
+struct rtcore_v04_typed_stack_pop_next_stats {
+    unsigned operations;
+    unsigned selected_items;
+    unsigned pruned_items;
+    unsigned popped_items;
+    unsigned mismatches;
+
+    rtcore_v04_typed_stack_pop_next_stats()
+        : operations(0), selected_items(0), pruned_items(0),
+          popped_items(0), mismatches(0) {}
+};
+
+static void rtcore_v04_observe_typed_stack_pop_next(
+    const rtcore::v04::typed_stack::push_result_v0 &push_result,
+    float current_traversal_bound,
+    rtcore_v04_typed_stack_pop_next_stats *stats)
+{
+    namespace typed_stack = rtcore::v04::typed_stack;
+    assert(stats != NULL);
+    assert(push_result.status == typed_stack::kStatusOk);
+    assert(push_result.result_kind == typed_stack::kStackPushedAndSelected);
+    assert(push_result.frontier_delta.append_base_index == 0);
+    assert(push_result.frontier_delta.new_frontier_top ==
+           push_result.frontier_delta.write_count);
+    assert(push_result.frontier_delta.new_frontier_count ==
+           push_result.frontier_delta.write_count);
+
+    typed_stack::frontier_metadata_v0 frontier = {};
+    frontier.frontier_top = push_result.frontier_delta.new_frontier_top;
+    frontier.frontier_count = push_result.frontier_delta.new_frontier_count;
+    frontier.frontier_capacity = typed_stack::kMaxRemainderChildren;
+    while (frontier.frontier_top != 0) {
+        const uint32_t expected_index = frontier.frontier_top - 1;
+        const rtcore::v04::typed_node::compact_child_work_item_v0 &expected =
+            push_result.frontier_delta.written_items[expected_index];
+
+        typed_stack::pop_input_v0 input = {};
+        input.profile_id = typed_stack::kGenRtDerivedProfileId;
+        input.operation_kind = typed_stack::kPopNext;
+        input.has_top_entry = 1;
+        input.frontier = frontier;
+        input.current_traversal_bound_bits =
+            rtcore_v04_fp32_bits(current_traversal_bound);
+        input.top_entry = expected;
+        input.current_decode_context =
+            push_result.selected_fetch.decode_context;
+
+        const typed_stack::pop_result_v0 result =
+            typed_stack::execute_pop(input);
+        const uint8_t expected_valid =
+            static_cast<uint8_t>(typed_stack::kFrontierDeltaValid |
+                                 typed_stack::kSelectedFetchValid);
+        const bool mismatch =
+            result.status != typed_stack::kStatusOk ||
+            result.result_kind != typed_stack::kStackSelectedNext ||
+            result.output_valid_mask != expected_valid ||
+            result.frontier_delta.action !=
+                typed_stack::kFrontierActionPopChild ||
+            result.frontier_delta.pop_count != 1 ||
+            result.frontier_delta.popped_index != expected_index ||
+            result.frontier_delta.new_frontier_top != expected_index ||
+            result.frontier_delta.new_frontier_count != expected_index ||
+            memcmp(&result.selected_fetch.child, &expected,
+                   sizeof(expected)) != 0 ||
+            memcmp(&result.selected_fetch.decode_context,
+                   &input.current_decode_context,
+                   sizeof(input.current_decode_context)) != 0;
+
+        ++stats->operations;
+        ++stats->popped_items;
+        if (result.result_kind == typed_stack::kStackSelectedNext) {
+            ++stats->selected_items;
+        } else if (result.result_kind ==
+                   typed_stack::kStackPrunedRetryPop) {
+            ++stats->pruned_items;
+        }
+        if (mismatch) {
+            ++stats->mismatches;
+            printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_STACK_POP_NEXT "
+                   "mismatch=1 status=%s expected_index=%u new_top=%u "
+                   "new_count=%u result_kind=%u\n",
+                   typed_stack::status_name(
+                       static_cast<typed_stack::status_kind>(result.status)),
+                   expected_index, result.frontier_delta.new_frontier_top,
+                   result.frontier_delta.new_frontier_count,
+                   result.result_kind);
+            fflush(stdout);
+            abort();
+        }
+        frontier.frontier_top = result.frontier_delta.new_frontier_top;
+        frontier.frontier_count = result.frontier_delta.new_frontier_count;
+    }
+}
+
 static void rtcore_v04_observe_typed_stack_push_remainder(
     const rtcore::v04::typed_node::route_result_v0 &node_route,
     float current_traversal_bound,
-    rtcore_v04_typed_stack_push_remainder_stats *stats)
+    rtcore_v04_typed_stack_push_remainder_stats *stats,
+    rtcore_v04_typed_stack_pop_next_stats *pop_stats)
 {
     namespace typed_node = rtcore::v04::typed_node;
     namespace typed_stack = rtcore::v04::typed_stack;
@@ -14526,6 +14637,10 @@ static void rtcore_v04_observe_typed_stack_push_remainder(
         fflush(stdout);
         abort();
     }
+    if (pop_stats != NULL) {
+        rtcore_v04_observe_typed_stack_pop_next(
+            result, current_traversal_bound, pop_stats);
+    }
 }
 
 static void rtcore_v04_observe_typed_node_child_route(
@@ -14536,7 +14651,8 @@ static void rtcore_v04_observe_typed_node_child_route(
     uint64_t comparison_host_as_base,
     rtcore_v04_typed_node_reference_tracker *reference_tracker,
     rtcore_v04_typed_node_child_route_stats *stats,
-    rtcore_v04_typed_stack_push_remainder_stats *stack_push_stats)
+    rtcore_v04_typed_stack_push_remainder_stats *stack_push_stats,
+    rtcore_v04_typed_stack_pop_next_stats *stack_pop_stats)
 {
     namespace typed_node = rtcore::v04::typed_node;
     assert(raw_node != NULL);
@@ -14582,7 +14698,7 @@ static void rtcore_v04_observe_typed_node_child_route(
     }
     if (stack_push_stats != NULL && result.frontier_count != 0) {
         rtcore_v04_observe_typed_stack_push_remainder(
-            result, committed_t, stack_push_stats);
+            result, committed_t, stack_push_stats, stack_pop_stats);
     }
 
     typed_node::compact_child_work_item_v0 expected_items[6] = {};
@@ -15975,6 +16091,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         rtcore_v04_typed_node_child_route_kernel_enabled();
     const bool v04_typed_stack_push_remainder_enabled =
         rtcore_v04_typed_stack_push_remainder_kernel_enabled();
+    const bool v04_typed_stack_pop_next_enabled =
+        rtcore_v04_typed_stack_pop_next_kernel_enabled();
     if (v04_typed_node_candidate_enabled &&
         (rtcore_abi_entry == NULL || !v04_shadow_boundary_enabled ||
          !rtcore_abi_entry->v04_shadow_trace_input_valid ||
@@ -16134,6 +16252,17 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         fflush(stdout);
         abort();
     }
+    if (v04_typed_stack_pop_next_enabled &&
+        !rtcore_v04_typed_stack_pop_next_prerequisites_enabled()) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_STACK_POP_NEXT "
+               "configuration_invalid=1 stack_push=%u producer_chain=%u\n",
+               v04_typed_stack_push_remainder_enabled ? 1u : 0u,
+               rtcore_v04_typed_stack_push_remainder_prerequisites_enabled()
+                   ? 1u
+                   : 0u);
+        fflush(stdout);
+        abort();
+    }
     if (v04_typed_instance_enter_enabled &&
         !rtcore_v04_typed_instance_enter_prerequisites_enabled()) {
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
@@ -16207,6 +16336,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         v04_typed_node_child_route_stats;
     rtcore_v04_typed_stack_push_remainder_stats
         v04_typed_stack_push_remainder_stats;
+    rtcore_v04_typed_stack_pop_next_stats
+        v04_typed_stack_pop_next_stats;
     rtcore_v04_typed_node_reference_tracker
         v04_typed_node_reference_tracker;
     rtcore_v04_typed_primitive_candidate_stats
@@ -16520,6 +16651,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     &v04_typed_node_child_route_stats,
                     v04_typed_stack_push_remainder_enabled
                         ? &v04_typed_stack_push_remainder_stats
+                        : NULL,
+                    v04_typed_stack_pop_next_enabled
+                        ? &v04_typed_stack_pop_next_stats
                         : NULL);
             }
 
@@ -16831,6 +16965,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             &v04_typed_node_child_route_stats,
                             v04_typed_stack_push_remainder_enabled
                                 ? &v04_typed_stack_push_remainder_stats
+                                : NULL,
+                            v04_typed_stack_pop_next_enabled
+                                ? &v04_typed_stack_pop_next_stats
                                 : NULL);
                     }
 
@@ -17397,6 +17534,20 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                v04_typed_stack_push_remainder_stats.written_items,
                v04_typed_stack_push_remainder_stats.pruned_items,
                v04_typed_stack_push_remainder_stats.mismatches);
+        fflush(stdout);
+    }
+    if (v04_typed_stack_pop_next_enabled) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_STACK_POP_NEXT "
+               "summary=1 thread_uid=%u operations=%u selected_items=%u "
+               "pruned_items=%u popped_items=%u mismatches=%u "
+               "persistent_frontier_authority=0 memory_issue_authority=0 "
+               "result_commit_authority=0 functional_authority=0 "
+               "timing_authority=0\n",
+               thread->get_uid(), v04_typed_stack_pop_next_stats.operations,
+               v04_typed_stack_pop_next_stats.selected_items,
+               v04_typed_stack_pop_next_stats.pruned_items,
+               v04_typed_stack_pop_next_stats.popped_items,
+               v04_typed_stack_pop_next_stats.mismatches);
         fflush(stdout);
     }
     if (v04_typed_primitive_candidate_enabled) {

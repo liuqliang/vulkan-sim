@@ -218,6 +218,67 @@ push_result_v0 execute_push(const push_input_v0 &input) {
   return result;
 }
 
+pop_result_v0 execute_pop(const pop_input_v0 &input) {
+  pop_result_v0 result = {};
+  result.status = kStatusInvalidArgument;
+
+  if (input.profile_id != kGenRtDerivedProfileId) {
+    result.status = kStatusUnsupportedProfile;
+    return result;
+  }
+  if (input.operation_kind != kPopNext || input.has_top_entry > 1 ||
+      !bytes_are_zero(input.reserved_zero,
+                      sizeof(input.reserved_zero))) {
+    return result;
+  }
+  if (input.has_top_entry == 0) {
+    result.status = kStatusMissingFrontierOperand;
+    return result;
+  }
+  if (input.frontier.frontier_top == 0 ||
+      input.frontier.frontier_count == 0 ||
+      input.frontier.frontier_top != input.frontier.frontier_count ||
+      input.frontier.frontier_top > input.frontier.frontier_capacity ||
+      input.frontier.frontier_count > input.frontier.frontier_capacity) {
+    result.status = kStatusInvalidFrontierMetadata;
+    return result;
+  }
+
+  const float traversal_bound =
+      fp32_value(input.current_traversal_bound_bits);
+  if (!std::isfinite(traversal_bound)) {
+    result.status = kStatusInvalidTraversalBound;
+    return result;
+  }
+  if (!valid_decode_context(input.current_decode_context) ||
+      !valid_child_item(input.top_entry, input.current_decode_context)) {
+    result.status = kStatusInvalidWorkItem;
+    return result;
+  }
+
+  result.status = kStatusOk;
+  result.output_valid_mask = kFrontierDeltaValid;
+  result.frontier_delta.action = kFrontierActionPopChild;
+  result.frontier_delta.pop_count = 1;
+  result.frontier_delta.popped_index = input.frontier.frontier_top - 1;
+  result.frontier_delta.new_frontier_top =
+      input.frontier.frontier_top - 1;
+  result.frontier_delta.new_frontier_count =
+      input.frontier.frontier_count - 1;
+
+  if (fp32_value(input.top_entry.near_t_bits) > traversal_bound) {
+    result.result_kind = kStackPrunedRetryPop;
+    return result;
+  }
+
+  result.result_kind = kStackSelectedNext;
+  result.output_valid_mask =
+      static_cast<uint8_t>(kFrontierDeltaValid | kSelectedFetchValid);
+  result.selected_fetch.child = input.top_entry;
+  result.selected_fetch.decode_context = input.current_decode_context;
+  return result;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:
@@ -238,6 +299,8 @@ const char *status_name(status_kind status) {
       return "invalid_remainder_order";
     case kStatusFrontierCapacityExceeded:
       return "frontier_capacity_exceeded";
+    case kStatusMissingFrontierOperand:
+      return "missing_frontier_operand";
   }
   return "unknown";
 }
