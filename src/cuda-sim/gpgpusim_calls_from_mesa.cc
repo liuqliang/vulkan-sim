@@ -205,9 +205,17 @@ extern "C" void gpgpusim_pass_child_addr(void *address)
     VulkanRayTracing::pass_child_addr(address);
 }
 
-extern "C" void gpgpusim_allocBLAS(void* rootAddr, uint64_t bufferSize, void* gpgpusimAddr)
+extern "C" void gpgpusim_allocBLAS(void* objectKey, void* rootAddr,
+                                     uint64_t bufferSize, void* gpgpusimAddr)
 {
-    VulkanRayTracing::allocBLAS(rootAddr, bufferSize, gpgpusimAddr);
+    VulkanRayTracing::allocBLAS(objectKey, rootAddr, bufferSize,
+                                gpgpusimAddr);
+}
+
+extern "C" void gpgpusim_releaseBLAS(void* objectKey, void* rootAddr,
+                                       void* gpgpusimAddr)
+{
+    VulkanRayTracing::releaseBLAS(objectKey, rootAddr, gpgpusimAddr);
 }
 
 extern "C" void gpgpusim_allocTLAS(void* objectKey, void* rootAddr,
