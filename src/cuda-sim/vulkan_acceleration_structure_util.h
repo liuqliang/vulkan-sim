@@ -276,7 +276,8 @@ GEN_RT_BVH_INSTANCE_LEAF_unpack(struct GEN_RT_BVH_INSTANCE_LEAF* dst,
         dst->GeometryFlags = temp >> 1;
     }
 
-    dst->StartNodeAddress = *((uint64_t *)data) & (1 << 48 - 1);
+    dst->StartNodeAddress =
+        *((uint64_t *)data) & 0x0000ffffffffffffULL;
     data += 6;
 
     dst->InstanceFlags = (uint32_t)(*data);

@@ -32,6 +32,7 @@
 #include "rtcore_procedural_hit_ordering.h"
 #include "rtcore_tlas_binding_registry.h"
 #include "rtcore_v04_shadow_shader_return.h"
+#include "rtcore_v04_typed_instance_kernel.h"
 #include "rtcore_v04_typed_node_kernel.h"
 #include "rtcore_v04_typed_primitive_kernel.h"
 
@@ -1913,6 +1914,16 @@ static bool rtcore_v04_typed_procedural_boundary_seed_enabled()
     static int enabled = []() {
         return rtcore_candidate_gate_state_for(
                    "VULKAN_SIM_RTCORE_ABI_V04_TYPED_PROCEDURAL_BOUNDARY_SEED") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v04_typed_instance_boundary_seed_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_TYPED_INSTANCE_BOUNDARY_SEED") ==
                RTCORE_CANDIDATE_GATE_ENABLED;
     }();
     return enabled != 0;
@@ -14349,6 +14360,121 @@ static void rtcore_v04_observe_typed_procedural_boundary_seed(
     }
 }
 
+struct rtcore_v04_typed_instance_boundary_stats {
+    unsigned instances;
+    unsigned mismatches;
+
+    rtcore_v04_typed_instance_boundary_stats()
+        : instances(0), mismatches(0) {}
+};
+
+static void rtcore_v04_observe_typed_instance_boundary_seed(
+    const uint8_t *raw_leaf, const GEN_RT_BVH_INSTANCE_LEAF &legacy_leaf,
+    rtcore_v04_typed_instance_boundary_stats *stats)
+{
+    namespace typed_instance = rtcore::v04::typed_instance;
+    assert(raw_leaf != NULL);
+    assert(stats != NULL);
+
+    typed_instance::boundary_input_v0 input = {};
+    input.profile_id = typed_instance::kGenRtDerivedProfileId;
+    if (!typed_instance::make_raw_instance_payload(
+            raw_leaf, &input.raw_instance)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_BOUNDARY "
+               "adapter_failure=1 raw_leaf=%p\n",
+               static_cast<const void *>(raw_leaf));
+        fflush(stdout);
+        abort();
+    }
+
+    const typed_instance::boundary_result_v0 result =
+        typed_instance::execute(input);
+    if (result.status != typed_instance::kStatusOk) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_BOUNDARY "
+               "kernel_failure=1 status=%s raw_leaf=%p\n",
+               typed_instance::status_name(
+                   static_cast<typed_instance::status_kind>(result.status)),
+               static_cast<const void *>(raw_leaf));
+        fflush(stdout);
+        abort();
+    }
+
+    const uint32_t legacy_world_to_object_bits[] = {
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm00),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm01),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm02),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm10),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm11),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm12),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm20),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm21),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm22),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm30),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm31),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm32),
+    };
+    const uint32_t legacy_object_to_world_bits[] = {
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm00),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm01),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm02),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm10),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm11),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm12),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm20),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm21),
+        rtcore_v04_fp32_bits(legacy_leaf.ObjectToWorldm22),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm30),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm31),
+        rtcore_v04_fp32_bits(legacy_leaf.WorldToObjectm32),
+    };
+    bool matrix_mismatch = false;
+    for (unsigned element = 0;
+         element < typed_instance::kMatrixElementCount; ++element) {
+        matrix_mismatch =
+            matrix_mismatch ||
+            result.world_to_object_bits[element] !=
+                legacy_world_to_object_bits[element] ||
+            result.object_to_world_bits[element] !=
+                legacy_object_to_world_bits[element];
+    }
+
+    const bool mismatch =
+        result.shader_index != legacy_leaf.ShaderIndex ||
+        result.geometry_ray_mask != legacy_leaf.GeometryRayMask ||
+        result.instance_sbt_contribution !=
+            legacy_leaf.InstanceContributionToHitGroupIndex ||
+        result.leaf_type != legacy_leaf.LeafType ||
+        result.geometry_flags != legacy_leaf.GeometryFlags ||
+        result.start_node_address != legacy_leaf.StartNodeAddress ||
+        result.instance_flags != legacy_leaf.InstanceFlags ||
+        result.bvh_address != legacy_leaf.BVHAddress ||
+        result.instance_custom_index != legacy_leaf.InstanceID ||
+        result.instance_index != legacy_leaf.InstanceIndex || matrix_mismatch;
+
+    ++stats->instances;
+    if (mismatch) {
+        ++stats->mismatches;
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_BOUNDARY "
+               "mismatch=1 raw_leaf=%p typed_shader=%u legacy_shader=%u "
+               "typed_sbt=%u legacy_sbt=%u typed_start=0x%llx "
+               "legacy_start=0x%llx typed_bvh=0x%llx legacy_bvh=0x%llx "
+               "typed_custom=%u legacy_custom=%u typed_index=%u "
+               "legacy_index=%u matrix_mismatch=%u\n",
+               static_cast<const void *>(raw_leaf), result.shader_index,
+               legacy_leaf.ShaderIndex, result.instance_sbt_contribution,
+               legacy_leaf.InstanceContributionToHitGroupIndex,
+               static_cast<unsigned long long>(result.start_node_address),
+               static_cast<unsigned long long>(legacy_leaf.StartNodeAddress),
+               static_cast<unsigned long long>(result.bvh_address),
+               static_cast<unsigned long long>(legacy_leaf.BVHAddress),
+               result.instance_custom_index, legacy_leaf.InstanceID,
+               result.instance_index, legacy_leaf.InstanceIndex,
+               matrix_mismatch ? 1u : 0u);
+        fflush(stdout);
+        abort();
+    }
+}
+
 typedef struct StackEntry {
     uint8_t* addr;
     bool topLevel;
@@ -14789,11 +14915,45 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         fflush(stdout);
         abort();
     }
+    const bool v04_typed_instance_boundary_enabled =
+        rtcore_v04_typed_instance_boundary_seed_enabled();
+    if (v04_typed_instance_boundary_enabled &&
+        (rtcore_abi_entry == NULL || !v04_shadow_boundary_enabled ||
+         !rtcore_abi_entry->v04_shadow_trace_input_valid ||
+         !v04_tlas_binding_enforcement_enabled ||
+         !rtcore_abi_entry->v04_tlas_binding.valid ||
+         !rtcore_abi_entry->v04_tlas_binding.live ||
+         bvh_format_profile_id != 1)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_BOUNDARY "
+               "configuration_invalid=1 abi_entry=%u boundary=%u "
+               "trace_input=%u tlas_enforcement=%u tlas_valid=%u "
+               "tlas_live=%u bvh_format_profile=%u\n",
+               rtcore_abi_entry != NULL ? 1u : 0u,
+               v04_shadow_boundary_enabled ? 1u : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_shadow_trace_input_valid
+                   ? 1u
+                   : 0u,
+               v04_tlas_binding_enforcement_enabled ? 1u : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_tlas_binding.valid
+                   ? 1u
+                   : 0u,
+               rtcore_abi_entry != NULL &&
+                       rtcore_abi_entry->v04_tlas_binding.live
+                   ? 1u
+                   : 0u,
+               bvh_format_profile_id);
+        fflush(stdout);
+        abort();
+    }
     rtcore_v04_typed_node_candidate_stats v04_typed_node_candidate_stats;
     rtcore_v04_typed_primitive_candidate_stats
         v04_typed_primitive_candidate_stats;
     rtcore_v04_typed_procedural_boundary_stats
         v04_typed_procedural_boundary_stats;
+    rtcore_v04_typed_instance_boundary_stats
+        v04_typed_instance_boundary_stats;
     // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
     //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
 
@@ -15148,6 +15308,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
             GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
             GEN_RT_BVH_INSTANCE_LEAF_unpack(&instanceLeaf, leaf_addr);
+            if (v04_typed_instance_boundary_enabled) {
+                rtcore_v04_observe_typed_instance_boundary_seed(
+                    leaf_addr, instanceLeaf,
+                    &v04_typed_instance_boundary_stats);
+            }
             const uint64_t instance_metadata_ref =
                 (uint64_t)leaf_addr + device_offset;
             transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
@@ -15849,6 +16014,15 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                thread->get_uid(), v04_typed_procedural_boundary_stats.leaves,
                v04_typed_procedural_boundary_stats.mask_visible,
                v04_typed_procedural_boundary_stats.mismatches);
+        fflush(stdout);
+    }
+    if (v04_typed_instance_boundary_enabled) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_BOUNDARY summary=1 "
+               "thread_uid=%u instances=%u mismatches=%u "
+               "transform_authority=0 functional_authority=0 "
+               "timing_authority=0\n",
+               thread->get_uid(), v04_typed_instance_boundary_stats.instances,
+               v04_typed_instance_boundary_stats.mismatches);
         fflush(stdout);
     }
 
