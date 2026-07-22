@@ -37,6 +37,7 @@
 #include "rtcore_v04_typed_instance_kernel.h"
 #include "rtcore_v04_typed_node_kernel.h"
 #include "rtcore_v04_typed_primitive_kernel.h"
+#include "rtcore_v04_typed_stack_kernel.h"
 
 #include <iostream>
 #include <vector>
@@ -1953,6 +1954,16 @@ static bool rtcore_v04_typed_node_child_route_kernel_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_typed_stack_push_remainder_kernel_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_TYPED_STACK_PUSH_REMAINDER_KERNEL") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_v04_typed_primitive_candidate_kernel_enabled()
 {
     static int enabled = []() {
@@ -2049,6 +2060,12 @@ static bool rtcore_v04_typed_node_child_route_prerequisites_enabled()
     return rtcore_v04_typed_node_candidate_kernel_enabled() &&
            rtcore_v04_typed_instance_enter_transition_enabled() &&
            rtcore_v04_typed_instance_enter_prerequisites_enabled();
+}
+
+static bool rtcore_v04_typed_stack_push_remainder_prerequisites_enabled()
+{
+    return rtcore_v04_typed_node_child_route_kernel_enabled() &&
+           rtcore_v04_typed_node_child_route_prerequisites_enabled();
 }
 
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
@@ -14430,6 +14447,87 @@ static bool rtcore_v04_apply_signed_block_offset(uint64_t base,
         base, static_cast<int64_t>(blocks) * int64_t{64}, result);
 }
 
+struct rtcore_v04_typed_stack_push_remainder_stats {
+    unsigned operations;
+    unsigned input_frontier_items;
+    unsigned written_items;
+    unsigned pruned_items;
+    unsigned mismatches;
+
+    rtcore_v04_typed_stack_push_remainder_stats()
+        : operations(0), input_frontier_items(0), written_items(0),
+          pruned_items(0), mismatches(0) {}
+};
+
+static void rtcore_v04_observe_typed_stack_push_remainder(
+    const rtcore::v04::typed_node::route_result_v0 &node_route,
+    float current_traversal_bound,
+    rtcore_v04_typed_stack_push_remainder_stats *stats)
+{
+    namespace typed_node = rtcore::v04::typed_node;
+    namespace typed_stack = rtcore::v04::typed_stack;
+    assert(stats != NULL);
+    assert(node_route.result_kind == typed_node::kRouteResultSelected);
+    assert(node_route.frontier_count != 0);
+
+    typed_stack::push_input_v0 input = {};
+    input.profile_id = typed_stack::kGenRtDerivedProfileId;
+    input.operation_kind =
+        typed_stack::kPushRemainderAndForwardSelected;
+    input.frontier.frontier_capacity =
+        typed_stack::kMaxRemainderChildren;
+    input.current_traversal_bound_bits =
+        rtcore_v04_fp32_bits(current_traversal_bound);
+    input.node_route = node_route;
+
+    const typed_stack::push_result_v0 result =
+        typed_stack::execute_push(input);
+    const uint8_t expected_valid =
+        static_cast<uint8_t>(typed_stack::kFrontierDeltaValid |
+                             typed_stack::kSelectedFetchValid);
+    bool mismatch =
+        result.status != typed_stack::kStatusOk ||
+        result.result_kind != typed_stack::kStackPushedAndSelected ||
+        result.output_valid_mask != expected_valid ||
+        result.pruned_count != 0 ||
+        result.frontier_delta.action !=
+            typed_stack::kFrontierActionAppendChildren ||
+        result.frontier_delta.write_count != node_route.frontier_count ||
+        result.frontier_delta.append_base_index != 0 ||
+        result.frontier_delta.new_frontier_top !=
+            node_route.frontier_count ||
+        result.frontier_delta.new_frontier_count !=
+            node_route.frontier_count ||
+        memcmp(&result.selected_fetch, &node_route.selected_fetch,
+               sizeof(result.selected_fetch)) != 0;
+    for (unsigned index = 0; index < node_route.frontier_count; ++index) {
+        const unsigned source_index = node_route.frontier_count - index - 1;
+        mismatch = mismatch ||
+            memcmp(&result.frontier_delta.written_items[index],
+                   &node_route.frontier[source_index],
+                   sizeof(node_route.frontier[source_index])) != 0;
+    }
+
+    ++stats->operations;
+    stats->input_frontier_items += node_route.frontier_count;
+    stats->written_items += result.frontier_delta.write_count;
+    stats->pruned_items += result.pruned_count;
+    if (mismatch) {
+        ++stats->mismatches;
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_STACK_PUSH_REMAINDER "
+               "mismatch=1 status=%s input_frontier=%u written=%u "
+               "pruned=%u new_top=%u new_count=%u\n",
+               typed_stack::status_name(
+                   static_cast<typed_stack::status_kind>(result.status)),
+               node_route.frontier_count,
+               result.frontier_delta.write_count, result.pruned_count,
+               result.frontier_delta.new_frontier_top,
+               result.frontier_delta.new_frontier_count);
+        fflush(stdout);
+        abort();
+    }
+}
+
 static void rtcore_v04_observe_typed_node_child_route(
     const uint8_t *raw_node, const GEN_RT_BVH_INTERNAL_NODE &legacy_node,
     const float3 &origin, const float3 &direction, float t_min, float t_max,
@@ -14437,7 +14535,8 @@ static void rtcore_v04_observe_typed_node_child_route(
     const bool legacy_child_hit[6], const float legacy_near_t[6],
     uint64_t comparison_host_as_base,
     rtcore_v04_typed_node_reference_tracker *reference_tracker,
-    rtcore_v04_typed_node_child_route_stats *stats)
+    rtcore_v04_typed_node_child_route_stats *stats,
+    rtcore_v04_typed_stack_push_remainder_stats *stack_push_stats)
 {
     namespace typed_node = rtcore::v04::typed_node;
     assert(raw_node != NULL);
@@ -14480,6 +14579,10 @@ static void rtcore_v04_observe_typed_node_child_route(
                static_cast<unsigned long long>(input.current_payload_offset));
         fflush(stdout);
         abort();
+    }
+    if (stack_push_stats != NULL && result.frontier_count != 0) {
+        rtcore_v04_observe_typed_stack_push_remainder(
+            result, committed_t, stack_push_stats);
     }
 
     typed_node::compact_child_work_item_v0 expected_items[6] = {};
@@ -15870,6 +15973,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         rtcore_v04_typed_node_candidate_kernel_enabled();
     const bool v04_typed_node_child_route_enabled =
         rtcore_v04_typed_node_child_route_kernel_enabled();
+    const bool v04_typed_stack_push_remainder_enabled =
+        rtcore_v04_typed_stack_push_remainder_kernel_enabled();
     if (v04_typed_node_candidate_enabled &&
         (rtcore_abi_entry == NULL || !v04_shadow_boundary_enabled ||
          !rtcore_abi_entry->v04_shadow_trace_input_valid ||
@@ -16017,6 +16122,18 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         fflush(stdout);
         abort();
     }
+    if (v04_typed_stack_push_remainder_enabled &&
+        !rtcore_v04_typed_stack_push_remainder_prerequisites_enabled()) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_STACK_PUSH_REMAINDER "
+               "configuration_invalid=1 node_child_route=%u "
+               "producer_chain=%u\n",
+               v04_typed_node_child_route_enabled ? 1u : 0u,
+               rtcore_v04_typed_node_child_route_prerequisites_enabled()
+                   ? 1u
+                   : 0u);
+        fflush(stdout);
+        abort();
+    }
     if (v04_typed_instance_enter_enabled &&
         !rtcore_v04_typed_instance_enter_prerequisites_enabled()) {
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
@@ -16088,6 +16205,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     rtcore_v04_typed_node_candidate_stats v04_typed_node_candidate_stats;
     rtcore_v04_typed_node_child_route_stats
         v04_typed_node_child_route_stats;
+    rtcore_v04_typed_stack_push_remainder_stats
+        v04_typed_stack_push_remainder_stats;
     rtcore_v04_typed_node_reference_tracker
         v04_typed_node_reference_tracker;
     rtcore_v04_typed_primitive_candidate_stats
@@ -16398,7 +16517,10 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     cullMask, true, child_hit, thit,
                     reinterpret_cast<uint64_t>(_topLevelAS),
                     &v04_typed_node_reference_tracker,
-                    &v04_typed_node_child_route_stats);
+                    &v04_typed_node_child_route_stats,
+                    v04_typed_stack_push_remainder_enabled
+                        ? &v04_typed_stack_push_remainder_stats
+                        : NULL);
             }
 
             uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
@@ -16706,7 +16828,10 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             cullMask, false, child_hit, thit,
                             v04_route_blas_host_base,
                             &v04_typed_node_reference_tracker,
-                            &v04_typed_node_child_route_stats);
+                            &v04_typed_node_child_route_stats,
+                            v04_typed_stack_push_remainder_enabled
+                                ? &v04_typed_stack_push_remainder_stats
+                                : NULL);
                     }
 
                     uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
@@ -17257,6 +17382,21 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                v04_typed_node_child_route_stats.miss_routes,
                v04_typed_node_child_route_stats.frontier_items,
                v04_typed_node_child_route_stats.mismatches);
+        fflush(stdout);
+    }
+    if (v04_typed_stack_push_remainder_enabled) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_STACK_PUSH_REMAINDER "
+               "summary=1 thread_uid=%u operations=%u "
+               "input_frontier_items=%u written_items=%u pruned_items=%u "
+               "mismatches=%u persistent_frontier_authority=0 "
+               "memory_issue_authority=0 result_commit_authority=0 "
+               "functional_authority=0 timing_authority=0\n",
+               thread->get_uid(),
+               v04_typed_stack_push_remainder_stats.operations,
+               v04_typed_stack_push_remainder_stats.input_frontier_items,
+               v04_typed_stack_push_remainder_stats.written_items,
+               v04_typed_stack_push_remainder_stats.pruned_items,
+               v04_typed_stack_push_remainder_stats.mismatches);
         fflush(stdout);
     }
     if (v04_typed_primitive_candidate_enabled) {
