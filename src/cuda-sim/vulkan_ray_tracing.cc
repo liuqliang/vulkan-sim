@@ -32,6 +32,7 @@
 #include "rtcore_procedural_hit_ordering.h"
 #include "rtcore_tlas_binding_registry.h"
 #include "rtcore_v04_instance_blas_reference_registry.h"
+#include "rtcore_v04_private_frontier_layout.h"
 #include "rtcore_v04_shadow_shader_return.h"
 #include "rtcore_v04_typed_blas_decode_context.h"
 #include "rtcore_v04_typed_instance_kernel.h"
@@ -1974,6 +1975,16 @@ static bool rtcore_v04_typed_stack_pop_next_kernel_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_private_frontier_owner_layout_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_PRIVATE_FRONTIER_OWNER_LAYOUT") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_v04_typed_primitive_candidate_kernel_enabled()
 {
     static int enabled = []() {
@@ -2082,6 +2093,12 @@ static bool rtcore_v04_typed_stack_pop_next_prerequisites_enabled()
 {
     return rtcore_v04_typed_stack_push_remainder_kernel_enabled() &&
            rtcore_v04_typed_stack_push_remainder_prerequisites_enabled();
+}
+
+static bool rtcore_v04_private_frontier_owner_layout_prerequisites_enabled()
+{
+    return rtcore_v04_typed_stack_pop_next_kernel_enabled() &&
+           rtcore_v04_typed_stack_pop_next_prerequisites_enabled();
 }
 
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
@@ -14487,6 +14504,71 @@ struct rtcore_v04_typed_stack_pop_next_stats {
           popped_items(0), mismatches(0) {}
 };
 
+struct rtcore_v04_private_frontier_owner_layout_stats {
+    unsigned initialized_slots;
+    unsigned append_operations;
+    unsigned pop_operations;
+    unsigned read_plans;
+    unsigned write_plans;
+    unsigned planned_chunks;
+    unsigned metadata_chunks;
+    unsigned entry_chunks;
+    unsigned multi_chunk_entry_plans;
+    unsigned mismatches;
+
+    rtcore_v04_private_frontier_owner_layout_stats()
+        : initialized_slots(0), append_operations(0), pop_operations(0),
+          read_plans(0), write_plans(0), planned_chunks(0),
+          metadata_chunks(0), entry_chunks(0),
+          multi_chunk_entry_plans(0), mismatches(0) {}
+};
+
+static bool rtcore_v04_record_private_frontier_plan(
+    const rtcore::v04::private_frontier::access_plan_v0 &plan,
+    const rtcore::v04::private_frontier::owner_binding_v0 &owner,
+    bool is_read,
+    rtcore_v04_private_frontier_owner_layout_stats *stats)
+{
+    namespace private_frontier = rtcore::v04::private_frontier;
+    assert(stats != NULL);
+    if (!private_frontier::owners_equal(plan.owner, owner) ||
+        plan.access_count == 0 ||
+        plan.access_count > private_frontier::kMaxAccessChunks) {
+        return false;
+    }
+
+    unsigned entry_chunks = 0;
+    for (unsigned index = 0; index < plan.access_count; ++index) {
+        const private_frontier::shared_chunk_access_v0 &chunk =
+            plan.accesses[index];
+        if ((chunk.aligned_32b_address %
+             private_frontier::kSharedAccessChunkBytes) != 0 ||
+            chunk.byte_mask == 0 || chunk.byte_count == 0 ||
+            chunk.byte_count > private_frontier::kSharedAccessChunkBytes ||
+            chunk.access_kind !=
+                (is_read ? private_frontier::kAccessRead
+                         : private_frontier::kAccessWrite) ||
+            (chunk.field_kind != private_frontier::kFieldFrontierMetadata &&
+             chunk.field_kind != private_frontier::kFieldFrontierEntry)) {
+            return false;
+        }
+        ++stats->planned_chunks;
+        if (chunk.field_kind == private_frontier::kFieldFrontierMetadata) {
+            ++stats->metadata_chunks;
+        } else {
+            ++stats->entry_chunks;
+            ++entry_chunks;
+        }
+    }
+    if (entry_chunks > 1) ++stats->multi_chunk_entry_plans;
+    if (is_read) {
+        ++stats->read_plans;
+    } else {
+        ++stats->write_plans;
+    }
+    return true;
+}
+
 static void rtcore_v04_observe_typed_stack_pop_next(
     const rtcore::v04::typed_stack::push_result_v0 &push_result,
     float current_traversal_bound,
@@ -14569,11 +14651,150 @@ static void rtcore_v04_observe_typed_stack_pop_next(
     }
 }
 
+static void rtcore_v04_observe_private_frontier_owner_layout(
+    const rtcore::v04::typed_stack::push_result_v0 &push_result,
+    float current_traversal_bound,
+    rtcore_v04_private_frontier_owner_layout_stats *stats)
+{
+    namespace private_frontier = rtcore::v04::private_frontier;
+    namespace typed_stack = rtcore::v04::typed_stack;
+    assert(stats != NULL);
+    assert(push_result.status == typed_stack::kStatusOk);
+    assert(push_result.result_kind == typed_stack::kStackPushedAndSelected);
+
+    private_frontier::owner_binding_v0 owner = {};
+    owner.request_identity = stats->initialized_slots + 1;
+    owner.generation = 1;
+    owner.resident_warp_id =
+        (owner.request_identity - 1) / 32;
+    owner.lane_id = static_cast<uint8_t>(
+        (owner.request_identity - 1) % 32);
+    owner.private_slot_id = owner.lane_id;
+
+    private_frontier::region_binding_v0 region = {};
+    region.profile_id = private_frontier::kLayoutProfileId;
+    region.slot_count = 32;
+    region.private_region_base = 0x100000;
+
+    private_frontier::frontier_metadata_image_v0 metadata = {};
+    metadata.frontier_capacity =
+        private_frontier::kFrontierEntryCapacity;
+    metadata.current_level =
+        push_result.selected_fetch.decode_context.as_object.as_type == 1
+            ? 0u
+            : 1u;
+    metadata.level_frame_depth = metadata.current_level;
+    metadata.max_level_depth = 1;
+
+    private_frontier::shadow_slot_v0 slot = {};
+    private_frontier::access_plan_v0 plan = {};
+    private_frontier::status_kind status =
+        private_frontier::initialize_shadow_slot(
+            &slot, owner, region, metadata, &plan);
+    bool mismatch = status != private_frontier::kStatusOk ||
+        !rtcore_v04_record_private_frontier_plan(
+            plan, owner, false, stats);
+    if (!mismatch) {
+        ++stats->initialized_slots;
+        status = private_frontier::apply_append_delta(
+            &slot, owner, region, push_result.frontier_delta, &plan);
+        mismatch = status != private_frontier::kStatusOk ||
+            !rtcore_v04_record_private_frontier_plan(
+                plan, owner, false, stats);
+    }
+    if (!mismatch) ++stats->append_operations;
+
+    unsigned observed_pops = 0;
+    while (!mismatch) {
+        status = private_frontier::decode_metadata(slot, owner, &metadata);
+        if (status != private_frontier::kStatusOk) {
+            mismatch = true;
+            break;
+        }
+        if (metadata.frontier_top == 0) break;
+
+        rtcore::v04::typed_node::compact_child_work_item_v0 top_entry = {};
+        uint32_t top_index = 0;
+        status = private_frontier::read_top_entry(
+            slot, owner, region, &top_entry, &top_index, &plan);
+        if (status != private_frontier::kStatusOk ||
+            !rtcore_v04_record_private_frontier_plan(
+                plan, owner, true, stats) ||
+            top_index >= push_result.frontier_delta.write_count ||
+            memcmp(&top_entry,
+                   &push_result.frontier_delta.written_items[top_index],
+                   sizeof(top_entry)) != 0) {
+            mismatch = true;
+            break;
+        }
+
+        typed_stack::pop_input_v0 pop_input = {};
+        pop_input.profile_id = typed_stack::kGenRtDerivedProfileId;
+        pop_input.operation_kind = typed_stack::kPopNext;
+        pop_input.has_top_entry = 1;
+        pop_input.frontier.frontier_top = metadata.frontier_top;
+        pop_input.frontier.frontier_count = metadata.frontier_count;
+        pop_input.frontier.frontier_capacity = metadata.frontier_capacity;
+        pop_input.current_traversal_bound_bits =
+            rtcore_v04_fp32_bits(current_traversal_bound);
+        pop_input.top_entry = top_entry;
+        pop_input.current_decode_context =
+            push_result.selected_fetch.decode_context;
+        const typed_stack::pop_result_v0 pop_result =
+            typed_stack::execute_pop(pop_input);
+        if (pop_result.status != typed_stack::kStatusOk ||
+            pop_result.result_kind != typed_stack::kStackSelectedNext) {
+            mismatch = true;
+            break;
+        }
+
+        status = private_frontier::apply_pop_delta(
+            &slot, owner, region, pop_result.frontier_delta, &plan);
+        if (status != private_frontier::kStatusOk ||
+            !rtcore_v04_record_private_frontier_plan(
+                plan, owner, false, stats)) {
+            mismatch = true;
+            break;
+        }
+
+        rtcore::v04::typed_node::compact_child_work_item_v0 stale_entry = {};
+        if (private_frontier::decode_entry(
+                slot, owner, top_index, &stale_entry) !=
+                private_frontier::kStatusOk ||
+            memcmp(&stale_entry, &top_entry, sizeof(top_entry)) != 0) {
+            mismatch = true;
+            break;
+        }
+        ++stats->pop_operations;
+        ++observed_pops;
+    }
+
+    if (!mismatch) {
+        status = private_frontier::decode_metadata(slot, owner, &metadata);
+        mismatch = status != private_frontier::kStatusOk ||
+            metadata.frontier_top != 0 ||
+            metadata.frontier_count != 0 ||
+            observed_pops != push_result.frontier_delta.write_count;
+    }
+    if (mismatch) {
+        ++stats->mismatches;
+        printf("GPGPU-Sim PTX: RTCORE_V04_PRIVATE_FRONTIER_OWNER_LAYOUT "
+               "mismatch=1 status=%s request_identity=%u "
+               "written_items=%u observed_pops=%u\n",
+               private_frontier::status_name(status),
+               owner.request_identity,
+               push_result.frontier_delta.write_count, observed_pops);
+        fflush(stdout);
+        abort();
+    }
+}
+
 static void rtcore_v04_observe_typed_stack_push_remainder(
     const rtcore::v04::typed_node::route_result_v0 &node_route,
     float current_traversal_bound,
     rtcore_v04_typed_stack_push_remainder_stats *stats,
-    rtcore_v04_typed_stack_pop_next_stats *pop_stats)
+    rtcore_v04_typed_stack_pop_next_stats *pop_stats,
+    rtcore_v04_private_frontier_owner_layout_stats *layout_stats)
 {
     namespace typed_node = rtcore::v04::typed_node;
     namespace typed_stack = rtcore::v04::typed_stack;
@@ -14641,6 +14862,10 @@ static void rtcore_v04_observe_typed_stack_push_remainder(
         rtcore_v04_observe_typed_stack_pop_next(
             result, current_traversal_bound, pop_stats);
     }
+    if (layout_stats != NULL) {
+        rtcore_v04_observe_private_frontier_owner_layout(
+            result, current_traversal_bound, layout_stats);
+    }
 }
 
 static void rtcore_v04_observe_typed_node_child_route(
@@ -14652,7 +14877,8 @@ static void rtcore_v04_observe_typed_node_child_route(
     rtcore_v04_typed_node_reference_tracker *reference_tracker,
     rtcore_v04_typed_node_child_route_stats *stats,
     rtcore_v04_typed_stack_push_remainder_stats *stack_push_stats,
-    rtcore_v04_typed_stack_pop_next_stats *stack_pop_stats)
+    rtcore_v04_typed_stack_pop_next_stats *stack_pop_stats,
+    rtcore_v04_private_frontier_owner_layout_stats *frontier_layout_stats)
 {
     namespace typed_node = rtcore::v04::typed_node;
     assert(raw_node != NULL);
@@ -14698,7 +14924,8 @@ static void rtcore_v04_observe_typed_node_child_route(
     }
     if (stack_push_stats != NULL && result.frontier_count != 0) {
         rtcore_v04_observe_typed_stack_push_remainder(
-            result, committed_t, stack_push_stats, stack_pop_stats);
+            result, committed_t, stack_push_stats, stack_pop_stats,
+            frontier_layout_stats);
     }
 
     typed_node::compact_child_work_item_v0 expected_items[6] = {};
@@ -16093,6 +16320,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         rtcore_v04_typed_stack_push_remainder_kernel_enabled();
     const bool v04_typed_stack_pop_next_enabled =
         rtcore_v04_typed_stack_pop_next_kernel_enabled();
+    const bool v04_private_frontier_owner_layout_enabled =
+        rtcore_v04_private_frontier_owner_layout_enabled();
     if (v04_typed_node_candidate_enabled &&
         (rtcore_abi_entry == NULL || !v04_shadow_boundary_enabled ||
          !rtcore_abi_entry->v04_shadow_trace_input_valid ||
@@ -16263,6 +16492,17 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         fflush(stdout);
         abort();
     }
+    if (v04_private_frontier_owner_layout_enabled &&
+        !rtcore_v04_private_frontier_owner_layout_prerequisites_enabled()) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_PRIVATE_FRONTIER_OWNER_LAYOUT "
+               "configuration_invalid=1 stack_pop=%u producer_chain=%u\n",
+               v04_typed_stack_pop_next_enabled ? 1u : 0u,
+               rtcore_v04_typed_stack_pop_next_prerequisites_enabled()
+                   ? 1u
+                   : 0u);
+        fflush(stdout);
+        abort();
+    }
     if (v04_typed_instance_enter_enabled &&
         !rtcore_v04_typed_instance_enter_prerequisites_enabled()) {
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
@@ -16338,6 +16578,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         v04_typed_stack_push_remainder_stats;
     rtcore_v04_typed_stack_pop_next_stats
         v04_typed_stack_pop_next_stats;
+    rtcore_v04_private_frontier_owner_layout_stats
+        v04_private_frontier_owner_layout_stats;
     rtcore_v04_typed_node_reference_tracker
         v04_typed_node_reference_tracker;
     rtcore_v04_typed_primitive_candidate_stats
@@ -16654,6 +16896,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         : NULL,
                     v04_typed_stack_pop_next_enabled
                         ? &v04_typed_stack_pop_next_stats
+                        : NULL,
+                    v04_private_frontier_owner_layout_enabled
+                        ? &v04_private_frontier_owner_layout_stats
                         : NULL);
             }
 
@@ -16968,6 +17213,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 : NULL,
                             v04_typed_stack_pop_next_enabled
                                 ? &v04_typed_stack_pop_next_stats
+                                : NULL,
+                            v04_private_frontier_owner_layout_enabled
+                                ? &v04_private_frontier_owner_layout_stats
                                 : NULL);
                     }
 
@@ -17548,6 +17796,30 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                v04_typed_stack_pop_next_stats.pruned_items,
                v04_typed_stack_pop_next_stats.popped_items,
                v04_typed_stack_pop_next_stats.mismatches);
+        fflush(stdout);
+    }
+    if (v04_private_frontier_owner_layout_enabled) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_PRIVATE_FRONTIER_OWNER_LAYOUT "
+               "summary=1 thread_uid=%u initialized_slots=%u "
+               "append_operations=%u pop_operations=%u read_plans=%u "
+               "write_plans=%u planned_chunks=%u metadata_chunks=%u "
+               "entry_chunks=%u multi_chunk_entry_plans=%u "
+               "mismatches=%u producer_owner_authority=0 "
+               "live_private_slot_authority=0 shared_memory_mutation=0 "
+               "memory_issue_authority=0 result_commit_authority=0 "
+               "functional_authority=0 timing_authority=0\n",
+               thread->get_uid(),
+               v04_private_frontier_owner_layout_stats.initialized_slots,
+               v04_private_frontier_owner_layout_stats.append_operations,
+               v04_private_frontier_owner_layout_stats.pop_operations,
+               v04_private_frontier_owner_layout_stats.read_plans,
+               v04_private_frontier_owner_layout_stats.write_plans,
+               v04_private_frontier_owner_layout_stats.planned_chunks,
+               v04_private_frontier_owner_layout_stats.metadata_chunks,
+               v04_private_frontier_owner_layout_stats.entry_chunks,
+               v04_private_frontier_owner_layout_stats
+                   .multi_chunk_entry_plans,
+               v04_private_frontier_owner_layout_stats.mismatches);
         fflush(stdout);
     }
     if (v04_typed_primitive_candidate_enabled) {

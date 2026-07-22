@@ -1,0 +1,159 @@
+#ifndef RTCORE_V04_PRIVATE_FRONTIER_LAYOUT_H
+#define RTCORE_V04_PRIVATE_FRONTIER_LAYOUT_H
+
+#include <cstddef>
+#include <cstdint>
+
+#include "rtcore_v04_typed_stack_kernel.h"
+
+namespace rtcore {
+namespace v04 {
+namespace private_frontier {
+
+static const uint32_t kLayoutProfileId =
+    typed_stack::kGenRtDerivedProfileId;
+static const uint32_t kPrivateDataSlotBytes = 0x340;
+static const uint32_t kPrivateDataSlotAlignment = 32;
+static const uint32_t kSharedAccessChunkBytes = 32;
+static const uint32_t kFrontierMetadataOffset = 0x02c;
+static const uint32_t kFrontierMetadataBytes = 24;
+static const uint32_t kFrontierEntriesOffset = 0x108;
+static const uint32_t kFrontierEntryBytes = 16;
+static const uint32_t kFrontierEntryCapacity = 16;
+static const uint32_t kFrontierEntriesEnd = 0x208;
+static const uint32_t kMaxAccessChunks = 12;
+
+enum status_kind : uint8_t {
+  kStatusOk = 0,
+  kStatusInvalidArgument,
+  kStatusUnsupportedProfile,
+  kStatusInvalidOwner,
+  kStatusOwnerMismatch,
+  kStatusInvalidRegion,
+  kStatusAddressOverflow,
+  kStatusInvalidMetadata,
+  kStatusInvalidEntryIndex,
+  kStatusInvalidDelta,
+  kStatusPlanCapacityExceeded,
+};
+
+enum access_kind : uint8_t {
+  kAccessInvalid = 0,
+  kAccessRead = 1,
+  kAccessWrite = 2,
+};
+
+enum field_kind : uint8_t {
+  kFieldInvalid = 0,
+  kFieldFrontierMetadata = 1,
+  kFieldFrontierEntry = 2,
+};
+
+struct owner_binding_v0 {
+  uint32_t owner_hw_sid;
+  uint32_t resident_warp_id;
+  uint32_t request_identity;
+  uint32_t generation;
+  uint32_t private_slot_id;
+  uint8_t lane_id;
+  uint8_t reserved_zero[3];
+};
+
+struct region_binding_v0 {
+  uint32_t profile_id;
+  uint32_t slot_count;
+  uint64_t private_region_base;
+};
+
+struct frontier_metadata_image_v0 {
+  uint32_t frontier_top;
+  uint32_t frontier_count;
+  uint32_t frontier_capacity;
+  uint32_t current_level;
+  uint32_t level_frame_depth;
+  uint32_t max_level_depth;
+};
+
+struct shared_chunk_access_v0 {
+  uint64_t aligned_32b_address;
+  uint32_t byte_mask;
+  uint16_t slot_byte_offset;
+  uint8_t byte_count;
+  uint8_t field_kind;
+  uint8_t access_kind;
+  uint8_t reserved_zero[7];
+};
+
+struct access_plan_v0 {
+  owner_binding_v0 owner;
+  uint8_t access_count;
+  uint8_t reserved_zero[7];
+  shared_chunk_access_v0 accesses[kMaxAccessChunks];
+};
+
+struct shadow_slot_v0 {
+  owner_binding_v0 owner;
+  uint8_t bytes[kPrivateDataSlotBytes];
+};
+
+static_assert(sizeof(owner_binding_v0) == 24,
+              "private frontier owner binding must remain 24 bytes");
+static_assert(sizeof(region_binding_v0) == 16,
+              "private frontier region binding must remain 16 bytes");
+static_assert(sizeof(frontier_metadata_image_v0) == kFrontierMetadataBytes,
+              "private frontier metadata must remain 24 bytes");
+static_assert(sizeof(typed_node::compact_child_work_item_v0) ==
+                  kFrontierEntryBytes,
+              "private frontier entry must remain 16 bytes");
+static_assert(kFrontierEntriesOffset +
+                      kFrontierEntryCapacity * kFrontierEntryBytes ==
+                  kFrontierEntriesEnd,
+              "private frontier entry range changed");
+static_assert(kPrivateDataSlotBytes % kPrivateDataSlotAlignment == 0,
+              "private data slot stride must remain 32-byte aligned");
+static_assert(sizeof(shared_chunk_access_v0) == 24,
+              "shared chunk descriptor must remain 24 bytes");
+
+status_kind initialize_shadow_slot(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const frontier_metadata_image_v0 &metadata,
+    access_plan_v0 *metadata_write_plan);
+
+status_kind decode_metadata(const shadow_slot_v0 &slot,
+                            const owner_binding_v0 &owner,
+                            frontier_metadata_image_v0 *metadata);
+
+status_kind decode_entry(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    uint32_t entry_index,
+    typed_node::compact_child_work_item_v0 *entry);
+
+status_kind apply_append_delta(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const typed_stack::frontier_append_delta_v0 &delta,
+    access_plan_v0 *write_plan);
+
+status_kind read_top_entry(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    typed_node::compact_child_work_item_v0 *entry,
+    uint32_t *entry_index, access_plan_v0 *read_plan);
+
+status_kind apply_pop_delta(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const typed_stack::frontier_pop_delta_v0 &delta,
+    access_plan_v0 *write_plan);
+
+bool owners_equal(const owner_binding_v0 &lhs,
+                  const owner_binding_v0 &rhs);
+
+const char *status_name(status_kind status);
+
+}  // namespace private_frontier
+}  // namespace v04
+}  // namespace rtcore
+
+#endif
