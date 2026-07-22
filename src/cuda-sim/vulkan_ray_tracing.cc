@@ -31,6 +31,7 @@
 #include "rtcore_replay_interface.h"
 #include "rtcore_procedural_hit_ordering.h"
 #include "rtcore_tlas_binding_registry.h"
+#include "rtcore_v04_instance_blas_reference_registry.h"
 #include "rtcore_v04_shadow_shader_return.h"
 #include "rtcore_v04_typed_blas_decode_context.h"
 #include "rtcore_v04_typed_instance_kernel.h"
@@ -190,6 +191,8 @@ static rtcore_tlas_binding_registry<rtcore_tlas_binding_snapshot>
     g_rtcore_tlas_binding_registry;
 static rtcore_tlas_binding_registry<rtcore_blas_binding_snapshot>
     g_rtcore_blas_binding_registry;
+static rtcore_v04_instance_blas_reference_registry
+    g_rtcore_instance_blas_reference_registry;
 
 static void rtcore_fail_tlas_binding(const char *reason,
                                      uint64_t host_root_address,
@@ -225,6 +228,24 @@ static void rtcore_fail_blas_binding(const char *reason,
             (unsigned long long)host_root_address,
             (unsigned long long)device_base_address,
             (unsigned long long)size_bytes);
+    fflush(stderr);
+    abort();
+}
+
+static void rtcore_fail_instance_blas_reference(
+    const char *reason, uint64_t tlas_object_id,
+    uint32_t tlas_generation, uint64_t instance_metadata_reference,
+    uint64_t blas_object_id = 0, uint32_t blas_generation = 0)
+{
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_INSTANCE_BLAS_REFERENCE_FAULT reason=%s "
+            "tlas_object_id=%llu tlas_generation=%u "
+            "instance_metadata_ref=0x%llx blas_object_id=%llu "
+            "blas_generation=%u\n",
+            reason != NULL ? reason : "unknown",
+            (unsigned long long)tlas_object_id, tlas_generation,
+            (unsigned long long)instance_metadata_reference,
+            (unsigned long long)blas_object_id, blas_generation);
     fflush(stderr);
     abort();
 }
@@ -1969,6 +1990,31 @@ static bool rtcore_v04_producer_backed_blas_root_descriptor_enabled()
                RTCORE_CANDIDATE_GATE_ENABLED;
     }();
     return enabled != 0;
+}
+
+static bool rtcore_v04_producer_backed_instance_blas_reference_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_PRODUCER_BACKED_INSTANCE_BLAS_REFERENCE_TABLE") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v04_tlas_binding_enforcement_gate_enabled()
+{
+    return rtcore_candidate_gate_state_for(
+               "VULKAN_SIM_RTCORE_ABI_V04_TLAS_BINDING_ENFORCEMENT") ==
+           RTCORE_CANDIDATE_GATE_ENABLED;
+}
+
+static bool rtcore_v04_instance_blas_reference_prerequisites_enabled()
+{
+    return rtcore_v04_typed_instance_boundary_seed_enabled() &&
+           rtcore_v04_typed_blas_decode_context_bridge_enabled() &&
+           rtcore_v04_producer_backed_blas_root_descriptor_enabled() &&
+           rtcore_v04_tlas_binding_enforcement_gate_enabled();
 }
 
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
@@ -14522,34 +14568,97 @@ struct rtcore_v04_typed_blas_decode_context_stats {
     unsigned mismatches;
     unsigned root_descriptors;
     unsigned root_descriptor_mismatches;
+    unsigned instance_references;
+    unsigned instance_reference_mismatches;
 
     rtcore_v04_typed_blas_decode_context_stats()
         : contexts(0), mismatches(0), root_descriptors(0),
-          root_descriptor_mismatches(0) {}
+          root_descriptor_mismatches(0), instance_references(0),
+          instance_reference_mismatches(0) {}
 };
+
+static bool rtcore_v04_resolve_instance_blas_reference(
+    const rtcore_tlas_binding_snapshot &tlas,
+    uint64_t instance_metadata_reference,
+    rtcore_blas_binding_snapshot *blas,
+    rtcore_v04_instance_blas_reference_snapshot *reference,
+    const char **failure_reason)
+{
+    if (blas == NULL || reference == NULL) {
+        if (failure_reason != NULL) *failure_reason = "null_output";
+        return false;
+    }
+    *blas = rtcore_blas_binding_snapshot();
+    *reference = rtcore_v04_instance_blas_reference_snapshot();
+    const char *reason = "unvalidated";
+    if (!g_rtcore_tlas_binding_registry.validate(
+            tlas, instance_metadata_reference, 128, &reason) ||
+        !g_rtcore_instance_blas_reference_registry.resolve(
+            tlas.object_id, tlas.generation,
+            instance_metadata_reference, reference, &reason) ||
+        !g_rtcore_blas_binding_registry.capture_by_object_id(
+            reference->blas_object_id, blas, &reason) ||
+        !g_rtcore_blas_binding_registry.validate(
+            *blas, 0, 0, &reason)) {
+        if (failure_reason != NULL) *failure_reason = reason;
+        return false;
+    }
+    if (blas->generation != reference->blas_generation ||
+        blas->host_root_address != reference->blas_host_root_address ||
+        !blas->root_descriptor_valid ||
+        blas->root_build_generation == 0) {
+        if (failure_reason != NULL) {
+            *failure_reason = "referenced_blas_generation_mismatch";
+        }
+        return false;
+    }
+    if (failure_reason != NULL) *failure_reason = "none";
+    return true;
+}
 
 static void rtcore_v04_observe_typed_blas_decode_context(
     const uint8_t *raw_instance,
     const GEN_RT_BVH_INSTANCE_LEAF &legacy_instance,
+    const rtcore_tlas_binding_snapshot &tlas_binding,
+    uint64_t instance_metadata_reference,
     rtcore_v04_typed_blas_decode_context_stats *stats)
 {
     namespace typed_blas = rtcore::v04::typed_blas;
     assert(raw_instance != NULL);
     assert(stats != NULL);
 
-    const uint64_t host_blas_header =
+    const uint64_t legacy_host_blas_header =
         reinterpret_cast<uint64_t>(raw_instance) + legacy_instance.BVHAddress;
     rtcore_blas_binding_snapshot binding;
+    rtcore_v04_instance_blas_reference_snapshot instance_reference;
     const char *capture_failure = "unvalidated";
-    if (!VulkanRayTracing::captureBlasBinding(
-            host_blas_header, &binding, &capture_failure)) {
+    const bool use_instance_reference =
+        rtcore_v04_producer_backed_instance_blas_reference_enabled();
+    const bool binding_captured = use_instance_reference
+        ? rtcore_v04_resolve_instance_blas_reference(
+              tlas_binding, instance_metadata_reference, &binding,
+              &instance_reference, &capture_failure)
+        : VulkanRayTracing::captureBlasBinding(
+              legacy_host_blas_header, &binding, &capture_failure);
+    if (!binding_captured) {
+        if (use_instance_reference) {
+            ++stats->instance_reference_mismatches;
+        }
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_BLAS_DECODE_CONTEXT "
-               "capture_failure=1 reason=%s host_blas=0x%llx\n",
+               "capture_failure=1 reason=%s host_blas=0x%llx "
+               "instance_metadata_ref=0x%llx relation_authority=%u\n",
                capture_failure,
-               static_cast<unsigned long long>(host_blas_header));
+               static_cast<unsigned long long>(legacy_host_blas_header),
+               static_cast<unsigned long long>(
+                   instance_metadata_reference),
+               use_instance_reference ? 1u : 0u);
         fflush(stdout);
         abort();
     }
+    if (use_instance_reference) {
+        ++stats->instance_references;
+    }
+    const uint64_t producer_host_blas_header = binding.host_root_address;
 
     typed_blas::boundary_input_v0 input = {};
     input.profile_id = typed_blas::kGenRtDerivedProfileId;
@@ -14559,12 +14668,13 @@ static void rtcore_v04_observe_typed_blas_decode_context(
     input.binding.device_base = binding.device_base_address;
     input.binding.device_range_bytes = binding.size_bytes;
     if (!typed_blas::make_raw_bvh_header(
-            reinterpret_cast<const void *>(host_blas_header),
+            reinterpret_cast<const void *>(producer_host_blas_header),
             binding.size_bytes,
             &input.raw_header)) {
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_BLAS_DECODE_CONTEXT "
-               "adapter_failure=1 host_blas=0x%llx\n",
-               static_cast<unsigned long long>(host_blas_header));
+               "adapter_failure=1 producer_host_blas=0x%llx\n",
+               static_cast<unsigned long long>(
+                   producer_host_blas_header));
         fflush(stdout);
         abort();
     }
@@ -14573,10 +14683,11 @@ static void rtcore_v04_observe_typed_blas_decode_context(
         typed_blas::execute(input);
     if (result.status != typed_blas::kStatusOk) {
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_BLAS_DECODE_CONTEXT "
-               "kernel_failure=1 status=%s host_blas=0x%llx\n",
+               "kernel_failure=1 status=%s producer_host_blas=0x%llx\n",
                typed_blas::status_name(
                    static_cast<typed_blas::status_kind>(result.status)),
-               static_cast<unsigned long long>(host_blas_header));
+               static_cast<unsigned long long>(
+                   producer_host_blas_header));
         fflush(stdout);
         abort();
     }
@@ -14596,7 +14707,8 @@ static void rtcore_v04_observe_typed_blas_decode_context(
 
     GEN_RT_BVH legacy_header;
     GEN_RT_BVH_unpack(
-        &legacy_header, reinterpret_cast<uint8_t *>(host_blas_header));
+        &legacy_header,
+        reinterpret_cast<uint8_t *>(legacy_host_blas_header));
     const uint32_t legacy_bounds_min[] = {
         rtcore_v04_fp32_bits(legacy_header.BoundsMin.X),
         rtcore_v04_fp32_bits(legacy_header.BoundsMin.Y),
@@ -14618,10 +14730,20 @@ static void rtcore_v04_observe_typed_blas_decode_context(
 
     const bool legacy_map_valid =
         VulkanRayTracing::validateBlasLegacyAlias(
-            host_blas_header, binding.device_base_address);
+            legacy_host_blas_header, binding.device_base_address);
     const typed_blas::as_decode_context_v0 &context = result.decode_context;
+    const bool instance_reference_mismatch =
+        use_instance_reference &&
+        (instance_reference.instance_host_address !=
+             reinterpret_cast<uint64_t>(raw_instance) ||
+         instance_reference.instance_metadata_reference !=
+             instance_metadata_reference ||
+         instance_reference.blas_host_root_address !=
+             producer_host_blas_header ||
+         producer_host_blas_header != legacy_host_blas_header);
     const bool mismatch =
         !binding.valid || !binding.live ||
+        instance_reference_mismatch ||
         context.bvh_format_profile_id !=
             typed_blas::kGenRtDerivedProfileId ||
         context.reserved_zero != 0 ||
@@ -14637,13 +14759,18 @@ static void rtcore_v04_observe_typed_blas_decode_context(
     ++stats->contexts;
     if (mismatch) {
         ++stats->mismatches;
+        if (instance_reference_mismatch) {
+            ++stats->instance_reference_mismatches;
+        }
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_BLAS_DECODE_CONTEXT "
-               "mismatch=1 host_blas=0x%llx object_id=%llu generation=%u "
+               "mismatch=1 producer_host_blas=0x%llx "
+               "legacy_host_blas=0x%llx object_id=%llu generation=%u "
                "typed_base=0x%llx binding_base=0x%llx "
                "typed_range=%llu binding_range=%llu "
                "typed_root=0x%llx legacy_root=0x%llx "
                "legacy_map_valid=%u bounds_mismatch=%u\n",
-               static_cast<unsigned long long>(host_blas_header),
+               static_cast<unsigned long long>(producer_host_blas_header),
+               static_cast<unsigned long long>(legacy_host_blas_header),
                static_cast<unsigned long long>(binding.object_id),
                binding.generation,
                static_cast<unsigned long long>(context.device_base),
@@ -14705,12 +14832,13 @@ static void rtcore_v04_observe_typed_blas_decode_context(
             ++stats->root_descriptor_mismatches;
             printf("GPGPU-Sim PTX: "
                    "RTCORE_V04_PRODUCER_BACKED_BLAS_ROOT_DESCRIPTOR "
-                   "mismatch=1 host_blas=0x%llx object_id=%llu "
+                   "mismatch=1 producer_host_blas=0x%llx object_id=%llu "
                    "generation=%u build_generation=%u status=%s "
                    "typed_root=0x%llx producer_root=0x%llx "
                    "legacy_root=0x%llx typed_kind=%u producer_kind=%u "
                    "range_valid=%u range_reason=%s\n",
-                   static_cast<unsigned long long>(host_blas_header),
+                   static_cast<unsigned long long>(
+                       producer_host_blas_header),
                    static_cast<unsigned long long>(binding.object_id),
                    binding.generation, binding.root_build_generation,
                    typed_blas::status_name(
@@ -15207,6 +15335,22 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         rtcore_v04_typed_blas_decode_context_bridge_enabled();
     const bool v04_producer_backed_blas_root_descriptor_enabled =
         rtcore_v04_producer_backed_blas_root_descriptor_enabled();
+    const bool v04_producer_backed_instance_blas_reference_enabled =
+        rtcore_v04_producer_backed_instance_blas_reference_enabled();
+    if (v04_producer_backed_instance_blas_reference_enabled &&
+        !rtcore_v04_instance_blas_reference_prerequisites_enabled()) {
+        printf("GPGPU-Sim PTX: "
+               "RTCORE_V04_PRODUCER_BACKED_INSTANCE_BLAS_REFERENCE "
+               "configuration_invalid=1 instance_boundary=%u "
+               "context_bridge=%u root_descriptor=%u "
+               "tlas_binding_enforcement=%u\n",
+               v04_typed_instance_boundary_enabled ? 1u : 0u,
+               v04_typed_blas_decode_context_enabled ? 1u : 0u,
+               v04_producer_backed_blas_root_descriptor_enabled ? 1u : 0u,
+               rtcore_v04_tlas_binding_enforcement_gate_enabled() ? 1u : 0u);
+        fflush(stdout);
+        abort();
+    }
     if (v04_producer_backed_blas_root_descriptor_enabled &&
         !v04_typed_blas_decode_context_enabled) {
         printf("GPGPU-Sim PTX: "
@@ -15615,13 +15759,15 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     leaf_addr, instanceLeaf,
                     &v04_typed_instance_boundary_stats);
             }
+            const uint64_t instance_metadata_ref =
+                (uint64_t)leaf_addr + device_offset;
             if (v04_typed_blas_decode_context_enabled) {
                 rtcore_v04_observe_typed_blas_decode_context(
                     leaf_addr, instanceLeaf,
+                    rtcore_abi_entry->v04_tlas_binding,
+                    instance_metadata_ref,
                     &v04_typed_blas_decode_context_stats);
             }
-            const uint64_t instance_metadata_ref =
-                (uint64_t)leaf_addr + device_offset;
             transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
             total_nodes_accessed++;
@@ -16354,6 +16500,20 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                v04_typed_blas_decode_context_stats.root_descriptors,
                v04_typed_blas_decode_context_stats
                    .root_descriptor_mismatches);
+        fflush(stdout);
+    }
+    if (v04_producer_backed_instance_blas_reference_enabled) {
+        printf("GPGPU-Sim PTX: "
+               "RTCORE_V04_PRODUCER_BACKED_INSTANCE_BLAS_REFERENCE "
+               "summary=1 thread_uid=%u resolutions=%u mismatches=%u "
+               "legacy_pointer_authority=0 transform_authority=0 "
+               "blas_transition_authority=0 memory_issue_authority=0 "
+               "private_state_authority=0 functional_authority=0 "
+               "timing_authority=0\n",
+               thread->get_uid(),
+               v04_typed_blas_decode_context_stats.instance_references,
+               v04_typed_blas_decode_context_stats
+                   .instance_reference_mismatches);
         fflush(stdout);
     }
 
@@ -19255,6 +19415,148 @@ void VulkanRayTracing::publishBLASRootDescriptor(
     fflush(stdout);
 }
 
+void VulkanRayTracing::beginTLASInstanceReferences(void* objectKey) {
+    if (!rtcore_v04_producer_backed_instance_blas_reference_enabled()) {
+        return;
+    }
+    if (!rtcore_v04_instance_blas_reference_prerequisites_enabled()) {
+        rtcore_fail_instance_blas_reference(
+            "instance_reference_prerequisite_missing", 0, 0, 0);
+    }
+
+    rtcore_tlas_binding_snapshot tlas;
+    const char *capture_failure = "unvalidated";
+    if (!g_rtcore_tlas_binding_registry.capture_by_driver_object(
+            (uint64_t)objectKey, &tlas, &capture_failure)) {
+        rtcore_fail_instance_blas_reference(
+            capture_failure, 0, 0, 0);
+    }
+    const char *binding_failure = "unvalidated";
+    if (!g_rtcore_tlas_binding_registry.validate(
+            tlas, 0, 0, &binding_failure)) {
+        rtcore_fail_instance_blas_reference(
+            binding_failure, tlas.object_id, tlas.generation, 0);
+    }
+
+    uint32_t build_generation = 0;
+    const char *begin_failure = "unvalidated";
+    if (!g_rtcore_instance_blas_reference_registry.begin_build(
+            tlas.object_id, tlas.generation, tlas.host_root_address,
+            tlas.device_base_address, tlas.size_bytes,
+            &build_generation, &begin_failure)) {
+        rtcore_fail_instance_blas_reference(
+            begin_failure, tlas.object_id, tlas.generation, 0);
+    }
+    printf("GPGPU-Sim RTCORE_INSTANCE_BLAS_REFERENCE_BUILD_BEGIN "
+           "tlas_object_id=%llu tlas_generation=%u "
+           "build_generation=%u\n",
+           (unsigned long long)tlas.object_id, tlas.generation,
+           build_generation);
+    fflush(stdout);
+}
+
+void VulkanRayTracing::publishTLASInstanceReference(
+    void* objectKey, void* instanceLeafAddress,
+    const void* blasRootAddress) {
+    if (!rtcore_v04_producer_backed_instance_blas_reference_enabled()) {
+        return;
+    }
+    if (!rtcore_v04_instance_blas_reference_prerequisites_enabled()) {
+        rtcore_fail_instance_blas_reference(
+            "instance_reference_prerequisite_missing", 0, 0, 0);
+    }
+
+    rtcore_tlas_binding_snapshot tlas;
+    rtcore_blas_binding_snapshot blas;
+    const char *capture_failure = "unvalidated";
+    if (!g_rtcore_tlas_binding_registry.capture_by_driver_object(
+            (uint64_t)objectKey, &tlas, &capture_failure)) {
+        rtcore_fail_instance_blas_reference(
+            capture_failure, 0, 0, 0);
+    }
+    if (!g_rtcore_blas_binding_registry.capture(
+            (uint64_t)blasRootAddress, &blas, &capture_failure)) {
+        rtcore_fail_instance_blas_reference(
+            capture_failure, tlas.object_id, tlas.generation, 0);
+    }
+    if (!blas.root_descriptor_valid ||
+        blas.root_build_generation == 0) {
+        rtcore_fail_instance_blas_reference(
+            "referenced_blas_root_not_published", tlas.object_id,
+            tlas.generation, 0, blas.object_id, blas.generation);
+    }
+
+    const uint64_t instance_host_address =
+        (uint64_t)instanceLeafAddress;
+    if (instance_host_address < tlas.host_root_address) {
+        rtcore_fail_instance_blas_reference(
+            "instance_host_before_tlas", tlas.object_id,
+            tlas.generation, 0, blas.object_id, blas.generation);
+    }
+    const uint64_t instance_offset =
+        instance_host_address - tlas.host_root_address;
+    if (instance_offset > tlas.size_bytes ||
+        uint64_t{128} > tlas.size_bytes - instance_offset) {
+        rtcore_fail_instance_blas_reference(
+            "instance_host_out_of_range", tlas.object_id,
+            tlas.generation, 0, blas.object_id, blas.generation);
+    }
+    const uint64_t instance_metadata_reference =
+        tlas.device_base_address + instance_offset;
+    rtcore_v04_instance_blas_reference_snapshot published;
+    const char *publish_failure = "unvalidated";
+    if (!g_rtcore_instance_blas_reference_registry.publish(
+            tlas.object_id, tlas.generation, instance_host_address,
+            instance_metadata_reference, blas.object_id,
+            blas.generation, blas.host_root_address, &published,
+            &publish_failure)) {
+        rtcore_fail_instance_blas_reference(
+            publish_failure, tlas.object_id, tlas.generation,
+            instance_metadata_reference, blas.object_id,
+            blas.generation);
+    }
+
+    printf("GPGPU-Sim RTCORE_INSTANCE_BLAS_REFERENCE_PUBLISHED "
+           "tlas_object_id=%llu tlas_generation=%u "
+           "build_generation=%u instance_metadata_ref=0x%llx "
+           "blas_object_id=%llu blas_generation=%u\n",
+           (unsigned long long)published.tlas_object_id,
+           published.tlas_generation,
+           published.tlas_build_generation,
+           (unsigned long long)published.instance_metadata_reference,
+           (unsigned long long)published.blas_object_id,
+           published.blas_generation);
+    fflush(stdout);
+}
+
+void VulkanRayTracing::endTLASInstanceReferences(void* objectKey) {
+    if (!rtcore_v04_producer_backed_instance_blas_reference_enabled()) {
+        return;
+    }
+    rtcore_tlas_binding_snapshot tlas;
+    const char *capture_failure = "unvalidated";
+    if (!g_rtcore_tlas_binding_registry.capture_by_driver_object(
+            (uint64_t)objectKey, &tlas, &capture_failure)) {
+        rtcore_fail_instance_blas_reference(
+            capture_failure, 0, 0, 0);
+    }
+    uint32_t build_generation = 0;
+    uint64_t reference_count = 0;
+    const char *end_failure = "unvalidated";
+    if (!g_rtcore_instance_blas_reference_registry.end_build(
+            tlas.object_id, tlas.generation, &build_generation,
+            &reference_count, &end_failure)) {
+        rtcore_fail_instance_blas_reference(
+            end_failure, tlas.object_id, tlas.generation, 0);
+    }
+    printf("GPGPU-Sim RTCORE_INSTANCE_BLAS_REFERENCE_BUILD_END "
+           "tlas_object_id=%llu tlas_generation=%u "
+           "build_generation=%u references=%llu\n",
+           (unsigned long long)tlas.object_id, tlas.generation,
+           build_generation, (unsigned long long)reference_count);
+    fflush(stdout);
+}
+
 void VulkanRayTracing::releaseBLAS(void* objectKey, void* rootAddr,
                                    void* gpgpusimAddr) {
     if (!rtcore_v04_typed_blas_decode_context_bridge_enabled()) {
@@ -19332,6 +19634,16 @@ void VulkanRayTracing::releaseTLAS(void* objectKey, void* rootAddr,
             &released, &failure_reason)) {
         rtcore_fail_tlas_binding(failure_reason, host_root_address,
                                 device_base_address, 0, driver_object_key);
+    }
+    if (rtcore_v04_producer_backed_instance_blas_reference_enabled()) {
+        const char *reference_failure = "unvalidated";
+        if (!g_rtcore_instance_blas_reference_registry.release(
+                released.object_id, released.generation,
+                &reference_failure)) {
+            rtcore_fail_instance_blas_reference(
+                reference_failure, released.object_id,
+                released.generation, 0);
+        }
     }
     printf("GPGPU-Sim RTCORE_TLAS_BINDING_RELEASED "
            "object_id=%llu generation=%u driver_object_key=0x%llx "

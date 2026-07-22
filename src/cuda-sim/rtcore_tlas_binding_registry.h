@@ -152,6 +152,40 @@ class rtcore_tlas_binding_registry {
     return succeed(failure_reason);
   }
 
+  bool capture_by_driver_object(uint64_t driver_object_key,
+                                Snapshot *snapshot,
+                                const char **failure_reason) const {
+    reset_snapshot(snapshot);
+    typename std::map<uint64_t, uint64_t>::const_iterator object =
+        object_id_by_driver_object_.find(driver_object_key);
+    typename std::map<uint64_t, record>::const_iterator binding =
+        object != object_id_by_driver_object_.end()
+            ? bindings_by_object_id_.find(object->second)
+            : bindings_by_object_id_.end();
+    if (snapshot == nullptr || object == object_id_by_driver_object_.end() ||
+        binding == bindings_by_object_id_.end() ||
+        !binding->second.snapshot.valid || !binding->second.snapshot.live ||
+        binding->second.driver_object_key != driver_object_key) {
+      return fail("driver_object_binding_not_found", failure_reason);
+    }
+    *snapshot = binding->second.snapshot;
+    return succeed(failure_reason);
+  }
+
+  bool capture_by_object_id(uint64_t object_id, Snapshot *snapshot,
+                            const char **failure_reason) const {
+    reset_snapshot(snapshot);
+    typename std::map<uint64_t, record>::const_iterator binding =
+        bindings_by_object_id_.find(object_id);
+    if (snapshot == nullptr || object_id == 0 ||
+        binding == bindings_by_object_id_.end() ||
+        !binding->second.snapshot.valid || !binding->second.snapshot.live) {
+      return fail("object_binding_not_found", failure_reason);
+    }
+    *snapshot = binding->second.snapshot;
+    return succeed(failure_reason);
+  }
+
   bool validate(const Snapshot &snapshot, uint64_t instance_metadata_reference,
                 uint64_t record_size, const char **failure_reason) const {
     if (!snapshot.valid || !snapshot.live || snapshot.object_id == 0 ||

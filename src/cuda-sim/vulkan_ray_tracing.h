@@ -470,6 +470,11 @@ public:
     static void publishBLASRootDescriptor(void* objectKey,
                                           uint64_t rootPayloadOffset,
                                           uint32_t rootPayloadKind);
+    static void beginTLASInstanceReferences(void* objectKey);
+    static void publishTLASInstanceReference(void* objectKey,
+                                             void* instanceLeafAddress,
+                                             const void* blasRootAddress);
+    static void endTLASInstanceReferences(void* objectKey);
     static void allocTLAS(void* objectKey, void* rootAddr,
                           uint64_t bufferSize, void* gpgpusimAddr);
     static void releaseTLAS(void* objectKey, void* rootAddr,

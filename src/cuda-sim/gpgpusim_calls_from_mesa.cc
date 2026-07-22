@@ -225,6 +225,23 @@ extern "C" void gpgpusim_publishBLASRootDescriptor(
         objectKey, rootPayloadOffset, rootPayloadKind);
 }
 
+extern "C" void gpgpusim_beginTLASInstanceReferences(void* objectKey)
+{
+    VulkanRayTracing::beginTLASInstanceReferences(objectKey);
+}
+
+extern "C" void gpgpusim_publishTLASInstanceReference(
+    void* objectKey, void* instanceLeafAddress, const void* blasRootAddress)
+{
+    VulkanRayTracing::publishTLASInstanceReference(
+        objectKey, instanceLeafAddress, blasRootAddress);
+}
+
+extern "C" void gpgpusim_endTLASInstanceReferences(void* objectKey)
+{
+    VulkanRayTracing::endTLASInstanceReferences(objectKey);
+}
+
 extern "C" void gpgpusim_allocTLAS(void* objectKey, void* rootAddr,
                                     uint64_t bufferSize, void* gpgpusimAddr)
 {
