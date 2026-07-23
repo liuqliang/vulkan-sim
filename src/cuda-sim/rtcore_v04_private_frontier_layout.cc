@@ -165,6 +165,41 @@ static typed_node::compact_child_work_item_v0 decode_entry_bytes(
   return entry;
 }
 
+static void encode_selected_fetch_bytes(
+    uint8_t *destination,
+    const typed_node::selected_child_fetch_work_item_v0 &selected) {
+  encode_entry_bytes(destination, selected.child);
+  const typed_blas::as_decode_context_v0 &context =
+      selected.decode_context;
+  encode_u32_le(destination + 16, context.bvh_format_profile_id);
+  encode_u32_le(destination + 20, context.reserved_zero);
+  encode_u64_le(destination + 24, context.as_object.object_id);
+  encode_u32_le(destination + 32, context.as_object.generation);
+  destination[36] = context.as_object.as_type;
+  std::memcpy(destination + 37, context.as_object.reserved_zero,
+              sizeof(context.as_object.reserved_zero));
+  encode_u64_le(destination + 40, context.device_base);
+  encode_u64_le(destination + 48, context.device_range_bytes);
+}
+
+static typed_node::selected_child_fetch_work_item_v0
+decode_selected_fetch_bytes(const uint8_t *source) {
+  typed_node::selected_child_fetch_work_item_v0 selected = {};
+  selected.child = decode_entry_bytes(source);
+  typed_blas::as_decode_context_v0 &context =
+      selected.decode_context;
+  context.bvh_format_profile_id = decode_u32_le(source + 16);
+  context.reserved_zero = decode_u32_le(source + 20);
+  context.as_object.object_id = decode_u64_le(source + 24);
+  context.as_object.generation = decode_u32_le(source + 32);
+  context.as_object.as_type = source[36];
+  std::memcpy(context.as_object.reserved_zero, source + 37,
+              sizeof(context.as_object.reserved_zero));
+  context.device_base = decode_u64_le(source + 40);
+  context.device_range_bytes = decode_u64_le(source + 48);
+  return selected;
+}
+
 static status_kind validate_slot_owner(const shadow_slot_v0 &slot,
                                        const owner_binding_v0 &owner) {
   if (!valid_owner(owner)) return kStatusInvalidOwner;
@@ -184,7 +219,9 @@ static status_kind append_range_to_plan(
     access_kind access, uint32_t slot_offset, uint32_t byte_count) {
   if (plan == NULL || byte_count == 0 ||
       (access != kAccessRead && access != kAccessWrite) ||
-      (field != kFieldFrontierMetadata && field != kFieldFrontierEntry)) {
+      (field != kFieldFrontierMetadata &&
+       field != kFieldFrontierEntry &&
+       field != kFieldTransitionSpill)) {
     return kStatusInvalidArgument;
   }
   if (slot_offset >= kPrivateDataSlotBytes ||
@@ -458,6 +495,56 @@ status_kind apply_pop_delta(
   return kStatusOk;
 }
 
+status_kind apply_stack_selected_fetch_spill(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const typed_stack::push_result_v0 &result,
+    access_plan_v0 *write_plan) {
+  if (slot == NULL || write_plan == NULL) return kStatusInvalidArgument;
+  std::memset(write_plan, 0, sizeof(*write_plan));
+  status_kind status = validate_slot_owner(*slot, owner);
+  if (status != kStatusOk) return status;
+  uint64_t ignored_slot_base = 0;
+  status = slot_base_address(owner, region, &ignored_slot_base);
+  if (status != kStatusOk) return status;
+  if (!typed_stack::validate_push_result(result) ||
+      result.result_kind != typed_stack::kStackPushedAndSelected ||
+      result.output_valid_mask !=
+          static_cast<uint8_t>(
+              typed_stack::kFrontierDeltaValid |
+              typed_stack::kSelectedFetchValid)) {
+    return kStatusInvalidSpillPayload;
+  }
+
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldTransitionSpill, kAccessWrite,
+      kTransitionSpillOffset, kStackTransitionSpillBytes);
+  if (status != kStatusOk) return status;
+
+  shadow_slot_v0 updated = *slot;
+  std::memset(updated.bytes + kTransitionSpillOffset, 0,
+              kStackTransitionSpillBytes);
+  encode_selected_fetch_bytes(
+      updated.bytes + kTransitionSpillOffset,
+      result.selected_fetch);
+  *slot = updated;
+  *write_plan = plan;
+  return kStatusOk;
+}
+
+status_kind decode_stack_selected_fetch_spill(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    typed_node::selected_child_fetch_work_item_v0 *selected_fetch) {
+  if (selected_fetch == NULL) return kStatusInvalidArgument;
+  const status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  *selected_fetch = decode_selected_fetch_bytes(
+      slot.bytes + kTransitionSpillOffset);
+  return kStatusOk;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:
@@ -482,6 +569,8 @@ const char *status_name(status_kind status) {
       return "invalid_delta";
     case kStatusPlanCapacityExceeded:
       return "plan_capacity_exceeded";
+    case kStatusInvalidSpillPayload:
+      return "invalid_spill_payload";
   }
   return "unknown";
 }

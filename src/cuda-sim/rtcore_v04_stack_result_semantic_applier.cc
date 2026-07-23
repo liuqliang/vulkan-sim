@@ -30,6 +30,8 @@ status_kind translate_layout_status(private_frontier::status_kind status) {
       return kStatusInvalidDelta;
     case private_frontier::kStatusPlanCapacityExceeded:
       return kStatusPlanCapacityExceeded;
+    case private_frontier::kStatusInvalidSpillPayload:
+      return kStatusInvalidTypedResult;
   }
   return kStatusInvalidArgument;
 }

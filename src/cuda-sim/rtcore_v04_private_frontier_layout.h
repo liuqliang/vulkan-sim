@@ -21,6 +21,13 @@ static const uint32_t kFrontierEntriesOffset = 0x108;
 static const uint32_t kFrontierEntryBytes = 16;
 static const uint32_t kFrontierEntryCapacity = 16;
 static const uint32_t kFrontierEntriesEnd = 0x208;
+static const uint32_t kTransitionSpillOffset = 0x288;
+static const uint32_t kTransitionSpillBytes = 184;
+static const uint32_t kStackTransitionSpillBytes = 128;
+static const uint32_t kStackSelectedFetchBytes =
+    sizeof(typed_node::selected_child_fetch_work_item_v0);
+static const uint32_t kTransitionSpillEnd =
+    kTransitionSpillOffset + kTransitionSpillBytes;
 static const uint32_t kMaxAccessChunks = 12;
 
 enum status_kind : uint8_t {
@@ -35,6 +42,7 @@ enum status_kind : uint8_t {
   kStatusInvalidEntryIndex,
   kStatusInvalidDelta,
   kStatusPlanCapacityExceeded,
+  kStatusInvalidSpillPayload,
 };
 
 enum access_kind : uint8_t {
@@ -47,6 +55,7 @@ enum field_kind : uint8_t {
   kFieldInvalid = 0,
   kFieldFrontierMetadata = 1,
   kFieldFrontierEntry = 2,
+  kFieldTransitionSpill = 3,
 };
 
 struct owner_binding_v0 {
@@ -109,6 +118,12 @@ static_assert(kFrontierEntriesOffset +
                       kFrontierEntryCapacity * kFrontierEntryBytes ==
                   kFrontierEntriesEnd,
               "private frontier entry range changed");
+static_assert(kTransitionSpillEnd == kPrivateDataSlotBytes,
+              "transition spill must end at private-slot boundary");
+static_assert(kStackSelectedFetchBytes == 56,
+              "Stack selected-fetch spill payload changed");
+static_assert(kStackSelectedFetchBytes <= kStackTransitionSpillBytes,
+              "Stack selected fetch exceeds its transition-spill arm");
 static_assert(kPrivateDataSlotBytes % kPrivateDataSlotAlignment == 0,
               "private data slot stride must remain 32-byte aligned");
 static_assert(sizeof(shared_chunk_access_v0) == 24,
@@ -146,6 +161,16 @@ status_kind apply_pop_delta(
     const region_binding_v0 &region,
     const typed_stack::frontier_pop_delta_v0 &delta,
     access_plan_v0 *write_plan);
+
+status_kind apply_stack_selected_fetch_spill(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const typed_stack::push_result_v0 &result,
+    access_plan_v0 *write_plan);
+
+status_kind decode_stack_selected_fetch_spill(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    typed_node::selected_child_fetch_work_item_v0 *selected_fetch);
 
 bool owners_equal(const owner_binding_v0 &lhs,
                   const owner_binding_v0 &rhs);
