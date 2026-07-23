@@ -14825,6 +14825,14 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
     }
     *operation = rtcore::v04::private_shared::shared_write_v0();
     operation->valid = true;
+    operation->address_space =
+        rtcore::v04::private_shared::kAddressSpaceShared;
+    operation->address_mode =
+        rtcore::v04::private_shared::kAddressModePrivateField;
+    operation->access_operation =
+        rtcore::v04::private_shared::kAccessOperationWrite;
+    operation->destination =
+        rtcore::v04::private_shared::kDestinationPrivateCommitAck;
     operation->owner.owner_hw_sid = snapshot.owner_hw_sid;
     operation->owner.resident_warp_id = snapshot.resident_warp_id;
     operation->owner.request_identity = snapshot.rt_request_id;
@@ -14836,6 +14844,8 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
     operation->chunk_id = static_cast<uint8_t>(snapshot.chunk_id);
     operation->chunk_count =
         static_cast<uint8_t>(snapshot.chunk_count);
+    operation->field_kind =
+        rtcore::v04::private_frontier::kFieldFrontierMetadata;
     operation->aligned_32b_address = snapshot.aligned_32b_addr;
     operation->byte_mask = snapshot.byte_mask;
     std::memcpy(operation->payload, snapshot.payload,

@@ -40,21 +40,61 @@ enum status_kind : uint8_t {
   kStatusDuplicateAck,
   kStatusInFlightRelease,
   kStatusPlannerFailure,
+  kStatusDuplicateOperation,
+  kStatusNoAckReady,
+};
+
+enum address_space_kind : uint8_t {
+  kAddressSpaceInvalid = 0,
+  kAddressSpaceShared = 1,
+};
+
+enum address_mode_kind : uint8_t {
+  kAddressModeInvalid = 0,
+  kAddressModePrivateField = 1,
+};
+
+enum access_operation_kind : uint8_t {
+  kAccessOperationInvalid = 0,
+  kAccessOperationWrite = 1,
+};
+
+enum destination_kind : uint8_t {
+  kDestinationInvalid = 0,
+  kDestinationPrivateCommitAck = 1,
 };
 
 struct shared_write_v0 {
   bool valid;
+  uint8_t address_space;
+  uint8_t address_mode;
+  uint8_t access_operation;
+  uint8_t destination;
+  uint8_t reserved_zero[3];
   private_frontier::owner_binding_v0 owner;
+  uint32_t operation_seq;
+  uint32_t commit_epoch;
   uint32_t memory_op_seq;
   uint8_t chunk_id;
   uint8_t chunk_count;
-  uint16_t reserved_zero;
+  uint8_t field_kind;
+  uint8_t reserved_zero1;
   uint64_t aligned_32b_address;
   uint32_t byte_mask;
   uint8_t payload[private_frontier::kSharedAccessChunkBytes];
   uint64_t enqueue_cycle;
   uint64_t accepted_cycle;
   uint64_t ack_cycle;
+};
+
+struct runtime_write_ack_v0 {
+  bool valid;
+  uint8_t field_kind;
+  uint16_t memory_operation_seq;
+  private_frontier::owner_binding_v0 owner;
+  uint32_t operation_seq;
+  uint32_t commit_epoch;
+  uint8_t reserved_zero[8];
 };
 
 struct lane_slot_state_v0 {
@@ -170,8 +210,7 @@ status_kind prepare_new_warp(
 status_kind commit_new_warp(backing_state_v0 *state,
                             const new_warp_plan_v0 &plan);
 
-uint32_t service_init_enqueue(backing_state_v0 *state,
-                              uint64_t service_cycle,
+uint32_t service_init_enqueue(backing_state_v0 *state, uint64_t service_cycle,
                               uint32_t enqueue_budget);
 
 bool pop_shared_offer(backing_state_v0 *state, uint64_t service_cycle,
@@ -181,26 +220,30 @@ status_kind accept_shared_offer(backing_state_v0 *state,
                                 const shared_write_v0 &operation,
                                 uint64_t accepted_cycle);
 
-uint32_t service_write_acks(backing_state_v0 *state,
-                            uint64_t service_cycle,
+status_kind validate_runtime_write(const backing_state_v0 &state,
+                                   const shared_write_v0 &operation);
+
+status_kind enqueue_runtime_write(backing_state_v0 *state,
+                                  const shared_write_v0 &operation);
+
+uint32_t service_write_acks(backing_state_v0 *state, uint64_t service_cycle,
                             uint32_t response_budget);
 
-bool pop_ready_commit(backing_state_v0 *state,
-                      ready_commit_v0 *commit);
+bool pop_ready_commit(backing_state_v0 *state, ready_commit_v0 *commit);
 
-status_kind prepare_mask_shrink(
-    const backing_state_v0 &state, uint8_t resident_warp_slot,
-    uint32_t previous_warp_uid, uint32_t next_warp_uid,
-    uint32_t warp_id, uint32_t next_active_mask,
-    mask_shrink_plan_v0 *plan);
+status_kind prepare_mask_shrink(const backing_state_v0 &state,
+                                uint8_t resident_warp_slot,
+                                uint32_t previous_warp_uid,
+                                uint32_t next_warp_uid, uint32_t warp_id,
+                                uint32_t next_active_mask,
+                                mask_shrink_plan_v0 *plan);
 
 status_kind commit_mask_shrink(backing_state_v0 *state,
                                const mask_shrink_plan_v0 &plan);
 
-status_kind prepare_release_warp(
-    const backing_state_v0 &state, uint8_t resident_warp_slot,
-    uint32_t warp_uid, uint32_t warp_id,
-    release_warp_plan_v0 *plan);
+status_kind prepare_release_warp(const backing_state_v0 &state,
+                                 uint8_t resident_warp_slot, uint32_t warp_uid,
+                                 uint32_t warp_id, release_warp_plan_v0 *plan);
 
 status_kind commit_release_warp(backing_state_v0 *state,
                                 const release_warp_plan_v0 &plan);

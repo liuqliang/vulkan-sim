@@ -146,8 +146,16 @@ status_kind issue_stack_push(
 status_kind peek_write_offer(const engine_state_v0 &state,
                              write_offer_v0 *offer);
 
+status_kind validate_write_offer(const engine_state_v0 &state,
+                                 const write_offer_v0 &offer);
+
 status_kind accept_write_offer(engine_state_v0 *state,
                                const write_offer_v0 &offer);
+
+status_kind validate_write_ack(const engine_state_v0 &state,
+                               const private_frontier::owner_binding_v0 &owner,
+                               uint32_t operation_seq, uint32_t commit_epoch,
+                               uint16_t memory_operation_seq);
 
 status_kind accept_write_ack(engine_state_v0 *state,
                              const private_frontier::owner_binding_v0 &owner,

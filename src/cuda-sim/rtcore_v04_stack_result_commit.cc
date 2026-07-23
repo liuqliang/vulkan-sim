@@ -297,32 +297,42 @@ status_kind peek_write_offer(const engine_state_v0 &state,
   return kStatusOk;
 }
 
-status_kind accept_write_offer(engine_state_v0 *state,
-                               const write_offer_v0 &offer) {
-  if (state == NULL || state->initialized != 1) {
+status_kind validate_write_offer(const engine_state_v0 &state,
+                                 const write_offer_v0 &offer) {
+  if (state.initialized != 1) {
     return kStatusInvalidArgument;
   }
   if (!bytes_are_zero(offer.reserved_zero, sizeof(offer.reserved_zero))) {
     return kStatusWriteOfferMismatch;
   }
-  const int entry_slot = find_result_entry(*state, offer);
+  const int entry_slot = find_result_entry(state, offer);
   if (entry_slot < 0) return kStatusWriteOfferMismatch;
-  result_commit_entry_v0 &entry = state->result_entries[entry_slot];
+  const result_commit_entry_v0 &entry = state.result_entries[entry_slot];
   write_offer_v0 expected = {};
   build_offer(entry, &expected);
   if (std::memcmp(&offer, &expected, sizeof(offer)) != 0) {
     return kStatusWriteOfferMismatch;
   }
-  if (entry.tracker_slot >= state->config.tracker_capacity) {
+  if (entry.tracker_slot >= state.config.tracker_capacity) {
     return kStatusWriteOfferMismatch;
   }
-  request_commit_tracker_v0 &tracker = state->trackers[entry.tracker_slot];
+  const request_commit_tracker_v0 &tracker = state.trackers[entry.tracker_slot];
   if (tracker.valid != 1 || tracker.operation_seq != entry.operation_seq ||
       tracker.commit_epoch != entry.commit_epoch ||
       !private_frontier::owners_equal(tracker.owner, entry.owner)) {
     return kStatusWriteOfferMismatch;
   }
+  return kStatusOk;
+}
 
+status_kind accept_write_offer(engine_state_v0 *state,
+                               const write_offer_v0 &offer) {
+  if (state == NULL) return kStatusInvalidArgument;
+  const status_kind validation = validate_write_offer(*state, offer);
+  if (validation != kStatusOk) return validation;
+  const int entry_slot = find_result_entry(*state, offer);
+  result_commit_entry_v0 &entry = state->result_entries[entry_slot];
+  request_commit_tracker_v0 &tracker = state->trackers[entry.tracker_slot];
   const uint16_t write_bit =
       static_cast<uint16_t>(uint16_t{1} << entry.next_write_index);
   tracker.accepted_write_mask |= write_bit;
@@ -334,21 +344,21 @@ status_kind accept_write_offer(engine_state_v0 *state,
   return kStatusOk;
 }
 
-status_kind accept_write_ack(engine_state_v0 *state,
-                             const private_frontier::owner_binding_v0 &owner,
-                             uint32_t operation_seq, uint32_t commit_epoch,
-                             uint16_t memory_operation_seq) {
-  if (state == NULL || state->initialized != 1 || operation_seq == 0 ||
-      commit_epoch == 0 || memory_operation_seq == 0) {
+status_kind validate_write_ack(const engine_state_v0 &state,
+                               const private_frontier::owner_binding_v0 &owner,
+                               uint32_t operation_seq, uint32_t commit_epoch,
+                               uint16_t memory_operation_seq) {
+  if (state.initialized != 1 || operation_seq == 0 || commit_epoch == 0 ||
+      memory_operation_seq == 0) {
     return kStatusInvalidArgument;
   }
   const int tracker_slot =
-      find_exact_tracker(*state, owner, operation_seq, commit_epoch);
+      find_exact_tracker(state, owner, operation_seq, commit_epoch);
   if (tracker_slot < 0) {
-    return has_other_epoch(*state, owner, operation_seq) ? kStatusStaleAck
-                                                         : kStatusUnknownAck;
+    return has_other_epoch(state, owner, operation_seq) ? kStatusStaleAck
+                                                        : kStatusUnknownAck;
   }
-  request_commit_tracker_v0 &tracker = state->trackers[tracker_slot];
+  const request_commit_tracker_v0 &tracker = state.trackers[tracker_slot];
   if (memory_operation_seq > tracker.expected_write_count) {
     return kStatusUnknownAck;
   }
@@ -360,6 +370,22 @@ status_kind accept_write_ack(engine_state_v0 *state,
   if ((tracker.acknowledged_write_mask & write_bit) != 0) {
     return kStatusDuplicateAck;
   }
+  return kStatusOk;
+}
+
+status_kind accept_write_ack(engine_state_v0 *state,
+                             const private_frontier::owner_binding_v0 &owner,
+                             uint32_t operation_seq, uint32_t commit_epoch,
+                             uint16_t memory_operation_seq) {
+  if (state == NULL) return kStatusInvalidArgument;
+  const status_kind validation = validate_write_ack(
+      *state, owner, operation_seq, commit_epoch, memory_operation_seq);
+  if (validation != kStatusOk) return validation;
+  const int tracker_slot =
+      find_exact_tracker(*state, owner, operation_seq, commit_epoch);
+  request_commit_tracker_v0 &tracker = state->trackers[tracker_slot];
+  const uint16_t write_bit =
+      static_cast<uint16_t>(uint16_t{1} << (memory_operation_seq - 1));
   tracker.acknowledged_write_mask |= write_bit;
   if (tracker.payload_transferred != 0 &&
       tracker.acknowledged_write_mask ==
