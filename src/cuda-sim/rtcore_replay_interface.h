@@ -142,18 +142,37 @@ struct rtcore_replay_warp_completion_entry_snapshot {
 
 struct rtcore_memory_unit_request_snapshot {
   bool valid;
+  unsigned address_space;
+  unsigned operation;
+  unsigned destination;
   unsigned response_target;
   unsigned owner_hw_sid;
   unsigned rt_request_id;
   unsigned lane_id;
+  unsigned resident_warp_id;
+  unsigned request_generation;
+  unsigned private_slot_id;
   unsigned memory_op_seq;
   unsigned chunk_id;
   unsigned chunk_count;
   unsigned access_kind;
   unsigned long long aligned_32b_addr;
+  unsigned byte_mask;
+  unsigned char payload[32];
   bool is_write;
   unsigned long long issue_cycle;
 };
+
+static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
+static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_SHARED = 1u;
+static const unsigned RTCORE_MEMORY_OPERATION_READ = 0u;
+static const unsigned RTCORE_MEMORY_OPERATION_WRITE = 1u;
+static const unsigned RTCORE_MEMORY_DESTINATION_LEGACY = 0u;
+static const unsigned RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK = 1u;
+static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT = 8u;
+
+extern "C" bool
+rtcore_v04_private_frontier_live_init_memory_issue_profile_active();
 
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE = 0xfffffff0u;
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT = 4u;
