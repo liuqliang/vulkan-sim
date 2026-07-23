@@ -167,6 +167,8 @@ static_assert(offsetof(pop_result_v0, reserved_zero_tail) == 88,
 
 push_result_v0 execute_push(const push_input_v0 &input);
 
+bool validate_push_result(const push_result_v0 &result);
+
 pop_result_v0 execute_pop(const pop_input_v0 &input);
 
 const char *status_name(status_kind status);

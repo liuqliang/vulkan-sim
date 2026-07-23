@@ -218,6 +218,72 @@ push_result_v0 execute_push(const push_input_v0 &input) {
   return result;
 }
 
+bool validate_push_result(const push_result_v0 &result) {
+  const uint8_t expected_valid =
+      static_cast<uint8_t>(kFrontierDeltaValid | kSelectedFetchValid);
+  const frontier_append_delta_v0 &delta = result.frontier_delta;
+  if (result.status != kStatusOk ||
+      result.result_kind != kStackPushedAndSelected ||
+      result.output_valid_mask != expected_valid ||
+      result.pruned_count > kMaxRemainderChildren ||
+      !bytes_are_zero(result.reserved_zero0,
+                      sizeof(result.reserved_zero0)) ||
+      !bytes_are_zero(result.reserved_zero_tail,
+                      sizeof(result.reserved_zero_tail)) ||
+      delta.action != kFrontierActionAppendChildren ||
+      delta.write_count > kMaxRemainderChildren ||
+      delta.reserved_zero != 0) {
+    return false;
+  }
+
+  const unsigned route_remainder_count =
+      static_cast<unsigned>(delta.write_count) + result.pruned_count;
+  if (route_remainder_count == 0 ||
+      route_remainder_count > kMaxRemainderChildren) {
+    return false;
+  }
+
+  uint32_t expected_top = 0;
+  if (!checked_add_u32(delta.append_base_index, delta.write_count,
+                       &expected_top) ||
+      delta.new_frontier_top != expected_top ||
+      delta.new_frontier_count != expected_top) {
+    return false;
+  }
+
+  const typed_node::selected_child_fetch_work_item_v0 &selected =
+      result.selected_fetch;
+  if (!valid_decode_context(selected.decode_context) ||
+      !valid_child_item(selected.child, selected.decode_context)) {
+    return false;
+  }
+
+  uint8_t seen_child_slots =
+      static_cast<uint8_t>(1u << selected.child.child_slot);
+  for (unsigned index = 0; index < delta.write_count; ++index) {
+    const typed_node::compact_child_work_item_v0 &item =
+        delta.written_items[index];
+    if (!valid_child_item(item, selected.decode_context) ||
+        (seen_child_slots & (1u << item.child_slot)) != 0 ||
+        !item_precedes(selected.child, item)) {
+      return false;
+    }
+    if (index != 0 &&
+        !item_precedes(item, delta.written_items[index - 1])) {
+      return false;
+    }
+    seen_child_slots |= static_cast<uint8_t>(1u << item.child_slot);
+  }
+  for (unsigned index = delta.write_count;
+       index < kMaxRemainderChildren; ++index) {
+    const typed_node::compact_child_work_item_v0 zero = {};
+    if (std::memcmp(&delta.written_items[index], &zero, sizeof(zero)) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 pop_result_v0 execute_pop(const pop_input_v0 &input) {
   pop_result_v0 result = {};
   result.status = kStatusInvalidArgument;

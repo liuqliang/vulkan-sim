@@ -41,6 +41,7 @@
 #include "rtcore_v04_typed_node_kernel.h"
 #include "rtcore_v04_typed_primitive_kernel.h"
 #include "rtcore_v04_typed_stack_kernel.h"
+#include "rtcore_v04_typed_stack_result_stream.h"
 
 #include <iostream>
 #include <vector>
@@ -572,6 +573,8 @@ struct rtcore_compact_trace_export_record {
     memory_space *v04_live_handoff_memory;
     std::vector<rtcore_compact_trace_event> events;
     std::vector<rtcore_boundary_candidate_snapshot> boundary_candidates;
+    std::vector<rtcore::v04::typed_stack_stream::push_result_record_v0>
+        v04_shadow_typed_stack_push_results;
 };
 
 static std::map<unsigned, rtcore_compact_trace_export_record>
@@ -693,6 +696,8 @@ struct rtcore_replay_lane_request {
     unsigned long long unit_latency_ready_cycle;
     std::vector<rtcore_compact_trace_event> events;
     std::vector<rtcore_boundary_candidate_snapshot> boundary_candidates;
+    std::vector<rtcore::v04::typed_stack_stream::push_result_record_v0>
+        v04_shadow_typed_stack_push_results;
 };
 
 static std::map<unsigned, rtcore_replay_lane_request>
@@ -2055,6 +2060,16 @@ static bool rtcore_v04_private_frontier_live_init_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_typed_stack_result_owner_bridge_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_TYPED_STACK_RESULT_OWNER_BRIDGE") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 extern "C" bool
 rtcore_v04_private_frontier_live_init_memory_issue_profile_active()
 {
@@ -2190,6 +2205,15 @@ static bool rtcore_v04_private_frontier_live_init_prerequisites_enabled()
     return rtcore_v04_request_owner_binding_enabled() &&
            rtcore_v04_request_owner_binding_prerequisites_enabled() &&
            rtcore_replay_memory_unit_request_offer_enabled();
+}
+
+static bool rtcore_v04_typed_stack_result_owner_bridge_prerequisites_enabled()
+{
+    return rtcore_v04_typed_stack_push_remainder_kernel_enabled() &&
+           rtcore_v04_typed_stack_push_remainder_prerequisites_enabled() &&
+           rtcore_v04_private_frontier_live_init_enabled() &&
+           rtcore_v04_private_frontier_live_init_prerequisites_enabled() &&
+           rtcore_bounded_trace_collection_enabled();
 }
 
 static bool rtcore_memory_unit_response_wait_stats_log_enabled()
@@ -2946,6 +2970,8 @@ struct rtcore_bounded_trace_collector {
     bool oracle_requires_intersection_shader;
     std::vector<rtcore_compact_trace_event> events;
     std::vector<rtcore_boundary_candidate_snapshot> boundary_candidates;
+    std::vector<rtcore::v04::typed_stack_stream::push_result_record_v0>
+        v04_shadow_typed_stack_push_results;
 
     explicit rtcore_bounded_trace_collector(ptx_thread_info *thread)
         : enabled(rtcore_bounded_trace_collection_enabled()),
@@ -2967,6 +2993,9 @@ struct rtcore_bounded_trace_collector {
                     RTCORE_COMPACT_TRACE_MAX_EVENTS_PER_LANE_WITHOUT_CR;
             }
             events.reserve(max_trace_events_per_lane + 1);
+            if (rtcore_v04_typed_stack_result_owner_bridge_enabled()) {
+                v04_shadow_typed_stack_push_results.reserve(8);
+            }
         }
     }
 
@@ -3216,6 +3245,30 @@ struct rtcore_bounded_trace_collector {
         boundary_candidates.push_back(snapshot);
     }
 
+    void record_v04_typed_stack_push_result(
+        uint64_t producer_node_reference,
+        const rtcore::v04::typed_stack::push_result_v0 &result)
+    {
+        if (!rtcore_v04_typed_stack_result_owner_bridge_enabled()) return;
+        const rtcore::v04::typed_stack_stream::status_kind status =
+            rtcore::v04::typed_stack_stream::append_push_result(
+                &v04_shadow_typed_stack_push_results,
+                producer_node_reference, result);
+        if (status != rtcore::v04::typed_stack_stream::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_TYPED_STACK_RESULT_OWNER_BRIDGE "
+                    "fault=%s lane_id=%u producer_node_ref=0x%llx "
+                    "result_count=%zu\n",
+                    rtcore::v04::typed_stack_stream::status_name(status),
+                    lane_id,
+                    static_cast<unsigned long long>(
+                        producer_node_reference),
+                    v04_shadow_typed_stack_push_results.size());
+            fflush(stderr);
+            abort();
+        }
+    }
+
     void append_completion_summary(unsigned node_events,
                                    unsigned primitive_events)
     {
@@ -3257,6 +3310,8 @@ struct rtcore_bounded_trace_collector {
         if (enabled) {
             record.events = events;
             record.boundary_candidates = boundary_candidates;
+            record.v04_shadow_typed_stack_push_results =
+                v04_shadow_typed_stack_push_results;
         }
         return record;
     }
@@ -3523,6 +3578,23 @@ static rtcore_replay_lane_request rtcore_build_replay_lane_request(
     request.state = RTCORE_REPLAY_COMPLETED;
     request.events = record.events;
     request.boundary_candidates = record.boundary_candidates;
+    request.v04_shadow_typed_stack_push_results =
+        record.v04_shadow_typed_stack_push_results;
+    if (rtcore::v04::typed_stack_stream::validate_unbound(
+            request.v04_shadow_typed_stack_push_results) !=
+            rtcore::v04::typed_stack_stream::kStatusOk ||
+        !rtcore::v04::typed_stack_stream::streams_equal(
+            record.v04_shadow_typed_stack_push_results,
+            request.v04_shadow_typed_stack_push_results)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_TYPED_STACK_RESULT_OWNER_BRIDGE "
+                "fault=export_replay_copy_invalid thread_uid=%u "
+                "lane_id=%u result_count=%zu\n",
+                record.thread_uid, record.lane_id,
+                record.v04_shadow_typed_stack_push_results.size());
+        fflush(stderr);
+        abort();
+    }
 
     for (unsigned i = 0; i < request.events.size(); ++i) {
         rtcore_compact_trace_event_type event_type =
@@ -10410,6 +10482,73 @@ static bool rtcore_commit_v04_whole_mask_request_owner_binding(
             abort();
         }
     }
+    if (rtcore_v04_typed_stack_result_owner_bridge_enabled()) {
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            const unsigned lane_mask = 1u << lane;
+            if ((record->active_mask & lane_mask) == 0) continue;
+            const private_shared::lane_slot_state_v0 *live_lane =
+                private_shared::find_live_lane(
+                    *private_backing, private_owners[lane]);
+            const rtcore::v04::typed_stack_stream::status_kind status =
+                live_lane == NULL
+                    ? rtcore::v04::typed_stack_stream::kStatusInvalidOwner
+                    : rtcore::v04::typed_stack_stream::bind_owner(
+                          &requests[lane]
+                               .v04_shadow_typed_stack_push_results,
+                          private_owners[lane]);
+            if (status !=
+                    rtcore::v04::typed_stack_stream::kStatusOk ||
+                rtcore::v04::typed_stack_stream::validate_bound(
+                    requests[lane].v04_shadow_typed_stack_push_results,
+                    private_owners[lane]) !=
+                    rtcore::v04::typed_stack_stream::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim "
+                        "RTCORE_V04_TYPED_STACK_RESULT_OWNER_BRIDGE "
+                        "fault=%s owner_hw_sid=%u warp_uid=%u "
+                        "warp_id=%u lane_id=%u result_count=%zu\n",
+                        rtcore::v04::typed_stack_stream::status_name(status),
+                        record->owner_hw_sid, record->current_warp_uid,
+                        record->warp_id, lane,
+                        requests[lane]
+                            .v04_shadow_typed_stack_push_results.size());
+                fflush(stderr);
+                abort();
+            }
+            if (!requests[lane]
+                     .v04_shadow_typed_stack_push_results.empty()) {
+                const std::vector<
+                    rtcore::v04::typed_stack_stream::
+                        push_result_record_v0> &results =
+                    requests[lane].v04_shadow_typed_stack_push_results;
+                printf("GPGPU-Sim "
+                       "RTCORE_V04_TYPED_STACK_RESULT_OWNER_BRIDGE "
+                       "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                       "lane_id=%u request_identity=%u generation=%u "
+                       "private_slot=%u result_count=%zu "
+                       "first_operation_seq=%u last_operation_seq=%u "
+                       "first_producer_node_ref=0x%llx "
+                       "last_producer_node_ref=0x%llx "
+                       "payload_bytes=%u owner_bound=1 "
+                       "shadow_sidecar=1 commit_eligible=0 "
+                       "scheduler_authority=0 result_commit_authority=0 "
+                       "shared_mutation_authority=0\n",
+                       record->owner_hw_sid, record->current_warp_uid,
+                       record->warp_id, lane,
+                       private_owners[lane].request_identity,
+                       private_owners[lane].generation,
+                       private_owners[lane].private_slot_id, results.size(),
+                       results.front().operation_seq,
+                       results.back().operation_seq,
+                       static_cast<unsigned long long>(
+                           results.front().producer_node_reference),
+                       static_cast<unsigned long long>(
+                           results.back().producer_node_reference),
+                       results.front().payload_bytes);
+                fflush(stdout);
+            }
+        }
+    }
 
     record->v04_request_owner_binding_valid = true;
     record->v04_resident_warp_slot = owner_plan.resident_warp_slot;
@@ -12300,6 +12439,21 @@ static bool rtcore_commit_prepared_shader_visible_resubmit_admission(
                 record->lane_identity[lane]
                     .v04_request_owner_binding_valid = false;
             }
+            if (rtcore_v04_typed_stack_result_owner_bridge_enabled()) {
+                if (!request.v04_shadow_typed_stack_push_results.empty()) {
+                    printf("GPGPU-Sim "
+                           "RTCORE_V04_TYPED_STACK_RESULT_OWNER_BRIDGE "
+                           "lifecycle=mask_shrink_cleanup owner_hw_sid=%u "
+                           "previous_warp_uid=%u warp_uid=%u warp_id=%u "
+                           "lane_id=%u cleared_results=%zu "
+                           "stale_live_records=0 shadow_sidecar=1\n",
+                           owner_hw_sid, expected_previous_warp_uid,
+                           new_warp_uid, warp_id, lane,
+                           request.v04_shadow_typed_stack_push_results.size());
+                    fflush(stdout);
+                }
+                request.v04_shadow_typed_stack_push_results.clear();
+            }
             released_mask |= lane_mask;
             rtcore_log_continuation_request_state_reconcile(
                 request, log_state, "release_mask_shrink", service_cycle);
@@ -13379,6 +13533,24 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
                     g_rtcore_replay_lane_requests.find(thread_uid);
                 if (it != g_rtcore_replay_lane_requests.end()) {
                     it->second.v04_request_owner_binding_valid = false;
+                    if (rtcore_v04_typed_stack_result_owner_bridge_enabled()) {
+                        if (!it->second.v04_shadow_typed_stack_push_results
+                                 .empty()) {
+                            printf("GPGPU-Sim "
+                                   "RTCORE_V04_TYPED_STACK_RESULT_OWNER_BRIDGE "
+                                   "lifecycle=retire_cleanup owner_hw_sid=%u "
+                                   "warp_uid=%u warp_id=%u lane_id=%u "
+                                   "cleared_results=%zu stale_live_records=0 "
+                                   "shadow_sidecar=1\n",
+                                   owner_hw_sid, record->current_warp_uid,
+                                   warp_id, lane,
+                                   it->second
+                                       .v04_shadow_typed_stack_push_results
+                                       .size());
+                            fflush(stdout);
+                        }
+                        it->second.v04_shadow_typed_stack_push_results.clear();
+                    }
                 }
                 record->lane_identity[lane]
                     .v04_request_owner_binding_valid = false;
@@ -15854,7 +16026,9 @@ static void rtcore_v04_observe_typed_stack_push_remainder(
     float current_traversal_bound,
     rtcore_v04_typed_stack_push_remainder_stats *stats,
     rtcore_v04_typed_stack_pop_next_stats *pop_stats,
-    rtcore_v04_private_frontier_owner_layout_stats *layout_stats)
+    rtcore_v04_private_frontier_owner_layout_stats *layout_stats,
+    rtcore_bounded_trace_collector *result_collector,
+    uint64_t producer_node_reference)
 {
     namespace typed_node = rtcore::v04::typed_node;
     namespace typed_stack = rtcore::v04::typed_stack;
@@ -15918,6 +16092,10 @@ static void rtcore_v04_observe_typed_stack_push_remainder(
         fflush(stdout);
         abort();
     }
+    if (result_collector != NULL) {
+        result_collector->record_v04_typed_stack_push_result(
+            producer_node_reference, result);
+    }
     if (pop_stats != NULL) {
         rtcore_v04_observe_typed_stack_pop_next(
             result, current_traversal_bound, pop_stats);
@@ -15938,7 +16116,8 @@ static void rtcore_v04_observe_typed_node_child_route(
     rtcore_v04_typed_node_child_route_stats *stats,
     rtcore_v04_typed_stack_push_remainder_stats *stack_push_stats,
     rtcore_v04_typed_stack_pop_next_stats *stack_pop_stats,
-    rtcore_v04_private_frontier_owner_layout_stats *frontier_layout_stats)
+    rtcore_v04_private_frontier_owner_layout_stats *frontier_layout_stats,
+    rtcore_bounded_trace_collector *stack_result_collector)
 {
     namespace typed_node = rtcore::v04::typed_node;
     assert(raw_node != NULL);
@@ -15985,7 +16164,8 @@ static void rtcore_v04_observe_typed_node_child_route(
     if (stack_push_stats != NULL && result.frontier_count != 0) {
         rtcore_v04_observe_typed_stack_push_remainder(
             result, committed_t, stack_push_stats, stack_pop_stats,
-            frontier_layout_stats);
+            frontier_layout_stats, stack_result_collector,
+            input.current_payload_offset);
     }
 
     typed_node::compact_child_work_item_v0 expected_items[6] = {};
@@ -17386,6 +17566,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         rtcore_v04_request_owner_binding_enabled();
     const bool v04_private_frontier_live_init_enabled =
         rtcore_v04_private_frontier_live_init_enabled();
+    const bool v04_typed_stack_result_owner_bridge_enabled =
+        rtcore_v04_typed_stack_result_owner_bridge_enabled();
     if (v04_typed_node_candidate_enabled &&
         (rtcore_abi_entry == NULL || !v04_shadow_boundary_enabled ||
          !rtcore_abi_entry->v04_shadow_trace_input_valid ||
@@ -17592,6 +17774,21 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                    ? 1u
                    : 0u,
                rtcore_replay_memory_unit_request_offer_enabled() ? 1u : 0u);
+        fflush(stdout);
+        abort();
+    }
+    if (v04_typed_stack_result_owner_bridge_enabled &&
+        !rtcore_v04_typed_stack_result_owner_bridge_prerequisites_enabled()) {
+        printf("GPGPU-Sim PTX: "
+               "RTCORE_V04_TYPED_STACK_RESULT_OWNER_BRIDGE "
+               "configuration_invalid=1 stack_push=%u live_init=%u "
+               "bounded_trace=%u producer_chain=%u\n",
+               v04_typed_stack_push_remainder_enabled ? 1u : 0u,
+               v04_private_frontier_live_init_enabled ? 1u : 0u,
+               rtcore_bounded_trace_collection_enabled() ? 1u : 0u,
+               rtcore_v04_typed_stack_result_owner_bridge_prerequisites_enabled()
+                   ? 1u
+                   : 0u);
         fflush(stdout);
         abort();
     }
@@ -17991,6 +18188,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                         : NULL,
                     v04_private_frontier_owner_layout_enabled
                         ? &v04_private_frontier_owner_layout_stats
+                        : NULL,
+                    v04_typed_stack_result_owner_bridge_enabled
+                        ? &rtcore_compact_trace
                         : NULL);
             }
 
@@ -18308,6 +18508,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 : NULL,
                             v04_private_frontier_owner_layout_enabled
                                 ? &v04_private_frontier_owner_layout_stats
+                                : NULL,
+                            v04_typed_stack_result_owner_bridge_enabled
+                                ? &rtcore_compact_trace
                                 : NULL);
                     }
 
