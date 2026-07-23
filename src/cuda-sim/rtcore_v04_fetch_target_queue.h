@@ -30,6 +30,8 @@ enum status_kind : uint8_t {
   kStatusStaleReservation,
   kStatusPayloadShapeMismatch,
   kStatusDuplicateRawPayload,
+  kStatusChunkShapeMismatch,
+  kStatusDuplicateRawChunk,
   kStatusUnknownProducerCommit,
   kStatusDuplicateProducerCommit,
   kStatusReadyFifoInvariant,
@@ -70,21 +72,24 @@ struct reservation_receipt_v0 {
   private_frontier::owner_binding_v0 owner;
   uint64_t reservation_id;
   uint64_t reservation_age;
+  uint64_t raw_payload_base_address;
   uint32_t operation_seq;
   uint32_t commit_epoch;
   uint32_t slot_generation;
   uint16_t raw_payload_bytes;
   uint8_t target_kind;
   uint8_t slot_index;
+  uint8_t raw_chunk_count;
   uint8_t producer_commit_required;
   uint8_t valid;
-  uint8_t reserved_zero[2];
+  uint8_t reserved_zero;
 };
 
 struct operation_packet_v0 {
   private_frontier::owner_binding_v0 owner;
   uint64_t reservation_id;
   uint64_t reservation_age;
+  uint64_t raw_payload_base_address;
   uint32_t operation_seq;
   uint32_t commit_epoch;
   uint32_t slot_generation;
@@ -99,6 +104,7 @@ struct slot_metadata_v0 {
   private_frontier::owner_binding_v0 owner;
   uint64_t reservation_id;
   uint64_t reservation_age;
+  uint64_t raw_payload_base_address;
   uint32_t operation_seq;
   uint32_t commit_epoch;
   uint32_t slot_generation;
@@ -108,10 +114,11 @@ struct slot_metadata_v0 {
   uint8_t valid_operand_mask;
   uint8_t required_operand_mask;
   uint8_t pending_response_count;
+  uint8_t expected_chunk_count;
+  uint8_t received_chunk_mask;
   uint8_t producer_commit_required;
   uint8_t producer_commit_complete;
   uint8_t ready_enqueued;
-  uint8_t reserved_zero[2];
   typed_node::selected_child_fetch_work_item_v0 selected_fetch;
 };
 
@@ -176,6 +183,12 @@ status_kind fill_raw_payload(engine_state_v0 *state,
                              const reservation_receipt_v0 &reservation,
                              const uint8_t *raw_payload,
                              uint16_t raw_payload_bytes);
+
+status_kind fill_raw_payload_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, const uint8_t *raw_payload_chunk,
+    uint8_t chunk_bytes);
 
 status_kind complete_producer_commit(
     engine_state_v0 *state,

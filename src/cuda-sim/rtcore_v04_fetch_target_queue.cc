@@ -62,6 +62,11 @@ bool selected_fetch_shape_valid(
     target_kind target, uint16_t payload_bytes) {
   const typed_blas::as_decode_context_v0 &context = selected.decode_context;
   const typed_node::compact_child_work_item_v0 &child = selected.child;
+  const bool address_aligned =
+      child.payload_offset <=
+          std::numeric_limits<uint64_t>::max() - context.device_base &&
+      ((context.device_base + child.payload_offset) &
+       (private_frontier::kSharedAccessChunkBytes - 1)) == 0;
   return context.bvh_format_profile_id == typed_node::kGenRtDerivedProfileId &&
          context.reserved_zero == 0 && context.as_object.object_id != 0 &&
          context.as_object.generation != 0 &&
@@ -78,7 +83,7 @@ bool selected_fetch_shape_valid(
          static_cast<uint64_t>(payload_bytes) <=
              context.device_range_bytes - child.payload_offset &&
          std::isfinite(fp32_value(child.near_t_bits)) &&
-         target != kTargetInvalid;
+         target != kTargetInvalid && address_aligned;
 }
 
 template <typename Slot>
@@ -113,12 +118,15 @@ void build_receipt(const slot_metadata_v0 &metadata, uint8_t slot_index,
   receipt->owner = metadata.owner;
   receipt->reservation_id = metadata.reservation_id;
   receipt->reservation_age = metadata.reservation_age;
+  receipt->raw_payload_base_address =
+      metadata.raw_payload_base_address;
   receipt->operation_seq = metadata.operation_seq;
   receipt->commit_epoch = metadata.commit_epoch;
   receipt->slot_generation = metadata.slot_generation;
   receipt->raw_payload_bytes = metadata.raw_payload_bytes;
   receipt->target_kind = metadata.target_kind;
   receipt->slot_index = slot_index;
+  receipt->raw_chunk_count = metadata.expected_chunk_count;
   receipt->producer_commit_required =
       metadata.producer_commit_required;
   receipt->valid = 1;
@@ -150,6 +158,9 @@ status_kind reserve_in_queue(
   metadata.owner = decision.owner;
   metadata.reservation_id = state->next_reservation_id;
   metadata.reservation_age = state->next_reservation_age;
+  metadata.raw_payload_base_address =
+      decision.selected_fetch.decode_context.device_base +
+      decision.selected_fetch.child.payload_offset;
   metadata.operation_seq = decision.operation_seq;
   metadata.commit_epoch = decision.commit_epoch;
   metadata.slot_generation = slot_generation;
@@ -160,7 +171,9 @@ status_kind reserve_in_queue(
   metadata.required_operand_mask =
       static_cast<uint8_t>(kOperandSelectedFetchValid |
                            kOperandRawPayloadValid);
-  metadata.pending_response_count = 1;
+  metadata.expected_chunk_count = static_cast<uint8_t>(
+      raw_payload_bytes / private_frontier::kSharedAccessChunkBytes);
+  metadata.pending_response_count = metadata.expected_chunk_count;
   metadata.producer_commit_required =
       decision.persistent_write_count != 0;
   metadata.selected_fetch = decision.selected_fetch;
@@ -178,11 +191,14 @@ bool receipt_matches(const slot_metadata_v0 &metadata,
          metadata.state != kSlotFree &&
          metadata.reservation_id == receipt.reservation_id &&
          metadata.reservation_age == receipt.reservation_age &&
+         metadata.raw_payload_base_address ==
+             receipt.raw_payload_base_address &&
          metadata.operation_seq == receipt.operation_seq &&
          metadata.commit_epoch == receipt.commit_epoch &&
          metadata.slot_generation == receipt.slot_generation &&
          metadata.target_kind == receipt.target_kind &&
          metadata.raw_payload_bytes == receipt.raw_payload_bytes &&
+         metadata.expected_chunk_count == receipt.raw_chunk_count &&
          private_frontier::owners_equal(metadata.owner, receipt.owner);
 }
 
@@ -253,9 +269,60 @@ status_kind fill_in_queue(Slot *slots, uint8_t capacity,
   if ((slot.metadata.valid_operand_mask & kOperandRawPayloadValid) != 0) {
     return kStatusDuplicateRawPayload;
   }
+  if (slot.metadata.received_chunk_mask != 0) {
+    return kStatusDuplicateRawPayload;
+  }
   std::memcpy(slot.raw_payload, raw_payload, raw_payload_bytes);
+  slot.metadata.received_chunk_mask = static_cast<uint8_t>(
+      (uint8_t{1} << slot.metadata.expected_chunk_count) - 1);
   slot.metadata.valid_operand_mask |= kOperandRawPayloadValid;
   slot.metadata.pending_response_count = 0;
+  return maybe_make_ready(&slot.metadata, fifo, capacity,
+                          reservation.slot_index);
+}
+
+template <typename Slot>
+status_kind fill_chunk_in_queue(
+    Slot *slots, uint8_t capacity, ready_fifo_v0 *fifo,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, const uint8_t *raw_payload_chunk,
+    uint8_t chunk_bytes) {
+  if (reservation.slot_index >= capacity) return kStatusUnknownReservation;
+  Slot &slot = slots[reservation.slot_index];
+  if (!receipt_matches(slot.metadata, reservation)) {
+    return slot.metadata.state == kSlotFree ? kStatusUnknownReservation
+                                            : kStatusStaleReservation;
+  }
+  if (chunk_count != slot.metadata.expected_chunk_count ||
+      chunk_count == 0 || chunk_count > 4 || chunk_id >= chunk_count ||
+      chunk_bytes != private_frontier::kSharedAccessChunkBytes ||
+      static_cast<uint16_t>(chunk_count) * chunk_bytes !=
+          slot.metadata.raw_payload_bytes ||
+      static_cast<size_t>(chunk_id) * chunk_bytes + chunk_bytes >
+          sizeof(slot.raw_payload)) {
+    return kStatusChunkShapeMismatch;
+  }
+  const uint8_t chunk_bit = static_cast<uint8_t>(uint8_t{1} << chunk_id);
+  if ((slot.metadata.received_chunk_mask & chunk_bit) != 0 ||
+      (slot.metadata.valid_operand_mask & kOperandRawPayloadValid) != 0) {
+    return kStatusDuplicateRawChunk;
+  }
+  std::memcpy(slot.raw_payload +
+                  static_cast<size_t>(chunk_id) * chunk_bytes,
+              raw_payload_chunk, chunk_bytes);
+  slot.metadata.received_chunk_mask |= chunk_bit;
+  if (slot.metadata.pending_response_count == 0) {
+    return kStatusReadyFifoInvariant;
+  }
+  --slot.metadata.pending_response_count;
+  const uint8_t expected_mask =
+      static_cast<uint8_t>((uint8_t{1} << chunk_count) - 1);
+  if (slot.metadata.received_chunk_mask == expected_mask) {
+    if (slot.metadata.pending_response_count != 0) {
+      return kStatusReadyFifoInvariant;
+    }
+    slot.metadata.valid_operand_mask |= kOperandRawPayloadValid;
+  }
   return maybe_make_ready(&slot.metadata, fifo, capacity,
                           reservation.slot_index);
 }
@@ -315,6 +382,8 @@ status_kind pop_from_queue(Slot *slots, uint8_t capacity,
   packet->owner = slot.metadata.owner;
   packet->reservation_id = slot.metadata.reservation_id;
   packet->reservation_age = slot.metadata.reservation_age;
+  packet->raw_payload_base_address =
+      slot.metadata.raw_payload_base_address;
   packet->operation_seq = slot.metadata.operation_seq;
   packet->commit_epoch = slot.metadata.commit_epoch;
   packet->slot_generation = slot.metadata.slot_generation;
@@ -474,6 +543,43 @@ status_kind fill_raw_payload(engine_state_v0 *state,
   return status;
 }
 
+status_kind fill_raw_payload_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, const uint8_t *raw_payload_chunk,
+    uint8_t chunk_bytes) {
+  if (state == NULL || raw_payload_chunk == NULL ||
+      state->initialized != 1 || reservation.valid != 1) {
+    return kStatusInvalidArgument;
+  }
+  engine_state_v0 staged = *state;
+  status_kind status = kStatusInvalidArgument;
+  switch (static_cast<target_kind>(reservation.target_kind)) {
+    case kTargetNode:
+      status = fill_chunk_in_queue(
+          staged.node_slots, staged.config.node_capacity,
+          &staged.node_ready, reservation, chunk_id, chunk_count,
+          raw_payload_chunk, chunk_bytes);
+      break;
+    case kTargetPrimitive:
+      status = fill_chunk_in_queue(
+          staged.primitive_slots, staged.config.primitive_capacity,
+          &staged.primitive_ready, reservation, chunk_id, chunk_count,
+          raw_payload_chunk, chunk_bytes);
+      break;
+    case kTargetInstance:
+      status = fill_chunk_in_queue(
+          staged.instance_slots, staged.config.instance_capacity,
+          &staged.instance_ready, reservation, chunk_id, chunk_count,
+          raw_payload_chunk, chunk_bytes);
+      break;
+    case kTargetInvalid:
+      return kStatusInvalidArgument;
+  }
+  if (status == kStatusOk) *state = staged;
+  return status;
+}
+
 status_kind complete_producer_commit(
     engine_state_v0 *state,
     const private_frontier::owner_binding_v0 &owner, uint32_t operation_seq,
@@ -603,6 +709,10 @@ const char *status_name(status_kind status) {
       return "payload_shape_mismatch";
     case kStatusDuplicateRawPayload:
       return "duplicate_raw_payload";
+    case kStatusChunkShapeMismatch:
+      return "chunk_shape_mismatch";
+    case kStatusDuplicateRawChunk:
+      return "duplicate_raw_chunk";
     case kStatusUnknownProducerCommit:
       return "unknown_producer_commit";
     case kStatusDuplicateProducerCommit:
