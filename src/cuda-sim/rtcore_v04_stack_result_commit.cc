@@ -163,6 +163,12 @@ bool has_other_epoch(const engine_state_v0 &state,
   return false;
 }
 
+forwarding_kind select_fixed_forwarding(
+    void *context, const forwarding_decision_input_v0 &) {
+  if (context == NULL) return kForwardingInvalid;
+  return *static_cast<const forwarding_kind *>(context);
+}
+
 }  // namespace
 
 status_kind initialize(engine_state_v0 *state, const config_v0 &config) {
@@ -182,10 +188,23 @@ status_kind issue_stack_push(
     const private_frontier::shadow_slot_v0 &canonical_slot,
     const typed_stack::push_input_v0 &input, forwarding_kind forwarding,
     issue_receipt_v0 *receipt) {
+  if (forwarding != kForwardingRegistered &&
+      forwarding != kForwardingSpillToMemory) {
+    return kStatusInvalidArgument;
+  }
+  return issue_stack_push_with_selector(
+      state, owner, operation_seq, region, canonical_slot, input,
+      select_fixed_forwarding, &forwarding, receipt);
+}
+
+status_kind issue_stack_push_with_selector(
+    engine_state_v0 *state, const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq, const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    const typed_stack::push_input_v0 &input, forwarding_selector_v0 selector,
+    void *selector_context, issue_receipt_v0 *receipt) {
   if (state == NULL || receipt == NULL || state->initialized != 1 ||
-      (forwarding != kForwardingRegistered &&
-       forwarding != kForwardingSpillToMemory) ||
-      operation_seq == 0) {
+      selector == NULL || operation_seq == 0) {
     return kStatusInvalidArgument;
   }
   std::memset(receipt, 0, sizeof(*receipt));
@@ -210,6 +229,20 @@ status_kind issue_stack_push(
           owner, operation_seq, region, canonical_slot, result,
           &semantic_plan) != stack_semantic::kStatusOk) {
     return kStatusSemanticPlanRejected;
+  }
+
+  forwarding_decision_input_v0 decision_input = {};
+  decision_input.owner = owner;
+  decision_input.operation_seq = operation_seq;
+  decision_input.commit_epoch = state->next_commit_epoch;
+  decision_input.persistent_write_count =
+      semantic_plan.write_fragment_count;
+  decision_input.selected_fetch = result.selected_fetch;
+  const forwarding_kind forwarding =
+      selector(selector_context, decision_input);
+  if (forwarding != kForwardingRegistered &&
+      forwarding != kForwardingSpillToMemory) {
+    return kStatusForwardingDecisionRejected;
   }
 
   result_commit_entry_v0 prepared_entry = {};
@@ -462,6 +495,8 @@ const char *status_name(status_kind status) {
       return "invalid_typed_operation";
     case kStatusSemanticPlanRejected:
       return "semantic_plan_rejected";
+    case kStatusForwardingDecisionRejected:
+      return "forwarding_decision_rejected";
     case kStatusSpillPlanRejected:
       return "spill_plan_rejected";
     case kStatusNoWriteOffer:

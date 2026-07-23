@@ -38,6 +38,7 @@ enum status_kind : uint8_t {
   kStatusOperationSequenceExhausted,
   kStatusInvalidTypedOperation,
   kStatusSemanticPlanRejected,
+  kStatusForwardingDecisionRejected,
   kStatusSpillPlanRejected,
   kStatusNoWriteOffer,
   kStatusWriteOfferMismatch,
@@ -59,6 +60,18 @@ enum ready_kind : uint8_t {
   kReadyForwardedTarget = 1,
   kReadySpillRecovery = 2,
 };
+
+struct forwarding_decision_input_v0 {
+  private_frontier::owner_binding_v0 owner;
+  uint32_t operation_seq;
+  uint32_t commit_epoch;
+  uint16_t persistent_write_count;
+  uint8_t reserved_zero[6];
+  typed_node::selected_child_fetch_work_item_v0 selected_fetch;
+};
+
+typedef forwarding_kind (*forwarding_selector_v0)(
+    void *context, const forwarding_decision_input_v0 &input);
 
 struct config_v0 {
   uint8_t result_commit_capacity;
@@ -142,6 +155,13 @@ status_kind issue_stack_push(
     const private_frontier::shadow_slot_v0 &canonical_slot,
     const typed_stack::push_input_v0 &input, forwarding_kind forwarding,
     issue_receipt_v0 *receipt);
+
+status_kind issue_stack_push_with_selector(
+    engine_state_v0 *state, const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq, const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    const typed_stack::push_input_v0 &input, forwarding_selector_v0 selector,
+    void *selector_context, issue_receipt_v0 *receipt);
 
 status_kind peek_write_offer(const engine_state_v0 &state,
                              write_offer_v0 *offer);
