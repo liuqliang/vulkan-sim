@@ -140,6 +140,21 @@ struct rtcore_replay_warp_completion_entry_snapshot {
   unsigned long long scoreboard_handoff_cycle;
 };
 
+struct rtcore_v04_target_raw_read_transport_snapshot {
+  uint64_t reservation_id;
+  uint64_t reservation_age;
+  uint64_t raw_payload_base_address;
+  uint32_t commit_epoch;
+  uint32_t target_slot_generation;
+  uint16_t raw_payload_bytes;
+  uint8_t target_kind;
+  uint8_t target_slot_index;
+  uint8_t producer_commit_required;
+  uint8_t transfer_bytes;
+  uint8_t valid;
+  uint8_t reserved_zero[5];
+};
+
 struct rtcore_memory_unit_request_snapshot {
   bool valid;
   unsigned address_space;
@@ -161,6 +176,7 @@ struct rtcore_memory_unit_request_snapshot {
   unsigned char payload[32];
   bool is_write;
   unsigned long long issue_cycle;
+  rtcore_v04_target_raw_read_transport_snapshot v04_target_raw_read;
 };
 
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
@@ -169,7 +185,9 @@ static const unsigned RTCORE_MEMORY_OPERATION_READ = 0u;
 static const unsigned RTCORE_MEMORY_OPERATION_WRITE = 1u;
 static const unsigned RTCORE_MEMORY_DESTINATION_LEGACY = 0u;
 static const unsigned RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK = 1u;
+static const unsigned RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL = 2u;
 static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT = 8u;
+static const unsigned RTCORE_MEMORY_ACCESS_TARGET_RAW_READ = 9u;
 
 extern "C" bool
 rtcore_v04_private_frontier_live_init_memory_issue_profile_active();
@@ -207,6 +225,11 @@ bool rtcore_push_front_memory_unit_request_for_sm(
 bool rtcore_push_back_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     const rtcore_memory_unit_request_snapshot *sideband_snapshot);
+
+bool rtcore_accept_v04_target_raw_read_response(
+    const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long response_cycle);
 
 bool rtcore_query_replay_warp_completion_entry(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,

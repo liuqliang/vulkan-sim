@@ -45,6 +45,7 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include "../cuda-sim/ptx-stats.h"
 #include "../cuda-sim/ptx_sim.h"
 #include "../cuda-sim/rtcore_replay_interface.h"
+#include "../cuda-sim/rtcore_v04_live_global_memory_adapter.h"
 #include "../cuda-sim/rtcore_v04_shadow_shader_return.h"
 #include "../statwrapper.h"
 #include "addrdec.h"
@@ -2743,8 +2744,43 @@ static void rtcore_record_v02_lsu_sideband_response_latency(
 
 static void rtcore_record_v02_lsu_sideband_response_completion(
     const rtcore_memory_unit_request_snapshot &snapshot,
-    unsigned long long response_cycle) {
+    unsigned long long response_cycle, memory_space *global_memory,
+    unsigned long long response_address) {
   if (!snapshot.valid) {
+    return;
+  }
+  if (snapshot.destination ==
+      RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL) {
+    uint8_t response_payload[
+        rtcore::v04::target_memory::kRawReadChunkBytes] = {};
+    const rtcore::v04::live_global_memory::status_kind materialize_status =
+        rtcore::v04::live_global_memory::materialize_functional_response(
+            snapshot, global_memory, response_address, response_payload,
+            sizeof(response_payload));
+    if (materialize_status !=
+            rtcore::v04::live_global_memory::kStatusOk ||
+        !rtcore_accept_v04_target_raw_read_response(
+            &snapshot, response_payload, sizeof(response_payload),
+            response_cycle)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_TARGET_RAW_RESPONSE_FAULT "
+              "owner_hw_sid=%u request_key=0x%08x generation=%u "
+              "reservation_id=%llu slot=%u slot_generation=%u "
+              "chunk_id=%u chunk_count=%u response_addr=0x%llx "
+              "materialize_status=%s\n",
+              snapshot.owner_hw_sid, snapshot.rt_request_id,
+              snapshot.request_generation,
+              static_cast<unsigned long long>(
+                  snapshot.v04_target_raw_read.reservation_id),
+              snapshot.v04_target_raw_read.target_slot_index,
+              snapshot.v04_target_raw_read.target_slot_generation,
+              snapshot.chunk_id, snapshot.chunk_count,
+              response_address,
+              rtcore::v04::live_global_memory::status_name(
+                  materialize_status));
+      fflush(stderr);
+      abort();
+    }
     return;
   }
   const bool v04_live_publication_store =
@@ -2892,7 +2928,7 @@ static bool rtcore_record_v02_lsu_sideband_icnt_injection(mem_fetch *mf) {
 
 static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
     mem_fetch *mf, unsigned long long response_cycle,
-    unsigned *last_owner_hw_sid) {
+    unsigned *last_owner_hw_sid, memory_space *global_memory) {
   if (mf == NULL) {
     return 0;
   }
@@ -2918,7 +2954,9 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
                                                     response_cycle);
     rtcore_record_v02_lsu_sideband_response_wakeup_kind(*waiter_it);
     rtcore_record_v02_lsu_sideband_response_completion(*waiter_it,
-                                                       response_cycle);
+                                                       response_cycle,
+                                                       global_memory,
+                                                       mf->get_addr());
   }
   const unsigned completed_count = it->second.size();
   if (completed_count > 1) {
@@ -2930,7 +2968,8 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
 }
 
 static bool rtcore_maybe_complete_v02_lsu_sideband_ready_access(
-    mem_fetch *mf, unsigned long long response_cycle) {
+    mem_fetch *mf, unsigned long long response_cycle,
+    memory_space *global_memory) {
   if (mf == NULL ||
       g_rtcore_v02_lsu_pending_memory_requests.find(mf->get_request_uid()) ==
           g_rtcore_v02_lsu_pending_memory_requests.end()) {
@@ -2940,7 +2979,7 @@ static bool rtcore_maybe_complete_v02_lsu_sideband_ready_access(
   unsigned owner_hw_sid = 0;
   const unsigned completed_count =
       rtcore_complete_v02_lsu_sideband_pending_response(
-          mf, response_cycle, &owner_hw_sid);
+          mf, response_cycle, &owner_hw_sid, global_memory);
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_response_wakeup_count += completed_count;
   rtcore_v02_lsu_update_sideband_pending_count();
@@ -2952,6 +2991,18 @@ static new_addr_type rtcore_memory_unit_effective_addr(
     const rtcore_replay_cycle_hook_result &result) {
   if (!rtcore_memory_unit_same_cycle_32b_merge_stress_enabled()) {
     return static_cast<new_addr_type>(result.lsu_sideband_aligned_32b_addr);
+  }
+  const rtcore_memory_unit_request_snapshot snapshot =
+      rtcore_v02_lsu_sideband_snapshot_from_result(result);
+  if (snapshot.destination ==
+      RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_TARGET_RAW_CONFIGURATION_FAULT "
+            "owner_hw_sid=%u request_key=0x%08x "
+            "fault=same_cycle_merge_stress_rewrites_data_address\n",
+            snapshot.owner_hw_sid, snapshot.rt_request_id);
+    fflush(stderr);
+    abort();
   }
   return static_cast<new_addr_type>(
       0x70000000ull +
@@ -3043,7 +3094,9 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
       result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_STACK_STORE ||
       result.lsu_sideband_access_kind ==
           RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
-      result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE;
+      result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE ||
+      result.lsu_sideband_access_kind ==
+          RTCORE_MEMORY_ACCESS_TARGET_RAW_READ;
   const bool supported_shader_continuation_access =
       result.lsu_sideband_response_target ==
           RTCORE_V02_LSU_RESPONSE_TARGET_SHADER_CONTINUATION &&
@@ -3061,6 +3114,8 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
 
   baseline_cache *cache = l1d_cache;
   if (cache == NULL || mf_allocator == NULL || core == NULL || stats == NULL) {
+    const rtcore_memory_unit_request_snapshot snapshot =
+        rtcore_v02_lsu_sideband_snapshot_from_result(result);
     if (supported_shader_continuation_access) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_SHADER_CONTINUATION_SBT_METADATA_FAULT "
@@ -3070,6 +3125,17 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
               result.lsu_sideband_rt_request_id,
               result.lsu_sideband_lane_id,
               result.lsu_sideband_memory_op_seq);
+      fflush(stderr);
+      abort();
+    }
+    if (snapshot.destination ==
+        RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_MEMORY_UNIT_L1D_CLIENT_FAULT "
+              "owner_hw_sid=%u request_key=%u lane_id=%u generation=%u "
+              "fault=missing_l1d_client_fail_closed\n",
+              snapshot.owner_hw_sid, snapshot.rt_request_id,
+              snapshot.lane_id, snapshot.request_generation);
       fflush(stderr);
       abort();
     }
@@ -3210,7 +3276,8 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
         result.lsu_sideband_access_kind);
     stats->rt_total_cacheline_fetched[sid]++;
     rtcore_record_v02_lsu_sideband_response_completion(
-        rtcore_v02_lsu_sideband_snapshot_from_result(result), result.cycle);
+        rtcore_v02_lsu_sideband_snapshot_from_result(result), result.cycle,
+        core->get_gpu()->get_global_memory(), mf->get_addr());
     delete mf;
     return;
   }
@@ -3424,7 +3491,8 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
   if (it->second.front().is_write) {
     unsigned completed_count =
         rtcore_complete_v02_lsu_sideband_pending_response(
-            mf, current_cycle, &owner_hw_sid);
+            mf, current_cycle, &owner_hw_sid,
+            core->get_gpu()->get_global_memory());
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_response_wakeup_count += completed_count;
     rtcore_v02_lsu_update_sideband_pending_count();
@@ -3457,11 +3525,13 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
            ready_sideband_responses.begin();
        response_it != ready_sideband_responses.end(); ++response_it) {
     completed_count += rtcore_complete_v02_lsu_sideband_pending_response(
-        *response_it, current_cycle, &owner_hw_sid);
+        *response_it, current_cycle, &owner_hw_sid,
+        core->get_gpu()->get_global_memory());
   }
   if (completed_count == 0) {
     completed_count += rtcore_complete_v02_lsu_sideband_pending_response(
-        mf, current_cycle, &owner_hw_sid);
+        mf, current_cycle, &owner_hw_sid,
+        core->get_gpu()->get_global_memory());
   }
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_response_wakeup_count += completed_count;
@@ -13552,7 +13622,8 @@ void rt_unit::writeback() {
     const unsigned long long current_cycle =
         m_core->get_gpu()->gpu_sim_cycle +
         m_core->get_gpu()->gpu_tot_sim_cycle;
-    rtcore_maybe_complete_v02_lsu_sideband_ready_access(mf, current_cycle);
+    rtcore_maybe_complete_v02_lsu_sideband_ready_access(
+        mf, current_cycle, m_core->get_gpu()->get_global_memory());
     rtcore_record_v02_lsu_shared_l1d_response_rt_serviced();
     rtcore_maybe_log_memory_unit_request_offer_stats(m_sid);
     delete mf;

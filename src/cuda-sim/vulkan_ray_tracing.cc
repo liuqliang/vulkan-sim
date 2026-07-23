@@ -32,6 +32,7 @@
 #include "rtcore_procedural_hit_ordering.h"
 #include "rtcore_tlas_binding_registry.h"
 #include "rtcore_v04_instance_blas_reference_registry.h"
+#include "rtcore_v04_live_global_memory_adapter.h"
 #include "rtcore_v04_private_frontier_layout.h"
 #include "rtcore_v04_private_shared_backing.h"
 #include "rtcore_v04_request_owner_binding.h"
@@ -1439,6 +1440,8 @@ static std::map<unsigned,
     g_rtcore_memory_unit_request_snapshots_by_owner;
 static std::map<unsigned, rtcore::v04::private_shared::backing_state_v0>
     g_rtcore_v04_private_shared_backing_by_owner;
+static std::map<unsigned, rtcore::v04::fetch_target::engine_state_v0>
+    g_rtcore_v04_live_target_engine_by_owner;
 
 static rtcore::v04::private_shared::backing_state_v0 &
 rtcore_v04_private_shared_backing_for(unsigned owner_hw_sid)
@@ -1447,6 +1450,32 @@ rtcore_v04_private_shared_backing_for(unsigned owner_hw_sid)
         g_rtcore_v04_private_shared_backing_by_owner[owner_hw_sid];
     if (!state.initialized) {
         rtcore::v04::private_shared::initialize(&state, owner_hw_sid);
+    }
+    return state;
+}
+
+static rtcore::v04::fetch_target::engine_state_v0 &
+rtcore_v04_live_target_engine_for(unsigned owner_hw_sid)
+{
+    namespace target = rtcore::v04::fetch_target;
+    target::engine_state_v0 &state =
+        g_rtcore_v04_live_target_engine_by_owner[owner_hw_sid];
+    if (!state.initialized) {
+        target::config_v0 config = {};
+        config.node_capacity = target::kMaxNodeSlots;
+        config.node_reservation_width = 8;
+        config.primitive_capacity = target::kMaxPrimitiveSlots;
+        config.primitive_reservation_width = 4;
+        config.instance_capacity = target::kMaxInstanceSlots;
+        config.instance_reservation_width = 2;
+        if (target::initialize(&state, config) != target::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_TARGET_ENGINE_FAULT "
+                    "owner_hw_sid=%u fault=initialize_failed\n",
+                    owner_hw_sid);
+            fflush(stderr);
+            abort();
+        }
     }
     return state;
 }
@@ -1958,6 +1987,22 @@ static bool rtcore_replay_memory_unit_path_active()
     return rtcore_replay_memory_unit_request_offer_enabled() &&
            rtcore_replay_memory_unit_l1d_client_enabled() &&
            rtcore_memory_unit_response_wait_enabled();
+}
+
+extern "C" bool rtcore_v04_live_global_memory_adapter_active()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_REPLAY_V04_LIVE_GLOBAL_MEMORY_ADAPTER") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v04_live_global_memory_adapter_configuration_valid()
+{
+    return rtcore_v04_live_global_memory_adapter_active() &&
+           rtcore_replay_memory_unit_path_active();
 }
 
 static bool rtcore_v04_live_handoff_publication_enabled()
@@ -14874,6 +14919,127 @@ extern "C" bool rtcore_accept_v04_private_shared_request(
     return private_shared::accept_shared_offer(
                &backing, operation, accepted_cycle) ==
            private_shared::kStatusOk;
+}
+
+extern "C" bool rtcore_v04_live_target_reserve_and_enqueue_raw_reads(
+    unsigned owner_hw_sid,
+    const rtcore::v04::stack_commit::forwarding_decision_input_v0 *decision,
+    unsigned long long reservation_cycle,
+    rtcore::v04::fetch_target::reservation_receipt_v0 *reservation)
+{
+    namespace live = rtcore::v04::live_global_memory;
+    namespace memory = rtcore::v04::target_memory;
+    namespace target = rtcore::v04::fetch_target;
+    if (decision == NULL || reservation == NULL ||
+        !rtcore_v04_live_global_memory_adapter_configuration_valid() ||
+        decision->owner.owner_hw_sid != owner_hw_sid) {
+        return false;
+    }
+
+    target::engine_state_v0 staged =
+        rtcore_v04_live_target_engine_for(owner_hw_sid);
+    target::reservation_receipt_v0 staged_reservation = {};
+    if (target::try_reserve_prefill(
+            &staged, *decision, reservation_cycle,
+            &staged_reservation) != target::kStatusOk) {
+        return false;
+    }
+    memory::raw_read_plan_v0 raw_plan = {};
+    if (memory::prepare_raw_read_plan(staged_reservation, &raw_plan) !=
+        memory::kStatusOk) {
+        return false;
+    }
+    live::request_plan_v0 request_plan = {};
+    if (live::prepare_request_plan(
+            raw_plan, reservation_cycle, &request_plan) !=
+            live::kStatusOk) {
+        return false;
+    }
+    for (unsigned index = 0; index < request_plan.request_count; ++index) {
+        if (!request_plan.requests[index].valid ||
+            request_plan.requests[index].owner_hw_sid != owner_hw_sid) {
+            return false;
+        }
+    }
+
+    rtcore_v04_live_target_engine_for(owner_hw_sid) = staged;
+    std::deque<rtcore_memory_unit_request_snapshot> &queue =
+        g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid];
+    for (unsigned index = 0; index < request_plan.request_count; ++index) {
+        queue.push_back(request_plan.requests[index]);
+    }
+    *reservation = staged_reservation;
+    return true;
+}
+
+extern "C" bool rtcore_v04_live_target_complete_producer(
+    unsigned owner_hw_sid,
+    const rtcore::v04::private_frontier::owner_binding_v0 *owner,
+    unsigned operation_seq, unsigned commit_epoch,
+    rtcore::v04::fetch_target::reservation_receipt_v0 *reservation)
+{
+    namespace target = rtcore::v04::fetch_target;
+    if (owner == NULL || reservation == NULL ||
+        !rtcore_v04_live_global_memory_adapter_configuration_valid() ||
+        owner->owner_hw_sid != owner_hw_sid) {
+        return false;
+    }
+    std::map<unsigned, target::engine_state_v0>::iterator it =
+        g_rtcore_v04_live_target_engine_by_owner.find(owner_hw_sid);
+    if (it == g_rtcore_v04_live_target_engine_by_owner.end()) {
+        return false;
+    }
+    return target::complete_producer_commit(
+               &it->second, *owner, operation_seq, commit_epoch,
+               reservation) == target::kStatusOk;
+}
+
+extern "C" bool rtcore_v04_live_target_pop_ready_operation(
+    unsigned owner_hw_sid, unsigned target_kind, bool unit_accepts,
+    rtcore::v04::fetch_target::operation_packet_v0 *packet)
+{
+    namespace target = rtcore::v04::fetch_target;
+    if (packet == NULL ||
+        !rtcore_v04_live_global_memory_adapter_configuration_valid() ||
+        target_kind < target::kTargetNode ||
+        target_kind > target::kTargetInstance) {
+        return false;
+    }
+    std::map<unsigned, target::engine_state_v0>::iterator it =
+        g_rtcore_v04_live_target_engine_by_owner.find(owner_hw_sid);
+    if (it == g_rtcore_v04_live_target_engine_by_owner.end()) {
+        return false;
+    }
+    return target::pop_ready_operation(
+               &it->second,
+               static_cast<target::target_kind>(target_kind),
+               unit_accepts, packet) == target::kStatusOk;
+}
+
+extern "C" bool rtcore_accept_v04_target_raw_read_response(
+    const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long response_cycle)
+{
+    namespace live = rtcore::v04::live_global_memory;
+    namespace target = rtcore::v04::fetch_target;
+    (void)response_cycle;
+    if (request == NULL || response_bytes == NULL ||
+        response_byte_count !=
+            rtcore::v04::target_memory::kRawReadChunkBytes ||
+        !rtcore_v04_live_global_memory_adapter_configuration_valid()) {
+        return false;
+    }
+    std::map<unsigned, target::engine_state_v0>::iterator it =
+        g_rtcore_v04_live_target_engine_by_owner.find(
+            request->owner_hw_sid);
+    if (it == g_rtcore_v04_live_target_engine_by_owner.end()) {
+        return false;
+    }
+    return live::accept_materialized_response(
+               &it->second, *request, response_bytes,
+               static_cast<uint8_t>(response_byte_count)) ==
+           live::kStatusOk;
 }
 
 extern "C" bool
