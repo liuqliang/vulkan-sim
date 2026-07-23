@@ -53,7 +53,8 @@ bool fragment_is_valid(const private_write_fragment_v0 &fragment) {
       fragment.byte_count > private_frontier::kSharedAccessChunkBytes ||
       count_mask_bits(fragment.byte_mask) != fragment.byte_count ||
       (fragment.field_kind != private_frontier::kFieldFrontierMetadata &&
-       fragment.field_kind != private_frontier::kFieldFrontierEntry)) {
+       fragment.field_kind != private_frontier::kFieldFrontierEntry &&
+       fragment.field_kind != private_frontier::kFieldTransitionSpill)) {
     return false;
   }
   for (unsigned byte = 0;
@@ -110,6 +111,11 @@ bool plan_structure_is_valid(
 }
 
 }  // namespace
+
+bool validate_private_write_fragment(
+    const private_write_fragment_v0 &fragment) {
+  return fragment_is_valid(fragment);
+}
 
 status_kind prepare_stack_pushed_and_selected(
     const private_frontier::owner_binding_v0 &owner,

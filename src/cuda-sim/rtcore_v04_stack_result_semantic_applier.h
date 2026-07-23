@@ -102,6 +102,9 @@ static_assert(sizeof(private_write_fragment_v0) == 48,
 static_assert(offsetof(private_write_fragment_v0, payload) == 16,
               "private write payload offset changed");
 
+bool validate_private_write_fragment(
+    const private_write_fragment_v0 &fragment);
+
 status_kind prepare_stack_pushed_and_selected(
     const private_frontier::owner_binding_v0 &owner,
     uint32_t operation_seq,
