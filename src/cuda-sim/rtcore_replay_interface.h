@@ -161,6 +161,19 @@ struct rtcore_v04_target_raw_read_transport_snapshot {
   uint8_t reserved_zero[2];
 };
 
+struct rtcore_v04_stack_private_read_transport_snapshot {
+  uint64_t reservation_id;
+  uint64_t reservation_age;
+  uint32_t target_operation_seq;
+  uint32_t source_node_operation_seq;
+  uint32_t target_slot_generation;
+  uint16_t slot_chunk_offset;
+  uint8_t target_slot_index;
+  uint8_t field_kind;
+  uint8_t valid;
+  uint8_t reserved_zero[7];
+};
+
 struct rtcore_memory_unit_request_snapshot {
   bool valid;
   unsigned address_space;
@@ -183,6 +196,7 @@ struct rtcore_memory_unit_request_snapshot {
   bool is_write;
   unsigned long long issue_cycle;
   rtcore_v04_target_raw_read_transport_snapshot v04_target_raw_read;
+  rtcore_v04_stack_private_read_transport_snapshot v04_stack_private_read;
 };
 
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
@@ -192,9 +206,11 @@ static const unsigned RTCORE_MEMORY_OPERATION_WRITE = 1u;
 static const unsigned RTCORE_MEMORY_DESTINATION_LEGACY = 0u;
 static const unsigned RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK = 1u;
 static const unsigned RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL = 2u;
+static const unsigned RTCORE_MEMORY_DESTINATION_STACK_QUEUE_FILL = 3u;
 static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT = 8u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_RAW_READ = 9u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ = 10u;
+static const unsigned RTCORE_MEMORY_ACCESS_STACK_PRIVATE_READ = 11u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL = 1u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_PRIVATE_SHARED = 2u;
 
@@ -241,6 +257,10 @@ bool rtcore_accept_v04_target_raw_read_response(
     unsigned long long response_cycle);
 
 bool rtcore_accept_v04_target_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle);
+
+bool rtcore_accept_v04_stack_private_shared_read(
     const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle);
 

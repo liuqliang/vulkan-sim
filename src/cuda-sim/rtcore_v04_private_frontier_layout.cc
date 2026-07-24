@@ -473,6 +473,20 @@ status_kind initialize_shadow_slot(
   return kStatusOk;
 }
 
+status_kind build_frontier_metadata_read_plan(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region, access_plan_v0 *read_plan) {
+  if (read_plan == NULL) return kStatusInvalidArgument;
+  const status_kind owner_status = validate_slot_owner(slot, owner);
+  if (owner_status != kStatusOk) return owner_status;
+  uint64_t ignored_slot_base = 0;
+  const status_kind region_status =
+      slot_base_address(owner, region, &ignored_slot_base);
+  if (region_status != kStatusOk) return region_status;
+  initialize_plan(read_plan, owner);
+  return build_metadata_plan(read_plan, owner, region, kAccessRead);
+}
+
 status_kind initialize_root_shadow_slot(
     shadow_slot_v0 *slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region,

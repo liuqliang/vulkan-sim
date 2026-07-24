@@ -84,6 +84,7 @@ struct result_commit_entry_v0 {
   uint64_t result_ready_cycle;
   uint64_t capture_cycle;
   uint32_t commit_epoch;
+  uint32_t current_traversal_bound_bits;
   uint8_t valid;
   uint8_t operator_invocation_count;
   uint8_t reserved_zero[2];
@@ -91,6 +92,7 @@ struct result_commit_entry_v0 {
 
 struct committed_route_receipt_v0 {
   result_identity_envelope_v0 result_identity;
+  typed_node::route_result_v0 typed_result;
   result_semantic::node_commit_plan_v0 semantic_plan;
   typed_node::ray_policy_v0 ray_policy;
   uint64_t issue_cycle;
@@ -98,6 +100,7 @@ struct committed_route_receipt_v0 {
   uint64_t capture_cycle;
   uint64_t commit_cycle;
   uint32_t commit_epoch;
+  uint32_t current_traversal_bound_bits;
   uint32_t next_target_operation_seq;
   uint8_t valid;
   uint8_t operator_invocation_count;
@@ -109,6 +112,11 @@ enum route_sink_result_kind : uint8_t {
   kRouteSinkAccepted = 0,
   kRouteSinkBackpressure = 1,
   kRouteSinkRejected = 2,
+};
+
+enum materialized_route_target_kind : uint8_t {
+  kMaterializedRouteTargetInvalid = 0,
+  kMaterializedRouteTargetStackOperation = 4,
 };
 
 typedef route_sink_result_kind (*route_sink_accept_fn)(

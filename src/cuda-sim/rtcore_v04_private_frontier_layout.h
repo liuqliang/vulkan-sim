@@ -196,6 +196,10 @@ status_kind build_root_operand_read_plan(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region, access_plan_v0 *read_plan);
 
+status_kind build_frontier_metadata_read_plan(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region, access_plan_v0 *read_plan);
+
 status_kind decode_root_private_operands(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     root_private_operands_v0 *operands);

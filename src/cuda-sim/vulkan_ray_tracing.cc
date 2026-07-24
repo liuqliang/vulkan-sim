@@ -42,6 +42,8 @@
 #include "rtcore_v04_root_node_packet.h"
 #include "rtcore_v04_selected_fetch_transition.h"
 #include "rtcore_v04_shadow_shader_return.h"
+#include "rtcore_v04_stack_operation_queue.h"
+#include "rtcore_v04_stack_private_shared_bridge.h"
 #include "rtcore_v04_target_shared_memory_bridge.h"
 #include "rtcore_v04_timing_driver.h"
 #include "rtcore_v04_typed_blas_decode_context.h"
@@ -1469,6 +1471,8 @@ static std::map<unsigned, rtcore::v04::fetch_target::engine_state_v0>
     g_rtcore_v04_live_target_engine_by_owner;
 static std::map<unsigned, rtcore::v04::node_timing::state_v0>
     g_rtcore_v04_live_node_timing_by_owner;
+static std::map<unsigned, rtcore::v04::stack_operation::engine_state_v0>
+    g_rtcore_v04_live_stack_operation_by_owner;
 
 static rtcore::v04::private_shared::backing_state_v0 &
 rtcore_v04_private_shared_backing_for(unsigned owner_hw_sid)
@@ -1520,6 +1524,28 @@ rtcore_v04_live_node_timing_for(unsigned owner_hw_sid)
             node_timing::kStatusOk) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_LIVE_NODE_TIMING_FAULT "
+                    "owner_hw_sid=%u fault=initialize_failed\n",
+                    owner_hw_sid);
+            fflush(stderr);
+            abort();
+        }
+    }
+    return state;
+}
+
+static rtcore::v04::stack_operation::engine_state_v0 &
+rtcore_v04_live_stack_operation_for(unsigned owner_hw_sid)
+{
+    namespace stack_operation = rtcore::v04::stack_operation;
+    stack_operation::engine_state_v0 &state =
+        g_rtcore_v04_live_stack_operation_by_owner[owner_hw_sid];
+    if (!state.initialized) {
+        const stack_operation::config_v0 config =
+            stack_operation::candidate_profile_config();
+        if (stack_operation::initialize(&state, config) !=
+            stack_operation::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_STACK_OPERATION_FAULT "
                     "owner_hw_sid=%u fault=initialize_failed\n",
                     owner_hw_sid);
             fflush(stderr);
@@ -2205,6 +2231,16 @@ static bool rtcore_v04_live_selected_fetch_transition_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_live_stack_operation_ingress_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_LIVE_STACK_OPERATION_INGRESS") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled();
@@ -2225,6 +2261,11 @@ extern "C" bool rtcore_v04_live_selected_fetch_transition_gate_active()
     return rtcore_v04_live_selected_fetch_transition_enabled();
 }
 
+extern "C" bool rtcore_v04_live_stack_operation_ingress_gate_active()
+{
+    return rtcore_v04_live_stack_operation_ingress_enabled();
+}
+
 extern "C" bool rtcore_v04_root_node_input_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled() ||
@@ -2239,7 +2280,10 @@ extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
         rtcore_v04_root_node_ready_packet_enabled(),
         rtcore_v04_live_node_timing_enabled()) &&
            (!rtcore_v04_live_selected_fetch_transition_enabled() ||
-            rtcore_v04_live_node_timing_enabled());
+            rtcore_v04_live_node_timing_enabled()) &&
+           (!rtcore_v04_live_stack_operation_ingress_enabled() ||
+            (rtcore_v04_live_selected_fetch_transition_enabled() &&
+             rtcore_v04_private_frontier_live_init_enabled()));
 }
 
 static void rtcore_v04_require_valid_node_driver_configuration()
@@ -2251,12 +2295,14 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             "GPGPU-Sim RTCORE_V04_NODE_DRIVER_MODE_FAULT "
             "reason=driver_mode_or_live_timing_prerequisite_invalid "
             "functional=%u timing_control=%u root_packet=%u "
-            "live_node_timing=%u selected_fetch_transition=%u\n",
+            "live_node_timing=%u selected_fetch_transition=%u "
+            "stack_operation_ingress=%u\n",
             rtcore_v04_functional_node_driver_enabled() ? 1u : 0u,
             rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u,
             rtcore_v04_root_node_ready_packet_enabled() ? 1u : 0u,
             rtcore_v04_live_node_timing_enabled() ? 1u : 0u,
-            rtcore_v04_live_selected_fetch_transition_enabled() ? 1u : 0u);
+            rtcore_v04_live_selected_fetch_transition_enabled() ? 1u : 0u,
+            rtcore_v04_live_stack_operation_ingress_enabled() ? 1u : 0u);
     fflush(stderr);
     abort();
 }
@@ -15947,6 +15993,112 @@ extern "C" bool rtcore_accept_v04_target_private_shared_read(
     return true;
 }
 
+static rtcore::v04::stack_operation::reservation_receipt_v0
+rtcore_v04_stack_reservation_from_request(
+    const rtcore_memory_unit_request_snapshot &request)
+{
+    rtcore::v04::stack_operation::reservation_receipt_v0 receipt = {};
+    receipt.owner.owner_hw_sid = request.owner_hw_sid;
+    receipt.owner.resident_warp_id = request.resident_warp_id;
+    receipt.owner.request_identity = request.rt_request_id;
+    receipt.owner.generation = request.request_generation;
+    receipt.owner.private_slot_id = request.private_slot_id;
+    receipt.owner.lane_id = request.lane_id;
+    receipt.reservation_id =
+        request.v04_stack_private_read.reservation_id;
+    receipt.reservation_age =
+        request.v04_stack_private_read.reservation_age;
+    receipt.target_operation_seq =
+        request.v04_stack_private_read.target_operation_seq;
+    receipt.source_node_operation_seq =
+        request.v04_stack_private_read.source_node_operation_seq;
+    receipt.slot_generation =
+        request.v04_stack_private_read.target_slot_generation;
+    receipt.slot_index =
+        request.v04_stack_private_read.target_slot_index;
+    receipt.metadata_chunk_count =
+        rtcore::v04::stack_operation::kFrontierMetadataReadChunks;
+    receipt.valid = request.v04_stack_private_read.valid;
+    return receipt;
+}
+
+extern "C" bool rtcore_accept_v04_stack_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle)
+{
+    namespace stack_operation = rtcore::v04::stack_operation;
+    namespace stack_shared = rtcore::v04::stack_private_shared;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (request == NULL ||
+        !rtcore_v04_live_stack_operation_ingress_enabled()) {
+        return false;
+    }
+    std::map<unsigned, stack_operation::engine_state_v0>::iterator it =
+        g_rtcore_v04_live_stack_operation_by_owner.find(
+            request->owner_hw_sid);
+    if (it == g_rtcore_v04_live_stack_operation_by_owner.end()) {
+        return false;
+    }
+    rtcore::v04::request_owner::lane_binding_v0 owner = {};
+    if (!rtcore_v04_owner_binding_from_target_request(*request, &owner)) {
+        return false;
+    }
+    stack_operation::engine_state_v0 staged_stack = it->second;
+    timing_driver::state_v0 staged_driver =
+        rtcore_v04_timing_driver_for(request->owner_hw_sid);
+    if (stack_shared::accept_request_and_fill(
+            rtcore_v04_private_shared_backing_for(
+                request->owner_hw_sid),
+            &staged_stack, *request) != stack_shared::kStatusOk ||
+        timing_driver::complete_memory_transaction(
+            &staged_driver, owner,
+            request->v04_stack_private_read.target_operation_seq) !=
+            timing_driver::kStatusOk) {
+        return false;
+    }
+
+    const stack_operation::reservation_receipt_v0 reservation =
+        rtcore_v04_stack_reservation_from_request(*request);
+    stack_operation::operation_packet_v0 ready_packet = {};
+    const stack_operation::status_kind ready_status =
+        stack_operation::peek_ready_reservation(
+            staged_stack, reservation, &ready_packet);
+    if (ready_status != stack_operation::kStatusOk &&
+        ready_status != stack_operation::kStatusNoReadyOperation) {
+        return false;
+    }
+    it->second = staged_stack;
+    rtcore_v04_timing_driver_for(request->owner_hw_sid) =
+        staged_driver;
+    if (ready_status == stack_operation::kStatusOk) {
+        printf("GPGPU-Sim RTCORE_V04_STACK_OPERATION_READY "
+               "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+               "request_identity=%u request_generation=%u "
+               "source_node_operation_seq=%u "
+               "stack_operation_seq=%u reservation_id=%llu "
+               "slot_generation=%u frontier_top=%u "
+               "frontier_count=%u frontier_capacity=%u "
+               "shared_chunks=2 producer_gate_complete=1 "
+               "required_field_mask_complete=1 "
+               "operator_invocations=0 ready_cycle=%llu\n",
+               ready_packet.owner.owner_hw_sid,
+               ready_packet.owner.resident_warp_id,
+               ready_packet.owner.lane_id,
+               ready_packet.owner.request_identity,
+               ready_packet.owner.generation,
+               ready_packet.source_node_operation_seq,
+               ready_packet.target_operation_seq,
+               (unsigned long long)ready_packet.reservation_id,
+               ready_packet.slot_generation,
+               ready_packet.input.frontier.frontier_top,
+               ready_packet.input.frontier.frontier_count,
+               ready_packet.input.frontier.frontier_capacity,
+               response_cycle);
+        fflush(stdout);
+    }
+    return true;
+}
+
 struct rtcore_v04_selected_fetch_sink_context {
     unsigned owner_hw_sid;
     unsigned long long service_cycle;
@@ -16080,6 +16232,183 @@ rtcore_accept_v04_direct_selected_fetch_route(
 }
 
 static bool rtcore_service_v04_live_node_timing(
+    unsigned owner_hw_sid, unsigned long long service_cycle);
+
+static rtcore::v04::node_timing::route_sink_result_kind
+rtcore_accept_v04_multi_child_stack_route(
+    rtcore::v04::node_timing::committed_route_receipt_v0 *route,
+    rtcore::v04::timing_driver::state_v0 *staged_timing_state,
+    void *opaque_context)
+{
+    namespace node_timing = rtcore::v04::node_timing;
+    namespace private_frontier = rtcore::v04::private_frontier;
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace result_semantic = rtcore::v04::result_semantic;
+    namespace stack_operation = rtcore::v04::stack_operation;
+    namespace stack_shared = rtcore::v04::stack_private_shared;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    rtcore_v04_selected_fetch_sink_context *context =
+        static_cast<rtcore_v04_selected_fetch_sink_context *>(
+            opaque_context);
+    if (route == NULL || staged_timing_state == NULL ||
+        context == NULL || !route->valid ||
+        route->result_identity.owner.owner_hw_sid !=
+            context->owner_hw_sid ||
+        route->semantic_plan.route_kind !=
+            result_semantic::kNodeRouteMultiChildToStack ||
+        route->typed_result.frontier_count == 0 ||
+        route->typed_result.frontier_count !=
+            route->semantic_plan.frontier_count) {
+        return node_timing::kRouteSinkRejected;
+    }
+
+    rtcore_memory_unit_request_snapshot owner_snapshot = {};
+    owner_snapshot.valid = true;
+    owner_snapshot.owner_hw_sid =
+        route->result_identity.owner.owner_hw_sid;
+    owner_snapshot.rt_request_id =
+        route->result_identity.owner.request_identity;
+    owner_snapshot.lane_id =
+        route->result_identity.owner.lane_id;
+    owner_snapshot.resident_warp_id =
+        route->result_identity.owner.resident_warp_id;
+    owner_snapshot.request_generation =
+        route->result_identity.owner.generation;
+    owner_snapshot.private_slot_id =
+        route->result_identity.owner.private_slot_id;
+    rtcore::v04::request_owner::lane_binding_v0 request_owner = {};
+    if (!rtcore_v04_owner_binding_from_target_request(
+            owner_snapshot, &request_owner)) {
+        return node_timing::kRouteSinkRejected;
+    }
+
+    stack_operation::engine_state_v0 staged_stack =
+        rtcore_v04_live_stack_operation_for(context->owner_hw_sid);
+    uint32_t stack_operation_seq = 0;
+    timing_driver::status_kind timing_status =
+        timing_driver::allocate_target_operation(
+            staged_timing_state, request_owner,
+            &stack_operation_seq);
+    if (timing_status == timing_driver::kStatusOperationInFlight) {
+        return node_timing::kRouteSinkBackpressure;
+    }
+    if (timing_status != timing_driver::kStatusOk) {
+        return node_timing::kRouteSinkRejected;
+    }
+
+    stack_operation::reservation_input_v0 input = {};
+    input.owner = route->result_identity.owner;
+    input.node_route = route->typed_result;
+    input.current_traversal_bound_bits =
+        route->current_traversal_bound_bits;
+    input.target_operation_seq = stack_operation_seq;
+    input.source_node_operation_seq =
+        route->result_identity.target_operation_seq;
+    stack_operation::reservation_receipt_v0 reservation = {};
+    const stack_operation::status_kind reserve_status =
+        stack_operation::try_reserve(
+            &staged_stack, input, context->service_cycle,
+            &reservation);
+    if (reserve_status ==
+            stack_operation::kStatusCapacityBackpressure ||
+        reserve_status ==
+            stack_operation::kStatusReservationBudgetBackpressure) {
+        return node_timing::kRouteSinkBackpressure;
+    }
+    if (reserve_status != stack_operation::kStatusOk) {
+        return node_timing::kRouteSinkRejected;
+    }
+
+    private_frontier::access_plan_v0 read_plan = {};
+    if (private_shared::prepare_frontier_metadata_read_plan(
+            rtcore_v04_private_shared_backing_for(
+                context->owner_hw_sid),
+            route->result_identity.owner, &read_plan) !=
+        private_shared::kStatusOk) {
+        return node_timing::kRouteSinkRejected;
+    }
+    stack_shared::request_plan_v0 request_plan = {};
+    if (stack_shared::prepare_request_plan(
+            reservation, read_plan, context->service_cycle,
+            &request_plan) != stack_shared::kStatusOk ||
+        request_plan.request_count !=
+            stack_operation::kFrontierMetadataReadChunks) {
+        return node_timing::kRouteSinkRejected;
+    }
+    for (unsigned index = 0; index < request_plan.request_count;
+         ++index) {
+        timing_status = timing_driver::begin_memory_transaction(
+            staged_timing_state, request_owner,
+            stack_operation_seq);
+        if (timing_status != timing_driver::kStatusOk ||
+            !request_plan.requests[index].valid ||
+            request_plan.requests[index].owner_hw_sid !=
+                context->owner_hw_sid) {
+            return node_timing::kRouteSinkRejected;
+        }
+    }
+
+    rtcore_v04_live_stack_operation_for(context->owner_hw_sid) =
+        staged_stack;
+    std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+        g_rtcore_memory_unit_request_snapshots_by_owner[
+            context->owner_hw_sid];
+    live_queue.insert(live_queue.end(),
+                      request_plan.requests,
+                      request_plan.requests +
+                          request_plan.request_count);
+    route->next_target_operation_seq = stack_operation_seq;
+    route->next_target_kind =
+        node_timing::kMaterializedRouteTargetStackOperation;
+    route->next_target_materialized = 1;
+    printf("GPGPU-Sim RTCORE_V04_STACK_OPERATION_INGRESS_ACCEPTED "
+           "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+           "request_identity=%u request_generation=%u "
+           "source_node_operation_seq=%u stack_operation_seq=%u "
+           "reservation_id=%llu slot_generation=%u "
+           "frontier_count=%u shared_requests=2 "
+           "route_retained_until_accept=1 operator_invocations=0 "
+           "service_cycle=%llu\n",
+           route->result_identity.owner.owner_hw_sid,
+           route->result_identity.owner.resident_warp_id,
+           route->result_identity.owner.lane_id,
+           route->result_identity.owner.request_identity,
+           route->result_identity.owner.generation,
+           route->result_identity.target_operation_seq,
+           stack_operation_seq,
+           (unsigned long long)reservation.reservation_id,
+           reservation.slot_generation,
+           route->semantic_plan.frontier_count,
+           context->service_cycle);
+    fflush(stdout);
+    return node_timing::kRouteSinkAccepted;
+}
+
+static rtcore::v04::node_timing::route_sink_result_kind
+rtcore_accept_v04_live_node_route(
+    rtcore::v04::node_timing::committed_route_receipt_v0 *route,
+    rtcore::v04::timing_driver::state_v0 *staged_timing_state,
+    void *opaque_context)
+{
+    namespace node_timing = rtcore::v04::node_timing;
+    namespace result_semantic = rtcore::v04::result_semantic;
+    if (route == NULL) return node_timing::kRouteSinkRejected;
+    if (route->semantic_plan.route_kind ==
+        result_semantic::kNodeRouteDirectChild) {
+        return rtcore_accept_v04_direct_selected_fetch_route(
+            route, staged_timing_state, opaque_context);
+    }
+    if (route->semantic_plan.route_kind ==
+        result_semantic::kNodeRouteMultiChildToStack) {
+        return rtcore_v04_live_stack_operation_ingress_enabled()
+                   ? rtcore_accept_v04_multi_child_stack_route(
+                         route, staged_timing_state, opaque_context)
+                   : node_timing::kRouteSinkBackpressure;
+    }
+    return node_timing::kRouteSinkBackpressure;
+}
+
+static bool rtcore_service_v04_live_node_timing(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
     namespace node_timing = rtcore::v04::node_timing;
@@ -16104,7 +16433,7 @@ static bool rtcore_service_v04_live_node_timing(
     sink_context.service_cycle = service_cycle;
     node_timing::route_sink_v0 route_sink = {};
     route_sink.accept =
-        rtcore_accept_v04_direct_selected_fetch_route;
+        rtcore_accept_v04_live_node_route;
     route_sink.context = &sink_context;
     const node_timing::route_sink_v0 *active_route_sink =
         rtcore_v04_live_selected_fetch_transition_enabled()

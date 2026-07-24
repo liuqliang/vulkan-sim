@@ -16,6 +16,12 @@ bool bytes_are_zero(const uint8_t *bytes, size_t count) {
   return true;
 }
 
+uint32_t fp32_bits(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
 bool config_valid(const config_v0 &config) {
   return config.node_unit_count != 0 &&
          config.node_unit_count <= kMaxNodeUnits &&
@@ -195,6 +201,7 @@ status_kind commit_results(
     }
     committed_route_receipt_v0 receipt = {};
     receipt.result_identity = entry.result_identity;
+    receipt.typed_result = entry.typed_result;
     receipt.semantic_plan = entry.semantic_plan;
     receipt.ray_policy = entry.ray_policy;
     receipt.issue_cycle = entry.issue_cycle;
@@ -202,6 +209,8 @@ status_kind commit_results(
     receipt.capture_cycle = entry.capture_cycle;
     receipt.commit_cycle = service_cycle;
     receipt.commit_epoch = entry.commit_epoch;
+    receipt.current_traversal_bound_bits =
+        entry.current_traversal_bound_bits;
     receipt.valid = 1;
     receipt.operator_invocation_count =
         entry.operator_invocation_count;
@@ -279,6 +288,10 @@ status_kind capture_matured_results(
     entry.result_ready_cycle = pipeline.result_ready_cycle;
     entry.capture_cycle = service_cycle;
     entry.commit_epoch = commit_epoch;
+    entry.current_traversal_bound_bits = fp32_bits(
+        pipeline.operation_packet.private_operands.committed_hit.valid != 0
+            ? pipeline.operation_packet.private_operands.committed_hit.hit_t
+            : pipeline.operation_packet.private_operands.mutable_ray.t_max);
     entry.operator_invocation_count =
         pipeline.operator_invocation_count;
     entry.valid = 1;

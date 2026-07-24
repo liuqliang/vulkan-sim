@@ -117,6 +117,9 @@ extern "C" bool rtcore_push_back_memory_unit_request_for_sm(
 extern "C" bool rtcore_accept_v04_private_shared_request(
     const rtcore_memory_unit_request_snapshot *sideband_snapshot,
     unsigned long long accepted_cycle);
+extern "C" bool rtcore_accept_v04_stack_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *sideband_snapshot,
+    unsigned long long response_cycle);
 extern "C" unsigned rtcore_count_memory_unit_requests_for_sm(
     unsigned owner_hw_sid);
 extern "C" bool rtcore_record_memory_unit_response(
@@ -3399,13 +3402,23 @@ static void rtcore_consume_memory_unit_request_offer_from_rt_unit(
             RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
         result.memory_unit_snapshot.access_kind ==
             RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ;
+    const bool stack_private_read =
+        result.memory_unit_snapshot.operation ==
+            RTCORE_MEMORY_OPERATION_READ &&
+        result.memory_unit_snapshot.destination ==
+            RTCORE_MEMORY_DESTINATION_STACK_QUEUE_FILL &&
+        result.memory_unit_snapshot.access_kind ==
+            RTCORE_MEMORY_ACCESS_STACK_PRIVATE_READ;
     const bool accepted =
         private_init_write
             ? rtcore_accept_v04_private_shared_request(
                   &result.memory_unit_snapshot, result.cycle)
             : (target_private_read &&
                rtcore_accept_v04_target_private_shared_read(
-                   &result.memory_unit_snapshot, result.cycle));
+                   &result.memory_unit_snapshot, result.cycle)) ||
+                  (stack_private_read &&
+                   rtcore_accept_v04_stack_private_shared_read(
+                       &result.memory_unit_snapshot, result.cycle));
     if (!accepted) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_V04_PRIVATE_SHARED_ACCEPT_FAULT "
