@@ -28,6 +28,7 @@ enum status_kind : uint8_t {
   kStatusSemanticApplyFailed,
   kStatusTimingControlRejected,
   kStatusQueueInvariant,
+  kStatusRouteSinkRejected,
 };
 
 enum stall_bit : uint8_t {
@@ -36,6 +37,7 @@ enum stall_bit : uint8_t {
   kStallNodePipelineFull = 1u << 1,
   kStallResultCommitFull = 1u << 2,
   kStallResultCommitNotAccepted = 1u << 3,
+  kStallRouteSinkBackpressure = 1u << 4,
 };
 
 struct config_v0 {
@@ -76,6 +78,7 @@ struct result_commit_entry_v0 {
   result_identity_envelope_v0 result_identity;
   typed_node::route_result_v0 typed_result;
   result_semantic::node_commit_plan_v0 semantic_plan;
+  typed_node::ray_policy_v0 ray_policy;
   uint64_t issue_age;
   uint64_t issue_cycle;
   uint64_t result_ready_cycle;
@@ -89,14 +92,32 @@ struct result_commit_entry_v0 {
 struct committed_route_receipt_v0 {
   result_identity_envelope_v0 result_identity;
   result_semantic::node_commit_plan_v0 semantic_plan;
+  typed_node::ray_policy_v0 ray_policy;
   uint64_t issue_cycle;
   uint64_t result_ready_cycle;
   uint64_t capture_cycle;
   uint64_t commit_cycle;
   uint32_t commit_epoch;
+  uint32_t next_target_operation_seq;
   uint8_t valid;
   uint8_t operator_invocation_count;
-  uint8_t reserved_zero[2];
+  uint8_t next_target_kind;
+  uint8_t next_target_materialized;
+};
+
+enum route_sink_result_kind : uint8_t {
+  kRouteSinkAccepted = 0,
+  kRouteSinkBackpressure = 1,
+  kRouteSinkRejected = 2,
+};
+
+typedef route_sink_result_kind (*route_sink_accept_fn)(
+    committed_route_receipt_v0 *route,
+    timing_driver::state_v0 *staged_timing_state, void *context);
+
+struct route_sink_v0 {
+  route_sink_accept_fn accept;
+  void *context;
 };
 
 struct cycle_result_v0 {
@@ -143,6 +164,12 @@ status_kind service_cycle(
     state_v0 *state, fetch_target::engine_state_v0 *target_state,
     timing_driver::state_v0 *timing_state, uint64_t service_cycle,
     bool result_commit_accepts, cycle_result_v0 *result);
+
+status_kind service_cycle(
+    state_v0 *state, fetch_target::engine_state_v0 *target_state,
+    timing_driver::state_v0 *timing_state, uint64_t service_cycle,
+    bool result_commit_accepts, const route_sink_v0 *route_sink,
+    cycle_result_v0 *result);
 
 uint8_t active_pipeline_count(const state_v0 &state);
 uint8_t active_result_count(const state_v0 &state);

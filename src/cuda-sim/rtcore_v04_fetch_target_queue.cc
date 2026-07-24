@@ -848,6 +848,70 @@ status_kind try_reserve(
   return kStatusInvalidSelectedFetch;
 }
 
+status_kind try_reserve_selected_fetch(
+    engine_state_v0 *state,
+    const selected_fetch_reservation_input_v0 &selected_input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt) {
+  const bool producer_tag_valid =
+      selected_input.producer_commit_required == 0
+          ? selected_input.producer_operation_seq == 0 &&
+                selected_input.producer_commit_epoch == 0
+          : selected_input.producer_operation_seq != 0 &&
+                selected_input.producer_commit_epoch != 0 &&
+                selected_input.producer_operation_seq !=
+                    selected_input.target_operation_seq;
+  if (state == NULL || receipt == NULL ||
+      selected_input.target_operation_seq == 0 ||
+      selected_input.producer_commit_required > 1 ||
+      !producer_tag_valid ||
+      !bytes_are_zero(selected_input.reserved_zero,
+                      sizeof(selected_input.reserved_zero))) {
+    return kStatusInvalidArgument;
+  }
+
+  target_kind target = kTargetInvalid;
+  uint16_t raw_payload_bytes = 0;
+  const status_kind classify_status =
+      classify_selected_fetch(selected_input.selected_fetch, &target,
+                              &raw_payload_bytes);
+  if (classify_status != kStatusOk) return classify_status;
+
+  reservation_input_v0 input = {};
+  input.owner = selected_input.owner;
+  input.target_reference.payload_offset =
+      selected_input.selected_fetch.child.payload_offset;
+  input.target_reference.near_t_bits =
+      selected_input.selected_fetch.child.near_t_bits;
+  input.target_reference.payload_byte_count = raw_payload_bytes;
+  input.target_reference.payload_kind =
+      selected_input.selected_fetch.child.payload_kind;
+  input.target_reference.level =
+      selected_input.selected_fetch.decode_context.as_object.as_type == 1
+          ? typed_node::kLevelTlas
+          : typed_node::kLevelBlas;
+  input.target_reference.source_kind =
+      kTargetReferenceSelectedFetchCompatibilityAdapter;
+  input.target_reference.proxy_delegated = 1;
+  input.forwarded_ray_policy = selected_input.forwarded_ray_policy;
+  input.raw_payload_base_address =
+      selected_input.selected_fetch.decode_context.device_base +
+      selected_input.selected_fetch.child.payload_offset;
+  input.target_operation_seq = selected_input.target_operation_seq;
+  input.producer_operation_seq =
+      selected_input.producer_operation_seq;
+  input.producer_commit_epoch =
+      selected_input.producer_commit_epoch;
+  input.raw_payload_bytes = raw_payload_bytes;
+  input.target_kind = target;
+  input.producer_commit_required =
+      selected_input.producer_commit_required;
+  input.required_operand_mask =
+      selected_input.required_operand_mask;
+  input.forwarded_operand_mask =
+      selected_input.forwarded_operand_mask;
+  return try_reserve(state, input, reservation_cycle, receipt);
+}
+
 status_kind try_reserve_prefill(
     engine_state_v0 *state,
     const stack_commit::forwarding_decision_input_v0 &decision,

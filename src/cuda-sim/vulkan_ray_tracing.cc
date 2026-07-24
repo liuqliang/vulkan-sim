@@ -40,6 +40,7 @@
 #include "rtcore_v04_private_shared_backing.h"
 #include "rtcore_v04_request_owner_binding.h"
 #include "rtcore_v04_root_node_packet.h"
+#include "rtcore_v04_selected_fetch_transition.h"
 #include "rtcore_v04_shadow_shader_return.h"
 #include "rtcore_v04_target_shared_memory_bridge.h"
 #include "rtcore_v04_timing_driver.h"
@@ -2194,6 +2195,16 @@ static bool rtcore_v04_live_node_timing_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_live_selected_fetch_transition_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_LIVE_SELECTED_FETCH_TRANSITION") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled();
@@ -2209,6 +2220,11 @@ extern "C" bool rtcore_v04_live_node_timing_gate_active()
     return rtcore_v04_live_node_timing_enabled();
 }
 
+extern "C" bool rtcore_v04_live_selected_fetch_transition_gate_active()
+{
+    return rtcore_v04_live_selected_fetch_transition_enabled();
+}
+
 extern "C" bool rtcore_v04_root_node_input_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled() ||
@@ -2221,7 +2237,9 @@ extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
         rtcore_v04_functional_node_driver_enabled(),
         rtcore_v04_live_timing_driver_control_enabled(),
         rtcore_v04_root_node_ready_packet_enabled(),
-        rtcore_v04_live_node_timing_enabled());
+        rtcore_v04_live_node_timing_enabled()) &&
+           (!rtcore_v04_live_selected_fetch_transition_enabled() ||
+            rtcore_v04_live_node_timing_enabled());
 }
 
 static void rtcore_v04_require_valid_node_driver_configuration()
@@ -2233,11 +2251,12 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             "GPGPU-Sim RTCORE_V04_NODE_DRIVER_MODE_FAULT "
             "reason=driver_mode_or_live_timing_prerequisite_invalid "
             "functional=%u timing_control=%u root_packet=%u "
-            "live_node_timing=%u\n",
+            "live_node_timing=%u selected_fetch_transition=%u\n",
             rtcore_v04_functional_node_driver_enabled() ? 1u : 0u,
             rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u,
             rtcore_v04_root_node_ready_packet_enabled() ? 1u : 0u,
-            rtcore_v04_live_node_timing_enabled() ? 1u : 0u);
+            rtcore_v04_live_node_timing_enabled() ? 1u : 0u,
+            rtcore_v04_live_selected_fetch_transition_enabled() ? 1u : 0u);
     fflush(stderr);
     abort();
 }
@@ -15657,6 +15676,56 @@ static bool rtcore_v04_owner_binding_from_target_request(
     return true;
 }
 
+static bool rtcore_v04_reservation_from_target_request(
+    const rtcore_memory_unit_request_snapshot &request,
+    rtcore::v04::fetch_target::reservation_receipt_v0 *reservation)
+{
+    if (reservation == NULL || !request.valid ||
+        !request.v04_target_raw_read.valid ||
+        request.v04_target_raw_read.reservation_id == 0 ||
+        request.v04_target_raw_read.target_operation_seq == 0 ||
+        request.v04_target_raw_read.target_slot_generation == 0) {
+        return false;
+    }
+    *reservation =
+        rtcore::v04::fetch_target::reservation_receipt_v0();
+    reservation->owner.owner_hw_sid = request.owner_hw_sid;
+    reservation->owner.resident_warp_id = request.resident_warp_id;
+    reservation->owner.request_identity = request.rt_request_id;
+    reservation->owner.generation = request.request_generation;
+    reservation->owner.private_slot_id = request.private_slot_id;
+    reservation->owner.lane_id = request.lane_id;
+    reservation->reservation_id =
+        request.v04_target_raw_read.reservation_id;
+    reservation->reservation_age =
+        request.v04_target_raw_read.reservation_age;
+    reservation->raw_payload_base_address =
+        request.v04_target_raw_read.raw_payload_base_address;
+    reservation->target_operation_seq =
+        request.v04_target_raw_read.target_operation_seq;
+    reservation->producer_operation_seq =
+        request.v04_target_raw_read.producer_operation_seq;
+    reservation->producer_commit_epoch =
+        request.v04_target_raw_read.producer_commit_epoch;
+    reservation->slot_generation =
+        request.v04_target_raw_read.target_slot_generation;
+    reservation->raw_payload_bytes =
+        request.v04_target_raw_read.raw_payload_bytes;
+    reservation->target_kind =
+        request.v04_target_raw_read.target_kind;
+    reservation->slot_index =
+        request.v04_target_raw_read.target_slot_index;
+    reservation->raw_chunk_count = static_cast<uint8_t>(
+        reservation->raw_payload_bytes /
+        rtcore::v04::target_memory::kRawReadChunkBytes);
+    reservation->private_chunk_count =
+        request.v04_target_raw_read.private_chunk_count;
+    reservation->producer_commit_required =
+        request.v04_target_raw_read.producer_commit_required;
+    reservation->valid = 1;
+    return true;
+}
+
 static void rtcore_maybe_publish_v04_root_ready_packet(
     unsigned owner_hw_sid, unsigned long long ready_cycle)
 {
@@ -15726,6 +15795,71 @@ static void rtcore_maybe_publish_v04_root_ready_packet(
     }
 }
 
+static void rtcore_maybe_publish_v04_selected_fetch_ready(
+    const rtcore_memory_unit_request_snapshot &request,
+    unsigned long long ready_cycle)
+{
+    namespace target = rtcore::v04::fetch_target;
+    if (!rtcore_v04_live_selected_fetch_transition_enabled()) {
+        return;
+    }
+    target::reservation_receipt_v0 reservation = {};
+    if (!rtcore_v04_reservation_from_target_request(
+            request, &reservation)) {
+        return;
+    }
+    std::map<unsigned, target::engine_state_v0>::const_iterator it =
+        g_rtcore_v04_live_target_engine_by_owner.find(
+            request.owner_hw_sid);
+    if (it == g_rtcore_v04_live_target_engine_by_owner.end()) {
+        return;
+    }
+    target::operation_packet_v0 packet = {};
+    const target::status_kind status =
+        target::peek_ready_reservation(
+            it->second, reservation, &packet);
+    if (status == target::kStatusNoReadyOperation) {
+        return;
+    }
+    if (status == target::kStatusOk && packet.valid &&
+        packet.target_reference.source_kind ==
+            target::kTargetReferenceRootCompatibilityProxy) {
+        return;
+    }
+    if (status != target::kStatusOk || !packet.valid ||
+        packet.target_reference.source_kind !=
+            target::kTargetReferenceSelectedFetchCompatibilityAdapter ||
+        packet.target_operation_seq !=
+            reservation.target_operation_seq ||
+        packet.producer_operation_seq != 0 ||
+        packet.producer_commit_epoch != 0 ||
+        packet.target_kind != reservation.target_kind) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SELECTED_FETCH_READY_FAULT "
+                "owner_hw_sid=%u request_identity=%u lane_id=%u "
+                "target_operation_seq=%u status=%s\n",
+                request.owner_hw_sid, request.rt_request_id,
+                request.lane_id, reservation.target_operation_seq,
+                target::status_name(status));
+        fflush(stderr);
+        abort();
+    }
+    printf("GPGPU-Sim RTCORE_V04_SELECTED_FETCH_TARGET_READY "
+           "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+           "request_identity=%u request_generation=%u "
+           "target_operation_seq=%u reservation_id=%llu "
+           "slot_generation=%u target_kind=%u "
+           "raw_global_complete=1 private_shared_complete=1 "
+           "producer_gate_complete=1 required_field_mask_complete=1 "
+           "ready_cycle=%llu\n",
+           packet.owner.owner_hw_sid, packet.owner.resident_warp_id,
+           packet.owner.lane_id, packet.owner.request_identity,
+           packet.owner.generation, packet.target_operation_seq,
+           (unsigned long long)packet.reservation_id,
+           packet.slot_generation, packet.target_kind, ready_cycle);
+    fflush(stdout);
+}
+
 extern "C" bool rtcore_accept_v04_target_raw_read_response(
     const rtcore_memory_unit_request_snapshot *request,
     const unsigned char *response_bytes, unsigned response_byte_count,
@@ -15766,6 +15900,8 @@ extern "C" bool rtcore_accept_v04_target_raw_read_response(
     rtcore_v04_timing_driver_for(request->owner_hw_sid) = staged_driver;
     rtcore_maybe_publish_v04_root_ready_packet(
         request->owner_hw_sid, response_cycle);
+    rtcore_maybe_publish_v04_selected_fetch_ready(
+        *request, response_cycle);
     return true;
 }
 
@@ -15806,7 +15942,141 @@ extern "C" bool rtcore_accept_v04_target_private_shared_read(
     rtcore_v04_timing_driver_for(request->owner_hw_sid) = staged_driver;
     rtcore_maybe_publish_v04_root_ready_packet(
         request->owner_hw_sid, response_cycle);
+    rtcore_maybe_publish_v04_selected_fetch_ready(
+        *request, response_cycle);
     return true;
+}
+
+struct rtcore_v04_selected_fetch_sink_context {
+    unsigned owner_hw_sid;
+    unsigned long long service_cycle;
+};
+
+static rtcore::v04::node_timing::route_sink_result_kind
+rtcore_accept_v04_direct_selected_fetch_route(
+    rtcore::v04::node_timing::committed_route_receipt_v0 *route,
+    rtcore::v04::timing_driver::state_v0 *staged_timing_state,
+    void *opaque_context)
+{
+    namespace node_timing = rtcore::v04::node_timing;
+    namespace result_semantic = rtcore::v04::result_semantic;
+    namespace transition =
+        rtcore::v04::selected_fetch_transition;
+    rtcore_v04_selected_fetch_sink_context *context =
+        static_cast<rtcore_v04_selected_fetch_sink_context *>(
+            opaque_context);
+    if (route == NULL || staged_timing_state == NULL ||
+        context == NULL || !route->valid ||
+        route->result_identity.owner.owner_hw_sid !=
+            context->owner_hw_sid) {
+        return node_timing::kRouteSinkRejected;
+    }
+    if (route->semantic_plan.route_kind !=
+        result_semantic::kNodeRouteDirectChild) {
+        return node_timing::kRouteSinkBackpressure;
+    }
+
+    rtcore::v04::fetch_target::engine_state_v0 staged_target =
+        rtcore_v04_live_target_engine_for(context->owner_hw_sid);
+    transition::direct_transition_input_v0 input = {};
+    input.owner = route->result_identity.owner;
+    input.selected_fetch = route->semantic_plan.selected_fetch;
+    input.ray_policy = route->ray_policy;
+    input.producer_operation_seq =
+        route->result_identity.target_operation_seq;
+    input.reservation_cycle = context->service_cycle;
+    transition::accepted_transition_v0 accepted = {};
+    const transition::status_kind status =
+        transition::try_accept_direct(
+            staged_timing_state, &staged_target,
+            rtcore_v04_private_shared_backing_for(
+                context->owner_hw_sid),
+            input, &accepted);
+    if (status == transition::kStatusTargetBackpressure) {
+        return node_timing::kRouteSinkBackpressure;
+    }
+    if (status != transition::kStatusOk || !accepted.valid ||
+        accepted.producer_operation_seq !=
+            route->result_identity.target_operation_seq ||
+        accepted.target_operation_seq == 0 ||
+        accepted.target_operation_seq ==
+            accepted.producer_operation_seq) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SELECTED_FETCH_TRANSITION_FAULT "
+                "owner_hw_sid=%u lane_id=%u producer_operation_seq=%u "
+                "fault=%s\n",
+                context->owner_hw_sid,
+                route->result_identity.owner.lane_id,
+                route->result_identity.target_operation_seq,
+                transition::status_name(status));
+        fflush(stderr);
+        return node_timing::kRouteSinkRejected;
+    }
+
+    rtcore::v04::live_global_memory::request_plan_v0
+        raw_request_plan = {};
+    if (rtcore::v04::live_global_memory::prepare_request_plan(
+            accepted.raw_read_plan, context->service_cycle,
+            &raw_request_plan) !=
+        rtcore::v04::live_global_memory::kStatusOk) {
+        return node_timing::kRouteSinkRejected;
+    }
+    std::deque<rtcore_memory_unit_request_snapshot> requests;
+    for (unsigned index = 0;
+         index < raw_request_plan.request_count; ++index) {
+        const rtcore_memory_unit_request_snapshot &request =
+            raw_request_plan.requests[index];
+        if (!request.valid ||
+            request.owner_hw_sid != context->owner_hw_sid) {
+            return node_timing::kRouteSinkRejected;
+        }
+        requests.push_back(request);
+    }
+    for (unsigned index = 0;
+         index < accepted.private_request_plan.request_count; ++index) {
+        const rtcore_memory_unit_request_snapshot &request =
+            accepted.private_request_plan.requests[index];
+        if (!request.valid ||
+            request.owner_hw_sid != context->owner_hw_sid) {
+            return node_timing::kRouteSinkRejected;
+        }
+        requests.push_back(request);
+    }
+
+    rtcore_v04_live_target_engine_for(context->owner_hw_sid) =
+        staged_target;
+    std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+        g_rtcore_memory_unit_request_snapshots_by_owner[
+            context->owner_hw_sid];
+    live_queue.insert(live_queue.end(),
+                      requests.begin(), requests.end());
+    route->next_target_operation_seq =
+        accepted.target_operation_seq;
+    route->next_target_kind = accepted.target_kind;
+    route->next_target_materialized = 1;
+    printf("GPGPU-Sim RTCORE_V04_SELECTED_FETCH_TRANSITION_ACCEPTED "
+           "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+           "request_identity=%u request_generation=%u "
+           "producer_operation_seq=%u target_operation_seq=%u "
+           "target_kind=%u reservation_id=%llu slot_generation=%u "
+           "raw_requests=%u private_requests=%u "
+           "route_retained_until_accept=1 legacy_authority=0 "
+           "service_cycle=%llu\n",
+           route->result_identity.owner.owner_hw_sid,
+           route->result_identity.owner.resident_warp_id,
+           route->result_identity.owner.lane_id,
+           route->result_identity.owner.request_identity,
+           route->result_identity.owner.generation,
+           accepted.producer_operation_seq,
+           accepted.target_operation_seq,
+           accepted.target_kind,
+           (unsigned long long)accepted.reservation.reservation_id,
+           accepted.reservation.slot_generation,
+           raw_request_plan.request_count,
+           accepted.private_request_plan.request_count,
+           context->service_cycle);
+    fflush(stdout);
+    return node_timing::kRouteSinkAccepted;
 }
 
 static bool rtcore_service_v04_live_node_timing(
@@ -15829,13 +16099,24 @@ static bool rtcore_service_v04_live_node_timing(
         abort();
     }
 
+    rtcore_v04_selected_fetch_sink_context sink_context = {};
+    sink_context.owner_hw_sid = owner_hw_sid;
+    sink_context.service_cycle = service_cycle;
+    node_timing::route_sink_v0 route_sink = {};
+    route_sink.accept =
+        rtcore_accept_v04_direct_selected_fetch_route;
+    route_sink.context = &sink_context;
+    const node_timing::route_sink_v0 *active_route_sink =
+        rtcore_v04_live_selected_fetch_transition_enabled()
+            ? &route_sink
+            : NULL;
     node_timing::cycle_result_v0 result = {};
     const node_timing::status_kind status =
         node_timing::service_cycle(
             &rtcore_v04_live_node_timing_for(owner_hw_sid),
             &rtcore_v04_live_target_engine_for(owner_hw_sid),
             &rtcore_v04_timing_driver_for(owner_hw_sid),
-            service_cycle, true, &result);
+            service_cycle, true, active_route_sink, &result);
     if (status != node_timing::kStatusOk) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_LIVE_NODE_TIMING_FAULT "
@@ -15859,7 +16140,9 @@ static bool rtcore_service_v04_live_node_timing(
                "frontier_count=%u issue_cycle=%llu "
                "result_ready_cycle=%llu capture_cycle=%llu "
                "commit_cycle=%llu modeled_node_latency=%llu "
-               "lt5_next_target_materialized=0 legacy_authority=0\n",
+               "lt5_next_target_materialized=%u "
+               "next_target_operation_seq=%u "
+               "materialized_target_kind=%u legacy_authority=0\n",
                receipt.result_identity.owner.owner_hw_sid,
                receipt.result_identity.owner.resident_warp_id,
                receipt.result_identity.owner.lane_id,
@@ -15881,7 +16164,10 @@ static bool rtcore_service_v04_live_node_timing(
                (unsigned long long)receipt.capture_cycle,
                (unsigned long long)receipt.commit_cycle,
                (unsigned long long)(
-                   receipt.result_ready_cycle - receipt.issue_cycle));
+                   receipt.result_ready_cycle - receipt.issue_cycle),
+               receipt.next_target_materialized,
+               receipt.next_target_operation_seq,
+               receipt.next_target_kind);
         fflush(stdout);
     }
     if (result.issued_count != 0 ||

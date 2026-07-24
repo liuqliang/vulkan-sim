@@ -97,6 +97,19 @@ struct reservation_input_v0 {
   uint8_t reserved_zero[6];
 };
 
+struct selected_fetch_reservation_input_v0 {
+  private_frontier::owner_binding_v0 owner;
+  typed_node::selected_child_fetch_work_item_v0 selected_fetch;
+  typed_node::ray_policy_v0 forwarded_ray_policy;
+  uint32_t target_operation_seq;
+  uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
+  uint8_t producer_commit_required;
+  uint8_t required_operand_mask;
+  uint8_t forwarded_operand_mask;
+  uint8_t reserved_zero[5];
+};
+
 struct config_v0 {
   uint8_t node_capacity;
   uint8_t node_reservation_width;
@@ -228,6 +241,11 @@ status_kind classify_selected_fetch(
 
 status_kind try_reserve(
     engine_state_v0 *state, const reservation_input_v0 &input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
+
+status_kind try_reserve_selected_fetch(
+    engine_state_v0 *state,
+    const selected_fetch_reservation_input_v0 &input,
     uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
 
 status_kind try_reserve_prefill(

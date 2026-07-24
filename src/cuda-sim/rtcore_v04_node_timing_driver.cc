@@ -164,6 +164,7 @@ int find_oldest_result(const state_v0 &state) {
 status_kind commit_results(
     state_v0 *state, timing_driver::state_v0 *timing_state,
     uint64_t service_cycle, bool result_commit_accepts,
+    const route_sink_v0 *route_sink,
     cycle_result_v0 *result) {
   if (!result_commit_accepts) {
     if (active_result_count(*state) != 0) {
@@ -183,18 +184,19 @@ status_kind commit_results(
                             &request_binding)) {
       return kStatusOwnerMismatch;
     }
+    timing_driver::state_v0 staged_timing = *timing_state;
     const timing_driver::status_kind timing_status =
         timing_driver::complete_result_commit(
-            timing_state, request_binding,
+            &staged_timing, request_binding,
             entry.result_identity.target_operation_seq,
             entry.commit_epoch);
     if (timing_status != timing_driver::kStatusOk) {
       return kStatusTimingControlRejected;
     }
-    committed_route_receipt_v0 &receipt =
-        result->committed_routes[result->committed_route_count++];
+    committed_route_receipt_v0 receipt = {};
     receipt.result_identity = entry.result_identity;
     receipt.semantic_plan = entry.semantic_plan;
+    receipt.ray_policy = entry.ray_policy;
     receipt.issue_cycle = entry.issue_cycle;
     receipt.result_ready_cycle = entry.result_ready_cycle;
     receipt.capture_cycle = entry.capture_cycle;
@@ -203,6 +205,22 @@ status_kind commit_results(
     receipt.valid = 1;
     receipt.operator_invocation_count =
         entry.operator_invocation_count;
+    if (route_sink != NULL) {
+      const route_sink_result_kind sink_result =
+          route_sink->accept(&receipt, &staged_timing,
+                             route_sink->context);
+      if (sink_result == kRouteSinkBackpressure) {
+        result->stall_mask = static_cast<uint8_t>(
+            result->stall_mask | kStallRouteSinkBackpressure);
+        return kStatusOk;
+      }
+      if (sink_result != kRouteSinkAccepted) {
+        return kStatusRouteSinkRejected;
+      }
+    }
+    *timing_state = staged_timing;
+    result->committed_routes[result->committed_route_count++] =
+        receipt;
     std::memset(&entry, 0, sizeof(entry));
     ++state->total_routes_committed;
   }
@@ -255,6 +273,7 @@ status_kind capture_matured_results(
     entry.result_identity = pipeline.result_identity;
     entry.typed_result = pipeline.typed_result;
     entry.semantic_plan = semantic_plan;
+    entry.ray_policy = pipeline.operation_packet.ray_policy;
     entry.issue_age = pipeline.issue_age;
     entry.issue_cycle = pipeline.issue_cycle;
     entry.result_ready_cycle = pipeline.result_ready_cycle;
@@ -390,10 +409,14 @@ bool validate_result_identity(
 status_kind service_cycle(
     state_v0 *state, fetch_target::engine_state_v0 *target_state,
     timing_driver::state_v0 *timing_state, uint64_t service_cycle,
-    bool result_commit_accepts, cycle_result_v0 *result) {
+    bool result_commit_accepts, const route_sink_v0 *route_sink,
+    cycle_result_v0 *result) {
   if (state == NULL || target_state == NULL || timing_state == NULL ||
       result == NULL || state->initialized != 1 ||
       target_state->initialized != 1 || !timing_state->initialized) {
+    return kStatusInvalidArgument;
+  }
+  if (route_sink != NULL && route_sink->accept == NULL) {
     return kStatusInvalidArgument;
   }
   *result = cycle_result_v0();
@@ -404,7 +427,7 @@ status_kind service_cycle(
 
   status_kind status =
       commit_results(state, timing_state, service_cycle,
-                     result_commit_accepts, result);
+                     result_commit_accepts, route_sink, result);
   if (status == kStatusOk) {
     status = capture_matured_results(
         state, timing_state, service_cycle, result);
@@ -422,6 +445,14 @@ status_kind service_cycle(
   result->ready_node_entries = fetch_target::ready_slot_count(
       *target_state, fetch_target::kTargetNode);
   return kStatusOk;
+}
+
+status_kind service_cycle(
+    state_v0 *state, fetch_target::engine_state_v0 *target_state,
+    timing_driver::state_v0 *timing_state, uint64_t cycle,
+    bool result_commit_accepts, cycle_result_v0 *result) {
+  return service_cycle(state, target_state, timing_state, cycle,
+                       result_commit_accepts, NULL, result);
 }
 
 uint8_t active_pipeline_count(const state_v0 &state) {
@@ -467,6 +498,8 @@ const char *status_name(status_kind status) {
       return "timing_control_rejected";
     case kStatusQueueInvariant:
       return "queue_invariant";
+    case kStatusRouteSinkRejected:
+      return "route_sink_rejected";
   }
   return "unknown";
 }

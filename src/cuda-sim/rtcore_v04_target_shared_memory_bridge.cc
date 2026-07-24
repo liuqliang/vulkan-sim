@@ -69,7 +69,11 @@ bool request_shape_valid(
          request.chunk_count == kMaxPrivateReadChunks &&
          request.chunk_id < request.chunk_count &&
          request.memory_op_seq ==
-             static_cast<unsigned>(request.chunk_id) + 3 &&
+             static_cast<unsigned>(request.chunk_id) +
+                 static_cast<unsigned>(
+                     extension.raw_payload_bytes /
+                     private_frontier::kSharedAccessChunkBytes) +
+                 1 &&
          request.access_kind ==
              RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ &&
          (request.aligned_32b_addr &
@@ -170,7 +174,8 @@ status_kind prepare_request_plan(
     request.resident_warp_id = reservation.owner.resident_warp_id;
     request.request_generation = reservation.owner.generation;
     request.private_slot_id = reservation.owner.private_slot_id;
-    request.memory_op_seq = 3 + index;
+    request.memory_op_seq =
+        static_cast<unsigned>(reservation.raw_chunk_count) + 1 + index;
     request.chunk_id = index;
     request.chunk_count = read_plan.access_count;
     request.access_kind =
