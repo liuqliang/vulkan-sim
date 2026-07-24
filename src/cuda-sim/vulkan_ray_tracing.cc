@@ -44,6 +44,10 @@
 #include "rtcore_v04_shadow_shader_return.h"
 #include "rtcore_v04_stack_operation_queue.h"
 #include "rtcore_v04_stack_private_shared_bridge.h"
+#include "rtcore_v04_stack_result_commit.h"
+#include "rtcore_v04_stack_shared_transport.h"
+#include "rtcore_v04_stack_target_transport.h"
+#include "rtcore_v04_stack_timing_driver.h"
 #include "rtcore_v04_target_shared_memory_bridge.h"
 #include "rtcore_v04_timing_driver.h"
 #include "rtcore_v04_typed_blas_decode_context.h"
@@ -1092,6 +1096,9 @@ struct rtcore_replay_service_tick_result {
     bool unit_wake_progressed;
     bool ready_issue_progressed;
     bool scoreboard_handoff_progressed;
+    unsigned private_shared_init_acks_consumed;
+    unsigned private_shared_runtime_acks_consumed;
+    unsigned private_shared_init_writes_enqueued;
     rtcore_replay_service_cycle_identity_snapshot last_progress_identity;
 };
 
@@ -1473,6 +1480,10 @@ static std::map<unsigned, rtcore::v04::node_timing::state_v0>
     g_rtcore_v04_live_node_timing_by_owner;
 static std::map<unsigned, rtcore::v04::stack_operation::engine_state_v0>
     g_rtcore_v04_live_stack_operation_by_owner;
+static std::map<unsigned, rtcore::v04::stack_timing::state_v0>
+    g_rtcore_v04_live_stack_timing_by_owner;
+static std::map<unsigned, rtcore::v04::stack_commit::engine_state_v0>
+    g_rtcore_v04_live_stack_commit_by_owner;
 
 static rtcore::v04::private_shared::backing_state_v0 &
 rtcore_v04_private_shared_backing_for(unsigned owner_hw_sid)
@@ -1546,6 +1557,53 @@ rtcore_v04_live_stack_operation_for(unsigned owner_hw_sid)
             stack_operation::kStatusOk) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_LIVE_STACK_OPERATION_FAULT "
+                    "owner_hw_sid=%u fault=initialize_failed\n",
+                    owner_hw_sid);
+            fflush(stderr);
+            abort();
+        }
+    }
+    return state;
+}
+
+static rtcore::v04::stack_timing::state_v0 &
+rtcore_v04_live_stack_timing_for(unsigned owner_hw_sid)
+{
+    namespace stack_timing = rtcore::v04::stack_timing;
+    stack_timing::state_v0 &state =
+        g_rtcore_v04_live_stack_timing_by_owner[owner_hw_sid];
+    if (!state.initialized) {
+        const stack_timing::config_v0 config =
+            stack_timing::candidate_profile_config();
+        if (stack_timing::initialize(&state, config) !=
+            stack_timing::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_STACK_TIMING_FAULT "
+                    "owner_hw_sid=%u fault=initialize_failed\n",
+                    owner_hw_sid);
+            fflush(stderr);
+            abort();
+        }
+    }
+    return state;
+}
+
+static rtcore::v04::stack_commit::engine_state_v0 &
+rtcore_v04_live_stack_commit_for(unsigned owner_hw_sid)
+{
+    namespace stack_commit = rtcore::v04::stack_commit;
+    stack_commit::engine_state_v0 &state =
+        g_rtcore_v04_live_stack_commit_by_owner[owner_hw_sid];
+    if (!state.initialized) {
+        stack_commit::config_v0 config = {};
+        config.result_commit_capacity =
+            stack_commit::kMaxResultCommitEntries;
+        config.tracker_capacity =
+            stack_commit::kMaxRequestCommitTrackers;
+        if (stack_commit::initialize(&state, config) !=
+            stack_commit::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_STACK_COMMIT_FAULT "
                     "owner_hw_sid=%u fault=initialize_failed\n",
                     owner_hw_sid);
             fflush(stderr);
@@ -2241,6 +2299,16 @@ static bool rtcore_v04_live_stack_operation_ingress_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_live_stack_push_commit_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_LIVE_STACK_PUSH_COMMIT") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled();
@@ -2266,6 +2334,11 @@ extern "C" bool rtcore_v04_live_stack_operation_ingress_gate_active()
     return rtcore_v04_live_stack_operation_ingress_enabled();
 }
 
+extern "C" bool rtcore_v04_live_stack_push_commit_gate_active()
+{
+    return rtcore_v04_live_stack_push_commit_enabled();
+}
+
 extern "C" bool rtcore_v04_root_node_input_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled() ||
@@ -2283,7 +2356,9 @@ extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
             rtcore_v04_live_node_timing_enabled()) &&
            (!rtcore_v04_live_stack_operation_ingress_enabled() ||
             (rtcore_v04_live_selected_fetch_transition_enabled() &&
-             rtcore_v04_private_frontier_live_init_enabled()));
+             rtcore_v04_private_frontier_live_init_enabled())) &&
+           (!rtcore_v04_live_stack_push_commit_enabled() ||
+            rtcore_v04_live_stack_operation_ingress_enabled());
 }
 
 static void rtcore_v04_require_valid_node_driver_configuration()
@@ -2296,13 +2371,14 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             "reason=driver_mode_or_live_timing_prerequisite_invalid "
             "functional=%u timing_control=%u root_packet=%u "
             "live_node_timing=%u selected_fetch_transition=%u "
-            "stack_operation_ingress=%u\n",
+            "stack_operation_ingress=%u stack_push_commit=%u\n",
             rtcore_v04_functional_node_driver_enabled() ? 1u : 0u,
             rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u,
             rtcore_v04_root_node_ready_packet_enabled() ? 1u : 0u,
             rtcore_v04_live_node_timing_enabled() ? 1u : 0u,
             rtcore_v04_live_selected_fetch_transition_enabled() ? 1u : 0u,
-            rtcore_v04_live_stack_operation_ingress_enabled() ? 1u : 0u);
+            rtcore_v04_live_stack_operation_ingress_enabled() ? 1u : 0u,
+            rtcore_v04_live_stack_push_commit_enabled() ? 1u : 0u);
     fflush(stderr);
     abort();
 }
@@ -14133,13 +14209,25 @@ static bool rtcore_enqueue_v04_root_private_operand_reads(
     return true;
 }
 
+static unsigned rtcore_service_v04_private_shared_ack_dispatch(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    unsigned *init_acknowledged_count,
+    unsigned *runtime_acknowledged_count);
+
 static bool rtcore_service_v04_private_frontier_live_init(
     unsigned owner_hw_sid, unsigned long long service_cycle,
-    bool *scheduler_ready_progressed)
+    bool service_acknowledgments, bool *scheduler_ready_progressed,
+    unsigned *acknowledged_count, unsigned *enqueued_count)
 {
     namespace private_shared = rtcore::v04::private_shared;
     if (scheduler_ready_progressed != NULL) {
         *scheduler_ready_progressed = false;
+    }
+    if (acknowledged_count != NULL) {
+        *acknowledged_count = 0;
+    }
+    if (enqueued_count != NULL) {
+        *enqueued_count = 0;
     }
     if (!rtcore_v04_private_frontier_live_init_enabled()) {
         return false;
@@ -14148,8 +14236,14 @@ static bool rtcore_service_v04_private_frontier_live_init(
     private_shared::backing_state_v0 &backing =
         rtcore_v04_private_shared_backing_for(owner_hw_sid);
     const unsigned acknowledged =
-        private_shared::service_write_acks(
-            &backing, service_cycle, private_shared::kResponseFillWidth);
+        service_acknowledgments
+            ? private_shared::service_write_acks(
+                  &backing, service_cycle,
+                  private_shared::kResponseFillWidth)
+            : 0;
+    if (acknowledged_count != NULL) {
+        *acknowledged_count = acknowledged;
+    }
     if (backing.fault_status != private_shared::kStatusOk) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_PRIVATE_FRONTIER_INIT_INVARIANT "
@@ -14331,6 +14425,9 @@ static bool rtcore_service_v04_private_frontier_live_init(
         private_shared::service_init_enqueue(
             &backing, service_cycle,
             private_shared::kPrivateWriteEnqueueWidth);
+    if (enqueued_count != NULL) {
+        *enqueued_count = enqueued;
+    }
     if (scheduler_ready_progressed != NULL) {
         *scheduler_ready_progressed = ready_progressed;
     }
@@ -14350,10 +14447,31 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
     const bool owner_admission_progressed =
         rtcore_retry_v04_whole_mask_request_owner_admission(
             owner_hw_sid, service_cycle);
+    unsigned private_shared_init_acks_consumed = 0;
+    unsigned private_shared_runtime_acks_consumed = 0;
+    if (rtcore_v04_live_stack_push_commit_enabled()) {
+        rtcore_service_v04_private_shared_ack_dispatch(
+            owner_hw_sid, service_cycle,
+            &private_shared_init_acks_consumed,
+            &private_shared_runtime_acks_consumed);
+    }
     bool private_ready_progressed = false;
+    unsigned legacy_init_acks_consumed = 0;
+    unsigned private_shared_init_writes_enqueued = 0;
     const bool private_shared_progressed =
         rtcore_service_v04_private_frontier_live_init(
-            owner_hw_sid, service_cycle, &private_ready_progressed);
+            owner_hw_sid, service_cycle,
+            !rtcore_v04_live_stack_push_commit_enabled(),
+            &private_ready_progressed, &legacy_init_acks_consumed,
+            &private_shared_init_writes_enqueued);
+    private_shared_init_acks_consumed +=
+        legacy_init_acks_consumed;
+    result.private_shared_init_acks_consumed =
+        private_shared_init_acks_consumed;
+    result.private_shared_runtime_acks_consumed =
+        private_shared_runtime_acks_consumed;
+    result.private_shared_init_writes_enqueued =
+        private_shared_init_writes_enqueued;
     const bool lane_state_admission_progressed =
         rtcore_try_drain_replay_lane_request_state_capacity_pending_admissions(
             owner_hw_sid, service_cycle);
@@ -14366,7 +14484,10 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
             owner_hw_sid, rtcore_replay_memory_wake_budget_config(),
             &memory_identity, service_cycle);
     result.memory_progressed =
-        private_shared_progressed || memory_issue_progressed ||
+        private_shared_progressed ||
+        private_shared_init_acks_consumed != 0 ||
+        private_shared_runtime_acks_consumed != 0 ||
+        memory_issue_progressed ||
         memory_wake_progressed;
     const bool unit_progressed =
         rtcore_service_request_state_unit_wake_requests_for_owner(
@@ -15242,6 +15363,8 @@ static rtcore_memory_unit_request_snapshot
 rtcore_v04_private_shared_snapshot(
     const rtcore::v04::private_shared::shared_write_v0 &operation)
 {
+    const bool runtime_write =
+        operation.operation_seq != 0 && operation.commit_epoch != 0;
     rtcore_memory_unit_request_snapshot snapshot = {};
     snapshot.valid = operation.valid;
     snapshot.address_space = RTCORE_MEMORY_ADDRESS_SPACE_SHARED;
@@ -15259,14 +15382,25 @@ rtcore_v04_private_shared_snapshot(
     snapshot.chunk_id = operation.chunk_id;
     snapshot.chunk_count = operation.chunk_count;
     snapshot.access_kind =
-        RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT;
+        runtime_write
+            ? RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE
+            : RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT;
     snapshot.aligned_32b_addr = operation.aligned_32b_address;
     snapshot.byte_mask = operation.byte_mask;
     std::memcpy(snapshot.payload, operation.payload,
                 sizeof(snapshot.payload));
     snapshot.is_write = true;
     snapshot.issue_cycle = operation.enqueue_cycle;
-    snapshot.v04_target_raw_read.field_kind = operation.field_kind;
+    if (runtime_write) {
+        snapshot.v04_private_write.producer_operation_seq =
+            operation.operation_seq;
+        snapshot.v04_private_write.producer_commit_epoch =
+            operation.commit_epoch;
+        snapshot.v04_private_write.field_kind = operation.field_kind;
+        snapshot.v04_private_write.valid = 1;
+    } else {
+        snapshot.v04_target_raw_read.field_kind = operation.field_kind;
+    }
     return snapshot;
 }
 
@@ -15281,8 +15415,10 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
             RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK ||
         snapshot.response_target !=
             RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE ||
-        snapshot.access_kind !=
-            RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT ||
+        (snapshot.access_kind !=
+             RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT &&
+         snapshot.access_kind !=
+             RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE) ||
         snapshot.resident_warp_id >=
             rtcore::v04::private_shared::kResidentWarpCapacity ||
         snapshot.lane_id >=
@@ -15290,13 +15426,44 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
         snapshot.private_slot_id >= 256 ||
         snapshot.chunk_count == 0 ||
         snapshot.chunk_count >
-            rtcore::v04::private_frontier::kMaxAccessChunks ||
+            rtcore::v04::stack_commit::kMaxWritesPerTransaction ||
         snapshot.chunk_id >= snapshot.chunk_count ||
-        snapshot.v04_target_raw_read.field_kind <
+        (snapshot.access_kind ==
+                 RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE
+             ? snapshot.v04_private_write.field_kind
+             : snapshot.v04_target_raw_read.field_kind) <
             rtcore::v04::private_frontier::kFieldFrontierMetadata ||
-        snapshot.v04_target_raw_read.field_kind >
+        (snapshot.access_kind ==
+                 RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE
+             ? snapshot.v04_private_write.field_kind
+             : snapshot.v04_target_raw_read.field_kind) >
             rtcore::v04::private_frontier::kFieldCommittedHit ||
         !snapshot.is_write) {
+        return false;
+    }
+    const bool runtime_write =
+        snapshot.access_kind ==
+        RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE;
+    const rtcore_v04_private_write_transport_snapshot
+        zero_private_write = {};
+    const rtcore_v04_target_raw_read_transport_snapshot
+        zero_target_transport = {};
+    if ((runtime_write &&
+         (snapshot.v04_private_write.valid != 1 ||
+          snapshot.v04_private_write.producer_operation_seq == 0 ||
+          snapshot.v04_private_write.producer_commit_epoch == 0 ||
+          std::memcmp(snapshot.v04_private_write.reserved_zero,
+                      zero_private_write.reserved_zero,
+                      sizeof(zero_private_write.reserved_zero)) != 0 ||
+          std::memcmp(&snapshot.v04_target_raw_read,
+                      &zero_target_transport,
+                      sizeof(zero_target_transport)) != 0)) ||
+        (!runtime_write &&
+         (snapshot.chunk_count >
+              rtcore::v04::private_frontier::kMaxAccessChunks ||
+          std::memcmp(&snapshot.v04_private_write,
+                      &zero_private_write,
+                      sizeof(zero_private_write)) != 0))) {
         return false;
     }
     *operation = rtcore::v04::private_shared::shared_write_v0();
@@ -15316,12 +15483,22 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
     operation->owner.private_slot_id = snapshot.private_slot_id;
     operation->owner.lane_id =
         static_cast<uint8_t>(snapshot.lane_id);
+    operation->operation_seq =
+        runtime_write
+            ? snapshot.v04_private_write.producer_operation_seq
+            : 0;
+    operation->commit_epoch =
+        runtime_write
+            ? snapshot.v04_private_write.producer_commit_epoch
+            : 0;
     operation->memory_op_seq = snapshot.memory_op_seq;
     operation->chunk_id = static_cast<uint8_t>(snapshot.chunk_id);
     operation->chunk_count =
         static_cast<uint8_t>(snapshot.chunk_count);
     operation->field_kind =
-        snapshot.v04_target_raw_read.field_kind;
+        runtime_write
+            ? snapshot.v04_private_write.field_kind
+            : snapshot.v04_target_raw_read.field_kind;
     operation->aligned_32b_address = snapshot.aligned_32b_addr;
     operation->byte_mask = snapshot.byte_mask;
     std::memcpy(operation->payload, snapshot.payload,
@@ -15877,8 +16054,10 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
             target::kTargetReferenceSelectedFetchCompatibilityAdapter ||
         packet.target_operation_seq !=
             reservation.target_operation_seq ||
-        packet.producer_operation_seq != 0 ||
-        packet.producer_commit_epoch != 0 ||
+        packet.producer_operation_seq !=
+            reservation.producer_operation_seq ||
+        packet.producer_commit_epoch !=
+            reservation.producer_commit_epoch ||
         packet.target_kind != reservation.target_kind) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_SELECTED_FETCH_READY_FAULT "
@@ -16299,6 +16478,7 @@ rtcore_accept_v04_multi_child_stack_route(
     stack_operation::reservation_input_v0 input = {};
     input.owner = route->result_identity.owner;
     input.node_route = route->typed_result;
+    input.ray_policy = route->ray_policy;
     input.current_traversal_bound_bits =
         route->current_traversal_bound_bits;
     input.target_operation_seq = stack_operation_seq;
@@ -16522,6 +16702,509 @@ static bool rtcore_service_v04_live_node_timing(
            result.committed_route_count != 0;
 }
 
+struct rtcore_v04_stack_result_sink_context {
+    unsigned owner_hw_sid;
+    unsigned long long service_cycle;
+};
+
+static rtcore::v04::private_frontier::region_binding_v0
+rtcore_v04_private_region_for(unsigned owner_hw_sid)
+{
+    rtcore::v04::private_frontier::region_binding_v0 region = {};
+    region.profile_id =
+        rtcore::v04::private_frontier::kLayoutProfileId;
+    region.slot_count = 256;
+    region.private_region_base =
+        UINT64_C(0xff00000000000000) +
+        static_cast<uint64_t>(owner_hw_sid) * UINT64_C(0x1000000);
+    return region;
+}
+
+static bool rtcore_v04_request_owner_from_private_owner(
+    const rtcore::v04::private_frontier::owner_binding_v0 &private_owner,
+    rtcore::v04::request_owner::lane_binding_v0 *request_owner)
+{
+    rtcore_memory_unit_request_snapshot snapshot = {};
+    snapshot.valid = true;
+    snapshot.owner_hw_sid = private_owner.owner_hw_sid;
+    snapshot.rt_request_id = private_owner.request_identity;
+    snapshot.lane_id = private_owner.lane_id;
+    snapshot.resident_warp_id = private_owner.resident_warp_id;
+    snapshot.request_generation = private_owner.generation;
+    snapshot.private_slot_id = private_owner.private_slot_id;
+    return rtcore_v04_owner_binding_from_target_request(
+        snapshot, request_owner);
+}
+
+static rtcore::v04::stack_timing::result_sink_kind
+rtcore_accept_v04_live_stack_push_result(
+    rtcore::v04::stack_timing::completed_push_receipt_v0 *push,
+    rtcore::v04::timing_driver::state_v0 *staged_timing_state,
+    void *opaque_context)
+{
+    namespace live_global = rtcore::v04::live_global_memory;
+    namespace private_frontier = rtcore::v04::private_frontier;
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace stack_target = rtcore::v04::stack_target;
+    namespace stack_timing = rtcore::v04::stack_timing;
+    namespace target_memory = rtcore::v04::target_memory;
+    namespace target_shared = rtcore::v04::target_shared_memory;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    rtcore_v04_stack_result_sink_context *context =
+        static_cast<rtcore_v04_stack_result_sink_context *>(
+            opaque_context);
+    if (push == NULL || staged_timing_state == NULL ||
+        context == NULL || !push->valid ||
+        push->operation_packet.owner.owner_hw_sid !=
+            context->owner_hw_sid ||
+        push->producer_operation_seq !=
+            push->operation_packet.target_operation_seq ||
+        push->target_operation_seq == 0 ||
+        push->target_operation_seq ==
+            push->producer_operation_seq ||
+        push->commit_epoch == 0 ||
+        push->operator_invocation_count != 1) {
+        return stack_timing::kResultSinkRejected;
+    }
+
+    rtcore::v04::stack_commit::engine_state_v0 staged_stack =
+        rtcore_v04_live_stack_commit_for(context->owner_hw_sid);
+    rtcore::v04::fetch_target::engine_state_v0 staged_target =
+        rtcore_v04_live_target_engine_for(context->owner_hw_sid);
+    stack_target::issue_receipt_v0 receipt = {};
+    const stack_target::status_kind capture_status =
+        stack_target::capture_live_stack_push_result(
+            &staged_stack, &staged_target,
+            push->operation_packet.owner,
+            push->producer_operation_seq, push->commit_epoch,
+            push->target_operation_seq,
+            rtcore_v04_private_region_for(context->owner_hw_sid),
+            push->operation_packet.frontier_metadata,
+            push->operation_packet.input, push->typed_result,
+            push->operation_packet.ray_policy,
+            context->service_cycle, &receipt);
+    if (capture_status ==
+        stack_target::kStatusStackCommitBackpressure) {
+        return stack_timing::kResultSinkBackpressure;
+    }
+    if (capture_status != stack_target::kStatusOk ||
+        !receipt.valid ||
+        receipt.stack_issue.producer_operation_seq !=
+            push->producer_operation_seq ||
+        receipt.stack_issue.target_operation_seq !=
+            push->target_operation_seq ||
+        receipt.stack_issue.commit_epoch != push->commit_epoch) {
+        return stack_timing::kResultSinkRejected;
+    }
+
+    rtcore::v04::request_owner::lane_binding_v0 owner = {};
+    if (!rtcore_v04_request_owner_from_private_owner(
+            push->operation_packet.owner, &owner)) {
+        return stack_timing::kResultSinkRejected;
+    }
+    std::deque<rtcore_memory_unit_request_snapshot> requests;
+    if (!receipt.used_transition_spill) {
+        target_memory::raw_read_plan_v0 raw_plan = {};
+        live_global::request_plan_v0 raw_requests = {};
+        private_frontier::access_plan_v0 private_read_plan = {};
+        target_shared::request_plan_v0 private_requests = {};
+        if (!receipt.target_reservation.valid ||
+            target_memory::prepare_raw_read_plan(
+                receipt.target_reservation, &raw_plan) !=
+                target_memory::kStatusOk ||
+            live_global::prepare_request_plan(
+                raw_plan, context->service_cycle,
+                &raw_requests) != live_global::kStatusOk ||
+            private_shared::prepare_root_operand_read_plan(
+                rtcore_v04_private_shared_backing_for(
+                    context->owner_hw_sid),
+                push->operation_packet.owner,
+                &private_read_plan) != private_shared::kStatusOk ||
+            target_shared::prepare_request_plan(
+                receipt.target_reservation, private_read_plan,
+                context->service_cycle,
+                &private_requests) != target_shared::kStatusOk) {
+            return stack_timing::kResultSinkRejected;
+        }
+        const unsigned transaction_count =
+            static_cast<unsigned>(raw_requests.request_count) +
+            static_cast<unsigned>(private_requests.request_count);
+        for (unsigned index = 0; index < transaction_count; ++index) {
+            if (timing_driver::begin_memory_transaction(
+                    staged_timing_state, owner,
+                    push->target_operation_seq) !=
+                timing_driver::kStatusOk) {
+                return stack_timing::kResultSinkRejected;
+            }
+        }
+        requests.insert(requests.end(), raw_requests.requests,
+                        raw_requests.requests +
+                            raw_requests.request_count);
+        requests.insert(requests.end(), private_requests.requests,
+                        private_requests.requests +
+                            private_requests.request_count);
+        push->target_materialized = 1;
+    } else {
+        if (timing_driver::mark_commit_successor_pending_recovery(
+                staged_timing_state, owner,
+                push->producer_operation_seq, push->commit_epoch,
+                push->target_operation_seq) !=
+            timing_driver::kStatusOk) {
+            return stack_timing::kResultSinkRejected;
+        }
+        push->used_transition_spill = 1;
+    }
+
+    rtcore_v04_live_stack_commit_for(context->owner_hw_sid) =
+        staged_stack;
+    rtcore_v04_live_target_engine_for(context->owner_hw_sid) =
+        staged_target;
+    std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+        g_rtcore_memory_unit_request_snapshots_by_owner[
+            context->owner_hw_sid];
+    live_queue.insert(live_queue.end(), requests.begin(),
+                      requests.end());
+    return stack_timing::kResultSinkAccepted;
+}
+
+static bool rtcore_service_v04_live_stack_ack(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace stack_shared = rtcore::v04::stack_shared;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    private_shared::backing_state_v0 &backing =
+        rtcore_v04_private_shared_backing_for(owner_hw_sid);
+    if (backing.outstanding.empty() ||
+        backing.outstanding.front().ack_cycle > service_cycle ||
+        backing.outstanding.front().operation_seq == 0 ||
+        backing.outstanding.front().commit_epoch == 0) {
+        return false;
+    }
+
+    rtcore::v04::stack_commit::engine_state_v0 staged_stack =
+        rtcore_v04_live_stack_commit_for(owner_hw_sid);
+    private_shared::backing_state_v0 staged_backing = backing;
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(owner_hw_sid);
+    stack_shared::ack_receipt_v0 receipt = {};
+    const stack_shared::status_kind ack_status =
+        stack_shared::service_next_ack(
+            &staged_stack, &staged_backing, service_cycle,
+            &receipt);
+    rtcore::v04::request_owner::lane_binding_v0 owner = {};
+    if (ack_status != stack_shared::kStatusOk ||
+        !receipt.valid ||
+        !rtcore_v04_request_owner_from_private_owner(
+            receipt.shared_ack.owner, &owner) ||
+        timing_driver::complete_memory_transaction(
+            &staged_timing, owner,
+            receipt.shared_ack.operation_seq) !=
+            timing_driver::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_STACK_ACK_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                owner_hw_sid, service_cycle,
+                stack_shared::status_name(ack_status));
+        fflush(stderr);
+        abort();
+    }
+
+    rtcore_v04_live_stack_commit_for(owner_hw_sid) =
+        staged_stack;
+    backing = staged_backing;
+    rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
+    return true;
+}
+
+static unsigned rtcore_service_v04_private_shared_ack_dispatch(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    unsigned *init_acknowledged_count,
+    unsigned *runtime_acknowledged_count)
+{
+    namespace private_shared = rtcore::v04::private_shared;
+    if (init_acknowledged_count != NULL) {
+        *init_acknowledged_count = 0;
+    }
+    if (runtime_acknowledged_count != NULL) {
+        *runtime_acknowledged_count = 0;
+    }
+    private_shared::backing_state_v0 &backing =
+        rtcore_v04_private_shared_backing_for(owner_hw_sid);
+    unsigned consumed = 0;
+    while (consumed < private_shared::kResponseFillWidth &&
+           !backing.outstanding.empty() &&
+           backing.outstanding.front().ack_cycle <= service_cycle) {
+        const private_shared::shared_write_v0 &front =
+            backing.outstanding.front();
+        const bool init_transaction =
+            front.operation_seq == 0 && front.commit_epoch == 0;
+        const bool runtime_transaction =
+            front.operation_seq != 0 && front.commit_epoch != 0;
+        if (init_transaction) {
+            if (private_shared::service_write_acks(
+                    &backing, service_cycle, 1) != 1) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_PRIVATE_SHARED_ACK_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=init_ack_rejected\n",
+                        owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+            if (init_acknowledged_count != NULL) {
+                ++*init_acknowledged_count;
+            }
+        } else if (runtime_transaction) {
+            if (!rtcore_service_v04_live_stack_ack(
+                    owner_hw_sid, service_cycle)) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_PRIVATE_SHARED_ACK_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=runtime_ack_rejected\n",
+                        owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+            if (runtime_acknowledged_count != NULL) {
+                ++*runtime_acknowledged_count;
+            }
+        } else {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_PRIVATE_SHARED_ACK_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=malformed_transaction_identity\n",
+                    owner_hw_sid, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        ++consumed;
+    }
+    return consumed;
+}
+
+static bool rtcore_service_v04_live_stack_ready(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    namespace stack_target = rtcore::v04::stack_target;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    rtcore::v04::stack_commit::engine_state_v0 staged_stack =
+        rtcore_v04_live_stack_commit_for(owner_hw_sid);
+    rtcore::v04::fetch_target::engine_state_v0 staged_target =
+        rtcore_v04_live_target_engine_for(owner_hw_sid);
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(owner_hw_sid);
+    stack_target::ready_route_receipt_v0 receipt = {};
+    const stack_target::status_kind route_status =
+        stack_target::route_next_ready_event(
+            &staged_stack, &staged_target, &receipt);
+    if (route_status == stack_target::kStatusNoReadyEvent) {
+        return false;
+    }
+    rtcore::v04::request_owner::lane_binding_v0 owner = {};
+    if (route_status != stack_target::kStatusOk ||
+        !receipt.valid ||
+        !rtcore_v04_request_owner_from_private_owner(
+            receipt.stack_event.owner, &owner) ||
+        timing_driver::complete_result_commit(
+            &staged_timing, owner,
+            receipt.stack_event.producer_operation_seq,
+            receipt.stack_event.commit_epoch) !=
+            timing_driver::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_STACK_COMMIT_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                owner_hw_sid, service_cycle,
+                stack_target::status_name(route_status));
+        fflush(stderr);
+        abort();
+    }
+
+    rtcore_v04_live_stack_commit_for(owner_hw_sid) =
+        staged_stack;
+    rtcore_v04_live_target_engine_for(owner_hw_sid) =
+        staged_target;
+    rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
+    printf("GPGPU-Sim RTCORE_V04_LIVE_STACK_COMMIT_READY "
+           "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+           "producer_operation_seq=%u commit_epoch=%u "
+           "target_operation_seq=%u ready_kind=%u "
+           "producer_writes_acked=1 target_retained=1 "
+           "service_cycle=%llu\n",
+           owner_hw_sid,
+           receipt.stack_event.owner.resident_warp_id,
+           receipt.stack_event.owner.lane_id,
+           receipt.stack_event.producer_operation_seq,
+           receipt.stack_event.commit_epoch,
+           receipt.stack_event.target_operation_seq,
+           receipt.stack_event.ready_kind, service_cycle);
+    fflush(stdout);
+    return true;
+}
+
+static unsigned rtcore_service_v04_live_stack_write_transfer(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    unsigned transfer_budget)
+{
+    namespace stack_shared = rtcore::v04::stack_shared;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    unsigned transferred = 0;
+    for (; transferred < transfer_budget;
+         ++transferred) {
+        rtcore::v04::stack_commit::engine_state_v0 staged_stack =
+            rtcore_v04_live_stack_commit_for(owner_hw_sid);
+        rtcore::v04::private_shared::backing_state_v0 staged_backing =
+            rtcore_v04_private_shared_backing_for(owner_hw_sid);
+        timing_driver::state_v0 staged_timing =
+            rtcore_v04_timing_driver_for(owner_hw_sid);
+        stack_shared::transfer_receipt_v0 receipt = {};
+        const stack_shared::status_kind transfer_status =
+            stack_shared::transfer_next_write(
+                &staged_stack, &staged_backing, service_cycle,
+                &receipt);
+        if (transfer_status == stack_shared::kStatusNoWriteOffer ||
+            transfer_status ==
+                stack_shared::kStatusSharedQueueBackpressure) {
+            break;
+        }
+        rtcore::v04::request_owner::lane_binding_v0 owner = {};
+        if (transfer_status != stack_shared::kStatusOk ||
+            !receipt.valid ||
+            !rtcore_v04_request_owner_from_private_owner(
+                receipt.stack_offer.owner, &owner) ||
+            timing_driver::begin_memory_transaction(
+                &staged_timing, owner,
+                receipt.stack_offer.operation_seq) !=
+                timing_driver::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_STACK_WRITE_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                    owner_hw_sid, service_cycle,
+                    stack_shared::status_name(transfer_status));
+            fflush(stderr);
+            abort();
+        }
+        rtcore_v04_live_stack_commit_for(owner_hw_sid) =
+            staged_stack;
+        rtcore_v04_private_shared_backing_for(owner_hw_sid) =
+            staged_backing;
+        rtcore_v04_timing_driver_for(owner_hw_sid) =
+            staged_timing;
+    }
+    return transferred;
+}
+
+static bool rtcore_service_v04_live_stack_timing(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    unsigned runtime_acks_already_consumed,
+    unsigned runtime_write_budget, bool *memory_progressed)
+{
+    namespace stack_timing = rtcore::v04::stack_timing;
+    if (memory_progressed != NULL) {
+        *memory_progressed = false;
+    }
+    if (!rtcore_v04_live_stack_push_commit_enabled()) {
+        return false;
+    }
+    if (!rtcore_v04_functional_node_driver_configuration_valid() ||
+        !rtcore_v04_live_global_memory_adapter_configuration_valid()) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_STACK_TIMING_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu "
+                "fault=prerequisite_invalid\n",
+                owner_hw_sid, service_cycle);
+        fflush(stderr);
+        abort();
+    }
+
+    const bool ready_progressed =
+        rtcore_service_v04_live_stack_ready(
+            owner_hw_sid, service_cycle);
+
+    rtcore_v04_stack_result_sink_context sink_context = {};
+    sink_context.owner_hw_sid = owner_hw_sid;
+    sink_context.service_cycle = service_cycle;
+    stack_timing::result_sink_v0 sink = {};
+    sink.accept = rtcore_accept_v04_live_stack_push_result;
+    sink.context = &sink_context;
+    stack_timing::cycle_result_v0 result = {};
+    const stack_timing::status_kind status =
+        stack_timing::service_cycle(
+            &rtcore_v04_live_stack_timing_for(owner_hw_sid),
+            &rtcore_v04_live_stack_operation_for(owner_hw_sid),
+            &rtcore_v04_timing_driver_for(owner_hw_sid),
+            service_cycle, &sink, &result);
+    if (status != stack_timing::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_STACK_TIMING_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                owner_hw_sid, service_cycle,
+                stack_timing::status_name(status));
+        fflush(stderr);
+        abort();
+    }
+    const unsigned transferred =
+        rtcore_service_v04_live_stack_write_transfer(
+            owner_hw_sid, service_cycle, runtime_write_budget);
+    if (memory_progressed != NULL) {
+        *memory_progressed =
+            runtime_acks_already_consumed != 0 ||
+            transferred != 0;
+    }
+
+    if (result.captured_result_count != 0) {
+        const stack_timing::completed_push_receipt_v0 &push =
+            result.completed_push;
+        printf("GPGPU-Sim RTCORE_V04_LIVE_STACK_PUSH_CAPTURED "
+               "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+               "producer_operation_seq=%u commit_epoch=%u "
+               "target_operation_seq=%u operator_invocations=%u "
+               "transition_spill=%u target_materialized=%u "
+               "issue_cycle=%llu result_ready_cycle=%llu "
+               "capture_cycle=%llu modeled_stack_latency=%llu\n",
+               owner_hw_sid,
+               push.operation_packet.owner.resident_warp_id,
+               push.operation_packet.owner.lane_id,
+               push.producer_operation_seq, push.commit_epoch,
+               push.target_operation_seq,
+               push.operator_invocation_count,
+               push.used_transition_spill,
+               push.target_materialized,
+               static_cast<unsigned long long>(push.issue_cycle),
+               static_cast<unsigned long long>(
+                   push.result_ready_cycle),
+               static_cast<unsigned long long>(push.capture_cycle),
+               static_cast<unsigned long long>(
+                   push.result_ready_cycle - push.issue_cycle));
+        fflush(stdout);
+    }
+    if (result.issued_count != 0 ||
+        result.captured_result_count != 0 ||
+        transferred != 0 || runtime_acks_already_consumed != 0 ||
+        ready_progressed) {
+        printf("GPGPU-Sim RTCORE_V04_LIVE_STACK_TIMING_CYCLE "
+               "owner_hw_sid=%u service_cycle=%llu issued=%u "
+               "captured=%u writes_transferred=%u acks=%u "
+               "commit_ready=%u stall_mask=0x%02x "
+               "pipeline_active=%u stack_ready=%u "
+               "stack_units=1 stack_latency=2 stack_ii=1 "
+               "stack_issue_width=1 result_capacity=16 "
+               "private_write_width=4\n",
+               owner_hw_sid, service_cycle, result.issued_count,
+               result.captured_result_count, transferred,
+               runtime_acks_already_consumed,
+               ready_progressed ? 1u : 0u,
+               result.stall_mask, result.active_pipeline_entries,
+               result.ready_stack_entries);
+        fflush(stdout);
+    }
+    return result.issued_count != 0 ||
+           result.captured_result_count != 0 ||
+           transferred != 0 ||
+           runtime_acks_already_consumed != 0 ||
+           ready_progressed;
+}
+
 extern "C" bool
 rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     unsigned owner_hw_sid, unsigned long long service_cycle,
@@ -16534,9 +17217,28 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     const bool v04_live_node_progressed =
         rtcore_service_v04_live_node_timing(
             owner_hw_sid, service_cycle);
-    if (v04_live_node_progressed) {
+    bool v04_live_stack_memory_progressed = false;
+    const unsigned private_write_width =
+        rtcore::v04::private_shared::kPrivateWriteEnqueueWidth;
+    const unsigned runtime_write_budget =
+        result.tick_result.private_shared_init_writes_enqueued <
+                private_write_width
+            ? private_write_width -
+                  result.tick_result.private_shared_init_writes_enqueued
+            : 0;
+    const bool v04_live_stack_progressed =
+        rtcore_service_v04_live_stack_timing(
+            owner_hw_sid, service_cycle,
+            result.tick_result.private_shared_runtime_acks_consumed,
+            runtime_write_budget,
+            &v04_live_stack_memory_progressed);
+    if (v04_live_node_progressed ||
+        v04_live_stack_progressed) {
         result.tick_result.progressed = true;
         result.tick_result.ready_progressed = true;
+    }
+    if (v04_live_stack_memory_progressed) {
+        result.tick_result.memory_progressed = true;
     }
     if (service_enabled) {
         *service_enabled = result.service_enabled;

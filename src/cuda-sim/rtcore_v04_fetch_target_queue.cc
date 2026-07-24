@@ -916,7 +916,9 @@ status_kind try_reserve_prefill(
     engine_state_v0 *state,
     const stack_commit::forwarding_decision_input_v0 &decision,
     uint64_t reservation_cycle, reservation_receipt_v0 *receipt) {
-  if (decision.operation_seq == 0 || decision.commit_epoch == 0 ||
+  if (decision.producer_operation_seq == 0 ||
+      decision.target_operation_seq == 0 ||
+      decision.commit_epoch == 0 ||
       !valid_owner(decision.owner) ||
       !bytes_are_zero(decision.reserved_zero,
                       sizeof(decision.reserved_zero))) {
@@ -948,17 +950,13 @@ status_kind try_reserve_prefill(
   input.raw_payload_base_address =
       decision.selected_fetch.decode_context.device_base +
       decision.selected_fetch.child.payload_offset;
-  // This adapter remains a disconnected compatibility fixture until LT5
-  // supplies a separately allocated next-target sequence.
-  input.target_operation_seq = decision.operation_seq;
-  input.producer_operation_seq =
-      decision.persistent_write_count != 0 ? decision.operation_seq : 0;
-  input.producer_commit_epoch =
-      decision.persistent_write_count != 0 ? decision.commit_epoch : 0;
+  input.forwarded_ray_policy = decision.forwarded_ray_policy;
+  input.target_operation_seq = decision.target_operation_seq;
+  input.producer_operation_seq = decision.producer_operation_seq;
+  input.producer_commit_epoch = decision.commit_epoch;
   input.raw_payload_bytes = raw_payload_bytes;
   input.target_kind = target;
-  input.producer_commit_required =
-      decision.persistent_write_count != 0;
+  input.producer_commit_required = 1;
   input.required_operand_mask = static_cast<uint8_t>(
       kOperandTargetReferenceValid | kOperandRawPayloadValid);
   return try_reserve(state, input, reservation_cycle, receipt);

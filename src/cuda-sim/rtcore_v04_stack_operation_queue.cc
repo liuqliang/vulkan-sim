@@ -64,6 +64,8 @@ bool input_valid(const reservation_input_v0 &input) {
          input.source_node_operation_seq != 0 &&
          input.target_operation_seq != input.source_node_operation_seq &&
          std::isfinite(fp32_value(input.current_traversal_bound_bits)) &&
+         bytes_are_zero(input.ray_policy.reserved_zero,
+                        sizeof(input.ray_policy.reserved_zero)) &&
          bytes_are_zero(input.reserved_zero,
                         sizeof(input.reserved_zero)) &&
          route_valid(input.node_route);
@@ -150,15 +152,28 @@ void build_packet(const slot_v0 &slot, operation_packet_v0 *packet) {
       slot.reservation.source_node_operation_seq;
   packet->slot_generation = slot.reservation.slot_generation;
   packet->valid = 1;
+  packet->frontier_metadata.frontier_top =
+      load_u32_le(slot.metadata_bytes + 0);
+  packet->frontier_metadata.frontier_count =
+      load_u32_le(slot.metadata_bytes + 4);
+  packet->frontier_metadata.frontier_capacity =
+      load_u32_le(slot.metadata_bytes + 8);
+  packet->frontier_metadata.current_level =
+      load_u32_le(slot.metadata_bytes + 12);
+  packet->frontier_metadata.level_frame_depth =
+      load_u32_le(slot.metadata_bytes + 16);
+  packet->frontier_metadata.max_level_depth =
+      load_u32_le(slot.metadata_bytes + 20);
+  packet->ray_policy = slot.ray_policy;
   packet->input.profile_id = typed_stack::kGenRtDerivedProfileId;
   packet->input.operation_kind =
       typed_stack::kPushRemainderAndForwardSelected;
   packet->input.frontier.frontier_top =
-      load_u32_le(slot.metadata_bytes + 0);
+      packet->frontier_metadata.frontier_top;
   packet->input.frontier.frontier_count =
-      load_u32_le(slot.metadata_bytes + 4);
+      packet->frontier_metadata.frontier_count;
   packet->input.frontier.frontier_capacity =
-      load_u32_le(slot.metadata_bytes + 8);
+      packet->frontier_metadata.frontier_capacity;
   packet->input.current_traversal_bound_bits =
       slot.current_traversal_bound_bits;
   packet->input.node_route = slot.node_route;
@@ -227,6 +242,7 @@ status_kind try_reserve(
       kFrontierMetadataReadChunks;
   prepared.reservation.valid = 1;
   prepared.node_route = input.node_route;
+  prepared.ray_policy = input.ray_policy;
   prepared.current_traversal_bound_bits =
       input.current_traversal_bound_bits;
   prepared.state = kSlotReservedWaitMetadata;
@@ -317,6 +333,18 @@ status_kind peek_ready_reservation(
   }
   if (slot.state != kSlotReady) return kStatusNoReadyOperation;
   build_packet(slot, packet);
+  return kStatusOk;
+}
+
+status_kind peek_ready_operation(const engine_state_v0 &state,
+                                 operation_packet_v0 *packet) {
+  if (packet == NULL || state.initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  *packet = operation_packet_v0();
+  const int slot_index = find_oldest_ready_slot(state);
+  if (slot_index < 0) return kStatusNoReadyOperation;
+  build_packet(state.slots[slot_index], packet);
   return kStatusOk;
 }
 

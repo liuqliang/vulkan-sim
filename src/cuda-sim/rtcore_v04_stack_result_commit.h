@@ -10,7 +10,7 @@ namespace rtcore {
 namespace v04 {
 namespace stack_commit {
 
-static const uint8_t kMaxResultCommitEntries = 8;
+static const uint8_t kMaxResultCommitEntries = 16;
 static const uint8_t kMaxRequestCommitTrackers = 16;
 static const uint8_t kStackSpillWriteFragments =
     (private_frontier::kTransitionSpillOffset %
@@ -63,10 +63,12 @@ enum ready_kind : uint8_t {
 
 struct forwarding_decision_input_v0 {
   private_frontier::owner_binding_v0 owner;
-  uint32_t operation_seq;
+  uint32_t producer_operation_seq;
+  uint32_t target_operation_seq;
   uint32_t commit_epoch;
   uint16_t persistent_write_count;
-  uint8_t reserved_zero[6];
+  uint8_t reserved_zero[2];
+  typed_node::ray_policy_v0 forwarded_ray_policy;
   typed_node::selected_child_fetch_work_item_v0 selected_fetch;
 };
 
@@ -90,6 +92,8 @@ struct write_offer_v0 {
 };
 
 struct issue_receipt_v0 {
+  uint32_t producer_operation_seq;
+  uint32_t target_operation_seq;
   uint32_t commit_epoch;
   uint16_t write_count;
   uint8_t forwarding_kind;
@@ -99,16 +103,18 @@ struct issue_receipt_v0 {
 
 struct ready_event_v0 {
   private_frontier::owner_binding_v0 owner;
-  uint32_t operation_seq;
+  uint32_t producer_operation_seq;
+  uint32_t target_operation_seq;
   uint32_t commit_epoch;
   uint8_t ready_kind;
-  uint8_t reserved_zero[7];
+  uint8_t reserved_zero[3];
 };
 
 struct result_commit_entry_v0 {
   private_frontier::owner_binding_v0 owner;
   uint64_t issue_age;
   uint32_t operation_seq;
+  uint32_t target_operation_seq;
   uint32_t commit_epoch;
   uint16_t write_count;
   uint16_t next_write_index;
@@ -123,6 +129,7 @@ struct request_commit_tracker_v0 {
   private_frontier::owner_binding_v0 owner;
   uint64_t issue_age;
   uint32_t operation_seq;
+  uint32_t target_operation_seq;
   uint32_t commit_epoch;
   uint16_t expected_write_count;
   uint16_t accepted_write_mask;
@@ -162,6 +169,32 @@ status_kind issue_stack_push_with_selector(
     const private_frontier::shadow_slot_v0 &canonical_slot,
     const typed_stack::push_input_v0 &input, forwarding_selector_v0 selector,
     void *selector_context, issue_receipt_v0 *receipt);
+
+status_kind capture_stack_push_result_with_selector(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    const typed_stack::push_input_v0 &input,
+    const typed_stack::push_result_v0 &result,
+    const typed_node::ray_policy_v0 &forwarded_ray_policy,
+    forwarding_selector_v0 selector, void *selector_context,
+    issue_receipt_v0 *receipt);
+
+status_kind capture_stack_push_result_from_projection_with_selector(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::frontier_metadata_image_v0 &frontier_metadata,
+    const typed_stack::push_input_v0 &input,
+    const typed_stack::push_result_v0 &result,
+    const typed_node::ray_policy_v0 &forwarded_ray_policy,
+    forwarding_selector_v0 selector, void *selector_context,
+    issue_receipt_v0 *receipt);
 
 status_kind peek_write_offer(const engine_state_v0 &state,
                              write_offer_v0 *offer);

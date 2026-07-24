@@ -44,6 +44,7 @@ struct config_v0 {
 struct reservation_input_v0 {
   private_frontier::owner_binding_v0 owner;
   typed_node::route_result_v0 node_route;
+  typed_node::ray_policy_v0 ray_policy;
   uint32_t current_traversal_bound_bits;
   uint32_t target_operation_seq;
   uint32_t source_node_operation_seq;
@@ -72,12 +73,15 @@ struct operation_packet_v0 {
   uint32_t slot_generation;
   uint8_t valid;
   uint8_t reserved_zero[3];
+  private_frontier::frontier_metadata_image_v0 frontier_metadata;
+  typed_node::ray_policy_v0 ray_policy;
   typed_stack::push_input_v0 input;
 };
 
 struct slot_v0 {
   reservation_receipt_v0 reservation;
   typed_node::route_result_v0 node_route;
+  typed_node::ray_policy_v0 ray_policy;
   uint32_t current_traversal_bound_bits;
   uint32_t metadata_byte_valid_mask;
   uint8_t metadata_bytes[private_frontier::kFrontierMetadataBytes];
@@ -123,6 +127,9 @@ status_kind peek_ready_reservation(
     const engine_state_v0 &state,
     const reservation_receipt_v0 &reservation,
     operation_packet_v0 *packet);
+
+status_kind peek_ready_operation(const engine_state_v0 &state,
+                                 operation_packet_v0 *packet);
 
 status_kind pop_ready_operation(engine_state_v0 *state,
                                 bool unit_input_accepts,

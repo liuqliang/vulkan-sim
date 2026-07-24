@@ -102,7 +102,9 @@ bool live_target_matches(
              identity.target_operation_seq &&
          control->live_commit_producer_operation_seq == 0 &&
          control->live_commit_epoch == 0 &&
-         control->live_memory_transaction_count == 0;
+         control->pending_recovery_operation_seq == 0 &&
+         control->live_memory_transaction_count == 0 &&
+         control->live_commit_memory_transaction_count == 0;
 }
 
 int find_free_pipeline(const state_v0 &state) {

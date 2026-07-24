@@ -45,8 +45,9 @@ struct lane_control_state_v0 {
   uint32_t live_target_operation_seq;
   uint32_t live_commit_producer_operation_seq;
   uint32_t live_commit_epoch;
+  uint32_t pending_recovery_operation_seq;
   uint16_t live_memory_transaction_count;
-  uint16_t reserved_one;
+  uint16_t live_commit_memory_transaction_count;
 };
 
 struct state_v0 {
@@ -112,6 +113,14 @@ status_kind allocate_target_operation(
 status_kind begin_result_commit(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t *commit_epoch);
+status_kind allocate_commit_successor_operation(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t *target_operation_seq);
+status_kind mark_commit_successor_pending_recovery(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq);
 status_kind begin_memory_transaction(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t operation_seq);

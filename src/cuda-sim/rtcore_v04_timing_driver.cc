@@ -52,7 +52,9 @@ bool lane_is_quiescent(const lane_control_state_v0 &lane) {
   return lane.live && lane.live_target_operation_seq == 0 &&
          lane.live_commit_producer_operation_seq == 0 &&
          lane.live_commit_epoch == 0 &&
-         lane.live_memory_transaction_count == 0;
+         lane.pending_recovery_operation_seq == 0 &&
+         lane.live_memory_transaction_count == 0 &&
+         lane.live_commit_memory_transaction_count == 0;
 }
 
 status_kind validate_plan_epoch(const state_v0 &state, bool plan_valid,
@@ -277,7 +279,9 @@ status_kind allocate_target_operation(
   if (control->live_target_operation_seq != 0 ||
       control->live_commit_producer_operation_seq != 0 ||
       control->live_commit_epoch != 0 ||
-      control->live_memory_transaction_count != 0) {
+      control->pending_recovery_operation_seq != 0 ||
+      control->live_memory_transaction_count != 0 ||
+      control->live_commit_memory_transaction_count != 0) {
     return kStatusOperationInFlight;
   }
   if (control->next_target_operation_seq == 0) {
@@ -303,11 +307,15 @@ status_kind begin_result_commit(
   }
   if (control->live_target_operation_seq != producer_operation_seq ||
       control->live_commit_epoch != 0 ||
-      control->live_commit_producer_operation_seq != 0) {
+      control->live_commit_producer_operation_seq != 0 ||
+      control->pending_recovery_operation_seq != 0) {
     return kStatusCommitMismatch;
   }
   if (control->live_memory_transaction_count != 0) {
     return kStatusOperationInFlight;
+  }
+  if (control->live_commit_memory_transaction_count != 0) {
+    return kStatusCommitMismatch;
   }
   if (state->result_commit_control.next_commit_epoch == 0)
     return kStatusCommitEpochExhausted;
@@ -316,6 +324,67 @@ status_kind begin_result_commit(
   control->live_target_operation_seq = 0;
   control->live_commit_producer_operation_seq = producer_operation_seq;
   control->live_commit_epoch = *commit_epoch;
+  ++state->mutation_epoch;
+  return kStatusOk;
+}
+
+status_kind allocate_commit_successor_operation(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t *target_operation_seq) {
+  if (state == NULL || target_operation_seq == NULL ||
+      producer_operation_seq == 0 || commit_epoch == 0 ||
+      !state->initialized) {
+    return kStatusInvalidArgument;
+  }
+  lane_control_state_v0 *control = find_lane_control(state, owner);
+  if (control == NULL || !validate_owner_binding(*state, owner)) {
+    return kStatusOwnerMismatch;
+  }
+  if (control->live_commit_producer_operation_seq !=
+          producer_operation_seq ||
+      control->live_commit_epoch != commit_epoch) {
+    return kStatusCommitMismatch;
+  }
+  if (control->live_target_operation_seq != 0 ||
+      control->pending_recovery_operation_seq != 0 ||
+      control->live_memory_transaction_count != 0) {
+    return kStatusOperationInFlight;
+  }
+  if (control->next_target_operation_seq == 0) {
+    return kStatusOperationSequenceExhausted;
+  }
+  if (control->next_target_operation_seq == producer_operation_seq) {
+    return kStatusCommitMismatch;
+  }
+  *target_operation_seq = control->next_target_operation_seq;
+  control->live_target_operation_seq = *target_operation_seq;
+  ++control->next_target_operation_seq;
+  ++state->mutation_epoch;
+  return kStatusOk;
+}
+
+status_kind mark_commit_successor_pending_recovery(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq) {
+  if (state == NULL || producer_operation_seq == 0 || commit_epoch == 0 ||
+      target_operation_seq == 0 || !state->initialized) {
+    return kStatusInvalidArgument;
+  }
+  lane_control_state_v0 *control = find_lane_control(state, owner);
+  if (control == NULL || !validate_owner_binding(*state, owner)) {
+    return kStatusOwnerMismatch;
+  }
+  if (control->live_commit_producer_operation_seq !=
+          producer_operation_seq ||
+      control->live_commit_epoch != commit_epoch ||
+      control->live_target_operation_seq != target_operation_seq ||
+      control->pending_recovery_operation_seq != 0 ||
+      control->live_memory_transaction_count != 0) {
+    return kStatusCommitMismatch;
+  }
+  control->pending_recovery_operation_seq = target_operation_seq;
   ++state->mutation_epoch;
   return kStatusOk;
 }
@@ -330,14 +399,24 @@ status_kind begin_memory_transaction(
   if (control == NULL || !validate_owner_binding(*state, owner)) {
     return kStatusOwnerMismatch;
   }
-  if (control->live_target_operation_seq != operation_seq &&
-      control->live_commit_producer_operation_seq != operation_seq) {
+  const bool target_transaction =
+      control->live_target_operation_seq == operation_seq;
+  const bool commit_transaction =
+      control->live_commit_producer_operation_seq == operation_seq;
+  if (target_transaction == commit_transaction) {
     return kStatusMemoryTransactionMismatch;
   }
-  if (control->live_memory_transaction_count == 0xffffu) {
+  if (target_transaction &&
+      control->pending_recovery_operation_seq == operation_seq) {
+    return kStatusOperationInFlight;
+  }
+  uint16_t &transaction_count =
+      target_transaction ? control->live_memory_transaction_count
+                         : control->live_commit_memory_transaction_count;
+  if (transaction_count == 0xffffu) {
     return kStatusMemoryTransactionOverflow;
   }
-  ++control->live_memory_transaction_count;
+  ++transaction_count;
   ++state->mutation_epoch;
   return kStatusOk;
 }
@@ -352,12 +431,20 @@ status_kind complete_memory_transaction(
   if (control == NULL || !validate_owner_binding(*state, owner)) {
     return kStatusOwnerMismatch;
   }
-  if (control->live_memory_transaction_count == 0 ||
-      (control->live_target_operation_seq != operation_seq &&
-       control->live_commit_producer_operation_seq != operation_seq)) {
+  const bool target_transaction =
+      control->live_target_operation_seq == operation_seq;
+  const bool commit_transaction =
+      control->live_commit_producer_operation_seq == operation_seq;
+  if (target_transaction == commit_transaction) {
     return kStatusMemoryTransactionMismatch;
   }
-  --control->live_memory_transaction_count;
+  uint16_t &transaction_count =
+      target_transaction ? control->live_memory_transaction_count
+                         : control->live_commit_memory_transaction_count;
+  if (transaction_count == 0) {
+    return kStatusMemoryTransactionMismatch;
+  }
+  --transaction_count;
   ++state->mutation_epoch;
   return kStatusOk;
 }
@@ -373,10 +460,9 @@ status_kind complete_result_commit(
   if (control == NULL || !validate_owner_binding(*state, owner)) {
     return kStatusOwnerMismatch;
   }
-  if (control->live_target_operation_seq != 0 ||
-      control->live_commit_producer_operation_seq != producer_operation_seq ||
+  if (control->live_commit_producer_operation_seq != producer_operation_seq ||
       control->live_commit_epoch != commit_epoch ||
-      control->live_memory_transaction_count != 0) {
+      control->live_commit_memory_transaction_count != 0) {
     return kStatusCommitMismatch;
   }
   control->live_commit_producer_operation_seq = 0;

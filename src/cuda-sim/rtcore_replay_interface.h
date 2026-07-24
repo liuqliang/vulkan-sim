@@ -174,6 +174,14 @@ struct rtcore_v04_stack_private_read_transport_snapshot {
   uint8_t reserved_zero[7];
 };
 
+struct rtcore_v04_private_write_transport_snapshot {
+  uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
+  uint8_t field_kind;
+  uint8_t valid;
+  uint8_t reserved_zero[6];
+};
+
 struct rtcore_memory_unit_request_snapshot {
   bool valid;
   unsigned address_space;
@@ -197,6 +205,7 @@ struct rtcore_memory_unit_request_snapshot {
   unsigned long long issue_cycle;
   rtcore_v04_target_raw_read_transport_snapshot v04_target_raw_read;
   rtcore_v04_stack_private_read_transport_snapshot v04_stack_private_read;
+  rtcore_v04_private_write_transport_snapshot v04_private_write;
 };
 
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
@@ -211,6 +220,7 @@ static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT = 8u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_RAW_READ = 9u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ = 10u;
 static const unsigned RTCORE_MEMORY_ACCESS_STACK_PRIVATE_READ = 11u;
+static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE = 12u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL = 1u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_PRIVATE_SHARED = 2u;
 
