@@ -5997,7 +5997,7 @@ void shader_core_ctx::fetch() {
 
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   if (inst.op == RT_CORE_OP && inst.rt_subop == RT_CORE_SUBOP_SUBMIT &&
-      rtcore_v04_root_node_ready_packet_gate_active()) {
+      rtcore_v04_root_node_input_gate_active()) {
     ptx_thread_info *lane_threads[32] = {};
     const unsigned warp_size = m_config->warp_size;
     assert(warp_size == 32);

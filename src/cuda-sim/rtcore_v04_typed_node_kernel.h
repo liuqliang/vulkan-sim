@@ -64,6 +64,7 @@ struct raw_node_payload_v0 {
 struct ray_state_v0 {
   float origin[3];
   float direction[3];
+  float inverse_direction[3];
   float t_min;
   float t_max;
 };
@@ -144,12 +145,12 @@ static_assert(sizeof(raw_payload_header_v0) == 8,
               "raw payload header must remain 8 bytes");
 static_assert(sizeof(raw_node_payload_v0) == 72,
               "GEN_RT raw node envelope must remain 72 bytes");
-static_assert(sizeof(ray_state_v0) == 32,
-              "local typed ray input must remain 32 bytes");
+static_assert(sizeof(ray_state_v0) == 44,
+              "canonical typed ray input must remain 44 bytes");
 static_assert(sizeof(ray_policy_v0) == 8,
               "ray policy projection must remain 8 bytes");
-static_assert(sizeof(candidate_input_v0) == 128,
-              "typed node candidate input must remain 128 bytes");
+static_assert(sizeof(candidate_input_v0) == 144,
+              "typed node candidate input must remain 144 bytes");
 static_assert(sizeof(candidate_result_v0) == 56,
               "typed node candidate result must remain 56 bytes");
 static_assert(sizeof(compact_child_work_item_v0) == 16,
@@ -164,13 +165,13 @@ static_assert(offsetof(root_reference_seed_input_v0, raw_header) == 40,
               "typed root reference raw header offset changed");
 static_assert(sizeof(root_reference_seed_result_v0) == 16,
               "typed root reference seed result must remain 16 bytes");
-static_assert(sizeof(route_input_v0) == 176,
-              "typed node route input must remain 176 bytes");
+static_assert(sizeof(route_input_v0) == 192,
+              "typed node route input must remain 192 bytes");
 static_assert(alignof(route_input_v0) == 16,
               "typed node route input must remain aligned");
-static_assert(offsetof(route_input_v0, decode_context) == 128,
+static_assert(offsetof(route_input_v0, decode_context) == 144,
               "typed node route context offset changed");
-static_assert(offsetof(route_input_v0, current_payload_offset) == 168,
+static_assert(offsetof(route_input_v0, current_payload_offset) == 184,
               "typed node current reference offset changed");
 static_assert(sizeof(route_result_v0) == 160,
               "typed node route result must remain 160 bytes");

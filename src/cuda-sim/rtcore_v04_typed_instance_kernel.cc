@@ -4,6 +4,8 @@
 #include <cstring>
 #include <limits>
 
+#include "rtcore_v04_canonical_ray.h"
+
 namespace rtcore {
 namespace v04 {
 namespace typed_instance {
@@ -44,16 +46,9 @@ static float fp32_from_bits(uint32_t bits) {
 static float fp32_add(float lhs, float rhs) { return lhs + rhs; }
 static float fp32_sub(float lhs, float rhs) { return lhs - rhs; }
 static float fp32_mul(float lhs, float rhs) { return lhs * rhs; }
-static float fp32_div(float lhs, float rhs) { return lhs / rhs; }
 
 static bool valid_inverse_component(float direction, float inverse) {
-  if (std::isnan(inverse)) return false;
-  if (direction == 0.0f) {
-    return std::isinf(inverse) &&
-           std::signbit(direction) == std::signbit(inverse);
-  }
-  return std::isfinite(inverse) &&
-         inverse == fp32_div(1.0f, direction);
+  return canonical_ray::inverse_direction_matches(direction, inverse);
 }
 
 static bool valid_ray(const mutable_ray_state_v0 &ray) {
@@ -269,14 +264,8 @@ bool make_mutable_ray_state(const float origin[3], const float direction[3],
     ray->origin[component] = origin[component];
     ray->direction[component] = direction[component];
     any_direction = any_direction || direction[component] != 0.0f;
-    if (direction[component] == 0.0f) {
-      ray->inverse_direction[component] = std::copysign(
-          std::numeric_limits<float>::infinity(), direction[component]);
-    } else {
-      ray->inverse_direction[component] =
-          fp32_div(1.0f, direction[component]);
-      if (!std::isfinite(ray->inverse_direction[component])) return false;
-    }
+    ray->inverse_direction[component] =
+        canonical_ray::inverse_direction(direction[component]);
   }
   if (!any_direction || !std::isfinite(t_min) || !std::isfinite(t_max) ||
       t_min > t_max) {

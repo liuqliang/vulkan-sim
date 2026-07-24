@@ -43,6 +43,9 @@ struct warp_input_v0 {
 }  // namespace rtcore
 
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active();
+extern "C" bool rtcore_v04_functional_node_driver_gate_active();
+extern "C" bool rtcore_v04_root_node_input_gate_active();
+extern "C" bool rtcore_v04_functional_node_driver_configuration_valid();
 
 extern "C" bool rtcore_admit_v04_root_node_packet(
     const rtcore::v04::root_node_packet::warp_input_v0 *input,

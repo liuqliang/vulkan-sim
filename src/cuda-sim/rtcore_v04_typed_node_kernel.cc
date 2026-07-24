@@ -5,6 +5,8 @@
 #include <cstring>
 #include <limits>
 
+#include "rtcore_v04_canonical_ray.h"
+
 namespace rtcore {
 namespace v04 {
 namespace typed_node {
@@ -124,7 +126,9 @@ static bool payload_in_range(uint64_t offset, uint16_t bytes,
 static bool finite_ray(const ray_state_v0 &ray, float committed_t) {
   for (unsigned axis = 0; axis < 3; ++axis) {
     if (!std::isfinite(ray.origin[axis]) ||
-        !std::isfinite(ray.direction[axis])) {
+        !std::isfinite(ray.direction[axis]) ||
+        !canonical_ray::inverse_direction_matches(
+            ray.direction[axis], ray.inverse_direction[axis])) {
       return false;
     }
   }
@@ -161,11 +165,7 @@ static interval_result intersect_aabb_strict(
       continue;
     }
 
-    const float inverse_direction = 1.0f / direction;
-    if (!std::isfinite(inverse_direction)) {
-      result.valid = false;
-      return result;
-    }
+    const float inverse_direction = ray.inverse_direction[axis];
 
     const float low_delta = low[axis] - origin;
     const float high_delta = high[axis] - origin;

@@ -31,7 +31,9 @@
 #include "rtcore_replay_interface.h"
 #include "rtcore_procedural_hit_ordering.h"
 #include "rtcore_tlas_binding_registry.h"
+#include "rtcore_v04_canonical_ray.h"
 #include "rtcore_v04_instance_blas_reference_registry.h"
+#include "rtcore_v04_functional_driver.h"
 #include "rtcore_v04_live_global_memory_adapter.h"
 #include "rtcore_v04_private_frontier_layout.h"
 #include "rtcore_v04_private_shared_backing.h"
@@ -2146,9 +2148,50 @@ static bool rtcore_v04_root_node_ready_packet_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_functional_node_driver_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_FUNCTIONAL_NODE_DRIVER") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled();
+}
+
+extern "C" bool rtcore_v04_functional_node_driver_gate_active()
+{
+    return rtcore_v04_functional_node_driver_enabled();
+}
+
+extern "C" bool rtcore_v04_root_node_input_gate_active()
+{
+    return rtcore_v04_root_node_ready_packet_enabled() ||
+           rtcore_v04_functional_node_driver_enabled();
+}
+
+extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
+{
+    return rtcore::v04::functional_driver::mode_selection_valid(
+        rtcore_v04_functional_node_driver_enabled(),
+        rtcore_v04_live_timing_driver_control_enabled(),
+        rtcore_v04_root_node_ready_packet_enabled());
+}
+
+static void rtcore_v04_require_valid_node_driver_configuration()
+{
+    if (rtcore_v04_functional_node_driver_configuration_valid()) {
+        return;
+    }
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_FUNCTIONAL_NODE_MODE_FAULT "
+            "reason=functional_driver_conflicts_with_timing_or_root_packet\n");
+    fflush(stderr);
+    abort();
 }
 
 static bool rtcore_v04_typed_stack_result_owner_bridge_enabled()
@@ -16152,19 +16195,10 @@ float3 get_t_bound(float3 box, float3 origin, float3 idirection)
 }
 
 float3 calculate_idir(float3 direction) {
-    // Avoid div by zero, returns 1/2^80, an extremely small number
-    const float ooeps = exp2f(-80.0f);
-
-    // Calculate inverse direction
     float3 idir;
-    // TODO: is this wrong?
-    idir.x = 1.0f / (fabsf(direction.x) > ooeps ? direction.x : copysignf(ooeps, direction.x));
-    idir.y = 1.0f / (fabsf(direction.y) > ooeps ? direction.y : copysignf(ooeps, direction.y));
-    idir.z = 1.0f / (fabsf(direction.z) > ooeps ? direction.z : copysignf(ooeps, direction.z));
-
-    // idir.x = fabsf(direction.x) > ooeps ? 1.0f / direction.x : copysignf(ooeps, direction.x);
-    // idir.y = fabsf(direction.y) > ooeps ? 1.0f / direction.y : copysignf(ooeps, direction.y);
-    // idir.z = fabsf(direction.z) > ooeps ? 1.0f / direction.z : copysignf(ooeps, direction.z);
+    idir.x = rtcore::v04::canonical_ray::inverse_direction(direction.x);
+    idir.y = rtcore::v04::canonical_ray::inverse_direction(direction.y);
+    idir.z = rtcore::v04::canonical_ray::inverse_direction(direction.z);
     return idir;
 }
 
@@ -16210,6 +16244,10 @@ static bool rtcore_v04_make_typed_node_candidate_input(
     input->ray.direction[0] = direction.x;
     input->ray.direction[1] = direction.y;
     input->ray.direction[2] = direction.z;
+    const float3 inverse_direction = calculate_idir(direction);
+    input->ray.inverse_direction[0] = inverse_direction.x;
+    input->ray.inverse_direction[1] = inverse_direction.y;
+    input->ray.inverse_direction[2] = inverse_direction.z;
     input->ray.t_min = t_min;
     input->ray.t_max = t_max;
     input->policy.ray_flags = ray_flags;
@@ -22990,9 +23028,10 @@ void VulkanRayTracing::publishBLASRootDescriptor(
 void VulkanRayTracing::publishTLASRootDescriptor(
     void* objectKey, uint64_t rootPayloadOffset, uint32_t rootPayloadKind) {
     namespace typed_blas = rtcore::v04::typed_blas;
-    if (!rtcore_v04_root_node_ready_packet_enabled()) {
+    if (!rtcore_v04_root_node_input_gate_active()) {
         return;
     }
+    rtcore_v04_require_valid_node_driver_configuration();
     if (rootPayloadKind > UINT8_MAX ||
         rootPayloadKind != typed_blas::kInternalPayloadKind) {
         rtcore_fail_tlas_binding("invalid_root_payload_kind", 0, 0,
@@ -23205,6 +23244,7 @@ void VulkanRayTracing::releaseBLAS(void* objectKey, void* rootAddr,
 
 void VulkanRayTracing::allocTLAS(void* objectKey, void* rootAddr,
                                  uint64_t bufferSize, void* gpgpusimAddr) {
+    rtcore_v04_require_valid_node_driver_configuration();
     const uint64_t driver_object_key = (uint64_t)objectKey;
     const uint64_t host_root_address = (uint64_t)rootAddr;
     const uint64_t device_base_address = (uint64_t)gpgpusimAddr;

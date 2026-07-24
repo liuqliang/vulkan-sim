@@ -56,6 +56,8 @@ class ptx_recognizer;
 #include "ptx_loader.h"
 #include "rtcore_procedural_hit_ordering.h"
 #include "rtcore_replay_interface.h"
+#include "rtcore_v04_canonical_ray.h"
+#include "rtcore_v04_functional_driver.h"
 #include "rtcore_v04_root_node_packet.h"
 #include "rtcore_v04_shadow_boundary.h"
 #include "rtcore_v04_shadow_shader_return.h"
@@ -7806,11 +7808,14 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
   namespace root_packet = rtcore::v04::root_node_packet;
   namespace private_frontier = rtcore::v04::private_frontier;
   namespace fetch_target = rtcore::v04::fetch_target;
+  namespace functional_driver = rtcore::v04::functional_driver;
+  namespace result_semantic = rtcore::v04::result_semantic;
   namespace typed_blas = rtcore::v04::typed_blas;
   namespace typed_node = rtcore::v04::typed_node;
-  if (!rtcore_v04_root_node_ready_packet_gate_active()) {
+  if (!rtcore_v04_root_node_input_gate_active()) {
     return true;
   }
+  if (!rtcore_v04_functional_node_driver_configuration_valid()) return false;
   if (instruction == NULL || lane_threads == NULL || active_mask == 0 ||
       instruction->op != RT_CORE_OP ||
       instruction->rt_subop != RT_CORE_SUBOP_SUBMIT ||
@@ -7896,14 +7901,10 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     operands.mutable_ray.direction[0] = context.ray_direction.x;
     operands.mutable_ray.direction[1] = context.ray_direction.y;
     operands.mutable_ray.direction[2] = context.ray_direction.z;
-    const float inverse_direction_epsilon = exp2f(-80.0f);
     for (unsigned axis = 0; axis < 3; ++axis) {
       const float direction = operands.mutable_ray.direction[axis];
       operands.mutable_ray.inverse_direction[axis] =
-          1.0f /
-          (fabsf(direction) > inverse_direction_epsilon
-               ? direction
-               : copysignf(inverse_direction_epsilon, direction));
+          rtcore::v04::canonical_ray::inverse_direction(direction);
     }
     operands.mutable_ray.t_min = context.ray_tmin;
     operands.mutable_ray.t_max = context.ray_tmax;
@@ -7919,6 +7920,89 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     lane_input.ray_policy.ray_flags = context.ray_flags;
     lane_input.ray_policy.cull_mask =
         static_cast<uint8_t>(context.cull_mask);
+  }
+
+  if (rtcore_v04_functional_node_driver_gate_active()) {
+    for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
+      if ((active_mask & (1u << lane)) == 0) continue;
+      ptx_thread_info *thread = lane_threads[lane];
+      const root_packet::lane_input_v0 &lane_input = input.lanes[lane];
+      fetch_target::reservation_input_v0 packet_input = {};
+      packet_input.owner.owner_hw_sid = owner_hw_sid;
+      packet_input.owner.resident_warp_id = warp_id;
+      packet_input.owner.request_identity = lane_input.thread_uid;
+      packet_input.owner.generation = 1;
+      packet_input.owner.private_slot_id = lane;
+      packet_input.owner.lane_id = static_cast<uint8_t>(lane);
+      packet_input.target_reference = lane_input.target_reference;
+      packet_input.forwarded_ray_policy = lane_input.ray_policy;
+      packet_input.raw_payload_base_address =
+          lane_input.raw_payload_base_address;
+      packet_input.target_operation_seq = 1;
+      packet_input.raw_payload_bytes =
+          fetch_target::kNodeRawPayloadBytes;
+      packet_input.target_kind = fetch_target::kTargetNode;
+      packet_input.required_operand_mask = static_cast<uint8_t>(
+          fetch_target::kOperandTargetReferenceValid |
+          fetch_target::kOperandRawPayloadValid |
+          fetch_target::kOperandMutableRayValid |
+          fetch_target::kOperandRayPolicyValid |
+          fetch_target::kOperandDecodeContextValid |
+          fetch_target::kOperandCommittedHitValid);
+      packet_input.forwarded_operand_mask =
+          fetch_target::kOperandRayPolicyValid;
+
+      uint8_t raw_payload[fetch_target::kNodeRawPayloadBytes] = {};
+      thread->get_global_memory()->read_simulator_backing(
+          static_cast<mem_addr_t>(lane_input.raw_payload_base_address),
+          sizeof(raw_payload), raw_payload);
+      fetch_target::operation_packet_v0 packet = {};
+      const uint64_t local_identity =
+          (static_cast<uint64_t>(warp_uid) << 6) |
+          static_cast<uint64_t>(lane + 1);
+      const fetch_target::status_kind packet_status =
+          fetch_target::build_ready_node_operation_packet(
+              packet_input, local_identity, local_identity, 1,
+              lane_input.private_operands, raw_payload, &packet);
+      functional_driver::node_execution_v0 execution = {};
+      const functional_driver::status_kind driver_status =
+          packet_status == fetch_target::kStatusOk
+              ? functional_driver::execute_one_node(packet, &execution)
+              : functional_driver::kStatusInvalidOperationPacket;
+      if (driver_status != functional_driver::kStatusOk ||
+          !execution.valid ||
+          execution.operator_invocation_count != 1 ||
+          !result_semantic::validate_node_commit_plan(
+              execution.semantic_plan, packet,
+              execution.operator_result)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_FUNCTIONAL_NODE_FAULT "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                "packet_status=%s driver_status=%s invocations=%u\n",
+                owner_hw_sid, warp_uid, warp_id, lane,
+                fetch_target::status_name(packet_status),
+                functional_driver::status_name(driver_status),
+                execution.operator_invocation_count);
+        fflush(stderr);
+        return false;
+      }
+      printf("GPGPU-Sim RTCORE_V04_FUNCTIONAL_NODE_ROUTE "
+             "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+             "packet_reservation_id=%llu target_operation_seq=%u "
+             "operator_invocations=1 route=%s next_target=%u "
+             "frontier_count=%u timing_state_mutated=0 "
+             "legacy_authority=0\n",
+             owner_hw_sid, warp_uid, warp_id, lane,
+             (unsigned long long)packet.reservation_id,
+             packet.target_operation_seq,
+             result_semantic::node_route_name(
+                 static_cast<result_semantic::node_route_kind>(
+                     execution.semantic_plan.route_kind)),
+             execution.semantic_plan.next_target_kind,
+             execution.semantic_plan.frontier_count);
+      fflush(stdout);
+    }
+    return true;
   }
 
   const char *failure_reason = "unvalidated";

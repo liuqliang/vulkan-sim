@@ -258,6 +258,18 @@ status_kind complete_producer_commit(
     const private_frontier::owner_binding_v0 &owner, uint32_t operation_seq,
     uint32_t commit_epoch, reservation_receipt_v0 *reservation);
 
+status_kind build_ready_operation_packet(
+    const reservation_input_v0 &input, uint64_t reservation_id,
+    uint64_t reservation_age, uint32_t slot_generation,
+    const private_frontier::root_private_operands_v0 &private_operands,
+    const uint8_t *raw_payload, operation_packet_v0 *packet);
+
+status_kind build_ready_node_operation_packet(
+    const reservation_input_v0 &input, uint64_t reservation_id,
+    uint64_t reservation_age, uint32_t slot_generation,
+    const private_frontier::root_private_operands_v0 &private_operands,
+    const uint8_t *raw_payload, operation_packet_v0 *packet);
+
 status_kind pop_ready_operation(engine_state_v0 *state, target_kind target,
                                 bool unit_input_accepts,
                                 operation_packet_v0 *packet);

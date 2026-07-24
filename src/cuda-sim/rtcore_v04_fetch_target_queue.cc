@@ -566,30 +566,23 @@ template <typename Slot>
 status_kind build_operation_packet(const Slot &slot, target_kind target,
                                    operation_packet_v0 *packet) {
   if (packet == NULL) return kStatusInvalidArgument;
-  *packet = operation_packet_v0();
-  packet->owner = slot.metadata.owner;
-  packet->reservation_id = slot.metadata.reservation_id;
-  packet->reservation_age = slot.metadata.reservation_age;
-  packet->raw_payload_base_address =
-      slot.metadata.raw_payload_base_address;
-  packet->target_operation_seq =
-      slot.metadata.target_operation_seq;
-  packet->producer_operation_seq =
-      slot.metadata.producer_operation_seq;
-  packet->producer_commit_epoch =
-      slot.metadata.producer_commit_epoch;
-  packet->slot_generation = slot.metadata.slot_generation;
-  packet->raw_payload_bytes = slot.metadata.raw_payload_bytes;
-  packet->target_kind = target;
-  packet->valid = 1;
-  packet->target_reference = slot.metadata.target_reference;
-  packet->ray_policy = slot.metadata.ray_policy;
-  std::memcpy(packet->raw_payload, slot.raw_payload,
-              slot.metadata.raw_payload_bytes);
-
+  reservation_input_v0 input = {};
+  input.owner = slot.metadata.owner;
+  input.target_reference = slot.metadata.target_reference;
+  input.forwarded_ray_policy = slot.metadata.ray_policy;
+  input.raw_payload_base_address = slot.metadata.raw_payload_base_address;
+  input.target_operation_seq = slot.metadata.target_operation_seq;
+  input.producer_operation_seq = slot.metadata.producer_operation_seq;
+  input.producer_commit_epoch = slot.metadata.producer_commit_epoch;
+  input.raw_payload_bytes = slot.metadata.raw_payload_bytes;
+  input.target_kind = target;
+  input.producer_commit_required =
+      slot.metadata.producer_commit_required;
+  input.required_operand_mask = slot.metadata.required_operand_mask;
   const uint8_t root_private_mask = static_cast<uint8_t>(
       kOperandMutableRayValid | kOperandDecodeContextValid |
       kOperandCommittedHitValid);
+  private_frontier::root_private_operands_v0 private_operands = {};
   if ((slot.metadata.required_operand_mask & root_private_mask) ==
       root_private_mask) {
     private_frontier::shadow_slot_v0 private_slot = {};
@@ -608,11 +601,14 @@ status_kind build_operation_packet(const Slot &slot, target_kind target,
         sizeof(slot.metadata.committed_hit_bytes));
     if (private_frontier::decode_root_private_operands(
             private_slot, slot.metadata.owner,
-            &packet->private_operands) != private_frontier::kStatusOk) {
+            &private_operands) != private_frontier::kStatusOk) {
       return kStatusPrivateOperandShapeMismatch;
     }
   }
-  return kStatusOk;
+  return build_ready_operation_packet(
+      input, slot.metadata.reservation_id, slot.metadata.reservation_age,
+      slot.metadata.slot_generation, private_operands, slot.raw_payload,
+      packet);
 }
 
 template <typename Slot>
@@ -721,6 +717,55 @@ uint8_t count_active(const Slot *slots, uint8_t capacity) {
 }
 
 }  // namespace
+
+status_kind build_ready_operation_packet(
+    const reservation_input_v0 &input, uint64_t reservation_id,
+    uint64_t reservation_age, uint32_t slot_generation,
+    const private_frontier::root_private_operands_v0 &private_operands,
+    const uint8_t *raw_payload, operation_packet_v0 *packet) {
+  if (packet == NULL || raw_payload == NULL ||
+      !reservation_identity_valid(input) || reservation_id == 0 ||
+      reservation_age == 0 || slot_generation == 0 ||
+      input.raw_payload_bytes > kMaxRawPayloadBytes) {
+    return kStatusInvalidArgument;
+  }
+
+  *packet = operation_packet_v0();
+  packet->owner = input.owner;
+  packet->reservation_id = reservation_id;
+  packet->reservation_age = reservation_age;
+  packet->raw_payload_base_address = input.raw_payload_base_address;
+  packet->target_operation_seq = input.target_operation_seq;
+  packet->producer_operation_seq = input.producer_operation_seq;
+  packet->producer_commit_epoch = input.producer_commit_epoch;
+  packet->slot_generation = slot_generation;
+  packet->raw_payload_bytes = input.raw_payload_bytes;
+  packet->target_kind = input.target_kind;
+  packet->valid = 1;
+  packet->target_reference = input.target_reference;
+  packet->ray_policy = input.forwarded_ray_policy;
+  packet->private_operands = private_operands;
+  std::memcpy(packet->raw_payload, raw_payload, input.raw_payload_bytes);
+  return kStatusOk;
+}
+
+status_kind build_ready_node_operation_packet(
+    const reservation_input_v0 &input, uint64_t reservation_id,
+    uint64_t reservation_age, uint32_t slot_generation,
+    const private_frontier::root_private_operands_v0 &private_operands,
+    const uint8_t *raw_payload, operation_packet_v0 *packet) {
+  const uint8_t complete_node_mask = static_cast<uint8_t>(
+      kOperandTargetReferenceValid | kOperandRawPayloadValid |
+      kOperandMutableRayValid | kOperandRayPolicyValid |
+      kOperandDecodeContextValid | kOperandCommittedHitValid);
+  if (input.target_kind != kTargetNode ||
+      input.required_operand_mask != complete_node_mask) {
+    return kStatusInvalidArgument;
+  }
+  return build_ready_operation_packet(
+      input, reservation_id, reservation_age, slot_generation,
+      private_operands, raw_payload, packet);
+}
 
 status_kind initialize(engine_state_v0 *state, const config_v0 &config) {
   if (state == NULL) return kStatusInvalidArgument;
