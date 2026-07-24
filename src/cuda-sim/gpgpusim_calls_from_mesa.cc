@@ -225,6 +225,13 @@ extern "C" void gpgpusim_publishBLASRootDescriptor(
         objectKey, rootPayloadOffset, rootPayloadKind);
 }
 
+extern "C" void gpgpusim_publishTLASRootDescriptor(
+    void* objectKey, uint64_t rootPayloadOffset, uint32_t rootPayloadKind)
+{
+    VulkanRayTracing::publishTLASRootDescriptor(
+        objectKey, rootPayloadOffset, rootPayloadKind);
+}
+
 extern "C" void gpgpusim_beginTLASInstanceReferences(void* objectKey)
 {
     VulkanRayTracing::beginTLASInstanceReferences(objectKey);

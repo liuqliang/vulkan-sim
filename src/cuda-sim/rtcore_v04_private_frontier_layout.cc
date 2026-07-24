@@ -1,5 +1,6 @@
 #include "rtcore_v04_private_frontier_layout.h"
 
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -69,6 +70,18 @@ static uint64_t decode_u64_le(const uint8_t *source) {
   for (unsigned byte = 0; byte < 8; ++byte) {
     value |= static_cast<uint64_t>(source[byte]) << (byte * 8);
   }
+  return value;
+}
+
+static uint32_t fp32_bits(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+static float fp32_value(uint32_t bits) {
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof(value));
   return value;
 }
 
@@ -200,6 +213,138 @@ decode_selected_fetch_bytes(const uint8_t *source) {
   return selected;
 }
 
+static void encode_mutable_ray_bytes(
+    uint8_t *destination, const mutable_ray_state_v0 &ray) {
+  for (unsigned component = 0; component < 3; ++component) {
+    encode_u32_le(destination + component * 4,
+                  fp32_bits(ray.origin[component]));
+    encode_u32_le(destination + 12 + component * 4,
+                  fp32_bits(ray.direction[component]));
+    encode_u32_le(destination + 24 + component * 4,
+                  fp32_bits(ray.inverse_direction[component]));
+  }
+  encode_u32_le(destination + 36, fp32_bits(ray.t_min));
+  encode_u32_le(destination + 40, fp32_bits(ray.t_max));
+}
+
+static mutable_ray_state_v0 decode_mutable_ray_bytes(const uint8_t *source) {
+  mutable_ray_state_v0 ray = {};
+  for (unsigned component = 0; component < 3; ++component) {
+    ray.origin[component] = fp32_value(decode_u32_le(source + component * 4));
+    ray.direction[component] =
+        fp32_value(decode_u32_le(source + 12 + component * 4));
+    ray.inverse_direction[component] =
+        fp32_value(decode_u32_le(source + 24 + component * 4));
+  }
+  ray.t_min = fp32_value(decode_u32_le(source + 36));
+  ray.t_max = fp32_value(decode_u32_le(source + 40));
+  return ray;
+}
+
+static void encode_decode_context_bytes(
+    uint8_t *destination,
+    const typed_blas::as_decode_context_v0 &context) {
+  encode_u32_le(destination + 0, context.bvh_format_profile_id);
+  encode_u32_le(destination + 4, context.reserved_zero);
+  encode_u64_le(destination + 8, context.as_object.object_id);
+  encode_u32_le(destination + 16, context.as_object.generation);
+  destination[20] = context.as_object.as_type;
+  std::memcpy(destination + 21, context.as_object.reserved_zero,
+              sizeof(context.as_object.reserved_zero));
+  encode_u64_le(destination + 24, context.device_base);
+  encode_u64_le(destination + 32, context.device_range_bytes);
+}
+
+static typed_blas::as_decode_context_v0 decode_decode_context_bytes(
+    const uint8_t *source) {
+  typed_blas::as_decode_context_v0 context = {};
+  context.bvh_format_profile_id = decode_u32_le(source + 0);
+  context.reserved_zero = decode_u32_le(source + 4);
+  context.as_object.object_id = decode_u64_le(source + 8);
+  context.as_object.generation = decode_u32_le(source + 16);
+  context.as_object.as_type = source[20];
+  std::memcpy(context.as_object.reserved_zero, source + 21,
+              sizeof(context.as_object.reserved_zero));
+  context.device_base = decode_u64_le(source + 24);
+  context.device_range_bytes = decode_u64_le(source + 32);
+  return context;
+}
+
+static void encode_committed_hit_bytes(
+    uint8_t *destination, const committed_hit_projection_v0 &hit) {
+  destination[0] = hit.valid;
+  destination[1] = hit.geometry_type;
+  destination[2] = hit.hit_kind;
+  destination[3] = hit.attribute_word_count;
+  destination[4] = hit.attribute_location;
+  destination[5] = hit.attribute_format;
+  std::memcpy(destination + 6, hit.reserved_zero0,
+              sizeof(hit.reserved_zero0));
+  encode_u32_le(destination + 8, fp32_bits(hit.hit_t));
+  encode_u32_le(destination + 12, hit.policy_flags);
+  encode_u64_le(destination + 16, hit.instance_metadata_ref);
+  encode_u32_le(destination + 24, hit.primitive_index);
+  encode_u32_le(destination + 28, hit.geometry_index);
+  encode_u32_le(destination + 32, hit.instance_index);
+  encode_u32_le(destination + 36, hit.instance_custom_index);
+  encode_u32_le(destination + 40, hit.instance_sbt_contribution);
+  encode_u32_le(destination + 44, hit.reserved_zero1);
+  for (unsigned word = 0; word < 4; ++word) {
+    encode_u32_le(destination + 48 + word * 4, hit.inline_attributes[word]);
+  }
+}
+
+static committed_hit_projection_v0 decode_committed_hit_bytes(
+    const uint8_t *source) {
+  committed_hit_projection_v0 hit = {};
+  hit.valid = source[0];
+  hit.geometry_type = source[1];
+  hit.hit_kind = source[2];
+  hit.attribute_word_count = source[3];
+  hit.attribute_location = source[4];
+  hit.attribute_format = source[5];
+  std::memcpy(hit.reserved_zero0, source + 6, sizeof(hit.reserved_zero0));
+  hit.hit_t = fp32_value(decode_u32_le(source + 8));
+  hit.policy_flags = decode_u32_le(source + 12);
+  hit.instance_metadata_ref = decode_u64_le(source + 16);
+  hit.primitive_index = decode_u32_le(source + 24);
+  hit.geometry_index = decode_u32_le(source + 28);
+  hit.instance_index = decode_u32_le(source + 32);
+  hit.instance_custom_index = decode_u32_le(source + 36);
+  hit.instance_sbt_contribution = decode_u32_le(source + 40);
+  hit.reserved_zero1 = decode_u32_le(source + 44);
+  for (unsigned word = 0; word < 4; ++word) {
+    hit.inline_attributes[word] = decode_u32_le(source + 48 + word * 4);
+  }
+  return hit;
+}
+
+static bool valid_root_operands(const root_private_operands_v0 &operands) {
+  const mutable_ray_state_v0 &ray = operands.mutable_ray;
+  const typed_blas::as_decode_context_v0 &context =
+      operands.decode_context;
+  const committed_hit_projection_v0 &hit = operands.committed_hit;
+  for (unsigned component = 0; component < 3; ++component) {
+    if (!std::isfinite(ray.origin[component]) ||
+        !std::isfinite(ray.direction[component])) {
+      return false;
+    }
+  }
+  return std::isfinite(ray.t_min) && std::isfinite(ray.t_max) &&
+         ray.t_min <= ray.t_max &&
+         context.bvh_format_profile_id == kLayoutProfileId &&
+         context.reserved_zero == 0 && context.as_object.object_id != 0 &&
+         context.as_object.generation != 0 &&
+         bytes_are_zero(context.as_object.reserved_zero,
+                        sizeof(context.as_object.reserved_zero)) &&
+         (context.as_object.as_type == 1 ||
+          context.as_object.as_type == typed_blas::kAsTypeBlas) &&
+         context.device_base != 0 && context.device_range_bytes >= 64 &&
+         hit.valid <= 1 && hit.attribute_word_count <= 4 &&
+         bytes_are_zero(hit.reserved_zero0, sizeof(hit.reserved_zero0)) &&
+         hit.reserved_zero1 == 0;
+}
+
 static status_kind validate_slot_owner(const shadow_slot_v0 &slot,
                                        const owner_binding_v0 &owner) {
   if (!valid_owner(owner)) return kStatusInvalidOwner;
@@ -221,7 +366,10 @@ static status_kind append_range_to_plan(
       (access != kAccessRead && access != kAccessWrite) ||
       (field != kFieldFrontierMetadata &&
        field != kFieldFrontierEntry &&
-       field != kFieldTransitionSpill)) {
+       field != kFieldTransitionSpill &&
+       field != kFieldMutableRayState &&
+       field != kFieldAsDecodeContext &&
+       field != kFieldCommittedHit)) {
     return kStatusInvalidArgument;
   }
   if (slot_offset >= kPrivateDataSlotBytes ||
@@ -322,6 +470,99 @@ status_kind initialize_shadow_slot(
                         metadata);
   *slot = initialized;
   *metadata_write_plan = plan;
+  return kStatusOk;
+}
+
+status_kind initialize_root_shadow_slot(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const frontier_metadata_image_v0 &metadata,
+    const root_private_operands_v0 &root_operands,
+    access_plan_v0 *initial_write_plan) {
+  if (slot == NULL || initial_write_plan == NULL ||
+      !valid_root_operands(root_operands)) {
+    return kStatusInvalidArgument;
+  }
+  if (!valid_owner(owner)) return kStatusInvalidOwner;
+  uint64_t ignored_slot_base = 0;
+  status_kind status = slot_base_address(owner, region, &ignored_slot_base);
+  if (status != kStatusOk) return status;
+  if (!valid_metadata(metadata)) return kStatusInvalidMetadata;
+
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldMutableRayState, kAccessWrite,
+      kMutableRayStateOffset, kMutableRayStateBytes);
+  if (status != kStatusOk) return status;
+  status = build_metadata_plan(&plan, owner, region, kAccessWrite);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldAsDecodeContext, kAccessWrite,
+      kAsDecodeContextOffset, kAsDecodeContextBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldCommittedHit, kAccessWrite,
+      kCommittedHitOffset, kCommittedHitBytes);
+  if (status != kStatusOk) return status;
+
+  shadow_slot_v0 initialized = {};
+  initialized.owner = owner;
+  encode_mutable_ray_bytes(
+      initialized.bytes + kMutableRayStateOffset,
+      root_operands.mutable_ray);
+  encode_metadata_bytes(initialized.bytes + kFrontierMetadataOffset,
+                        metadata);
+  encode_decode_context_bytes(
+      initialized.bytes + kAsDecodeContextOffset,
+      root_operands.decode_context);
+  encode_committed_hit_bytes(
+      initialized.bytes + kCommittedHitOffset,
+      root_operands.committed_hit);
+  *slot = initialized;
+  *initial_write_plan = plan;
+  return kStatusOk;
+}
+
+status_kind build_root_operand_read_plan(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region, access_plan_v0 *read_plan) {
+  if (read_plan == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldMutableRayState, kAccessRead,
+      kMutableRayStateOffset, kMutableRayStateBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldAsDecodeContext, kAccessRead,
+      kAsDecodeContextOffset, kAsDecodeContextBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldCommittedHit, kAccessRead,
+      kCommittedHitOffset, kCommittedHitBytes);
+  if (status != kStatusOk) return status;
+  *read_plan = plan;
+  return kStatusOk;
+}
+
+status_kind decode_root_private_operands(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    root_private_operands_v0 *operands) {
+  if (operands == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  root_private_operands_v0 decoded = {};
+  decoded.mutable_ray = decode_mutable_ray_bytes(
+      slot.bytes + kMutableRayStateOffset);
+  decoded.decode_context = decode_decode_context_bytes(
+      slot.bytes + kAsDecodeContextOffset);
+  decoded.committed_hit = decode_committed_hit_bytes(
+      slot.bytes + kCommittedHitOffset);
+  if (!valid_root_operands(decoded)) return kStatusInvalidArgument;
+  *operands = decoded;
   return kStatusOk;
 }
 

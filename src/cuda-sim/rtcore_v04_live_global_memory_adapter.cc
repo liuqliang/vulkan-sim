@@ -24,6 +24,12 @@ bool common_transport_shape_valid(
     const rtcore_memory_unit_request_snapshot &request) {
   const rtcore_v04_target_raw_read_transport_snapshot &extension =
       request.v04_target_raw_read;
+  const bool producer_tag_valid =
+      extension.producer_commit_required == 0
+          ? extension.producer_operation_seq == 0 &&
+                extension.producer_commit_epoch == 0
+          : extension.producer_operation_seq != 0 &&
+                extension.producer_commit_epoch != 0;
   return request.valid &&
          request.address_space == RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
          request.operation == RTCORE_MEMORY_OPERATION_READ &&
@@ -34,10 +40,11 @@ bool common_transport_shape_valid(
          request.resident_warp_id < 8 &&
          request.request_generation != 0 &&
          request.private_slot_id < 256 &&
-         request.memory_op_seq != 0 &&
          request.chunk_count != 0 &&
          request.chunk_count <= target_memory::kMaxRawReadChunks &&
          request.chunk_id < request.chunk_count &&
+         request.memory_op_seq ==
+             static_cast<unsigned>(request.chunk_id) + 1 &&
          request.access_kind == RTCORE_MEMORY_ACCESS_TARGET_RAW_READ &&
          (request.aligned_32b_addr &
           (target_memory::kRawReadChunkBytes - 1)) == 0 &&
@@ -45,9 +52,14 @@ bool common_transport_shape_valid(
          extension.valid == 1 && extension.reservation_id != 0 &&
          extension.reservation_age != 0 &&
          extension.raw_payload_base_address != 0 &&
-         extension.commit_epoch != 0 &&
+         extension.target_operation_seq != 0 &&
+         producer_tag_valid &&
          extension.target_slot_generation != 0 &&
          extension.producer_commit_required <= 1 &&
+         extension.operand_kind ==
+             RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL &&
+         extension.field_kind == 0 &&
+         extension.private_chunk_count <= 7 &&
          extension.transfer_bytes ==
              target_memory::kRawReadChunkBytes &&
          bytes_are_zero(extension.reserved_zero,
@@ -102,7 +114,7 @@ status_kind lower_raw_read_chunk(
   request->resident_warp_id = reservation.owner.resident_warp_id;
   request->request_generation = reservation.owner.generation;
   request->private_slot_id = reservation.owner.private_slot_id;
-  request->memory_op_seq = reservation.operation_seq;
+  request->memory_op_seq = static_cast<unsigned>(chunk.chunk_id) + 1;
   request->chunk_id = chunk.chunk_id;
   request->chunk_count = chunk.chunk_count;
   request->access_kind = RTCORE_MEMORY_ACCESS_TARGET_RAW_READ;
@@ -117,7 +129,12 @@ status_kind lower_raw_read_chunk(
   extension.reservation_age = reservation.reservation_age;
   extension.raw_payload_base_address =
       reservation.raw_payload_base_address;
-  extension.commit_epoch = reservation.commit_epoch;
+  extension.target_operation_seq =
+      reservation.target_operation_seq;
+  extension.producer_operation_seq =
+      reservation.producer_operation_seq;
+  extension.producer_commit_epoch =
+      reservation.producer_commit_epoch;
   extension.target_slot_generation = reservation.slot_generation;
   extension.raw_payload_bytes = reservation.raw_payload_bytes;
   extension.target_kind = reservation.target_kind;
@@ -125,6 +142,10 @@ status_kind lower_raw_read_chunk(
   extension.producer_commit_required =
       reservation.producer_commit_required;
   extension.transfer_bytes = chunk.transfer_bytes;
+  extension.operand_kind =
+      RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL;
+  extension.private_chunk_count =
+      reservation.private_chunk_count;
   extension.valid = 1;
   return kStatusOk;
 }
@@ -152,8 +173,12 @@ status_kind reconstruct_raw_read_chunk(
   reservation.reservation_age = extension.reservation_age;
   reservation.raw_payload_base_address =
       extension.raw_payload_base_address;
-  reservation.operation_seq = request.memory_op_seq;
-  reservation.commit_epoch = extension.commit_epoch;
+  reservation.target_operation_seq =
+      extension.target_operation_seq;
+  reservation.producer_operation_seq =
+      extension.producer_operation_seq;
+  reservation.producer_commit_epoch =
+      extension.producer_commit_epoch;
   reservation.slot_generation =
       extension.target_slot_generation;
   reservation.raw_payload_bytes = extension.raw_payload_bytes;
@@ -161,6 +186,8 @@ status_kind reconstruct_raw_read_chunk(
   reservation.slot_index = extension.target_slot_index;
   reservation.raw_chunk_count =
       static_cast<uint8_t>(request.chunk_count);
+  reservation.private_chunk_count =
+      extension.private_chunk_count;
   reservation.producer_commit_required =
       extension.producer_commit_required;
   reservation.valid = 1;

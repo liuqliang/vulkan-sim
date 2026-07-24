@@ -46,6 +46,7 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include "../cuda-sim/ptx_sim.h"
 #include "../cuda-sim/rtcore_replay_interface.h"
 #include "../cuda-sim/rtcore_v04_live_global_memory_adapter.h"
+#include "../cuda-sim/rtcore_v04_root_node_packet.h"
 #include "../cuda-sim/rtcore_v04_shadow_shader_return.h"
 #include "../statwrapper.h"
 #include "addrdec.h"
@@ -3386,12 +3387,26 @@ static void rtcore_consume_memory_unit_request_offer_from_rt_unit(
   }
   if (result.memory_unit_snapshot.address_space ==
       RTCORE_MEMORY_ADDRESS_SPACE_SHARED) {
-    if (result.memory_unit_snapshot.operation !=
-            RTCORE_MEMORY_OPERATION_WRITE ||
-        result.memory_unit_snapshot.destination !=
-            RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK ||
-        !rtcore_accept_v04_private_shared_request(
-            &result.memory_unit_snapshot, result.cycle)) {
+    const bool private_init_write =
+        result.memory_unit_snapshot.operation ==
+            RTCORE_MEMORY_OPERATION_WRITE &&
+        result.memory_unit_snapshot.destination ==
+            RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK;
+    const bool target_private_read =
+        result.memory_unit_snapshot.operation ==
+            RTCORE_MEMORY_OPERATION_READ &&
+        result.memory_unit_snapshot.destination ==
+            RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
+        result.memory_unit_snapshot.access_kind ==
+            RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ;
+    const bool accepted =
+        private_init_write
+            ? rtcore_accept_v04_private_shared_request(
+                  &result.memory_unit_snapshot, result.cycle)
+            : (target_private_read &&
+               rtcore_accept_v04_target_private_shared_read(
+                   &result.memory_unit_snapshot, result.cycle));
+    if (!accepted) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_V04_PRIVATE_SHARED_ACCEPT_FAULT "
               "owner_hw_sid=%u request_key=0x%08x generation=%u "
@@ -5981,6 +5996,30 @@ void shader_core_ctx::fetch() {
 }
 
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
+  if (inst.op == RT_CORE_OP && inst.rt_subop == RT_CORE_SUBOP_SUBMIT &&
+      rtcore_v04_root_node_ready_packet_gate_active()) {
+    ptx_thread_info *lane_threads[32] = {};
+    const unsigned warp_size = m_config->warp_size;
+    assert(warp_size == 32);
+    for (unsigned lane = 0; lane < warp_size; ++lane) {
+      lane_threads[lane] = m_thread[inst.warp_id() * warp_size + lane];
+    }
+    const ptx_instruction *instruction =
+        static_cast<const ptx_instruction *>(
+            get_next_inst(inst.warp_id(), inst.pc));
+    if (!rtcore_prepare_v04_root_node_packet_before_functional(
+            instruction, lane_threads, m_sid, inst.get_uid(), inst.warp_id(),
+            static_cast<unsigned>(inst.get_warp_active_mask().to_ulong()),
+            m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_ROOT_PACKET_PRE_FUNCTIONAL_FAULT "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08lx\n",
+              m_sid, inst.get_uid(), inst.warp_id(),
+              inst.get_warp_active_mask().to_ulong());
+      fflush(stderr);
+      abort();
+    }
+  }
   execute_warp_inst_t(inst);
   if (inst.is_load() || inst.is_store()) {
     inst.generate_mem_accesses();

@@ -113,6 +113,18 @@ static bool field_contains_offset(uint8_t field_kind, uint32_t offset) {
     case private_frontier::kFieldTransitionSpill:
       return offset >= private_frontier::kTransitionSpillOffset &&
              offset < private_frontier::kTransitionSpillEnd;
+    case private_frontier::kFieldMutableRayState:
+      return offset >= private_frontier::kMutableRayStateOffset &&
+             offset < private_frontier::kMutableRayStateOffset +
+                          private_frontier::kMutableRayStateBytes;
+    case private_frontier::kFieldAsDecodeContext:
+      return offset >= private_frontier::kAsDecodeContextOffset &&
+             offset < private_frontier::kAsDecodeContextOffset +
+                          private_frontier::kAsDecodeContextBytes;
+    case private_frontier::kFieldCommittedHit:
+      return offset >= private_frontier::kCommittedHitOffset &&
+             offset < private_frontier::kCommittedHitOffset +
+                          private_frontier::kCommittedHitBytes;
     default:
       return false;
   }
@@ -299,10 +311,12 @@ void initialize(backing_state_v0 *state, uint32_t owner_hw_sid) {
   state->mutation_epoch = 1;
 }
 
-status_kind prepare_new_warp(
+static status_kind prepare_new_warp_impl(
     const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
     uint32_t active_mask,
     const private_frontier::owner_binding_v0 owners[kLaneCapacity],
+    const private_frontier::root_private_operands_v0
+        root_operands[kLaneCapacity],
     new_warp_plan_v0 *plan) {
   if (plan == NULL || owners == NULL || !state.initialized ||
       active_mask == 0) {
@@ -378,16 +392,22 @@ status_kind prepare_new_warp(
     metadata.frontier_capacity = private_frontier::kFrontierEntryCapacity;
     metadata.max_level_depth = 1;
     const private_frontier::status_kind planner_status =
-        private_frontier::initialize_shadow_slot(&plan->staging_slots[lane],
-                                                 owner, region, metadata,
-                                                 &plan->init_plans[lane]);
+        root_operands == NULL
+            ? private_frontier::initialize_shadow_slot(
+                  &plan->staging_slots[lane], owner, region, metadata,
+                  &plan->init_plans[lane])
+            : private_frontier::initialize_root_shadow_slot(
+                  &plan->staging_slots[lane], owner, region, metadata,
+                  root_operands[lane], &plan->init_plans[lane]);
     if (planner_status != private_frontier::kStatusOk ||
-        plan->init_plans[lane].access_count != 2) {
+        plan->init_plans[lane].access_count !=
+            (root_operands == NULL ? 2 : 9)) {
       return kStatusPlannerFailure;
     }
   }
 
   plan->valid = true;
+  plan->root_operands_initialized = root_operands != NULL;
   plan->resident_warp_slot = resident_slot;
   plan->owner_hw_sid = state.owner_hw_sid;
   plan->warp_uid = warp_uid;
@@ -396,6 +416,27 @@ status_kind prepare_new_warp(
   plan->charged_bytes = charge;
   plan->expected_mutation_epoch = state.mutation_epoch;
   return kStatusOk;
+}
+
+status_kind prepare_new_warp(
+    const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
+    uint32_t active_mask,
+    const private_frontier::owner_binding_v0 owners[kLaneCapacity],
+    new_warp_plan_v0 *plan) {
+  return prepare_new_warp_impl(state, warp_uid, warp_id, active_mask, owners,
+                               NULL, plan);
+}
+
+status_kind prepare_new_warp_with_root_operands(
+    const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
+    uint32_t active_mask,
+    const private_frontier::owner_binding_v0 owners[kLaneCapacity],
+    const private_frontier::root_private_operands_v0
+        root_operands[kLaneCapacity],
+    new_warp_plan_v0 *plan) {
+  if (root_operands == NULL) return kStatusInvalidArgument;
+  return prepare_new_warp_impl(state, warp_uid, warp_id, active_mask, owners,
+                               root_operands, plan);
 }
 
 status_kind commit_new_warp(backing_state_v0 *state,
@@ -408,14 +449,26 @@ status_kind commit_new_warp(backing_state_v0 *state,
     return kStatusStalePlan;
   }
   private_frontier::owner_binding_v0 owners[kLaneCapacity] = {};
+  private_frontier::root_private_operands_v0
+      root_operands[kLaneCapacity] = {};
   for (uint32_t lane = 0; lane < kLaneCapacity; ++lane) {
     if ((plan.active_mask & lane_bit(lane)) == 0) continue;
     owners[lane] = plan.staging_slots[lane].owner;
+    if (plan.root_operands_initialized &&
+        private_frontier::decode_root_private_operands(
+            plan.staging_slots[lane], owners[lane],
+            &root_operands[lane]) != private_frontier::kStatusOk) {
+      return kStatusPlannerFailure;
+    }
   }
   new_warp_plan_v0 revalidated = {};
   const status_kind revalidation_status =
-      prepare_new_warp(*state, plan.warp_uid, plan.warp_id, plan.active_mask,
-                       owners, &revalidated);
+      plan.root_operands_initialized
+          ? prepare_new_warp_with_root_operands(
+                *state, plan.warp_uid, plan.warp_id, plan.active_mask, owners,
+                root_operands, &revalidated)
+          : prepare_new_warp(*state, plan.warp_uid, plan.warp_id,
+                             plan.active_mask, owners, &revalidated);
   if (revalidation_status != kStatusOk) {
     return revalidation_status;
   }
@@ -918,6 +971,72 @@ const lane_slot_state_v0 *find_live_lane(
       state.resident_warps[owner.resident_warp_id].lanes[owner.lane_id];
   return lane.live && private_frontier::owners_equal(lane.owner, owner) ? &lane
                                                                         : NULL;
+}
+
+status_kind prepare_root_operand_read_plan(
+    const backing_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    private_frontier::access_plan_v0 *read_plan) {
+  if (!state.initialized || read_plan == NULL) {
+    return kStatusInvalidArgument;
+  }
+  const lane_slot_state_v0 *lane = find_live_lane(state, owner);
+  if (lane == NULL) return kStatusInvalidOwner;
+  const resident_warp_state_v0 &warp =
+      state.resident_warps[owner.resident_warp_id];
+  if (!warp.live || !warp.scheduler_ready) {
+    return kStatusNoAckReady;
+  }
+  private_frontier::region_binding_v0 region = {};
+  region.profile_id = private_frontier::kLayoutProfileId;
+  region.slot_count = 256;
+  region.private_region_base = private_region_base(state.owner_hw_sid);
+  const private_frontier::status_kind status =
+      private_frontier::build_root_operand_read_plan(
+          lane->canonical_slot, owner, region, read_plan);
+  return status == private_frontier::kStatusOk ? kStatusOk
+                                               : kStatusPlannerFailure;
+}
+
+status_kind read_canonical_chunk(
+    const backing_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    const private_frontier::shared_chunk_access_v0 &access,
+    uint8_t payload[private_frontier::kSharedAccessChunkBytes]) {
+  if (!state.initialized || payload == NULL ||
+      access.access_kind != private_frontier::kAccessRead ||
+      access.byte_mask == 0 ||
+      (access.aligned_32b_address %
+       private_frontier::kSharedAccessChunkBytes) != 0) {
+    return kStatusInvalidArgument;
+  }
+  const lane_slot_state_v0 *lane = find_live_lane(state, owner);
+  if (lane == NULL) return kStatusInvalidOwner;
+  const resident_warp_state_v0 &warp =
+      state.resident_warps[owner.resident_warp_id];
+  if (!warp.live || !warp.scheduler_ready) return kStatusNoAckReady;
+  const uint64_t base = private_slot_base(owner);
+  if (access.aligned_32b_address < base ||
+      access.aligned_32b_address >
+          base + private_frontier::kPrivateDataSlotBytes -
+                     private_frontier::kSharedAccessChunkBytes) {
+    return kStatusOfferMismatch;
+  }
+  const uint32_t chunk_offset =
+      static_cast<uint32_t>(access.aligned_32b_address - base);
+  std::memset(payload, 0, private_frontier::kSharedAccessChunkBytes);
+  for (unsigned byte = 0; byte < private_frontier::kSharedAccessChunkBytes;
+       ++byte) {
+    const bool selected = (access.byte_mask & (uint32_t{1} << byte)) != 0;
+    if (selected &&
+        !field_contains_offset(access.field_kind, chunk_offset + byte)) {
+      return kStatusOfferMismatch;
+    }
+    if (selected) {
+      payload[byte] = lane->canonical_slot.bytes[chunk_offset + byte];
+    }
+  }
+  return kStatusOk;
 }
 
 const char *status_name(status_kind status) {

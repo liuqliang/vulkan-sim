@@ -56,6 +56,7 @@ class ptx_recognizer;
 #include "ptx_loader.h"
 #include "rtcore_procedural_hit_ordering.h"
 #include "rtcore_replay_interface.h"
+#include "rtcore_v04_root_node_packet.h"
 #include "rtcore_v04_shadow_boundary.h"
 #include "rtcore_v04_shadow_shader_return.h"
 #include "rtcore_v04_shadow_trace_input.h"
@@ -7796,6 +7797,143 @@ static bool rtcore_decode_v03_compact_context_image(
          decoded->pipeline_profile_id, decoded->bvh_format_profile_id);
   fflush(stdout);
   return decoded->valid;
+}
+
+extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
+    const ptx_instruction *instruction, ptx_thread_info *const *lane_threads,
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned long long issue_cycle) {
+  namespace root_packet = rtcore::v04::root_node_packet;
+  namespace private_frontier = rtcore::v04::private_frontier;
+  namespace fetch_target = rtcore::v04::fetch_target;
+  namespace typed_blas = rtcore::v04::typed_blas;
+  namespace typed_node = rtcore::v04::typed_node;
+  if (!rtcore_v04_root_node_ready_packet_gate_active()) {
+    return true;
+  }
+  if (instruction == NULL || lane_threads == NULL || active_mask == 0 ||
+      instruction->op != RT_CORE_OP ||
+      instruction->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+      instruction->get_num_operands() != 3) {
+    return false;
+  }
+
+  root_packet::warp_input_v0 input = {};
+  input.valid = true;
+  input.owner_hw_sid = owner_hw_sid;
+  input.warp_uid = warp_uid;
+  input.warp_id = warp_id;
+  input.static_inst_uid = instruction->uid();
+  input.active_mask = active_mask;
+  const operand_info &context_operand = instruction->operand_lookup(1);
+  const operand_info &handoff_operand = instruction->operand_lookup(2);
+
+  for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
+    if ((active_mask & (1u << lane)) == 0) continue;
+    ptx_thread_info *thread = lane_threads[lane];
+    if (thread == NULL) return false;
+    const ptx_reg_t context_value = thread->get_operand_value(
+        context_operand, context_operand, B64_TYPE, thread, 1);
+    const ptx_reg_t handoff_value = thread->get_operand_value(
+        handoff_operand, handoff_operand, B64_TYPE, thread, 1);
+    rtcore_v03_compact_context_decoded context;
+    if (context_value.u64 == 0 || handoff_value.u64 == 0 ||
+        (context_value.u64 & 63u) != 0 ||
+        (handoff_value.u64 & 127u) != 0 ||
+        !rtcore_decode_v03_compact_context_image(
+            instruction, thread, context_value.u64, &context)) {
+      return false;
+    }
+
+    rtcore_tlas_binding_snapshot tlas = {};
+    const char *capture_failure = "unvalidated";
+    if (!VulkanRayTracing::captureTlasBinding(
+            context.as_handle_or_traversable_ref, &tlas,
+            &capture_failure) ||
+        !tlas.valid || !tlas.live || !tlas.root_descriptor_valid ||
+        tlas.root_build_generation == 0 ||
+        tlas.root_bvh_profile_id != typed_blas::kGenRtDerivedProfileId ||
+        tlas.root_payload_format_id != typed_blas::kGenRtPayloadFormatId ||
+        tlas.root_payload_kind != typed_blas::kInternalPayloadKind ||
+        tlas.root_payload_offset > tlas.size_bytes ||
+        uint64_t{64} > tlas.size_bytes - tlas.root_payload_offset ||
+        tlas.device_base_address >
+            UINT64_MAX - tlas.root_payload_offset) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_ROOT_PACKET_INPUT_FAULT "
+              "reason=%s owner_hw_sid=%u warp_uid=%u warp_id=%u lane=%u "
+              "as_ref=0x%llx\n",
+              capture_failure, owner_hw_sid, warp_uid, warp_id, lane,
+              (unsigned long long)context.as_handle_or_traversable_ref);
+      fflush(stderr);
+      return false;
+    }
+
+    root_packet::lane_input_v0 &lane_input = input.lanes[lane];
+    lane_input.valid = true;
+    lane_input.lane_id = static_cast<uint8_t>(lane);
+    lane_input.thread_uid = thread->get_uid();
+    lane_input.context_ptr = context_value.u64;
+    lane_input.handoff_window_base = handoff_value.u64;
+    lane_input.raw_payload_base_address =
+        tlas.device_base_address + tlas.root_payload_offset;
+    lane_input.target_reference.payload_offset =
+        tlas.root_payload_offset;
+    memcpy(&lane_input.target_reference.near_t_bits, &context.ray_tmin,
+           sizeof(context.ray_tmin));
+    lane_input.target_reference.payload_byte_count = 64;
+    lane_input.target_reference.payload_kind = tlas.root_payload_kind;
+    lane_input.target_reference.level = typed_node::kLevelTlas;
+    lane_input.target_reference.source_kind =
+        fetch_target::kTargetReferenceRootCompatibilityProxy;
+    lane_input.target_reference.proxy_delegated = 1;
+
+    private_frontier::root_private_operands_v0 &operands =
+        lane_input.private_operands;
+    operands.mutable_ray.origin[0] = context.ray_origin.x;
+    operands.mutable_ray.origin[1] = context.ray_origin.y;
+    operands.mutable_ray.origin[2] = context.ray_origin.z;
+    operands.mutable_ray.direction[0] = context.ray_direction.x;
+    operands.mutable_ray.direction[1] = context.ray_direction.y;
+    operands.mutable_ray.direction[2] = context.ray_direction.z;
+    const float inverse_direction_epsilon = exp2f(-80.0f);
+    for (unsigned axis = 0; axis < 3; ++axis) {
+      const float direction = operands.mutable_ray.direction[axis];
+      operands.mutable_ray.inverse_direction[axis] =
+          1.0f /
+          (fabsf(direction) > inverse_direction_epsilon
+               ? direction
+               : copysignf(inverse_direction_epsilon, direction));
+    }
+    operands.mutable_ray.t_min = context.ray_tmin;
+    operands.mutable_ray.t_max = context.ray_tmax;
+    operands.decode_context.bvh_format_profile_id =
+        tlas.root_bvh_profile_id;
+    operands.decode_context.as_object.object_id = tlas.object_id;
+    operands.decode_context.as_object.generation = tlas.generation;
+    operands.decode_context.as_object.as_type = 1;
+    operands.decode_context.device_base = tlas.device_base_address;
+    operands.decode_context.device_range_bytes = tlas.size_bytes;
+    operands.committed_hit.valid = 0;
+    operands.committed_hit.hit_t = context.ray_tmax;
+    lane_input.ray_policy.ray_flags = context.ray_flags;
+    lane_input.ray_policy.cull_mask =
+        static_cast<uint8_t>(context.cull_mask);
+  }
+
+  const char *failure_reason = "unvalidated";
+  if (!rtcore_admit_v04_root_node_packet(
+          &input, issue_cycle, &failure_reason)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_ROOT_PACKET_ADMISSION_FAULT "
+            "reason=%s owner_hw_sid=%u warp_uid=%u warp_id=%u "
+            "active_mask=0x%08x\n",
+            failure_reason != NULL ? failure_reason : "unknown",
+            owner_hw_sid, warp_uid, warp_id, active_mask);
+    fflush(stderr);
+    return false;
+  }
+  return true;
 }
 
 static std::map<ptx_thread_info *,

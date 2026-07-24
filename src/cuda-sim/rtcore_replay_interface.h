@@ -144,15 +144,21 @@ struct rtcore_v04_target_raw_read_transport_snapshot {
   uint64_t reservation_id;
   uint64_t reservation_age;
   uint64_t raw_payload_base_address;
-  uint32_t commit_epoch;
+  uint32_t target_operation_seq;
+  uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
   uint32_t target_slot_generation;
   uint16_t raw_payload_bytes;
+  uint16_t slot_chunk_offset;
   uint8_t target_kind;
   uint8_t target_slot_index;
   uint8_t producer_commit_required;
   uint8_t transfer_bytes;
+  uint8_t operand_kind;
+  uint8_t field_kind;
+  uint8_t private_chunk_count;
   uint8_t valid;
-  uint8_t reserved_zero[5];
+  uint8_t reserved_zero[2];
 };
 
 struct rtcore_memory_unit_request_snapshot {
@@ -188,6 +194,9 @@ static const unsigned RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK = 1u;
 static const unsigned RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL = 2u;
 static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT = 8u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_RAW_READ = 9u;
+static const unsigned RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ = 10u;
+static const unsigned RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL = 1u;
+static const unsigned RTCORE_MEMORY_TARGET_OPERAND_PRIVATE_SHARED = 2u;
 
 extern "C" bool
 rtcore_v04_private_frontier_live_init_memory_issue_profile_active();
@@ -229,6 +238,10 @@ bool rtcore_push_back_memory_unit_request_for_sm(
 bool rtcore_accept_v04_target_raw_read_response(
     const rtcore_memory_unit_request_snapshot *request,
     const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long response_cycle);
+
+bool rtcore_accept_v04_target_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle);
 
 bool rtcore_query_replay_warp_completion_entry(

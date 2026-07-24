@@ -470,6 +470,9 @@ public:
     static void publishBLASRootDescriptor(void* objectKey,
                                           uint64_t rootPayloadOffset,
                                           uint32_t rootPayloadKind);
+    static void publishTLASRootDescriptor(void* objectKey,
+                                          uint64_t rootPayloadOffset,
+                                          uint32_t rootPayloadKind);
     static void beginTLASInstanceReferences(void* objectKey);
     static void publishTLASInstanceReference(void* objectKey,
                                              void* instanceLeafAddress,

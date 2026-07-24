@@ -150,8 +150,9 @@ struct backing_state_v0 {
 
 struct new_warp_plan_v0 {
   bool valid;
+  bool root_operands_initialized;
   uint8_t resident_warp_slot;
-  uint16_t reserved_zero;
+  uint8_t reserved_zero;
   uint32_t owner_hw_sid;
   uint32_t warp_uid;
   uint32_t warp_id;
@@ -207,6 +208,14 @@ status_kind prepare_new_warp(
     const private_frontier::owner_binding_v0 owners[kLaneCapacity],
     new_warp_plan_v0 *plan);
 
+status_kind prepare_new_warp_with_root_operands(
+    const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
+    uint32_t active_mask,
+    const private_frontier::owner_binding_v0 owners[kLaneCapacity],
+    const private_frontier::root_private_operands_v0
+        root_operands[kLaneCapacity],
+    new_warp_plan_v0 *plan);
+
 status_kind commit_new_warp(backing_state_v0 *state,
                             const new_warp_plan_v0 &plan);
 
@@ -251,6 +260,17 @@ status_kind commit_release_warp(backing_state_v0 *state,
 const lane_slot_state_v0 *find_live_lane(
     const backing_state_v0 &state,
     const private_frontier::owner_binding_v0 &owner);
+
+status_kind prepare_root_operand_read_plan(
+    const backing_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    private_frontier::access_plan_v0 *read_plan);
+
+status_kind read_canonical_chunk(
+    const backing_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    const private_frontier::shared_chunk_access_v0 &access,
+    uint8_t payload[private_frontier::kSharedAccessChunkBytes]);
 
 const char *status_name(status_kind status);
 

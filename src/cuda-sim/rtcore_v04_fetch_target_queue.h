@@ -32,6 +32,8 @@ enum status_kind : uint8_t {
   kStatusDuplicateRawPayload,
   kStatusChunkShapeMismatch,
   kStatusDuplicateRawChunk,
+  kStatusPrivateOperandShapeMismatch,
+  kStatusDuplicatePrivateChunk,
   kStatusUnknownProducerCommit,
   kStatusDuplicateProducerCommit,
   kStatusReadyFifoInvariant,
@@ -54,8 +56,45 @@ enum slot_state_kind : uint8_t {
 };
 
 enum operand_valid_bit : uint8_t {
-  kOperandSelectedFetchValid = 1u << 0,
+  kOperandTargetReferenceValid = 1u << 0,
   kOperandRawPayloadValid = 1u << 1,
+  kOperandMutableRayValid = 1u << 2,
+  kOperandRayPolicyValid = 1u << 3,
+  kOperandDecodeContextValid = 1u << 4,
+  kOperandCommittedHitValid = 1u << 5,
+};
+
+enum target_reference_source_kind : uint8_t {
+  kTargetReferenceInvalid = 0,
+  kTargetReferenceRootCompatibilityProxy = 1,
+  kTargetReferenceSelectedFetchCompatibilityAdapter = 2,
+};
+
+struct target_reference_v0 {
+  uint64_t payload_offset;
+  uint32_t near_t_bits;
+  uint16_t payload_byte_count;
+  uint8_t payload_kind;
+  uint8_t level;
+  uint8_t source_kind;
+  uint8_t proxy_delegated;
+  uint8_t reserved_zero[6];
+};
+
+struct reservation_input_v0 {
+  private_frontier::owner_binding_v0 owner;
+  target_reference_v0 target_reference;
+  typed_node::ray_policy_v0 forwarded_ray_policy;
+  uint64_t raw_payload_base_address;
+  uint32_t target_operation_seq;
+  uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
+  uint16_t raw_payload_bytes;
+  uint8_t target_kind;
+  uint8_t producer_commit_required;
+  uint8_t required_operand_mask;
+  uint8_t forwarded_operand_mask;
+  uint8_t reserved_zero[6];
 };
 
 struct config_v0 {
@@ -73,16 +112,18 @@ struct reservation_receipt_v0 {
   uint64_t reservation_id;
   uint64_t reservation_age;
   uint64_t raw_payload_base_address;
-  uint32_t operation_seq;
-  uint32_t commit_epoch;
+  uint32_t target_operation_seq;
+  uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
   uint32_t slot_generation;
   uint16_t raw_payload_bytes;
   uint8_t target_kind;
   uint8_t slot_index;
   uint8_t raw_chunk_count;
+  uint8_t private_chunk_count;
   uint8_t producer_commit_required;
   uint8_t valid;
-  uint8_t reserved_zero;
+  uint8_t reserved_zero[2];
 };
 
 struct operation_packet_v0 {
@@ -90,13 +131,16 @@ struct operation_packet_v0 {
   uint64_t reservation_id;
   uint64_t reservation_age;
   uint64_t raw_payload_base_address;
-  uint32_t operation_seq;
-  uint32_t commit_epoch;
+  uint32_t target_operation_seq;
+  uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
   uint32_t slot_generation;
   uint16_t raw_payload_bytes;
   uint8_t target_kind;
   uint8_t valid;
-  typed_node::selected_child_fetch_work_item_v0 selected_fetch;
+  target_reference_v0 target_reference;
+  typed_node::ray_policy_v0 ray_policy;
+  private_frontier::root_private_operands_v0 private_operands;
   uint8_t raw_payload[kMaxRawPayloadBytes];
 };
 
@@ -105,21 +149,29 @@ struct slot_metadata_v0 {
   uint64_t reservation_id;
   uint64_t reservation_age;
   uint64_t raw_payload_base_address;
-  uint32_t operation_seq;
-  uint32_t commit_epoch;
+  uint32_t target_operation_seq;
+  uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
   uint32_t slot_generation;
   uint16_t raw_payload_bytes;
   uint8_t target_kind;
   uint8_t state;
   uint8_t valid_operand_mask;
   uint8_t required_operand_mask;
-  uint8_t pending_response_count;
-  uint8_t expected_chunk_count;
-  uint8_t received_chunk_mask;
+  uint8_t pending_raw_response_count;
+  uint8_t expected_raw_chunk_count;
+  uint8_t received_raw_chunk_mask;
+  uint8_t pending_private_response_count;
+  uint8_t expected_private_chunk_count;
+  uint8_t received_private_chunk_mask;
   uint8_t producer_commit_required;
   uint8_t producer_commit_complete;
   uint8_t ready_enqueued;
-  typed_node::selected_child_fetch_work_item_v0 selected_fetch;
+  target_reference_v0 target_reference;
+  typed_node::ray_policy_v0 ray_policy;
+  uint8_t mutable_ray_bytes[private_frontier::kMutableRayStateBytes];
+  uint8_t decode_context_bytes[private_frontier::kAsDecodeContextBytes];
+  uint8_t committed_hit_bytes[private_frontier::kCommittedHitBytes];
 };
 
 struct node_slot_v0 {
@@ -174,6 +226,10 @@ status_kind classify_selected_fetch(
     const typed_node::selected_child_fetch_work_item_v0 &selected_fetch,
     target_kind *target, uint16_t *raw_payload_bytes);
 
+status_kind try_reserve(
+    engine_state_v0 *state, const reservation_input_v0 &input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
+
 status_kind try_reserve_prefill(
     engine_state_v0 *state,
     const stack_commit::forwarding_decision_input_v0 &decision,
@@ -190,6 +246,13 @@ status_kind fill_raw_payload_chunk(
     uint8_t chunk_count, const uint8_t *raw_payload_chunk,
     uint8_t chunk_bytes);
 
+status_kind fill_private_operand_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint8_t field_kind, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes]);
+
 status_kind complete_producer_commit(
     engine_state_v0 *state,
     const private_frontier::owner_binding_v0 &owner, uint32_t operation_seq,
@@ -198,6 +261,15 @@ status_kind complete_producer_commit(
 status_kind pop_ready_operation(engine_state_v0 *state, target_kind target,
                                 bool unit_input_accepts,
                                 operation_packet_v0 *packet);
+
+status_kind peek_ready_operation(const engine_state_v0 &state,
+                                 target_kind target,
+                                 operation_packet_v0 *packet);
+
+status_kind peek_ready_reservation(
+    const engine_state_v0 &state,
+    const reservation_receipt_v0 &reservation,
+    operation_packet_v0 *packet);
 
 uint8_t active_slot_count(const engine_state_v0 &state, target_kind target);
 uint8_t ready_slot_count(const engine_state_v0 &state, target_kind target);

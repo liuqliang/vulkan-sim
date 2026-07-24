@@ -50,19 +50,25 @@ bool valid_reservation_shape(
   uint16_t expected_payload_bytes = 0;
   uint8_t expected_chunk_count = 0;
   uint8_t slot_capacity = 0;
+  const bool producer_tag_valid =
+      reservation.producer_commit_required == 0
+          ? reservation.producer_operation_seq == 0 &&
+                reservation.producer_commit_epoch == 0
+          : reservation.producer_operation_seq != 0 &&
+                reservation.producer_commit_epoch != 0;
   return reservation.valid == 1 && reservation.reservation_id != 0 &&
          reservation.reservation_age != 0 &&
          reservation.raw_payload_base_address != 0 &&
          (reservation.raw_payload_base_address &
           (kRawReadChunkBytes - 1)) == 0 &&
-         reservation.operation_seq != 0 && reservation.commit_epoch != 0 &&
+         reservation.target_operation_seq != 0 && producer_tag_valid &&
          reservation.slot_generation != 0 &&
          reservation.owner.request_identity != 0 &&
          reservation.owner.generation != 0 &&
          reservation.owner.lane_id < 32 &&
          bytes_are_zero(reservation.owner.reserved_zero,
                         sizeof(reservation.owner.reserved_zero)) &&
-         bytes_are_zero(&reservation.reserved_zero,
+         bytes_are_zero(reservation.reserved_zero,
                         sizeof(reservation.reserved_zero)) &&
          expected_shape(reservation, &expected_payload_bytes,
                         &expected_chunk_count, &slot_capacity) &&
