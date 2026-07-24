@@ -35,6 +35,7 @@
 #include "rtcore_v04_instance_blas_reference_registry.h"
 #include "rtcore_v04_functional_driver.h"
 #include "rtcore_v04_live_global_memory_adapter.h"
+#include "rtcore_v04_node_timing_driver.h"
 #include "rtcore_v04_private_frontier_layout.h"
 #include "rtcore_v04_private_shared_backing.h"
 #include "rtcore_v04_request_owner_binding.h"
@@ -1465,6 +1466,8 @@ static std::map<unsigned, rtcore::v04::private_shared::backing_state_v0>
     g_rtcore_v04_private_shared_backing_by_owner;
 static std::map<unsigned, rtcore::v04::fetch_target::engine_state_v0>
     g_rtcore_v04_live_target_engine_by_owner;
+static std::map<unsigned, rtcore::v04::node_timing::state_v0>
+    g_rtcore_v04_live_node_timing_by_owner;
 
 static rtcore::v04::private_shared::backing_state_v0 &
 rtcore_v04_private_shared_backing_for(unsigned owner_hw_sid)
@@ -1502,6 +1505,29 @@ rtcore_v04_live_target_engine_for(unsigned owner_hw_sid)
     }
     return state;
 }
+
+static rtcore::v04::node_timing::state_v0 &
+rtcore_v04_live_node_timing_for(unsigned owner_hw_sid)
+{
+    namespace node_timing = rtcore::v04::node_timing;
+    node_timing::state_v0 &state =
+        g_rtcore_v04_live_node_timing_by_owner[owner_hw_sid];
+    if (!state.initialized) {
+        const node_timing::config_v0 config =
+            node_timing::candidate_profile_config();
+        if (node_timing::initialize(&state, config) !=
+            node_timing::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_NODE_TIMING_FAULT "
+                    "owner_hw_sid=%u fault=initialize_failed\n",
+                    owner_hw_sid);
+            fflush(stderr);
+            abort();
+        }
+    }
+    return state;
+}
+
 static rtcore_service_tick_stats_snapshot
     g_rtcore_replay_service_tick_stats_snapshot;
 static unsigned g_rtcore_replay_service_tick_stats_logs_emitted = 0;
@@ -2158,6 +2184,16 @@ static bool rtcore_v04_functional_node_driver_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_live_node_timing_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_LIVE_NODE_TIMING_ROUTE") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled();
@@ -2166,6 +2202,11 @@ extern "C" bool rtcore_v04_root_node_ready_packet_gate_active()
 extern "C" bool rtcore_v04_functional_node_driver_gate_active()
 {
     return rtcore_v04_functional_node_driver_enabled();
+}
+
+extern "C" bool rtcore_v04_live_node_timing_gate_active()
+{
+    return rtcore_v04_live_node_timing_enabled();
 }
 
 extern "C" bool rtcore_v04_root_node_input_gate_active()
@@ -2179,7 +2220,8 @@ extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
     return rtcore::v04::functional_driver::mode_selection_valid(
         rtcore_v04_functional_node_driver_enabled(),
         rtcore_v04_live_timing_driver_control_enabled(),
-        rtcore_v04_root_node_ready_packet_enabled());
+        rtcore_v04_root_node_ready_packet_enabled(),
+        rtcore_v04_live_node_timing_enabled());
 }
 
 static void rtcore_v04_require_valid_node_driver_configuration()
@@ -2188,8 +2230,14 @@ static void rtcore_v04_require_valid_node_driver_configuration()
         return;
     }
     fprintf(stderr,
-            "GPGPU-Sim RTCORE_V04_FUNCTIONAL_NODE_MODE_FAULT "
-            "reason=functional_driver_conflicts_with_timing_or_root_packet\n");
+            "GPGPU-Sim RTCORE_V04_NODE_DRIVER_MODE_FAULT "
+            "reason=driver_mode_or_live_timing_prerequisite_invalid "
+            "functional=%u timing_control=%u root_packet=%u "
+            "live_node_timing=%u\n",
+            rtcore_v04_functional_node_driver_enabled() ? 1u : 0u,
+            rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u,
+            rtcore_v04_root_node_ready_packet_enabled() ? 1u : 0u,
+            rtcore_v04_live_node_timing_enabled() ? 1u : 0u);
     fflush(stderr);
     abort();
 }
@@ -15761,6 +15809,104 @@ extern "C" bool rtcore_accept_v04_target_private_shared_read(
     return true;
 }
 
+static bool rtcore_service_v04_live_node_timing(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    namespace node_timing = rtcore::v04::node_timing;
+    namespace result_semantic = rtcore::v04::result_semantic;
+    if (!rtcore_v04_live_node_timing_enabled()) {
+        return false;
+    }
+    if (!rtcore_v04_functional_node_driver_configuration_valid() ||
+        !rtcore_v04_live_timing_driver_control_prerequisites_enabled() ||
+        !rtcore_v04_live_global_memory_adapter_configuration_valid()) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_NODE_TIMING_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu "
+                "fault=prerequisite_invalid\n",
+                owner_hw_sid, service_cycle);
+        fflush(stderr);
+        abort();
+    }
+
+    node_timing::cycle_result_v0 result = {};
+    const node_timing::status_kind status =
+        node_timing::service_cycle(
+            &rtcore_v04_live_node_timing_for(owner_hw_sid),
+            &rtcore_v04_live_target_engine_for(owner_hw_sid),
+            &rtcore_v04_timing_driver_for(owner_hw_sid),
+            service_cycle, true, &result);
+    if (status != node_timing::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_NODE_TIMING_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                owner_hw_sid, service_cycle,
+                node_timing::status_name(status));
+        fflush(stderr);
+        abort();
+    }
+
+    for (unsigned index = 0; index < result.committed_route_count;
+         ++index) {
+        const node_timing::committed_route_receipt_v0 &receipt =
+            result.committed_routes[index];
+        printf("GPGPU-Sim RTCORE_V04_LIVE_NODE_ROUTE_COMMITTED "
+               "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+               "request_identity=%u request_generation=%u "
+               "target_operation_seq=%u reservation_id=%llu "
+               "slot_generation=%u commit_epoch=%u "
+               "operator_invocations=%u route=%s next_target=%u "
+               "frontier_count=%u issue_cycle=%llu "
+               "result_ready_cycle=%llu capture_cycle=%llu "
+               "commit_cycle=%llu modeled_node_latency=%llu "
+               "lt5_next_target_materialized=0 legacy_authority=0\n",
+               receipt.result_identity.owner.owner_hw_sid,
+               receipt.result_identity.owner.resident_warp_id,
+               receipt.result_identity.owner.lane_id,
+               receipt.result_identity.owner.request_identity,
+               receipt.result_identity.owner.generation,
+               receipt.result_identity.target_operation_seq,
+               (unsigned long long)
+                   receipt.result_identity.reservation_id,
+               receipt.result_identity.slot_generation,
+               receipt.commit_epoch,
+               receipt.operator_invocation_count,
+               result_semantic::node_route_name(
+                   static_cast<result_semantic::node_route_kind>(
+                       receipt.semantic_plan.route_kind)),
+               receipt.semantic_plan.next_target_kind,
+               receipt.semantic_plan.frontier_count,
+               (unsigned long long)receipt.issue_cycle,
+               (unsigned long long)receipt.result_ready_cycle,
+               (unsigned long long)receipt.capture_cycle,
+               (unsigned long long)receipt.commit_cycle,
+               (unsigned long long)(
+                   receipt.result_ready_cycle - receipt.issue_cycle));
+        fflush(stdout);
+    }
+    if (result.issued_count != 0 ||
+        result.captured_result_count != 0 ||
+        result.committed_route_count != 0) {
+        printf("GPGPU-Sim RTCORE_V04_LIVE_NODE_TIMING_CYCLE "
+               "owner_hw_sid=%u service_cycle=%llu issued=%u "
+               "captured=%u committed=%u stall_mask=0x%02x "
+               "pipeline_active=%u result_active=%u node_ready=%u "
+               "node_units=8 node_latency=2 node_ii=1 "
+               "node_issue_width=8 result_capacity=16 "
+               "result_commit_width=16\n",
+               owner_hw_sid, service_cycle, result.issued_count,
+               result.captured_result_count,
+               result.committed_route_count, result.stall_mask,
+               result.active_pipeline_entries,
+               result.active_result_entries,
+               result.ready_node_entries);
+        fflush(stdout);
+    }
+    return result.issued_count != 0 ||
+           result.captured_result_count != 0 ||
+           result.committed_route_count != 0;
+}
+
 extern "C" bool
 rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     unsigned owner_hw_sid, unsigned long long service_cycle,
@@ -15770,6 +15916,13 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
 {
     rtcore_replay_service_cycle_result result =
         rtcore_service_replay_cycle(owner_hw_sid, service_cycle);
+    const bool v04_live_node_progressed =
+        rtcore_service_v04_live_node_timing(
+            owner_hw_sid, service_cycle);
+    if (v04_live_node_progressed) {
+        result.tick_result.progressed = true;
+        result.tick_result.ready_progressed = true;
+    }
     if (service_enabled) {
         *service_enabled = result.service_enabled;
     }

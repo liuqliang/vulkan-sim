@@ -8,9 +8,14 @@ namespace functional_driver {
 
 bool mode_selection_valid(bool functional_only_enabled,
                           bool timing_driver_enabled,
-                          bool root_packet_enabled) {
-  return !functional_only_enabled ||
-         (!timing_driver_enabled && !root_packet_enabled);
+                          bool root_packet_enabled,
+                          bool live_node_timing_enabled) {
+  if (functional_only_enabled) {
+    return !timing_driver_enabled && !root_packet_enabled &&
+           !live_node_timing_enabled;
+  }
+  return !live_node_timing_enabled ||
+         (timing_driver_enabled && root_packet_enabled);
 }
 
 status_kind prepare_node_operator_input(
@@ -49,15 +54,33 @@ status_kind prepare_node_operator_input(
   return kStatusOk;
 }
 
+status_kind execute_node_operator_once(
+    const fetch_target::operation_packet_v0 &packet,
+    typed_node::route_result_v0 *result,
+    uint8_t *operator_invocation_count) {
+  if (result == NULL || operator_invocation_count == NULL) {
+    return kStatusInvalidArgument;
+  }
+  *result = typed_node::route_result_v0();
+  *operator_invocation_count = 0;
+  typed_node::route_input_v0 input = {};
+  const status_kind status = prepare_node_operator_input(packet, &input);
+  if (status != kStatusOk) return status;
+  *result = typed_node::execute_route(input);
+  *operator_invocation_count = 1;
+  return result->status == typed_node::kStatusOk
+             ? kStatusOk
+             : kStatusTypedOperatorFailed;
+}
+
 status_kind execute_one_node(
     const fetch_target::operation_packet_v0 &packet,
     node_execution_v0 *execution) {
   if (execution == NULL) return kStatusInvalidArgument;
   *execution = node_execution_v0();
-  status_kind status =
-      prepare_node_operator_input(packet, &execution->operator_input);
+  status_kind status = prepare_node_operator_input(
+      packet, &execution->operator_input);
   if (status != kStatusOk) return status;
-
   execution->operator_result =
       typed_node::execute_route(execution->operator_input);
   execution->operator_invocation_count = 1;
