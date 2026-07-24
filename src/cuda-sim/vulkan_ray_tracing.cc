@@ -37,6 +37,7 @@
 #include "rtcore_v04_private_shared_backing.h"
 #include "rtcore_v04_request_owner_binding.h"
 #include "rtcore_v04_shadow_shader_return.h"
+#include "rtcore_v04_timing_driver.h"
 #include "rtcore_v04_typed_blas_decode_context.h"
 #include "rtcore_v04_typed_instance_kernel.h"
 #include "rtcore_v04_typed_node_kernel.h"
@@ -1001,19 +1002,28 @@ static std::map<rtcore_resident_rt_warp_record_key,
                 rtcore_resident_rt_warp_record>
     g_rtcore_resident_rt_warp_records;
 static unsigned g_rtcore_next_resident_rt_warp_generation = 1;
-static std::map<unsigned, rtcore::v04::request_owner::allocator_state_v0>
-    g_rtcore_v04_request_owner_allocators;
+static std::map<unsigned, rtcore::v04::timing_driver::state_v0>
+    g_rtcore_v04_timing_drivers;
+
+static rtcore::v04::timing_driver::state_v0 &
+rtcore_v04_timing_driver_for(unsigned owner_hw_sid)
+{
+    rtcore::v04::timing_driver::state_v0 &driver =
+        g_rtcore_v04_timing_drivers[owner_hw_sid];
+    if (!driver.initialized) {
+        rtcore::v04::timing_driver::initialize(&driver);
+    }
+    return driver;
+}
 
 static rtcore::v04::request_owner::allocator_state_v0 &
 rtcore_v04_request_owner_allocator_for(unsigned owner_hw_sid)
 {
-    rtcore::v04::request_owner::allocator_state_v0 &allocator =
-        g_rtcore_v04_request_owner_allocators[owner_hw_sid];
-    if (!allocator.initialized) {
-        rtcore::v04::request_owner::initialize_allocator(
-            &allocator);
-    }
-    return allocator;
+    rtcore::v04::request_owner::allocator_state_v0 *allocator =
+        rtcore::v04::timing_driver::request_control(
+            &rtcore_v04_timing_driver_for(owner_hw_sid));
+    assert(allocator != NULL);
+    return *allocator;
 }
 
 struct rtcore_replay_issue_budget {
@@ -2105,6 +2115,16 @@ static bool rtcore_v04_private_frontier_live_init_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_live_timing_driver_control_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_LIVE_TIMING_DRIVER_CONTROL") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_v04_typed_stack_result_owner_bridge_enabled()
 {
     static int enabled = []() {
@@ -2250,6 +2270,14 @@ static bool rtcore_v04_private_frontier_live_init_prerequisites_enabled()
     return rtcore_v04_request_owner_binding_enabled() &&
            rtcore_v04_request_owner_binding_prerequisites_enabled() &&
            rtcore_replay_memory_unit_request_offer_enabled();
+}
+
+static bool rtcore_v04_live_timing_driver_control_prerequisites_enabled()
+{
+    return rtcore_v04_request_owner_binding_enabled() &&
+           rtcore_v04_request_owner_binding_prerequisites_enabled() &&
+           rtcore_v04_private_frontier_live_init_enabled() &&
+           rtcore_v04_private_frontier_live_init_prerequisites_enabled();
 }
 
 static bool rtcore_v04_typed_stack_result_owner_bridge_prerequisites_enabled()
@@ -10334,6 +10362,7 @@ static bool rtcore_commit_v04_whole_mask_request_owner_binding(
 {
     namespace request_owner = rtcore::v04::request_owner;
     namespace private_shared = rtcore::v04::private_shared;
+    namespace timing_driver = rtcore::v04::timing_driver;
     const char *failure = "accepted";
     if (failure_reason != NULL) *failure_reason = failure;
     if (!rtcore_v04_request_owner_binding_enabled()) return true;
@@ -10369,10 +10398,25 @@ static bool rtcore_commit_v04_whole_mask_request_owner_binding(
     request_owner::allocator_state_v0 &owner_allocator =
         rtcore_v04_request_owner_allocator_for(record->owner_hw_sid);
     request_owner::new_warp_plan_v0 owner_plan = {};
-    request_owner::status_kind owner_status =
-        request_owner::prepare_new_warp(owner_allocator, identity, &owner_plan);
-    if (owner_status != request_owner::kStatusOk) {
-        failure = request_owner::status_name(owner_status);
+    timing_driver::new_submit_plan_v0 timing_plan = {};
+    request_owner::status_kind owner_status = request_owner::kStatusOk;
+    timing_driver::status_kind timing_status = timing_driver::kStatusOk;
+    if (rtcore_v04_live_timing_driver_control_enabled()) {
+        timing_status = timing_driver::prepare_new_submit(
+            rtcore_v04_timing_driver_for(record->owner_hw_sid), identity,
+            &timing_plan);
+        if (timing_status == timing_driver::kStatusOk) {
+            owner_plan = timing_plan.owner_plan;
+        } else {
+            failure = timing_driver::status_name(timing_status);
+        }
+    } else {
+        owner_status =
+            request_owner::prepare_new_warp(owner_allocator, identity,
+                                            &owner_plan);
+        if (owner_status != request_owner::kStatusOk) {
+            failure = request_owner::status_name(owner_status);
+        }
     }
 
     std::array<rtcore_replay_lane_request, 32> requests = {};
@@ -10506,12 +10550,22 @@ static bool rtcore_commit_v04_whole_mask_request_owner_binding(
         return false;
     }
 
-    owner_status = request_owner::commit_new_warp(
-        &owner_allocator, owner_plan);
-    if (owner_status != request_owner::kStatusOk) {
-        failure = request_owner::status_name(owner_status);
-        if (failure_reason != NULL) *failure_reason = failure;
-        return false;
+    if (rtcore_v04_live_timing_driver_control_enabled()) {
+        timing_status = timing_driver::commit_new_submit(
+            &rtcore_v04_timing_driver_for(record->owner_hw_sid), timing_plan);
+        if (timing_status != timing_driver::kStatusOk) {
+            failure = timing_driver::status_name(timing_status);
+            if (failure_reason != NULL) *failure_reason = failure;
+            return false;
+        }
+    } else {
+        owner_status = request_owner::commit_new_warp(
+            &owner_allocator, owner_plan);
+        if (owner_status != request_owner::kStatusOk) {
+            failure = request_owner::status_name(owner_status);
+            if (failure_reason != NULL) *failure_reason = failure;
+            return false;
+        }
     }
     if (rtcore_v04_private_frontier_live_init_enabled()) {
         const private_shared::status_kind private_status =
@@ -10667,7 +10721,7 @@ static bool rtcore_commit_v04_whole_mask_request_owner_binding(
            "scheduler_visible_mask=0x%08x allocator_scope=per_sm "
            "private_live_init=%u resident_shared_charge_bytes=%u "
            "allocator_epoch=%llu "
-           "functional_authority=0 timing_authority=0 result=accepted\n",
+           "functional_authority=0 timing_authority=%u result=accepted\n",
            record->owner_hw_sid, record->current_warp_uid, record->warp_id,
            record->active_mask, prepared_mask,
            prepared_lane_count, unique_request_slots.size(),
@@ -10680,7 +10734,8 @@ static bool rtcore_commit_v04_whole_mask_request_owner_binding(
                ? private_plan.charged_bytes
                : 0u,
            static_cast<unsigned long long>(
-               owner_allocator.mutation_epoch));
+               owner_allocator.mutation_epoch),
+           rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u);
     fflush(stdout);
     if (service_after_commit) {
         rtcore_try_service_replay_after_admission(record->owner_hw_sid);
@@ -12184,7 +12239,8 @@ struct rtcore_shader_visible_resubmit_admission_plan {
     rtcore_shader_visible_resubmit_admission_plan()
         : valid(false), record(NULL), old_active_mask(0),
           continuation_depth(0), occupancy_before(0),
-          v04_request_owner_plan(), v04_private_shared_plan()
+          v04_timing_driver_plan(), v04_request_owner_plan(),
+          v04_private_shared_plan()
     {
         old_key = rtcore_replay_warp_completion_entry_key();
     }
@@ -12195,6 +12251,8 @@ struct rtcore_shader_visible_resubmit_admission_plan {
     unsigned old_active_mask;
     unsigned continuation_depth;
     unsigned occupancy_before;
+    rtcore::v04::timing_driver::resubmit_plan_v0
+        v04_timing_driver_plan;
     rtcore::v04::request_owner::mask_shrink_plan_v0
         v04_request_owner_plan;
     rtcore::v04::private_shared::mask_shrink_plan_v0
@@ -12328,6 +12386,22 @@ static bool rtcore_prepare_shader_visible_resubmit_admission(
             record->v04_resident_warp_slot >=
                 rtcore::v04::request_owner::kResidentWarpCapacity) {
             reason = "REQUEST_OWNER_RESUBMIT_BINDING_MISSING";
+        } else if (rtcore_v04_live_timing_driver_control_enabled()) {
+            const rtcore::v04::timing_driver::status_kind driver_status =
+                rtcore::v04::timing_driver::prepare_resubmit(
+                    rtcore_v04_timing_driver_for(owner_hw_sid),
+                    static_cast<uint8_t>(record->v04_resident_warp_slot),
+                    owner_hw_sid, expected_previous_warp_uid, new_warp_uid,
+                    warp_id, next_active_mask,
+                    &plan->v04_timing_driver_plan);
+            if (driver_status !=
+                rtcore::v04::timing_driver::kStatusOk) {
+                reason = rtcore::v04::timing_driver::status_name(
+                    driver_status);
+            } else {
+                plan->v04_request_owner_plan =
+                    plan->v04_timing_driver_plan.owner_plan;
+            }
         } else {
             const rtcore::v04::request_owner::status_kind owner_status =
                 rtcore::v04::request_owner::prepare_mask_shrink(
@@ -12398,18 +12472,35 @@ static bool rtcore_commit_prepared_shader_visible_resubmit_admission(
     unsigned reactivated_mask = 0;
 
     if (rtcore_v04_request_owner_binding_enabled()) {
-        const rtcore::v04::request_owner::status_kind owner_status =
-            rtcore::v04::request_owner::commit_mask_shrink(
-                &rtcore_v04_request_owner_allocator_for(owner_hw_sid),
-                plan.v04_request_owner_plan);
-        if (owner_status != rtcore::v04::request_owner::kStatusOk) {
+        const char *owner_fault = "ok";
+        if (rtcore_v04_live_timing_driver_control_enabled()) {
+            const rtcore::v04::timing_driver::status_kind driver_status =
+                rtcore::v04::timing_driver::commit_resubmit(
+                    &rtcore_v04_timing_driver_for(owner_hw_sid),
+                    plan.v04_timing_driver_plan);
+            if (driver_status !=
+                rtcore::v04::timing_driver::kStatusOk) {
+                owner_fault =
+                    rtcore::v04::timing_driver::status_name(driver_status);
+            }
+        } else {
+            const rtcore::v04::request_owner::status_kind owner_status =
+                rtcore::v04::request_owner::commit_mask_shrink(
+                    &rtcore_v04_request_owner_allocator_for(owner_hw_sid),
+                    plan.v04_request_owner_plan);
+            if (owner_status !=
+                rtcore::v04::request_owner::kStatusOk) {
+                owner_fault =
+                    rtcore::v04::request_owner::status_name(owner_status);
+            }
+        }
+        if (strcmp(owner_fault, "ok") != 0) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_REQUEST_OWNER_COMMIT_INVARIANT "
                     "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u "
                     "warp_id=%u fault=%s\n",
                     owner_hw_sid, expected_previous_warp_uid, new_warp_uid,
-                    warp_id,
-                    rtcore::v04::request_owner::status_name(owner_status));
+                    warp_id, owner_fault);
             fflush(stderr);
             abort();
         }
@@ -12418,13 +12509,15 @@ static bool rtcore_commit_prepared_shader_visible_resubmit_admission(
                "warp_id=%u resident_warp_slot=%u "
                "previous_active_mask=0x%08x next_active_mask=0x%08x "
                "released_lane_mask=0x%08x retained_lane_mask=0x%08x "
-               "allocator_scope=per_sm result=accepted\n",
+               "allocator_scope=per_sm timing_authority=%u "
+               "result=accepted\n",
                owner_hw_sid, expected_previous_warp_uid, new_warp_uid,
                warp_id, plan.v04_request_owner_plan.resident_warp_slot,
                plan.v04_request_owner_plan.previous_active_mask,
                plan.v04_request_owner_plan.next_active_mask,
                plan.v04_request_owner_plan.release_mask,
-               plan.v04_request_owner_plan.next_active_mask);
+               plan.v04_request_owner_plan.next_active_mask,
+               rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u);
         fflush(stdout);
     }
     if (rtcore_v04_private_frontier_live_init_enabled()) {
@@ -13268,6 +13361,27 @@ extern "C" bool rtcore_begin_retire_resident_rt_warp_transaction(
             }
         }
     }
+    if (record && strcmp(reason, "accepted") == 0 &&
+        rtcore_v04_live_timing_driver_control_enabled()) {
+        if (!record->v04_request_owner_binding_valid ||
+            record->v04_resident_warp_slot >=
+                rtcore::v04::request_owner::kResidentWarpCapacity) {
+            reason = "REQUEST_OWNER_RETIRE_BINDING_MISSING";
+        } else {
+            rtcore::v04::timing_driver::retire_plan_v0 preflight_plan = {};
+            const rtcore::v04::timing_driver::status_kind driver_status =
+                rtcore::v04::timing_driver::prepare_retire(
+                    rtcore_v04_timing_driver_for(owner_hw_sid),
+                    static_cast<uint8_t>(record->v04_resident_warp_slot),
+                    owner_hw_sid, record->current_warp_uid, warp_id,
+                    &preflight_plan);
+            if (driver_status !=
+                rtcore::v04::timing_driver::kStatusOk) {
+                reason =
+                    rtcore::v04::timing_driver::status_name(driver_status);
+            }
+        }
+    }
 
     unsigned already_released_mask = 0;
     if (record && strcmp(reason, "accepted") == 0) {
@@ -13494,6 +13608,8 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
 
     rtcore::v04::request_owner::release_warp_plan_v0
         v04_request_owner_release_plan = {};
+    rtcore::v04::timing_driver::retire_plan_v0
+        v04_timing_driver_retire_plan = {};
     rtcore::v04::private_shared::release_warp_plan_v0
         v04_private_shared_release_plan = {};
     if (record && strcmp(reason, "accepted") == 0 &&
@@ -13502,6 +13618,21 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
             record->v04_resident_warp_slot >=
                 rtcore::v04::request_owner::kResidentWarpCapacity) {
             reason = "REQUEST_OWNER_RETIRE_BINDING_MISSING";
+        } else if (rtcore_v04_live_timing_driver_control_enabled()) {
+            const rtcore::v04::timing_driver::status_kind driver_status =
+                rtcore::v04::timing_driver::prepare_retire(
+                    rtcore_v04_timing_driver_for(owner_hw_sid),
+                    static_cast<uint8_t>(record->v04_resident_warp_slot),
+                    owner_hw_sid, record->current_warp_uid, warp_id,
+                    &v04_timing_driver_retire_plan);
+            if (driver_status !=
+                rtcore::v04::timing_driver::kStatusOk) {
+                reason = rtcore::v04::timing_driver::status_name(
+                    driver_status);
+            } else {
+                v04_request_owner_release_plan =
+                    v04_timing_driver_retire_plan.owner_plan;
+            }
         } else {
             const rtcore::v04::request_owner::status_kind owner_status =
                 rtcore::v04::request_owner::prepare_release_warp(
@@ -13542,30 +13673,48 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
     unsigned submit_warp_uid = record ? record->current_warp_uid : 0;
     if (record && strcmp(reason, "accepted") == 0) {
         if (rtcore_v04_request_owner_binding_enabled()) {
-            const rtcore::v04::request_owner::status_kind owner_status =
-                rtcore::v04::request_owner::commit_release_warp(
-                    &rtcore_v04_request_owner_allocator_for(owner_hw_sid),
-                    v04_request_owner_release_plan);
-            if (owner_status !=
-                rtcore::v04::request_owner::kStatusOk) {
+            const char *owner_fault = "ok";
+            if (rtcore_v04_live_timing_driver_control_enabled()) {
+                const rtcore::v04::timing_driver::status_kind driver_status =
+                    rtcore::v04::timing_driver::commit_retire(
+                        &rtcore_v04_timing_driver_for(owner_hw_sid),
+                        v04_timing_driver_retire_plan);
+                if (driver_status !=
+                    rtcore::v04::timing_driver::kStatusOk) {
+                    owner_fault =
+                        rtcore::v04::timing_driver::status_name(driver_status);
+                }
+            } else {
+                const rtcore::v04::request_owner::status_kind owner_status =
+                    rtcore::v04::request_owner::commit_release_warp(
+                        &rtcore_v04_request_owner_allocator_for(owner_hw_sid),
+                        v04_request_owner_release_plan);
+                if (owner_status !=
+                    rtcore::v04::request_owner::kStatusOk) {
+                    owner_fault =
+                        rtcore::v04::request_owner::status_name(owner_status);
+                }
+            }
+            if (strcmp(owner_fault, "ok") != 0) {
                 fprintf(stderr,
                         "GPGPU-Sim "
                         "RTCORE_V04_REQUEST_OWNER_COMMIT_INVARIANT "
                         "owner_hw_sid=%u warp_uid=%u warp_id=%u "
                         "fault=%s\n",
                         owner_hw_sid, record->current_warp_uid, warp_id,
-                        rtcore::v04::request_owner::status_name(
-                            owner_status));
+                        owner_fault);
                 fflush(stderr);
                 abort();
             }
             printf("GPGPU-Sim RTCORE_V04_REQUEST_OWNER_RELEASE "
                    "owner_hw_sid=%u warp_uid=%u warp_id=%u "
                    "resident_warp_slot=%u released_lane_mask=0x%08x "
-                   "allocator_scope=per_sm result=accepted\n",
+                   "allocator_scope=per_sm timing_authority=%u "
+                   "result=accepted\n",
                    owner_hw_sid, record->current_warp_uid, warp_id,
                    v04_request_owner_release_plan.resident_warp_slot,
-                   v04_request_owner_release_plan.identity.active_mask);
+                   v04_request_owner_release_plan.identity.active_mask,
+                   rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u);
             fflush(stdout);
             for (unsigned lane = 0; lane < 32; ++lane) {
                 if ((record->v04_request_owner_active_mask &
@@ -17742,6 +17891,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         rtcore_v04_request_owner_binding_enabled();
     const bool v04_private_frontier_live_init_enabled =
         rtcore_v04_private_frontier_live_init_enabled();
+    const bool v04_live_timing_driver_control_enabled =
+        rtcore_v04_live_timing_driver_control_enabled();
     const bool v04_typed_stack_result_owner_bridge_enabled =
         rtcore_v04_typed_stack_result_owner_bridge_enabled();
     if (v04_typed_node_candidate_enabled &&
@@ -17950,6 +18101,23 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                    ? 1u
                    : 0u,
                rtcore_replay_memory_unit_request_offer_enabled() ? 1u : 0u);
+        fflush(stdout);
+        abort();
+    }
+    if (v04_live_timing_driver_control_enabled &&
+        !rtcore_v04_live_timing_driver_control_prerequisites_enabled()) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_LIVE_TIMING_DRIVER_CONTROL "
+               "configuration_invalid=1 request_owner_binding=%u "
+               "request_owner_prerequisites=%u private_live_init=%u "
+               "private_live_init_prerequisites=%u\n",
+               v04_request_owner_binding_enabled ? 1u : 0u,
+               rtcore_v04_request_owner_binding_prerequisites_enabled()
+                   ? 1u
+                   : 0u,
+               v04_private_frontier_live_init_enabled ? 1u : 0u,
+               rtcore_v04_private_frontier_live_init_prerequisites_enabled()
+                   ? 1u
+                   : 0u);
         fflush(stdout);
         abort();
     }
