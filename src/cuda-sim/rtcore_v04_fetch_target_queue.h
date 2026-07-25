@@ -79,6 +79,7 @@ enum target_reference_source_kind : uint8_t {
   kTargetReferenceInvalid = 0,
   kTargetReferenceRootCompatibilityProxy = 1,
   kTargetReferenceSelectedFetchCompatibilityAdapter = 2,
+  kTargetReferenceInstanceBlasRootProducer = 3,
 };
 
 struct target_reference_v0 {
@@ -119,6 +120,16 @@ struct selected_fetch_reservation_input_v0 {
   uint8_t required_operand_mask;
   uint8_t forwarded_operand_mask;
   uint8_t reserved_zero[5];
+};
+
+struct instance_blas_root_reservation_input_v0 {
+  private_frontier::owner_binding_v0 owner;
+  typed_node::selected_child_fetch_work_item_v0 root_fetch;
+  typed_node::ray_policy_v0 forwarded_ray_policy;
+  uint32_t target_operation_seq;
+  uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
+  uint8_t reserved_zero[4];
 };
 
 struct recovery_reservation_input_v0 {
@@ -283,6 +294,11 @@ status_kind try_reserve(
 status_kind try_reserve_selected_fetch(
     engine_state_v0 *state,
     const selected_fetch_reservation_input_v0 &input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
+
+status_kind try_reserve_instance_blas_root(
+    engine_state_v0 *state,
+    const instance_blas_root_reservation_input_v0 &input,
     uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
 
 status_kind try_reserve_recovery(

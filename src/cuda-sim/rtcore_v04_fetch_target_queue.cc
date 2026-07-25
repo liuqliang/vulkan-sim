@@ -105,12 +105,21 @@ bool target_reference_shape_valid(
       !kind_matches_target) {
     return false;
   }
+  const bool instance_blas_root_source_valid =
+      reference.source_kind !=
+          kTargetReferenceInstanceBlasRootProducer ||
+      (target == kTargetNode &&
+       reference.payload_kind == typed_node::kInternalPayloadKind &&
+       reference.payload_byte_count == kNodeRawPayloadBytes &&
+       reference.level == typed_node::kLevelBlas &&
+       reference.proxy_delegated == 0);
   return reference.level >= typed_node::kLevelTlas &&
          reference.level <= typed_node::kLevelBlas &&
          reference.source_kind >= kTargetReferenceRootCompatibilityProxy &&
          reference.source_kind <=
-             kTargetReferenceSelectedFetchCompatibilityAdapter &&
+             kTargetReferenceInstanceBlasRootProducer &&
          reference.proxy_delegated <= 1 &&
+         instance_blas_root_source_valid &&
          bytes_are_zero(reference.reserved_zero,
                         sizeof(reference.reserved_zero)) &&
          (reference.payload_offset & uint64_t{0x3f}) == 0 &&
@@ -1206,11 +1215,16 @@ status_kind classify_selected_fetch(
   return kStatusOk;
 }
 
-status_kind try_reserve(
+static status_kind try_reserve_internal(
     engine_state_v0 *state, const reservation_input_v0 &input,
-    uint64_t reservation_cycle, reservation_receipt_v0 *receipt) {
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt,
+    bool allow_instance_blas_root_source) {
   if (state == NULL || receipt == NULL || state->initialized != 1 ||
-      !reservation_identity_valid(input)) {
+      !reservation_identity_valid(input) ||
+      (input.target_reference.source_kind ==
+           kTargetReferenceInstanceBlasRootProducer &&
+       (!allow_instance_blas_root_source ||
+        input.producer_commit_required != 1))) {
     return kStatusInvalidArgument;
   }
   *receipt = reservation_receipt_v0();
@@ -1240,6 +1254,13 @@ status_kind try_reserve(
       break;
   }
   return kStatusInvalidSelectedFetch;
+}
+
+status_kind try_reserve(
+    engine_state_v0 *state, const reservation_input_v0 &input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt) {
+  return try_reserve_internal(state, input, reservation_cycle, receipt,
+                              false);
 }
 
 status_kind try_reserve_selected_fetch(
@@ -1304,6 +1325,61 @@ status_kind try_reserve_selected_fetch(
   input.forwarded_operand_mask =
       selected_input.forwarded_operand_mask;
   return try_reserve(state, input, reservation_cycle, receipt);
+}
+
+status_kind try_reserve_instance_blas_root(
+    engine_state_v0 *state,
+    const instance_blas_root_reservation_input_v0 &root_input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt) {
+  const typed_node::compact_child_work_item_v0 &root =
+      root_input.root_fetch.child;
+  const typed_blas::as_decode_context_v0 &context =
+      root_input.root_fetch.decode_context;
+  if (state == NULL || receipt == NULL ||
+      root_input.target_operation_seq == 0 ||
+      root_input.producer_operation_seq == 0 ||
+      root_input.producer_commit_epoch == 0 ||
+      root_input.target_operation_seq ==
+          root_input.producer_operation_seq ||
+      root.payload_kind != typed_node::kInternalPayloadKind ||
+      root.payload_byte_count != kNodeRawPayloadBytes ||
+      root.child_slot != 0 ||
+      context.as_object.as_type != typed_blas::kAsTypeBlas ||
+      !bytes_are_zero(root_input.reserved_zero,
+                      sizeof(root_input.reserved_zero))) {
+    return kStatusInvalidArgument;
+  }
+
+  reservation_input_v0 input = {};
+  input.owner = root_input.owner;
+  input.target_reference.payload_offset = root.payload_offset;
+  input.target_reference.near_t_bits = root.near_t_bits;
+  input.target_reference.payload_byte_count = kNodeRawPayloadBytes;
+  input.target_reference.payload_kind = root.payload_kind;
+  input.target_reference.level = typed_node::kLevelBlas;
+  input.target_reference.source_kind =
+      kTargetReferenceInstanceBlasRootProducer;
+  input.target_reference.proxy_delegated = 0;
+  input.forwarded_ray_policy = root_input.forwarded_ray_policy;
+  if (context.device_base >
+      std::numeric_limits<uint64_t>::max() - root.payload_offset) {
+    return kStatusInvalidSelectedFetch;
+  }
+  input.raw_payload_base_address =
+      context.device_base + root.payload_offset;
+  input.target_operation_seq = root_input.target_operation_seq;
+  input.producer_operation_seq = root_input.producer_operation_seq;
+  input.producer_commit_epoch = root_input.producer_commit_epoch;
+  input.raw_payload_bytes = kNodeRawPayloadBytes;
+  input.target_kind = kTargetNode;
+  input.producer_commit_required = 1;
+  input.required_operand_mask = static_cast<uint8_t>(
+      kOperandTargetReferenceValid | kOperandRawPayloadValid |
+      kOperandMutableRayValid | kOperandRayPolicyValid |
+      kOperandDecodeContextValid | kOperandCommittedHitValid);
+  input.forwarded_operand_mask = kOperandRayPolicyValid;
+  return try_reserve_internal(state, input, reservation_cycle, receipt,
+                              true);
 }
 
 status_kind try_reserve_recovery(

@@ -243,6 +243,10 @@ status_kind decode_committed_hit(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     committed_hit_projection_v0 *committed_hit);
 
+status_kind capture_parent_frame(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    traversal_frame_projection_v0 *parent_frame);
+
 status_kind apply_parent_frame_push(
     shadow_slot_v0 *slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region,
@@ -259,6 +263,14 @@ status_kind apply_parent_state_restore(
     shadow_slot_v0 *slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region,
     const traversal_frame_projection_v0 &parent_frame,
+    access_plan_v0 *write_plan);
+
+status_kind apply_instance_enter_state(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const mutable_ray_state_v0 &object_ray,
+    const typed_blas::as_decode_context_v0 &blas_decode_context,
+    const instance_shader_projection_v0 &current_instance,
     access_plan_v0 *write_plan);
 
 status_kind apply_append_delta(

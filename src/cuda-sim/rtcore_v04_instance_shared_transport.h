@@ -78,7 +78,10 @@ struct ready_event_v0 {
   uint32_t target_operation_seq;
   uint32_t commit_epoch;
   uint8_t valid;
-  uint8_t reserved_zero[3];
+  uint8_t route_kind;
+  uint8_t reserved_zero[2];
+  typed_node::selected_child_fetch_work_item_v0 root_fetch;
+  typed_node::ray_policy_v0 ray_policy;
 };
 
 struct result_commit_entry_v0 {
@@ -93,7 +96,7 @@ struct result_commit_entry_v0 {
   uint8_t valid;
   uint8_t reserved_zero[2];
   instance_semantic::private_write_fragment_v0
-      writes[instance_semantic::kRestoreWriteFragmentCount];
+      writes[instance_semantic::kMaxWriteFragmentCount];
 };
 
 struct commit_tracker_v0 {
@@ -107,7 +110,10 @@ struct commit_tracker_v0 {
   uint16_t acknowledged_write_mask;
   uint8_t valid;
   uint8_t ready;
-  uint8_t reserved_zero[4];
+  uint8_t route_kind;
+  uint8_t reserved_zero[3];
+  typed_node::selected_child_fetch_work_item_v0 root_fetch;
+  typed_node::ray_policy_v0 ray_policy;
 };
 
 struct engine_state_v0 {
@@ -130,6 +136,17 @@ status_kind capture_restore_parent_result(
     const private_frontier::shadow_slot_v0 &canonical_slot,
     const typed_instance::restore_parent_input_v0 &input,
     const typed_instance::restore_parent_result_v0 &result,
+    capture_receipt_v0 *receipt);
+
+status_kind capture_enter_result(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    const typed_instance::enter_input_v0 &input,
+    const typed_instance::enter_result_v0 &result,
     capture_receipt_v0 *receipt);
 
 status_kind peek_write_offer(const engine_state_v0 &state,

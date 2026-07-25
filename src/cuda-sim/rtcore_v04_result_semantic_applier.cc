@@ -60,8 +60,11 @@ bool operation_packet_valid_internal(
              fetch_target::kTargetReferenceRootCompatibilityProxy &&
          reference.source_kind <=
              fetch_target::
-                 kTargetReferenceSelectedFetchCompatibilityAdapter &&
+                 kTargetReferenceInstanceBlasRootProducer &&
          reference.proxy_delegated <= 1 &&
+         (reference.source_kind !=
+              fetch_target::kTargetReferenceInstanceBlasRootProducer ||
+          reference.proxy_delegated == 0) &&
          bytes_are_zero(reference.reserved_zero,
                         sizeof(reference.reserved_zero)) &&
          (reference.payload_offset & uint64_t{0x3f}) == 0 &&

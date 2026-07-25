@@ -849,6 +849,41 @@ status_kind decode_committed_hit(
   return kStatusOk;
 }
 
+status_kind capture_parent_frame(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    traversal_frame_projection_v0 *parent_frame) {
+  if (parent_frame == NULL) return kStatusInvalidArgument;
+  root_private_operands_v0 operands = {};
+  frontier_metadata_image_v0 metadata = {};
+  instance_shader_projection_v0 current_instance = {};
+  status_kind status =
+      decode_root_private_operands(slot, owner, &operands);
+  if (status != kStatusOk) return status;
+  status = decode_metadata(slot, owner, &metadata);
+  if (status != kStatusOk) return status;
+  status = decode_current_instance(slot, owner, &current_instance);
+  if (status != kStatusOk) return status;
+  if (metadata.current_level != 0 ||
+      metadata.level_frame_depth != 0 ||
+      operands.decode_context.as_object.as_type !=
+          1) {
+    return kStatusInvalidMetadata;
+  }
+
+  traversal_frame_projection_v0 captured = {};
+  captured.ray = operands.mutable_ray;
+  captured.traversal_level = 0;
+  captured.frontier_marker.frontier_top = metadata.frontier_top;
+  captured.frontier_marker.frontier_count = metadata.frontier_count;
+  captured.frontier_marker.level_frame_depth =
+      metadata.level_frame_depth;
+  captured.current_decode_context = operands.decode_context;
+  captured.current_instance = current_instance;
+  if (!valid_parent_frame(captured)) return kStatusInvalidMetadata;
+  *parent_frame = captured;
+  return kStatusOk;
+}
+
 status_kind apply_parent_frame_push(
     shadow_slot_v0 *slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region,
@@ -975,6 +1010,72 @@ status_kind apply_parent_state_restore(
                               parent_frame.current_decode_context);
   encode_instance_projection_bytes(updated.bytes + kCurrentInstanceOffset,
                                    parent_frame.current_instance);
+  *slot = updated;
+  *write_plan = plan;
+  return kStatusOk;
+}
+
+status_kind apply_instance_enter_state(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const mutable_ray_state_v0 &object_ray,
+    const typed_blas::as_decode_context_v0 &blas_decode_context,
+    const instance_shader_projection_v0 &current_instance,
+    access_plan_v0 *write_plan) {
+  if (slot == NULL || write_plan == NULL ||
+      !bytes_are_zero(current_instance.reserved_zero,
+                      sizeof(current_instance.reserved_zero))) {
+    return kStatusInvalidArgument;
+  }
+  for (unsigned component = 0; component < 3; ++component) {
+    if (!std::isfinite(object_ray.origin[component]) ||
+        !std::isfinite(object_ray.direction[component]) ||
+        !std::isfinite(object_ray.inverse_direction[component])) {
+      return kStatusInvalidArgument;
+    }
+  }
+  if (!std::isfinite(object_ray.t_min) ||
+      !std::isfinite(object_ray.t_max) ||
+      object_ray.t_min > object_ray.t_max ||
+      blas_decode_context.bvh_format_profile_id != kLayoutProfileId ||
+      blas_decode_context.reserved_zero != 0 ||
+      blas_decode_context.as_object.object_id == 0 ||
+      blas_decode_context.as_object.generation == 0 ||
+      blas_decode_context.as_object.as_type != typed_blas::kAsTypeBlas ||
+      !bytes_are_zero(
+          blas_decode_context.as_object.reserved_zero,
+          sizeof(blas_decode_context.as_object.reserved_zero)) ||
+      blas_decode_context.device_base == 0 ||
+      blas_decode_context.device_range_bytes < 64) {
+    return kStatusInvalidArgument;
+  }
+  status_kind status = validate_slot_owner(*slot, owner);
+  if (status != kStatusOk) return status;
+
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldMutableRayState, kAccessWrite,
+      kMutableRayStateOffset, kMutableRayStateBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldAsDecodeContext, kAccessWrite,
+      kAsDecodeContextOffset, kAsDecodeContextBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldCurrentInstance, kAccessWrite,
+      kCurrentInstanceOffset, kCurrentInstanceBytes);
+  if (status != kStatusOk || plan.access_count != 6) {
+    return status == kStatusOk ? kStatusPlanCapacityExceeded : status;
+  }
+
+  shadow_slot_v0 updated = *slot;
+  encode_mutable_ray_bytes(updated.bytes + kMutableRayStateOffset,
+                           object_ray);
+  encode_decode_context_bytes(updated.bytes + kAsDecodeContextOffset,
+                              blas_decode_context);
+  encode_instance_projection_bytes(
+      updated.bytes + kCurrentInstanceOffset, current_instance);
   *slot = updated;
   *write_plan = plan;
   return kStatusOk;

@@ -238,6 +238,7 @@ extern "C" bool
 rtcore_v04_private_frontier_live_init_memory_issue_profile_active();
 extern "C" bool rtcore_v04_live_stack_pop_next_loop_gate_active();
 extern "C" bool rtcore_v04_live_instance_restore_parent_gate_active();
+extern "C" bool rtcore_v04_live_instance_enter_transition_gate_active();
 
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE = 0xfffffff0u;
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT = 4u;

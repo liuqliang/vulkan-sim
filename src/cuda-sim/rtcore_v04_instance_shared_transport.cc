@@ -131,7 +131,8 @@ status_kind prepare_shared_write(
     private_shared::shared_write_v0 *operation) {
   if (operation == NULL || offer.operation_seq == 0 ||
       offer.commit_epoch == 0 || offer.memory_operation_seq == 0 ||
-      offer.write_count != instance_semantic::kRestoreWriteFragmentCount ||
+      offer.write_count == 0 ||
+      offer.write_count > instance_semantic::kMaxWriteFragmentCount ||
       offer.memory_operation_seq > offer.write_count ||
       !bytes_are_zero(offer.reserved_zero,
                       sizeof(offer.reserved_zero)) ||
@@ -230,11 +231,93 @@ status_kind capture_restore_parent_result(
   tracker.target_operation_seq = target_operation_seq;
   tracker.commit_epoch = commit_epoch;
   tracker.expected_write_count = plan.write_fragment_count;
+  tracker.route_kind = plan.route_kind;
   tracker.valid = 1;
 
   state->result_entries[result_index] = entry;
   state->trackers[tracker_index] = tracker;
   ++state->next_issue_age;
+  receipt->producer_operation_seq = producer_operation_seq;
+  receipt->target_operation_seq = target_operation_seq;
+  receipt->commit_epoch = commit_epoch;
+  receipt->write_count = plan.write_fragment_count;
+  receipt->valid = 1;
+  return kStatusOk;
+}
+
+status_kind capture_enter_result(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    const typed_instance::enter_input_v0 &input,
+    const typed_instance::enter_result_v0 &result,
+    capture_receipt_v0 *receipt) {
+  if (state == NULL || receipt == NULL || state->initialized != 1 ||
+      producer_operation_seq == 0 || commit_epoch == 0 ||
+      target_operation_seq == 0 ||
+      target_operation_seq == producer_operation_seq) {
+    return kStatusInvalidArgument;
+  }
+  *receipt = capture_receipt_v0();
+  if (operation_live(*state, owner, producer_operation_seq)) {
+    return kStatusDuplicateOperation;
+  }
+  const int tracker_index = find_free_tracker(*state);
+  if (tracker_index < 0) return kStatusTrackerBackpressure;
+  if (state->next_issue_age == 0) return kStatusInvalidArgument;
+
+  instance_semantic::enter_commit_plan_v0 plan = {};
+  if (instance_semantic::prepare_enter(
+          owner, producer_operation_seq, region, canonical_slot,
+          input, result, &plan) != instance_semantic::kStatusOk ||
+      plan.valid != 1 ||
+      (plan.route_kind == instance_semantic::kRouteBlasRootNode &&
+       plan.write_fragment_count !=
+           instance_semantic::kEnterVisibleWriteFragmentCount) ||
+      (plan.route_kind == instance_semantic::kRouteStackPopNext &&
+       plan.write_fragment_count != 0)) {
+    return kStatusSemanticPlanRejected;
+  }
+
+  const int result_index =
+      plan.write_fragment_count == 0 ? -1 : find_free_result(*state);
+  if (plan.write_fragment_count != 0 && result_index < 0) {
+    return kStatusResultBackpressure;
+  }
+  if (result_index >= 0) {
+    result_commit_entry_v0 entry = {};
+    entry.owner = owner;
+    entry.issue_age = state->next_issue_age;
+    entry.operation_seq = producer_operation_seq;
+    entry.target_operation_seq = target_operation_seq;
+    entry.commit_epoch = commit_epoch;
+    entry.write_count = plan.write_fragment_count;
+    entry.tracker_slot = static_cast<uint8_t>(tracker_index);
+    entry.valid = 1;
+    for (unsigned index = 0; index < plan.write_fragment_count; ++index) {
+      entry.writes[index] = plan.write_fragments[index];
+    }
+    state->result_entries[result_index] = entry;
+  }
+
+  commit_tracker_v0 tracker = {};
+  tracker.owner = owner;
+  tracker.issue_age = state->next_issue_age;
+  tracker.operation_seq = producer_operation_seq;
+  tracker.target_operation_seq = target_operation_seq;
+  tracker.commit_epoch = commit_epoch;
+  tracker.expected_write_count = plan.write_fragment_count;
+  tracker.route_kind = plan.route_kind;
+  tracker.root_fetch = plan.root_fetch;
+  tracker.ray_policy = plan.ray_policy;
+  tracker.valid = 1;
+  tracker.ready = plan.write_fragment_count == 0 ? 1 : 0;
+  state->trackers[tracker_index] = tracker;
+  ++state->next_issue_age;
+
   receipt->producer_operation_seq = producer_operation_seq;
   receipt->target_operation_seq = target_operation_seq;
   receipt->commit_epoch = commit_epoch;
@@ -401,6 +484,9 @@ status_kind pop_ready_event(engine_state_v0 *state,
   event->producer_operation_seq = tracker.operation_seq;
   event->target_operation_seq = tracker.target_operation_seq;
   event->commit_epoch = tracker.commit_epoch;
+  event->route_kind = tracker.route_kind;
+  event->root_fetch = tracker.root_fetch;
+  event->ray_policy = tracker.ray_policy;
   event->valid = 1;
   state->trackers[selected] = commit_tracker_v0();
   return kStatusOk;

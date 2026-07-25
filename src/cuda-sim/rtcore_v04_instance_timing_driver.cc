@@ -100,6 +100,78 @@ bool restore_packet_valid(
                         sizeof(packet.reserved_zero));
 }
 
+bool enter_packet_valid(
+    const fetch_target::operation_packet_v0 &packet) {
+  return packet.valid == 1 &&
+         packet.target_kind == fetch_target::kTargetInstance &&
+         packet.operation_kind == fetch_target::kOperationFetchTarget &&
+         packet.reservation_id != 0 && packet.reservation_age != 0 &&
+         packet.target_operation_seq != 0 &&
+         packet.producer_operation_seq == 0 &&
+         packet.producer_commit_epoch == 0 &&
+         packet.slot_generation != 0 &&
+         packet.raw_payload_base_address != 0 &&
+         packet.raw_payload_bytes ==
+             fetch_target::kInstanceRawPayloadBytes &&
+         packet.target_reference.payload_kind ==
+             typed_node::kInstancePayloadKind &&
+         packet.target_reference.payload_byte_count ==
+             fetch_target::kInstanceRawPayloadBytes &&
+         packet.target_reference.level == typed_node::kLevelTlas &&
+         packet.target_reference.source_kind ==
+             fetch_target::
+                 kTargetReferenceSelectedFetchCompatibilityAdapter &&
+         packet.target_reference.proxy_delegated == 1 &&
+         bytes_are_zero(packet.reserved_zero,
+                        sizeof(packet.reserved_zero));
+}
+
+status_kind select_oldest_candidate(
+    const fetch_target::engine_state_v0 &target_state,
+    const result_sink_v0 *result_sink,
+    fetch_target::operation_packet_v0 *candidate) {
+  if (candidate == NULL) return kStatusInvalidArgument;
+  *candidate = fetch_target::operation_packet_v0();
+  fetch_target::operation_packet_v0 restore = {};
+  fetch_target::operation_packet_v0 enter = {};
+  const bool restore_enabled =
+      result_sink != NULL && result_sink->accept != NULL;
+  const bool enter_enabled =
+      result_sink != NULL && result_sink->prepare_enter != NULL &&
+      result_sink->accept_enter != NULL;
+  const fetch_target::status_kind restore_status =
+      restore_enabled
+          ? fetch_target::peek_ready_operation_kind(
+                target_state, fetch_target::kTargetInstance,
+                fetch_target::kOperationInstanceRestoreParent,
+                &restore)
+          : fetch_target::kStatusNoReadyOperation;
+  const fetch_target::status_kind enter_status =
+      enter_enabled
+          ? fetch_target::peek_ready_operation_kind(
+                target_state, fetch_target::kTargetInstance,
+                fetch_target::kOperationFetchTarget, &enter)
+          : fetch_target::kStatusNoReadyOperation;
+  if ((restore_status != fetch_target::kStatusOk &&
+       restore_status != fetch_target::kStatusNoReadyOperation) ||
+      (enter_status != fetch_target::kStatusOk &&
+       enter_status != fetch_target::kStatusNoReadyOperation)) {
+    return kStatusQueueInvariant;
+  }
+  if (restore_status == fetch_target::kStatusNoReadyOperation &&
+      enter_status == fetch_target::kStatusNoReadyOperation) {
+    return kStatusOk;
+  }
+  if (restore_status == fetch_target::kStatusOk &&
+      (enter_status != fetch_target::kStatusOk ||
+       restore.reservation_age < enter.reservation_age)) {
+    *candidate = restore;
+  } else {
+    *candidate = enter;
+  }
+  return kStatusOk;
+}
+
 int find_free_pipeline(const state_v0 &state) {
   for (unsigned index = 0; index < kMaxPipelineEntries; ++index) {
     if (state.pipeline[index].valid == 0) {
@@ -146,20 +218,41 @@ status_kind capture_matured(
        captured < state->config.instance_issue_width; ++captured) {
     const int index = find_oldest_matured(*state, service_cycle);
     if (index < 0) return kStatusOk;
-    if (result_sink == NULL || result_sink->accept == NULL) {
+    pipeline_entry_v0 &pipeline = state->pipeline[index];
+    const bool restore_operation =
+        pipeline.operation_packet.operation_kind ==
+        fetch_target::kOperationInstanceRestoreParent;
+    const bool enter_operation =
+        pipeline.operation_packet.operation_kind ==
+        fetch_target::kOperationFetchTarget;
+    if (result_sink == NULL ||
+        (restore_operation && result_sink->accept == NULL) ||
+        (enter_operation && result_sink->accept_enter == NULL)) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallResultSinkBackpressure);
       return kStatusOk;
     }
-    pipeline_entry_v0 &pipeline = state->pipeline[index];
-    typed_instance::restore_parent_input_v0 input = {};
-    input.profile_id = typed_instance::kGenRtDerivedProfileId;
-    input.operation_kind = typed_instance::kRestoreParent;
-    input.parent_frame = pipeline.operation_packet.parent_frame;
-    if (!restore_packet_valid(pipeline.operation_packet) ||
-        !typed_instance::validate_restore_parent_result(
-            input, pipeline.typed_result) ||
+    if ((!restore_operation && !enter_operation) ||
         pipeline.operator_invocation_count != 1) {
+      return kStatusInvalidOperationPacket;
+    }
+    if (restore_operation) {
+      typed_instance::restore_parent_input_v0 input = {};
+      input.profile_id = typed_instance::kGenRtDerivedProfileId;
+      input.operation_kind = typed_instance::kRestoreParent;
+      input.parent_frame = pipeline.operation_packet.parent_frame;
+      if (!restore_packet_valid(pipeline.operation_packet) ||
+          !typed_instance::validate_restore_parent_result(
+              input, pipeline.typed_result)) {
+        return kStatusInvalidOperationPacket;
+      }
+    } else if (!enter_packet_valid(pipeline.operation_packet) ||
+               pipeline.enter_result.status !=
+                   typed_instance::kStatusOk ||
+               (pipeline.enter_result.result_kind !=
+                    typed_instance::kEnterResultCulled &&
+                pipeline.enter_result.result_kind !=
+                    typed_instance::kEnterResultBlasRoot)) {
       return kStatusInvalidOperationPacket;
     }
     request_owner::lane_binding_v0 request_binding = {};
@@ -182,23 +275,45 @@ status_kind capture_matured(
       return kStatusTimingControlRejected;
     }
 
-    completed_restore_receipt_v0 receipt = {};
-    receipt.operation_packet = pipeline.operation_packet;
-    receipt.typed_result = pipeline.typed_result;
-    receipt.issue_age = pipeline.issue_age;
-    receipt.issue_cycle = pipeline.issue_cycle;
-    receipt.result_ready_cycle = pipeline.result_ready_cycle;
-    receipt.capture_cycle = service_cycle;
-    receipt.producer_operation_seq =
-        pipeline.operation_packet.target_operation_seq;
-    receipt.commit_epoch = commit_epoch;
-    receipt.target_operation_seq = target_operation_seq;
-    receipt.valid = 1;
-    receipt.operator_invocation_count =
-        pipeline.operator_invocation_count;
-    const result_sink_kind sink_status =
-        result_sink->accept(&receipt, &staged_timing,
-                            result_sink->context);
+    result_sink_kind sink_status = kResultSinkRejected;
+    completed_restore_receipt_v0 restore_receipt = {};
+    completed_enter_receipt_v0 enter_receipt = {};
+    if (restore_operation) {
+      restore_receipt.operation_packet = pipeline.operation_packet;
+      restore_receipt.typed_result = pipeline.typed_result;
+      restore_receipt.issue_age = pipeline.issue_age;
+      restore_receipt.issue_cycle = pipeline.issue_cycle;
+      restore_receipt.result_ready_cycle = pipeline.result_ready_cycle;
+      restore_receipt.capture_cycle = service_cycle;
+      restore_receipt.producer_operation_seq =
+          pipeline.operation_packet.target_operation_seq;
+      restore_receipt.commit_epoch = commit_epoch;
+      restore_receipt.target_operation_seq = target_operation_seq;
+      restore_receipt.valid = 1;
+      restore_receipt.operator_invocation_count =
+          pipeline.operator_invocation_count;
+      sink_status =
+          result_sink->accept(&restore_receipt, &staged_timing,
+                              result_sink->context);
+    } else {
+      enter_receipt.operation_packet = pipeline.operation_packet;
+      enter_receipt.typed_input = pipeline.enter_input;
+      enter_receipt.typed_result = pipeline.enter_result;
+      enter_receipt.issue_age = pipeline.issue_age;
+      enter_receipt.issue_cycle = pipeline.issue_cycle;
+      enter_receipt.result_ready_cycle = pipeline.result_ready_cycle;
+      enter_receipt.capture_cycle = service_cycle;
+      enter_receipt.producer_operation_seq =
+          pipeline.operation_packet.target_operation_seq;
+      enter_receipt.commit_epoch = commit_epoch;
+      enter_receipt.target_operation_seq = target_operation_seq;
+      enter_receipt.valid = 1;
+      enter_receipt.operator_invocation_count =
+          pipeline.operator_invocation_count;
+      sink_status =
+          result_sink->accept_enter(&enter_receipt, &staged_timing,
+                                    result_sink->context);
+    }
     if (sink_status == kResultSinkBackpressure) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallResultSinkBackpressure);
@@ -209,7 +324,15 @@ status_kind capture_matured(
     }
 
     *timing_state = staged_timing;
-    result->completed_restores[result->captured_result_count] = receipt;
+    if (restore_operation) {
+      result->completed_restores[result->captured_restore_count] =
+          restore_receipt;
+      ++result->captured_restore_count;
+    } else {
+      result->completed_enters[result->captured_enter_count] =
+          enter_receipt;
+      ++result->captured_enter_count;
+    }
     ++result->captured_result_count;
     pipeline = pipeline_entry_v0();
     ++state->total_results_captured;
@@ -220,22 +343,25 @@ status_kind capture_matured(
 status_kind issue_operations(
     state_v0 *state, fetch_target::engine_state_v0 *target_state,
     const timing_driver::state_v0 &timing_state, uint64_t service_cycle,
+    const result_sink_v0 *result_sink,
     cycle_result_v0 *result) {
   uint8_t issued_unit_mask = 0;
   for (unsigned issued = 0;
        issued < state->config.instance_issue_width; ++issued) {
     fetch_target::operation_packet_v0 candidate = {};
-    const fetch_target::status_kind peek_status =
-        fetch_target::peek_ready_operation_kind(
-            *target_state, fetch_target::kTargetInstance,
-            fetch_target::kOperationInstanceRestoreParent, &candidate);
-    if (peek_status == fetch_target::kStatusNoReadyOperation) {
-      return kStatusOk;
-    }
-    if (peek_status != fetch_target::kStatusOk) {
-      return kStatusQueueInvariant;
-    }
-    if (!restore_packet_valid(candidate)) {
+    const status_kind select_status =
+        select_oldest_candidate(*target_state, result_sink, &candidate);
+    if (select_status != kStatusOk) return select_status;
+    if (candidate.valid == 0) return kStatusOk;
+    const bool restore_operation =
+        candidate.operation_kind ==
+        fetch_target::kOperationInstanceRestoreParent;
+    const bool enter_operation =
+        candidate.operation_kind ==
+        fetch_target::kOperationFetchTarget;
+    if ((!restore_operation && !enter_operation) ||
+        (restore_operation && !restore_packet_valid(candidate)) ||
+        (enter_operation && !enter_packet_valid(candidate))) {
       return kStatusInvalidOperationPacket;
     }
     const int pipeline_index = find_free_pipeline(*state);
@@ -257,20 +383,42 @@ status_kind issue_operations(
       return kStatusOwnerMismatch;
     }
 
-    typed_instance::restore_parent_input_v0 input = {};
-    input.profile_id = typed_instance::kGenRtDerivedProfileId;
-    input.operation_kind = typed_instance::kRestoreParent;
-    input.parent_frame = candidate.parent_frame;
-    const typed_instance::restore_parent_result_v0 typed_result =
-        typed_instance::execute_restore_parent(input);
-    if (!typed_instance::validate_restore_parent_result(
-            input, typed_result)) {
-      return kStatusOperatorFailed;
+    typed_instance::restore_parent_result_v0 restore_result = {};
+    typed_instance::enter_input_v0 enter_input = {};
+    typed_instance::enter_result_v0 enter_result = {};
+    if (restore_operation) {
+      typed_instance::restore_parent_input_v0 input = {};
+      input.profile_id = typed_instance::kGenRtDerivedProfileId;
+      input.operation_kind = typed_instance::kRestoreParent;
+      input.parent_frame = candidate.parent_frame;
+      restore_result = typed_instance::execute_restore_parent(input);
+      if (!typed_instance::validate_restore_parent_result(
+              input, restore_result)) {
+        return kStatusOperatorFailed;
+      }
+    } else {
+      const result_sink_kind provider_status =
+          result_sink->prepare_enter(
+              &candidate, &enter_input, result_sink->context);
+      if (provider_status == kResultSinkBackpressure) {
+        result->stall_mask = static_cast<uint8_t>(
+            result->stall_mask | kStallResultSinkBackpressure);
+        return kStatusOk;
+      }
+      if (provider_status != kResultSinkAccepted) {
+        return kStatusResultSinkRejected;
+      }
+      enter_result = typed_instance::execute_enter(enter_input);
+      if (enter_result.status != typed_instance::kStatusOk) {
+        return kStatusOperatorFailed;
+      }
     }
     fetch_target::operation_packet_v0 popped = {};
     if (fetch_target::pop_ready_operation_kind(
             target_state, fetch_target::kTargetInstance,
-            fetch_target::kOperationInstanceRestoreParent, true,
+            static_cast<fetch_target::operation_kind>(
+                candidate.operation_kind),
+            true,
             &popped) != fetch_target::kStatusOk ||
         std::memcmp(&candidate, &popped, sizeof(candidate)) != 0) {
       return kStatusQueueInvariant;
@@ -279,7 +427,9 @@ status_kind issue_operations(
     pipeline_entry_v0 &pipeline = state->pipeline[pipeline_index];
     pipeline = pipeline_entry_v0();
     pipeline.operation_packet = popped;
-    pipeline.typed_result = typed_result;
+    pipeline.enter_input = enter_input;
+    pipeline.enter_result = enter_result;
+    pipeline.typed_result = restore_result;
     pipeline.issue_age = state->next_issue_age++;
     pipeline.issue_cycle = service_cycle;
     pipeline.result_ready_cycle =
@@ -339,7 +489,7 @@ status_kind service_cycle(
                       result_sink, result);
   if (status != kStatusOk) return status;
   status = issue_operations(state, target_state, *timing_state,
-                            service_cycle, result);
+                            service_cycle, result_sink, result);
   if (status != kStatusOk) return status;
   result->active_pipeline_entries = active_pipeline_count(*state);
   result->ready_instance_entries = fetch_target::ready_slot_count(

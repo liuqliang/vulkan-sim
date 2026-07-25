@@ -2412,6 +2412,22 @@ static bool rtcore_v04_live_instance_restore_parent_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_live_instance_enter_transition_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_LIVE_INSTANCE_ENTER_TRANSITION") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v04_live_instance_service_enabled()
+{
+    return rtcore_v04_live_instance_restore_parent_enabled() ||
+           rtcore_v04_live_instance_enter_transition_enabled();
+}
+
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled();
@@ -2457,11 +2473,19 @@ extern "C" bool rtcore_v04_live_instance_restore_parent_gate_active()
     return rtcore_v04_live_instance_restore_parent_enabled();
 }
 
+extern "C" bool rtcore_v04_live_instance_enter_transition_gate_active()
+{
+    return rtcore_v04_live_instance_enter_transition_enabled();
+}
+
 extern "C" bool rtcore_v04_root_node_input_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled() ||
            rtcore_v04_functional_node_driver_enabled();
 }
+
+static bool rtcore_v04_typed_instance_enter_transition_enabled();
+static bool rtcore_v04_typed_instance_enter_prerequisites_enabled();
 
 extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
 {
@@ -2485,7 +2509,11 @@ extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
            (!rtcore_v04_live_stack_empty_frontier_enabled() ||
             rtcore_v04_live_stack_pop_next_loop_enabled()) &&
            (!rtcore_v04_live_instance_restore_parent_enabled() ||
-            rtcore_v04_live_stack_empty_frontier_enabled());
+            rtcore_v04_live_stack_empty_frontier_enabled()) &&
+           (!rtcore_v04_live_instance_enter_transition_enabled() ||
+            (rtcore_v04_live_instance_restore_parent_enabled() &&
+             rtcore_v04_typed_instance_enter_transition_enabled() &&
+             rtcore_v04_typed_instance_enter_prerequisites_enabled()));
 }
 
 static void rtcore_v04_require_valid_node_driver_configuration()
@@ -2500,7 +2528,8 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             "live_node_timing=%u selected_fetch_transition=%u "
             "stack_operation_ingress=%u stack_push_commit=%u "
             "stack_spill_recovery=%u stack_pop_next_loop=%u "
-            "stack_empty_frontier=%u instance_restore_parent=%u\n",
+            "stack_empty_frontier=%u instance_restore_parent=%u "
+            "instance_enter_transition=%u\n",
             rtcore_v04_functional_node_driver_enabled() ? 1u : 0u,
             rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u,
             rtcore_v04_root_node_ready_packet_enabled() ? 1u : 0u,
@@ -2511,7 +2540,8 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             rtcore_v04_live_stack_spill_recovery_enabled() ? 1u : 0u,
             rtcore_v04_live_stack_pop_next_loop_enabled() ? 1u : 0u,
             rtcore_v04_live_stack_empty_frontier_enabled() ? 1u : 0u,
-            rtcore_v04_live_instance_restore_parent_enabled() ? 1u : 0u);
+            rtcore_v04_live_instance_restore_parent_enabled() ? 1u : 0u,
+            rtcore_v04_live_instance_enter_transition_enabled() ? 1u : 0u);
     fflush(stderr);
     abort();
 }
@@ -14585,7 +14615,7 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
     unsigned private_shared_runtime_acks_consumed = 0;
     unsigned private_shared_instance_runtime_acks_consumed = 0;
     if (rtcore_v04_live_stack_push_commit_enabled() ||
-        rtcore_v04_live_instance_restore_parent_enabled()) {
+        rtcore_v04_live_instance_service_enabled()) {
         rtcore_service_v04_private_shared_ack_dispatch(
             owner_hw_sid, service_cycle,
             &private_shared_init_acks_consumed,
@@ -15547,6 +15577,10 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
     const rtcore_memory_unit_request_snapshot &snapshot,
     rtcore::v04::private_shared::shared_write_v0 *operation)
 {
+    static_assert(
+        rtcore::v04::instance_semantic::kMaxWriteFragmentCount >=
+            rtcore::v04::stack_commit::kMaxWritesPerTransaction,
+        "private Shared runtime-write envelope must cover Stack writes");
     if (operation == NULL || !snapshot.valid ||
         snapshot.address_space != RTCORE_MEMORY_ADDRESS_SPACE_SHARED ||
         snapshot.operation != RTCORE_MEMORY_OPERATION_WRITE ||
@@ -15565,7 +15599,7 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
         snapshot.private_slot_id >= 256 ||
         snapshot.chunk_count == 0 ||
         snapshot.chunk_count >
-            rtcore::v04::stack_commit::kMaxWritesPerTransaction ||
+            rtcore::v04::instance_semantic::kMaxWriteFragmentCount ||
         snapshot.chunk_id >= snapshot.chunk_count ||
         (snapshot.access_kind ==
                  RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE
@@ -16220,9 +16254,14 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
             target::kTargetReferenceRootCompatibilityProxy) {
         return;
     }
+    const bool selected_fetch_source =
+        packet.target_reference.source_kind ==
+            target::kTargetReferenceSelectedFetchCompatibilityAdapter;
+    const bool instance_root_source =
+        packet.target_reference.source_kind ==
+            target::kTargetReferenceInstanceBlasRootProducer;
     if (status != target::kStatusOk || !packet.valid ||
-        packet.target_reference.source_kind !=
-            target::kTargetReferenceSelectedFetchCompatibilityAdapter ||
+        (!selected_fetch_source && !instance_root_source) ||
         packet.target_operation_seq !=
             reservation.target_operation_seq ||
         packet.producer_operation_seq !=
@@ -16245,6 +16284,7 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
            "request_identity=%u request_generation=%u "
            "target_operation_seq=%u reservation_id=%llu "
            "slot_generation=%u target_kind=%u "
+           "source_kind=%u producer_backed_instance_root=%u "
            "raw_global_complete=1 private_shared_complete=1 "
            "producer_gate_complete=1 required_field_mask_complete=1 "
            "ready_cycle=%llu\n",
@@ -16252,7 +16292,9 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
            packet.owner.lane_id, packet.owner.request_identity,
            packet.owner.generation, packet.target_operation_seq,
            (unsigned long long)packet.reservation_id,
-           packet.slot_generation, packet.target_kind, ready_cycle);
+           packet.slot_generation, packet.target_kind,
+           packet.target_reference.source_kind,
+           instance_root_source ? 1u : 0u, ready_cycle);
     fflush(stdout);
 }
 
@@ -16309,7 +16351,7 @@ extern "C" bool rtcore_accept_v04_target_private_shared_read(
     namespace target_shared = rtcore::v04::target_shared_memory;
     if (request == NULL ||
         (!rtcore_v04_root_node_ready_packet_enabled() &&
-         !rtcore_v04_live_instance_restore_parent_enabled())) {
+         !rtcore_v04_live_instance_service_enabled())) {
         return false;
     }
     std::map<unsigned, target::engine_state_v0>::iterator it =
@@ -17713,7 +17755,7 @@ static bool rtcore_v04_live_instance_owns_front_ack(
 {
     namespace instance_shared = rtcore::v04::instance_shared;
     namespace private_shared = rtcore::v04::private_shared;
-    if (!rtcore_v04_live_instance_restore_parent_enabled()) {
+    if (!rtcore_v04_live_instance_service_enabled()) {
         return false;
     }
     std::map<unsigned, instance_shared::engine_state_v0>::const_iterator
@@ -18072,6 +18114,87 @@ struct rtcore_v04_instance_result_sink_context {
     unsigned long long service_cycle;
 };
 
+static bool rtcore_v04_build_typed_instance_enter_input(
+    const uint8_t *raw_instance,
+    const rtcore_tlas_binding_snapshot &tlas_binding,
+    uint64_t instance_metadata_reference,
+    const rtcore::v04::typed_instance::mutable_ray_state_v0 &world_ray,
+    const rtcore::v04::typed_instance::ray_policy_v0 &policy,
+    rtcore::v04::typed_instance::enter_input_v0 *input,
+    rtcore_blas_binding_snapshot *captured_blas,
+    rtcore_v04_instance_blas_reference_snapshot *captured_relation,
+    const char **failure_reason);
+
+static rtcore::v04::instance_timing::result_sink_kind
+rtcore_prepare_v04_live_instance_enter_input(
+    const rtcore::v04::fetch_target::operation_packet_v0 *packet,
+    rtcore::v04::typed_instance::enter_input_v0 *input,
+    void *opaque_context)
+{
+    namespace fetch_target = rtcore::v04::fetch_target;
+    namespace instance_timing = rtcore::v04::instance_timing;
+    namespace typed_instance = rtcore::v04::typed_instance;
+    rtcore_v04_instance_result_sink_context *context =
+        static_cast<rtcore_v04_instance_result_sink_context *>(
+            opaque_context);
+    if (packet == NULL || input == NULL || context == NULL ||
+        !rtcore_v04_live_instance_enter_transition_enabled() ||
+        !rtcore_v04_typed_instance_enter_prerequisites_enabled() ||
+        packet->owner.owner_hw_sid != context->owner_hw_sid ||
+        packet->operation_kind != fetch_target::kOperationFetchTarget ||
+        packet->target_kind != fetch_target::kTargetInstance ||
+        packet->raw_payload_bytes !=
+            fetch_target::kInstanceRawPayloadBytes ||
+        packet->target_reference.payload_kind !=
+            rtcore::v04::typed_node::kInstancePayloadKind ||
+        packet->target_reference.level !=
+            rtcore::v04::typed_node::kLevelTlas ||
+        packet->private_operands.decode_context.as_object.as_type !=
+            typed_instance::kAsTypeTlas) {
+        return instance_timing::kResultSinkRejected;
+    }
+
+    const rtcore::v04::typed_blas::as_decode_context_v0 &packet_tlas =
+        packet->private_operands.decode_context;
+    rtcore_tlas_binding_snapshot tlas;
+    const char *failure = "unvalidated";
+    if (!g_rtcore_tlas_binding_registry.capture_by_object_id(
+            packet_tlas.as_object.object_id, &tlas, &failure) ||
+        !g_rtcore_tlas_binding_registry.validate(
+            tlas, packet->raw_payload_base_address,
+            fetch_target::kInstanceRawPayloadBytes, &failure) ||
+        tlas.generation != packet_tlas.as_object.generation ||
+        tlas.device_base_address != packet_tlas.device_base ||
+        tlas.size_bytes != packet_tlas.device_range_bytes ||
+        packet->target_reference.payload_offset >
+            tlas.size_bytes - fetch_target::kInstanceRawPayloadBytes ||
+        tlas.device_base_address >
+            UINT64_MAX - packet->target_reference.payload_offset ||
+        packet->raw_payload_base_address !=
+            tlas.device_base_address +
+                packet->target_reference.payload_offset) {
+        return instance_timing::kResultSinkRejected;
+    }
+
+    typed_instance::mutable_ray_state_v0 world_ray = {};
+    std::memcpy(&world_ray, &packet->private_operands.mutable_ray,
+                sizeof(world_ray));
+    typed_instance::ray_policy_v0 policy = {};
+    policy.ray_flags = packet->ray_policy.ray_flags;
+    policy.cull_mask = packet->ray_policy.cull_mask;
+    rtcore_blas_binding_snapshot blas;
+    rtcore_v04_instance_blas_reference_snapshot relation;
+    if (!rtcore_v04_build_typed_instance_enter_input(
+            packet->raw_payload, tlas,
+            packet->raw_payload_base_address, world_ray, policy, input,
+            &blas, &relation, &failure) ||
+        std::memcmp(&input->tlas_decode_context, &packet_tlas,
+                    sizeof(packet_tlas)) != 0) {
+        return instance_timing::kResultSinkRejected;
+    }
+    return instance_timing::kResultSinkAccepted;
+}
+
 static rtcore::v04::instance_timing::result_sink_kind
 rtcore_accept_v04_live_instance_result(
     rtcore::v04::instance_timing::completed_restore_receipt_v0 *restore,
@@ -18150,10 +18273,92 @@ rtcore_accept_v04_live_instance_result(
     return instance_timing::kResultSinkAccepted;
 }
 
+static rtcore::v04::instance_timing::result_sink_kind
+rtcore_accept_v04_live_instance_enter_result(
+    rtcore::v04::instance_timing::completed_enter_receipt_v0 *enter,
+    rtcore::v04::timing_driver::state_v0 *staged_timing_state,
+    void *opaque_context)
+{
+    namespace fetch_target = rtcore::v04::fetch_target;
+    namespace instance_shared = rtcore::v04::instance_shared;
+    namespace instance_timing = rtcore::v04::instance_timing;
+    namespace private_shared = rtcore::v04::private_shared;
+    rtcore_v04_instance_result_sink_context *context =
+        static_cast<rtcore_v04_instance_result_sink_context *>(
+            opaque_context);
+    if (enter == NULL || staged_timing_state == NULL ||
+        context == NULL || !enter->valid ||
+        enter->operation_packet.owner.owner_hw_sid !=
+            context->owner_hw_sid ||
+        enter->operation_packet.operation_kind !=
+            fetch_target::kOperationFetchTarget ||
+        enter->producer_operation_seq !=
+            enter->operation_packet.target_operation_seq ||
+        enter->commit_epoch == 0 ||
+        enter->target_operation_seq == 0 ||
+        enter->target_operation_seq ==
+            enter->producer_operation_seq ||
+        enter->operator_invocation_count != 1) {
+        return instance_timing::kResultSinkRejected;
+    }
+    const private_shared::lane_slot_state_v0 *lane_slot =
+        private_shared::find_live_lane(
+            rtcore_v04_private_shared_backing_for(
+                context->owner_hw_sid),
+            enter->operation_packet.owner);
+    if (lane_slot == NULL) {
+        return instance_timing::kResultSinkRejected;
+    }
+
+    instance_shared::engine_state_v0 staged_instance =
+        rtcore_v04_live_instance_shared_for(
+            context->owner_hw_sid);
+    instance_shared::capture_receipt_v0 receipt = {};
+    const instance_shared::status_kind capture_status =
+        instance_shared::capture_enter_result(
+            &staged_instance, enter->operation_packet.owner,
+            enter->producer_operation_seq, enter->commit_epoch,
+            enter->target_operation_seq,
+            rtcore_v04_private_region_for(context->owner_hw_sid),
+            lane_slot->canonical_slot, enter->typed_input,
+            enter->typed_result, &receipt);
+    if (capture_status ==
+            instance_shared::kStatusResultBackpressure ||
+        capture_status ==
+            instance_shared::kStatusTrackerBackpressure) {
+        return instance_timing::kResultSinkBackpressure;
+    }
+    const uint16_t expected_writes =
+        enter->typed_result.result_kind ==
+                rtcore::v04::typed_instance::kEnterResultCulled
+            ? 0
+            : rtcore::v04::instance_semantic::
+                  kEnterVisibleWriteFragmentCount;
+    if (capture_status != instance_shared::kStatusOk ||
+        !receipt.valid ||
+        receipt.producer_operation_seq !=
+            enter->producer_operation_seq ||
+        receipt.commit_epoch != enter->commit_epoch ||
+        receipt.target_operation_seq !=
+            enter->target_operation_seq ||
+        receipt.write_count != expected_writes) {
+        return instance_timing::kResultSinkRejected;
+    }
+    rtcore_v04_live_instance_shared_for(context->owner_hw_sid) =
+        staged_instance;
+    return instance_timing::kResultSinkAccepted;
+}
+
 static bool rtcore_service_v04_live_instance_ready(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
+    namespace fetch_target = rtcore::v04::fetch_target;
     namespace instance_shared = rtcore::v04::instance_shared;
+    namespace instance_semantic = rtcore::v04::instance_semantic;
+    namespace live_global = rtcore::v04::live_global_memory;
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace target_memory = rtcore::v04::target_memory;
+    namespace target_shared = rtcore::v04::target_shared_memory;
     namespace timing_driver = rtcore::v04::timing_driver;
     instance_shared::engine_state_v0 staged_instance =
         rtcore_v04_live_instance_shared_for(owner_hw_sid);
@@ -18170,23 +18375,155 @@ static bool rtcore_service_v04_live_instance_ready(
     if (ready_status != instance_shared::kStatusOk ||
         !event.valid ||
         !rtcore_v04_request_owner_from_private_owner(
-            event.owner, &owner) ||
-        timing_driver::mark_commit_successor_pending_recovery(
-            &staged_timing, owner,
-            event.producer_operation_seq, event.commit_epoch,
-            event.target_operation_seq,
-            timing_driver::kPendingRecoveryTargetStack,
-            timing_driver::kPendingRecoveryRouteStackPopNext) !=
-            timing_driver::kStatusOk ||
-        timing_driver::complete_result_commit(
-            &staged_timing, owner,
-            event.producer_operation_seq, event.commit_epoch) !=
-            timing_driver::kStatusOk) {
+            event.owner, &owner)) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
                 "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
                 owner_hw_sid, service_cycle,
                 instance_shared::status_name(ready_status));
+        fflush(stderr);
+        abort();
+    }
+
+    unsigned raw_read_count = 0;
+    unsigned private_read_count = 0;
+    const char *route_name = "invalid";
+    if (event.route_kind == instance_semantic::kRouteStackPopNext) {
+        if (timing_driver::mark_commit_successor_pending_recovery(
+                &staged_timing, owner,
+                event.producer_operation_seq, event.commit_epoch,
+                event.target_operation_seq,
+                timing_driver::kPendingRecoveryTargetStack,
+                timing_driver::kPendingRecoveryRouteStackPopNext) !=
+                timing_driver::kStatusOk ||
+            timing_driver::complete_result_commit(
+                &staged_timing, owner,
+                event.producer_operation_seq, event.commit_epoch) !=
+                timing_driver::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=stack_route_rejected\n",
+                    owner_hw_sid, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        route_name = "stack_pop_next";
+    } else if (event.route_kind ==
+               instance_semantic::kRouteBlasRootNode) {
+        fetch_target::engine_state_v0 staged_target =
+            rtcore_v04_live_target_engine_for(owner_hw_sid);
+        fetch_target::instance_blas_root_reservation_input_v0
+            reservation_input = {};
+        reservation_input.owner = event.owner;
+        reservation_input.root_fetch = event.root_fetch;
+        reservation_input.forwarded_ray_policy = event.ray_policy;
+        reservation_input.target_operation_seq =
+            event.target_operation_seq;
+        reservation_input.producer_operation_seq =
+            event.producer_operation_seq;
+        reservation_input.producer_commit_epoch =
+            event.commit_epoch;
+        fetch_target::reservation_receipt_v0 reservation = {};
+        const fetch_target::status_kind reserve_status =
+            fetch_target::try_reserve_instance_blas_root(
+                &staged_target, reservation_input, service_cycle,
+                &reservation);
+        if (reserve_status ==
+                fetch_target::kStatusCapacityBackpressure ||
+            reserve_status ==
+                fetch_target::kStatusReservationBudgetBackpressure) {
+            return false;
+        }
+
+        target_memory::raw_read_plan_v0 raw_plan = {};
+        live_global::request_plan_v0 raw_requests = {};
+        rtcore::v04::private_frontier::access_plan_v0
+            private_plan = {};
+        target_shared::request_plan_v0 private_requests = {};
+        if (reserve_status != fetch_target::kStatusOk ||
+            target_memory::prepare_raw_read_plan(
+                reservation, &raw_plan) != target_memory::kStatusOk ||
+            live_global::prepare_request_plan(
+                raw_plan, service_cycle, &raw_requests) !=
+                live_global::kStatusOk ||
+            private_shared::prepare_root_operand_read_plan(
+                rtcore_v04_private_shared_backing_for(owner_hw_sid),
+                event.owner, &private_plan) !=
+                private_shared::kStatusOk ||
+            target_shared::prepare_request_plan(
+                reservation, private_plan, service_cycle,
+                &private_requests) != target_shared::kStatusOk ||
+            raw_requests.request_count != 2 ||
+            private_requests.request_count != 7) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=blas_root_plan_rejected reserve=%s\n",
+                    owner_hw_sid, service_cycle,
+                    fetch_target::status_name(reserve_status));
+            fflush(stderr);
+            abort();
+        }
+        const unsigned transaction_count =
+            raw_requests.request_count +
+            private_requests.request_count;
+        for (unsigned index = 0; index < transaction_count; ++index) {
+            if (timing_driver::begin_memory_transaction(
+                    &staged_timing, owner,
+                    event.target_operation_seq) !=
+                timing_driver::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=blas_root_memory_begin_rejected\n",
+                        owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+        }
+        fetch_target::reservation_receipt_v0
+            producer_completed_reservation = {};
+        if (fetch_target::complete_producer_commit(
+                &staged_target, event.owner,
+                event.producer_operation_seq, event.commit_epoch,
+                &producer_completed_reservation) !=
+                fetch_target::kStatusOk ||
+            producer_completed_reservation.reservation_id !=
+                reservation.reservation_id ||
+            timing_driver::complete_result_commit(
+                &staged_timing, owner,
+                event.producer_operation_seq, event.commit_epoch) !=
+                timing_driver::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=blas_root_commit_rejected\n",
+                    owner_hw_sid, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        rtcore_v04_live_target_engine_for(owner_hw_sid) =
+            staged_target;
+        std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+            g_rtcore_memory_unit_request_snapshots_by_owner[
+                owner_hw_sid];
+        live_queue.insert(live_queue.end(), raw_requests.requests,
+                          raw_requests.requests +
+                              raw_requests.request_count);
+        live_queue.insert(live_queue.end(),
+                          private_requests.requests,
+                          private_requests.requests +
+                              private_requests.request_count);
+        raw_read_count = raw_requests.request_count;
+        private_read_count = private_requests.request_count;
+        route_name = "blas_root_node";
+    } else {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu "
+                "fault=unknown_route route=%u\n",
+                owner_hw_sid, service_cycle, event.route_kind);
         fflush(stderr);
         abort();
     }
@@ -18196,12 +18533,13 @@ static bool rtcore_service_v04_live_instance_ready(
     printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_COMMIT_READY "
            "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
            "producer_operation_seq=%u commit_epoch=%u "
-           "target_operation_seq=%u restore_writes_acked=1 "
-           "stack_pop_pending_recovery=1 service_cycle=%llu\n",
+           "target_operation_seq=%u route=%s "
+           "matching_writes_acked=1 raw_global_reads=%u "
+           "private_shared_reads=%u service_cycle=%llu\n",
            owner_hw_sid, event.owner.resident_warp_id,
            event.owner.lane_id, event.producer_operation_seq,
-           event.commit_epoch, event.target_operation_seq,
-           service_cycle);
+           event.commit_epoch, event.target_operation_seq, route_name,
+           raw_read_count, private_read_count, service_cycle);
     fflush(stdout);
     return true;
 }
@@ -18262,7 +18600,7 @@ static bool rtcore_service_v04_live_instance_timing(
     unsigned runtime_acks_already_consumed)
 {
     namespace instance_timing = rtcore::v04::instance_timing;
-    if (!rtcore_v04_live_instance_restore_parent_enabled()) {
+    if (!rtcore_v04_live_instance_service_enabled()) {
         return false;
     }
     if (!rtcore_v04_functional_node_driver_configuration_valid() ||
@@ -18283,7 +18621,18 @@ static bool rtcore_service_v04_live_instance_timing(
     sink_context.owner_hw_sid = owner_hw_sid;
     sink_context.service_cycle = service_cycle;
     instance_timing::result_sink_v0 sink = {};
-    sink.accept = rtcore_accept_v04_live_instance_result;
+    sink.accept =
+        rtcore_v04_live_instance_restore_parent_enabled()
+            ? rtcore_accept_v04_live_instance_result
+            : NULL;
+    sink.prepare_enter =
+        rtcore_v04_live_instance_enter_transition_enabled()
+            ? rtcore_prepare_v04_live_instance_enter_input
+            : NULL;
+    sink.accept_enter =
+        rtcore_v04_live_instance_enter_transition_enabled()
+            ? rtcore_accept_v04_live_instance_enter_result
+            : NULL;
     sink.context = &sink_context;
     instance_timing::cycle_result_v0 result = {};
     const instance_timing::status_kind status =
@@ -18302,7 +18651,7 @@ static bool rtcore_service_v04_live_instance_timing(
         abort();
     }
     for (unsigned captured_index = 0;
-         captured_index < result.captured_result_count;
+         captured_index < result.captured_restore_count;
          ++captured_index) {
         const instance_timing::completed_restore_receipt_v0 &restore =
             result.completed_restores[captured_index];
@@ -18329,19 +18678,50 @@ static bool rtcore_service_v04_live_instance_timing(
                    restore.issue_cycle));
         fflush(stdout);
     }
+    for (unsigned captured_index = 0;
+         captured_index < result.captured_enter_count;
+         ++captured_index) {
+        const instance_timing::completed_enter_receipt_v0 &enter =
+            result.completed_enters[captured_index];
+        printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_ENTER_CAPTURED "
+               "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+               "producer_operation_seq=%u commit_epoch=%u "
+               "target_operation_seq=%u operator_invocations=%u "
+               "result_kind=%u visible=%u issue_cycle=%llu "
+               "result_ready_cycle=%llu capture_cycle=%llu "
+               "modeled_instance_latency=%llu legacy_authority=0\n",
+               owner_hw_sid,
+               enter.operation_packet.owner.resident_warp_id,
+               enter.operation_packet.owner.lane_id,
+               enter.producer_operation_seq, enter.commit_epoch,
+               enter.target_operation_seq,
+               enter.operator_invocation_count,
+               enter.typed_result.result_kind,
+               enter.typed_result.mask_visible,
+               static_cast<unsigned long long>(enter.issue_cycle),
+               static_cast<unsigned long long>(
+                   enter.result_ready_cycle),
+               static_cast<unsigned long long>(enter.capture_cycle),
+               static_cast<unsigned long long>(
+                   enter.result_ready_cycle - enter.issue_cycle));
+        fflush(stdout);
+    }
     if (result.issued_count != 0 ||
         result.captured_result_count != 0 ||
         runtime_acks_already_consumed != 0 ||
         ready_progressed) {
         printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_TIMING_CYCLE "
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
-               "captured=%u acks=%u commit_ready=%u "
+               "captured=%u captured_restore=%u captured_enter=%u "
+               "acks=%u commit_ready=%u "
                "stall_mask=0x%02x pipeline_active=%u "
                "instance_ready=%u instance_units=2 "
                "instance_latency=4 instance_ii=1 "
                "instance_issue_width=2 result_capacity=16\n",
                owner_hw_sid, service_cycle, result.issued_count,
                result.captured_result_count,
+               result.captured_restore_count,
+               result.captured_enter_count,
                runtime_acks_already_consumed,
                ready_progressed ? 1u : 0u, result.stall_mask,
                result.active_pipeline_entries,
@@ -18364,7 +18744,7 @@ static unsigned rtcore_service_v04_live_runtime_write_arbitration(
     unsigned total = 0;
     for (; total < transfer_budget; ++total) {
         const bool instance_first =
-            rtcore_v04_live_instance_restore_parent_enabled() &&
+            rtcore_v04_live_instance_service_enabled() &&
             ((service_cycle + total) & 1u) != 0;
         unsigned stack_count = 0;
         unsigned instance_count = 0;
@@ -18382,7 +18762,7 @@ static unsigned rtcore_service_v04_live_runtime_write_arbitration(
                 rtcore_service_v04_live_stack_write_transfer(
                     owner_hw_sid, service_cycle, 1);
             if (stack_count == 0 &&
-                rtcore_v04_live_instance_restore_parent_enabled()) {
+                rtcore_v04_live_instance_service_enabled()) {
                 instance_count =
                     rtcore_service_v04_live_instance_write_transfer(
                         owner_hw_sid, service_cycle, 1);
@@ -20781,6 +21161,112 @@ static bool rtcore_v04_resolve_instance_blas_reference(
     return true;
 }
 
+static bool rtcore_v04_build_typed_instance_enter_input(
+    const uint8_t *raw_instance,
+    const rtcore_tlas_binding_snapshot &tlas_binding,
+    uint64_t instance_metadata_reference,
+    const rtcore::v04::typed_instance::mutable_ray_state_v0 &world_ray,
+    const rtcore::v04::typed_instance::ray_policy_v0 &policy,
+    rtcore::v04::typed_instance::enter_input_v0 *input,
+    rtcore_blas_binding_snapshot *captured_blas,
+    rtcore_v04_instance_blas_reference_snapshot *captured_relation,
+    const char **failure_reason)
+{
+    namespace typed_blas = rtcore::v04::typed_blas;
+    namespace typed_instance = rtcore::v04::typed_instance;
+    if (raw_instance == NULL || input == NULL ||
+        captured_blas == NULL || captured_relation == NULL ||
+        instance_metadata_reference == 0 ||
+        policy.reserved_zero[0] != 0 ||
+        policy.reserved_zero[1] != 0 ||
+        policy.reserved_zero[2] != 0) {
+        if (failure_reason != NULL) *failure_reason = "invalid_input";
+        return false;
+    }
+    rtcore_blas_binding_snapshot blas_binding;
+    rtcore_v04_instance_blas_reference_snapshot relation;
+    const char *reason = "unvalidated";
+    if (!rtcore_v04_resolve_instance_blas_reference(
+            tlas_binding, instance_metadata_reference, &blas_binding,
+            &relation, &reason)) {
+        if (failure_reason != NULL) *failure_reason = reason;
+        return false;
+    }
+
+    typed_instance::enter_input_v0 prepared = {};
+    prepared.profile_id = typed_instance::kGenRtDerivedProfileId;
+    prepared.current_level = typed_instance::kLevelTlas;
+    prepared.world_ray = world_ray;
+    prepared.policy = policy;
+    if (!typed_instance::make_raw_instance_payload(
+            raw_instance, &prepared.raw_instance)) {
+        if (failure_reason != NULL) *failure_reason = "raw_instance";
+        return false;
+    }
+    prepared.instance_blas_reference.tlas_object_id =
+        relation.tlas_object_id;
+    prepared.instance_blas_reference.instance_metadata_reference =
+        relation.instance_metadata_reference;
+    prepared.instance_blas_reference.blas_object_id =
+        relation.blas_object_id;
+    prepared.instance_blas_reference.tlas_generation =
+        relation.tlas_generation;
+    prepared.instance_blas_reference.tlas_build_generation =
+        relation.tlas_build_generation;
+    prepared.instance_blas_reference.blas_generation =
+        relation.blas_generation;
+    prepared.instance_blas_reference.valid = relation.valid ? 1 : 0;
+
+    prepared.tlas_decode_context.bvh_format_profile_id =
+        typed_instance::kGenRtDerivedProfileId;
+    prepared.tlas_decode_context.as_object.object_id =
+        tlas_binding.object_id;
+    prepared.tlas_decode_context.as_object.generation =
+        tlas_binding.generation;
+    prepared.tlas_decode_context.as_object.as_type =
+        typed_instance::kAsTypeTlas;
+    prepared.tlas_decode_context.device_base =
+        tlas_binding.device_base_address;
+    prepared.tlas_decode_context.device_range_bytes =
+        tlas_binding.size_bytes;
+
+    prepared.blas_decode_context.bvh_format_profile_id =
+        typed_instance::kGenRtDerivedProfileId;
+    prepared.blas_decode_context.as_object.object_id =
+        blas_binding.object_id;
+    prepared.blas_decode_context.as_object.generation =
+        blas_binding.generation;
+    prepared.blas_decode_context.as_object.as_type =
+        typed_instance::kAsTypeBlas;
+    prepared.blas_decode_context.device_base =
+        blas_binding.device_base_address;
+    prepared.blas_decode_context.device_range_bytes =
+        blas_binding.size_bytes;
+
+    prepared.blas_root_descriptor.object_id = blas_binding.object_id;
+    prepared.blas_root_descriptor.root_payload_offset =
+        blas_binding.root_payload_offset;
+    prepared.blas_root_descriptor.object_generation =
+        blas_binding.generation;
+    prepared.blas_root_descriptor.build_generation =
+        blas_binding.root_build_generation;
+    prepared.blas_root_descriptor.bvh_format_profile_id =
+        blas_binding.root_bvh_profile_id;
+    prepared.blas_root_descriptor.payload_format_id =
+        blas_binding.root_payload_format_id;
+    prepared.blas_root_descriptor.as_type = typed_blas::kAsTypeBlas;
+    prepared.blas_root_descriptor.root_payload_kind =
+        blas_binding.root_payload_kind;
+    prepared.blas_root_descriptor.valid =
+        blas_binding.root_descriptor_valid ? 1 : 0;
+
+    *input = prepared;
+    *captured_blas = blas_binding;
+    *captured_relation = relation;
+    if (failure_reason != NULL) *failure_reason = "none";
+    return true;
+}
+
 struct rtcore_v04_typed_instance_enter_stats {
     unsigned observations;
     unsigned culled;
@@ -20816,18 +21302,6 @@ static void rtcore_v04_observe_typed_instance_enter_transition(
 
     rtcore_blas_binding_snapshot blas_binding;
     rtcore_v04_instance_blas_reference_snapshot relation;
-    const char *capture_failure = "unvalidated";
-    if (!rtcore_v04_resolve_instance_blas_reference(
-            tlas_binding, instance_metadata_reference, &blas_binding,
-            &relation, &capture_failure)) {
-        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
-               "capture_failure=1 reason=%s metadata_ref=0x%llx\n",
-               capture_failure,
-               static_cast<unsigned long long>(
-                   instance_metadata_reference));
-        fflush(stdout);
-        abort();
-    }
     if ((cull_mask & ~0xffu) != 0) {
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
                "adapter_failure=1 reason=cull_mask_width cull_mask=0x%x\n",
@@ -20837,8 +21311,7 @@ static void rtcore_v04_observe_typed_instance_enter_transition(
     }
 
     typed_instance::enter_input_v0 input = {};
-    input.profile_id = typed_instance::kGenRtDerivedProfileId;
-    input.current_level = typed_instance::kLevelTlas;
+    typed_instance::mutable_ray_state_v0 typed_world_ray = {};
     const float world_origin[] = {world_ray.get_origin().x,
                                   world_ray.get_origin().y,
                                   world_ray.get_origin().z};
@@ -20847,67 +21320,28 @@ static void rtcore_v04_observe_typed_instance_enter_transition(
                                      world_ray.get_direction().z};
     if (!typed_instance::make_mutable_ray_state(
             world_origin, world_direction, world_ray.get_tmin(),
-            world_ray.get_tmax(), &input.world_ray) ||
-        !typed_instance::make_raw_instance_payload(
-            raw_instance, &input.raw_instance)) {
+            world_ray.get_tmax(), &typed_world_ray)) {
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
-               "adapter_failure=1 reason=ray_or_raw_payload\n");
+               "adapter_failure=1 reason=ray\n");
         fflush(stdout);
         abort();
     }
-    input.policy.ray_flags = ray_flags;
-    input.policy.cull_mask = static_cast<uint8_t>(cull_mask);
-
-    input.instance_blas_reference.tlas_object_id =
-        relation.tlas_object_id;
-    input.instance_blas_reference.instance_metadata_reference =
-        relation.instance_metadata_reference;
-    input.instance_blas_reference.blas_object_id = relation.blas_object_id;
-    input.instance_blas_reference.tlas_generation =
-        relation.tlas_generation;
-    input.instance_blas_reference.tlas_build_generation =
-        relation.tlas_build_generation;
-    input.instance_blas_reference.blas_generation =
-        relation.blas_generation;
-    input.instance_blas_reference.valid = relation.valid ? 1 : 0;
-
-    input.tlas_decode_context.bvh_format_profile_id =
-        typed_instance::kGenRtDerivedProfileId;
-    input.tlas_decode_context.as_object.object_id = tlas_binding.object_id;
-    input.tlas_decode_context.as_object.generation = tlas_binding.generation;
-    input.tlas_decode_context.as_object.as_type =
-        typed_instance::kAsTypeTlas;
-    input.tlas_decode_context.device_base =
-        tlas_binding.device_base_address;
-    input.tlas_decode_context.device_range_bytes = tlas_binding.size_bytes;
-
-    input.blas_decode_context.bvh_format_profile_id =
-        typed_instance::kGenRtDerivedProfileId;
-    input.blas_decode_context.as_object.object_id = blas_binding.object_id;
-    input.blas_decode_context.as_object.generation =
-        blas_binding.generation;
-    input.blas_decode_context.as_object.as_type =
-        typed_instance::kAsTypeBlas;
-    input.blas_decode_context.device_base =
-        blas_binding.device_base_address;
-    input.blas_decode_context.device_range_bytes = blas_binding.size_bytes;
-
-    input.blas_root_descriptor.object_id = blas_binding.object_id;
-    input.blas_root_descriptor.root_payload_offset =
-        blas_binding.root_payload_offset;
-    input.blas_root_descriptor.object_generation =
-        blas_binding.generation;
-    input.blas_root_descriptor.build_generation =
-        blas_binding.root_build_generation;
-    input.blas_root_descriptor.bvh_format_profile_id =
-        blas_binding.root_bvh_profile_id;
-    input.blas_root_descriptor.payload_format_id =
-        blas_binding.root_payload_format_id;
-    input.blas_root_descriptor.as_type = typed_blas::kAsTypeBlas;
-    input.blas_root_descriptor.root_payload_kind =
-        blas_binding.root_payload_kind;
-    input.blas_root_descriptor.valid =
-        blas_binding.root_descriptor_valid ? 1 : 0;
+    typed_instance::ray_policy_v0 policy = {};
+    policy.ray_flags = ray_flags;
+    policy.cull_mask = static_cast<uint8_t>(cull_mask);
+    const char *capture_failure = "unvalidated";
+    if (!rtcore_v04_build_typed_instance_enter_input(
+            raw_instance, tlas_binding, instance_metadata_reference,
+            typed_world_ray, policy, &input, &blas_binding, &relation,
+            &capture_failure)) {
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_INSTANCE_ENTER "
+               "capture_failure=1 reason=%s metadata_ref=0x%llx\n",
+               capture_failure,
+               static_cast<unsigned long long>(
+                   instance_metadata_reference));
+        fflush(stdout);
+        abort();
+    }
 
     const typed_instance::enter_result_v0 result =
         typed_instance::execute_enter(input);

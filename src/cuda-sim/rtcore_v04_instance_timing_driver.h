@@ -48,6 +48,8 @@ struct unit_state_v0 {
 
 struct pipeline_entry_v0 {
   fetch_target::operation_packet_v0 operation_packet;
+  typed_instance::enter_input_v0 enter_input;
+  typed_instance::enter_result_v0 enter_result;
   typed_instance::restore_parent_result_v0 typed_result;
   uint64_t issue_age;
   uint64_t issue_cycle;
@@ -56,6 +58,22 @@ struct pipeline_entry_v0 {
   uint8_t unit_index;
   uint8_t operator_invocation_count;
   uint8_t reserved_zero[5];
+};
+
+struct completed_enter_receipt_v0 {
+  fetch_target::operation_packet_v0 operation_packet;
+  typed_instance::enter_input_v0 typed_input;
+  typed_instance::enter_result_v0 typed_result;
+  uint64_t issue_age;
+  uint64_t issue_cycle;
+  uint64_t result_ready_cycle;
+  uint64_t capture_cycle;
+  uint32_t producer_operation_seq;
+  uint32_t commit_epoch;
+  uint32_t target_operation_seq;
+  uint8_t valid;
+  uint8_t operator_invocation_count;
+  uint8_t reserved_zero[6];
 };
 
 struct completed_restore_receipt_v0 {
@@ -83,19 +101,32 @@ typedef result_sink_kind (*result_sink_accept_fn)(
     completed_restore_receipt_v0 *restore,
     timing_driver::state_v0 *staged_timing_state, void *context);
 
+typedef result_sink_kind (*enter_input_prepare_fn)(
+    const fetch_target::operation_packet_v0 *operation_packet,
+    typed_instance::enter_input_v0 *input, void *context);
+
+typedef result_sink_kind (*enter_result_sink_accept_fn)(
+    completed_enter_receipt_v0 *enter,
+    timing_driver::state_v0 *staged_timing_state, void *context);
+
 struct result_sink_v0 {
   result_sink_accept_fn accept;
+  enter_input_prepare_fn prepare_enter;
+  enter_result_sink_accept_fn accept_enter;
   void *context;
 };
 
 struct cycle_result_v0 {
   completed_restore_receipt_v0 completed_restores[kMaxInstanceUnits];
+  completed_enter_receipt_v0 completed_enters[kMaxInstanceUnits];
   uint8_t issued_count;
   uint8_t captured_result_count;
+  uint8_t captured_restore_count;
+  uint8_t captured_enter_count;
   uint8_t stall_mask;
   uint8_t active_pipeline_entries;
   uint8_t ready_instance_entries;
-  uint8_t reserved_zero[3];
+  uint8_t reserved_zero[1];
 };
 
 struct state_v0 {
