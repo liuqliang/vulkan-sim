@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "rtcore_v04_instance_result_semantic_applier.h"
+#include "rtcore_v04_primitive_result_semantic_applier.h"
 #include "rtcore_v04_result_semantic_applier.h"
 #include "rtcore_v04_stack_operation_queue.h"
 #include "rtcore_v04_stack_result_semantic_applier.h"
@@ -31,6 +32,7 @@ enum semantic_plan_kind : uint8_t {
   kSemanticPlanStackTerminalMiss = 6,
   kSemanticPlanInstanceEnter = 7,
   kSemanticPlanInstanceRestore = 8,
+  kSemanticPlanPrimitive = 9,
 };
 
 struct node_execution_v0 {
@@ -78,6 +80,17 @@ struct instance_restore_execution_v0 {
   uint8_t reserved_zero[5];
 };
 
+struct primitive_execution_v0 {
+  fetch_target::operation_packet_v0 operation_packet;
+  typed_primitive::route_input_v0 operator_input;
+  typed_primitive::route_result_v0 operator_result;
+  primitive_semantic::semantic_plan_v0 semantic_plan;
+  uint8_t valid;
+  uint8_t operator_invocation_count;
+  uint8_t semantic_plan_kind;
+  uint8_t reserved_zero[5];
+};
+
 bool mode_selection_valid(bool functional_only_enabled,
                           bool timing_driver_enabled,
                           bool root_packet_enabled,
@@ -114,6 +127,13 @@ status_kind execute_one_instance_restore(
     const private_frontier::region_binding_v0 &region,
     const private_frontier::shadow_slot_v0 &canonical_slot,
     instance_restore_execution_v0 *execution);
+
+status_kind execute_one_primitive(
+    const fetch_target::operation_packet_v0 &packet,
+    const typed_primitive::route_input_v0 &input,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    primitive_execution_v0 *execution);
 
 const char *status_name(status_kind status);
 
