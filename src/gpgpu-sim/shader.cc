@@ -2761,7 +2761,9 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
         rtcore::v04::live_global_memory::materialize_functional_response(
             snapshot, global_memory, response_address, response_payload,
             sizeof(response_payload));
-    if (materialize_status !=
+    if (snapshot.access_kind !=
+            RTCORE_MEMORY_ACCESS_TARGET_RAW_READ ||
+        materialize_status !=
             rtcore::v04::live_global_memory::kStatusOk ||
         !rtcore_accept_v04_target_raw_read_response(
             &snapshot, response_payload, sizeof(response_payload),
@@ -3413,6 +3415,20 @@ static void rtcore_consume_memory_unit_request_offer_from_rt_unit(
             RTCORE_MEMORY_DESTINATION_STACK_QUEUE_FILL &&
         result.memory_unit_snapshot.access_kind ==
             RTCORE_MEMORY_ACCESS_STACK_PRIVATE_READ;
+    const bool stack_spill_recovery_read =
+        result.memory_unit_snapshot.operation ==
+            RTCORE_MEMORY_OPERATION_READ &&
+        result.memory_unit_snapshot.destination ==
+            RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
+        result.memory_unit_snapshot.access_kind ==
+            RTCORE_MEMORY_ACCESS_STACK_SPILL_RECOVERY_READ;
+    const bool handoff_ray_policy_read =
+        result.memory_unit_snapshot.operation ==
+            RTCORE_MEMORY_OPERATION_READ &&
+        result.memory_unit_snapshot.destination ==
+            RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
+        result.memory_unit_snapshot.access_kind ==
+            RTCORE_MEMORY_ACCESS_HANDOFF_RAY_POLICY_READ;
     const bool accepted =
         private_shared_write
             ? rtcore_accept_v04_private_shared_request(
@@ -3422,6 +3438,12 @@ static void rtcore_consume_memory_unit_request_offer_from_rt_unit(
                    &result.memory_unit_snapshot, result.cycle)) ||
                   (stack_private_read &&
                    rtcore_accept_v04_stack_private_shared_read(
+                       &result.memory_unit_snapshot, result.cycle)) ||
+                  (stack_spill_recovery_read &&
+                   rtcore_accept_v04_stack_spill_recovery_shared_read(
+                       &result.memory_unit_snapshot, result.cycle)) ||
+                  (handoff_ray_policy_read &&
+                   rtcore_accept_v04_handoff_ray_policy_shared_read(
                        &result.memory_unit_snapshot, result.cycle));
     if (!accepted) {
       fprintf(stderr,

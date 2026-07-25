@@ -17,6 +17,7 @@ static const uint16_t kNodeRawPayloadBytes = 64;
 static const uint16_t kPrimitiveRawPayloadBytes = 64;
 static const uint16_t kInstanceRawPayloadBytes = 128;
 static const uint16_t kMaxRawPayloadBytes = kInstanceRawPayloadBytes;
+static const uint8_t kStackSpillRecoveryChunks = 5;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -34,6 +35,10 @@ enum status_kind : uint8_t {
   kStatusDuplicateRawChunk,
   kStatusPrivateOperandShapeMismatch,
   kStatusDuplicatePrivateChunk,
+  kStatusRecoveryDescriptorShapeMismatch,
+  kStatusDuplicateRecoveryDescriptorChunk,
+  kStatusRecoveryDescriptorKindMismatch,
+  kStatusDuplicateRecoveryRayPolicy,
   kStatusUnknownProducerCommit,
   kStatusDuplicateProducerCommit,
   kStatusReadyFifoInvariant,
@@ -110,6 +115,14 @@ struct selected_fetch_reservation_input_v0 {
   uint8_t reserved_zero[5];
 };
 
+struct recovery_reservation_input_v0 {
+  private_frontier::owner_binding_v0 owner;
+  uint32_t target_operation_seq;
+  uint8_t target_kind;
+  uint8_t required_operand_mask;
+  uint8_t reserved_zero[6];
+};
+
 struct config_v0 {
   uint8_t node_capacity;
   uint8_t node_reservation_width;
@@ -180,11 +193,17 @@ struct slot_metadata_v0 {
   uint8_t producer_commit_required;
   uint8_t producer_commit_complete;
   uint8_t ready_enqueued;
+  uint8_t recovery_descriptor_pending;
+  uint8_t pending_recovery_descriptor_response_count;
+  uint8_t received_recovery_descriptor_chunk_mask;
+  uint8_t reserved_zero0;
   target_reference_v0 target_reference;
   typed_node::ray_policy_v0 ray_policy;
   uint8_t mutable_ray_bytes[private_frontier::kMutableRayStateBytes];
   uint8_t decode_context_bytes[private_frontier::kAsDecodeContextBytes];
   uint8_t committed_hit_bytes[private_frontier::kCommittedHitBytes];
+  uint8_t recovery_descriptor_bytes[
+      private_frontier::kStackTransitionSpillBytes];
 };
 
 struct node_slot_v0 {
@@ -248,6 +267,11 @@ status_kind try_reserve_selected_fetch(
     const selected_fetch_reservation_input_v0 &input,
     uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
 
+status_kind try_reserve_recovery(
+    engine_state_v0 *state,
+    const recovery_reservation_input_v0 &input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
+
 status_kind try_reserve_prefill(
     engine_state_v0 *state,
     const stack_commit::forwarding_decision_input_v0 &decision,
@@ -270,6 +294,20 @@ status_kind fill_private_operand_chunk(
     uint8_t chunk_count, uint8_t field_kind, uint16_t slot_chunk_offset,
     uint32_t byte_mask,
     const uint8_t payload[private_frontier::kSharedAccessChunkBytes]);
+
+status_kind fill_recovery_descriptor_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes],
+    reservation_receipt_v0 *updated_reservation,
+    typed_node::selected_child_fetch_work_item_v0 *selected_fetch);
+
+status_kind fill_recovery_ray_policy(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation,
+    const typed_node::ray_policy_v0 &ray_policy);
 
 status_kind complete_producer_commit(
     engine_state_v0 *state,

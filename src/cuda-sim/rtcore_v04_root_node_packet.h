@@ -3,6 +3,7 @@
 
 #include <cstdint>
 
+#include "rtcore_abi_v04_generated.h"
 #include "rtcore_v04_fetch_target_queue.h"
 
 class ptx_instruction;
@@ -37,6 +38,47 @@ struct warp_input_v0 {
   uint32_t active_mask;
   lane_input_v0 lanes[kLaneCapacity];
 };
+
+enum shared_handoff_window_status_kind : uint8_t {
+  kSharedHandoffWindowOk = 0,
+  kSharedHandoffWindowInvalidInput,
+  kSharedHandoffWindowMisaligned,
+  kSharedHandoffWindowDivergent,
+  kSharedHandoffWindowAddressOverflow,
+};
+
+inline shared_handoff_window_status_kind validate_shared_handoff_window(
+    const warp_input_v0 &input, uint64_t *shared_window_base) {
+  if (shared_window_base == NULL || !input.valid ||
+      input.active_mask == 0) {
+    return kSharedHandoffWindowInvalidInput;
+  }
+  uint64_t common_base = 0;
+  for (unsigned lane = 0; lane < kLaneCapacity; ++lane) {
+    if ((input.active_mask & (uint32_t{1} << lane)) == 0) continue;
+    const lane_input_v0 &lane_input = input.lanes[lane];
+    if (!lane_input.valid || lane_input.lane_id != lane ||
+        lane_input.handoff_window_base == 0) {
+      return kSharedHandoffWindowInvalidInput;
+    }
+    if ((lane_input.handoff_window_base &
+         (abi_v04::kLaneSlotBytes - 1)) != 0) {
+      return kSharedHandoffWindowMisaligned;
+    }
+    if (common_base == 0) {
+      common_base = lane_input.handoff_window_base;
+    } else if (common_base != lane_input.handoff_window_base) {
+      return kSharedHandoffWindowDivergent;
+    }
+    const uint64_t lane_offset =
+        static_cast<uint64_t>(lane) * abi_v04::kLaneSlotBytes;
+    if (lane_input.handoff_window_base > UINT64_MAX - lane_offset) {
+      return kSharedHandoffWindowAddressOverflow;
+    }
+  }
+  *shared_window_base = common_base;
+  return kSharedHandoffWindowOk;
+}
 
 }  // namespace root_node_packet
 }  // namespace v04

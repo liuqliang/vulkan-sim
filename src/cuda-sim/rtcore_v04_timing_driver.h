@@ -33,6 +33,18 @@ enum status_kind : uint8_t {
   kStatusRetireNotQuiescent,
 };
 
+enum pending_recovery_target_kind : uint8_t {
+  kPendingRecoveryTargetInvalid = 0,
+  kPendingRecoveryTargetNode = 1,
+  kPendingRecoveryTargetPrimitive = 2,
+  kPendingRecoveryTargetInstance = 3,
+};
+
+enum pending_recovery_route_kind : uint8_t {
+  kPendingRecoveryRouteInvalid = 0,
+  kPendingRecoveryRouteStackSelectedFetch = 1,
+};
+
 struct result_commit_control_state_v0 {
   uint32_t next_commit_epoch;
 };
@@ -46,8 +58,22 @@ struct lane_control_state_v0 {
   uint32_t live_commit_producer_operation_seq;
   uint32_t live_commit_epoch;
   uint32_t pending_recovery_operation_seq;
+  uint8_t pending_recovery_target_kind;
+  uint8_t pending_recovery_route_kind;
+  uint8_t pending_recovery_reservation_retained;
+  uint8_t reserved_zero1;
   uint16_t live_memory_transaction_count;
   uint16_t live_commit_memory_transaction_count;
+};
+
+struct pending_recovery_snapshot_v0 {
+  request_owner::lane_binding_v0 owner;
+  uint32_t target_operation_seq;
+  uint16_t request_control_slot;
+  uint8_t target_kind;
+  uint8_t route_kind;
+  uint8_t valid;
+  uint8_t reserved_zero[3];
 };
 
 struct state_v0 {
@@ -120,7 +146,19 @@ status_kind allocate_commit_successor_operation(
 status_kind mark_commit_successor_pending_recovery(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
-    uint32_t target_operation_seq);
+    uint32_t target_operation_seq, uint8_t target_kind,
+    uint8_t route_kind);
+status_kind complete_pending_recovery_request_retention(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t target_operation_seq, uint8_t target_kind,
+    uint8_t route_kind);
+status_kind mark_pending_recovery_reservation_retained(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t target_operation_seq, uint8_t target_kind,
+    uint8_t route_kind);
+status_kind find_pending_recovery(
+    const state_v0 &state, uint16_t first_request_control_slot,
+    pending_recovery_snapshot_v0 *snapshot);
 status_kind begin_memory_transaction(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t operation_seq);

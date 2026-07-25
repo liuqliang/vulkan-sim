@@ -237,6 +237,10 @@ status_kind apply_stack_selected_fetch_spill(
     const typed_stack::push_result_v0 &result,
     access_plan_v0 *write_plan);
 
+status_kind build_stack_selected_fetch_spill_read_plan(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region, access_plan_v0 *read_plan);
+
 status_kind decode_stack_selected_fetch_spill(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     typed_node::selected_child_fetch_work_item_v0 *selected_fetch);

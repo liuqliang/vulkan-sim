@@ -155,6 +155,35 @@ bool reservation_identity_valid(const reservation_input_v0 &input) {
              input.raw_payload_bytes, input.raw_payload_base_address);
 }
 
+uint16_t raw_payload_bytes_for_target(target_kind target) {
+  switch (target) {
+    case kTargetNode:
+      return kNodeRawPayloadBytes;
+    case kTargetPrimitive:
+      return kPrimitiveRawPayloadBytes;
+    case kTargetInstance:
+      return kInstanceRawPayloadBytes;
+    case kTargetInvalid:
+      return 0;
+  }
+  return 0;
+}
+
+bool recovery_reservation_identity_valid(
+    const recovery_reservation_input_v0 &input) {
+  const uint8_t complete_operand_mask = static_cast<uint8_t>(
+      kOperandTargetReferenceValid | kOperandRawPayloadValid |
+      kOperandMutableRayValid | kOperandRayPolicyValid |
+      kOperandDecodeContextValid | kOperandCommittedHitValid);
+  return valid_owner(input.owner) &&
+         input.target_operation_seq != 0 &&
+         input.target_kind >= kTargetNode &&
+         input.target_kind <= kTargetInstance &&
+         input.required_operand_mask == complete_operand_mask &&
+         bytes_are_zero(input.reserved_zero,
+                        sizeof(input.reserved_zero));
+}
+
 template <typename Slot>
 int find_free_slot(const Slot *slots, uint8_t capacity) {
   for (unsigned index = 0; index < capacity; ++index) {
@@ -266,14 +295,65 @@ status_kind reserve_in_queue(
   return kStatusOk;
 }
 
+template <typename Slot>
+status_kind reserve_recovery_in_queue(
+    Slot *slots, uint8_t capacity, reservation_window_v0 *window,
+    uint8_t reservation_width, engine_state_v0 *state,
+    const recovery_reservation_input_v0 &input, target_kind target,
+    uint64_t cycle, reservation_receipt_v0 *receipt) {
+  if (!reservation_budget_available(*window, reservation_width, cycle)) {
+    return kStatusReservationBudgetBackpressure;
+  }
+  const int slot_index = find_free_slot(slots, capacity);
+  if (slot_index < 0) return kStatusCapacityBackpressure;
+  if (state->next_reservation_id == 0 ||
+      state->next_reservation_age == 0 ||
+      slots[slot_index].metadata.slot_generation ==
+          std::numeric_limits<uint32_t>::max()) {
+    return kStatusReservationSequenceExhausted;
+  }
+
+  const uint16_t raw_payload_bytes =
+      raw_payload_bytes_for_target(target);
+  if (raw_payload_bytes == 0) return kStatusInvalidSelectedFetch;
+  const uint32_t slot_generation =
+      slots[slot_index].metadata.slot_generation + 1;
+  std::memset(&slots[slot_index], 0, sizeof(slots[slot_index]));
+  slot_metadata_v0 &metadata = slots[slot_index].metadata;
+  metadata.owner = input.owner;
+  metadata.reservation_id = state->next_reservation_id;
+  metadata.reservation_age = state->next_reservation_age;
+  metadata.target_operation_seq = input.target_operation_seq;
+  metadata.slot_generation = slot_generation;
+  metadata.raw_payload_bytes = raw_payload_bytes;
+  metadata.target_kind = target;
+  metadata.state = kSlotReservedWaitDataOrCommit;
+  metadata.required_operand_mask = input.required_operand_mask;
+  metadata.expected_raw_chunk_count = static_cast<uint8_t>(
+      raw_payload_bytes / private_frontier::kSharedAccessChunkBytes);
+  metadata.pending_raw_response_count =
+      metadata.expected_raw_chunk_count;
+  metadata.expected_private_chunk_count = 7;
+  metadata.pending_private_response_count =
+      metadata.expected_private_chunk_count;
+  metadata.producer_commit_complete = 1;
+  metadata.recovery_descriptor_pending = 1;
+  metadata.pending_recovery_descriptor_response_count =
+      kStackSpillRecoveryChunks;
+
+  consume_reservation_budget(window, cycle);
+  build_receipt(metadata, static_cast<uint8_t>(slot_index), receipt);
+  ++state->next_reservation_id;
+  ++state->next_reservation_age;
+  return kStatusOk;
+}
+
 bool receipt_matches(const slot_metadata_v0 &metadata,
                      const reservation_receipt_v0 &receipt) {
   return receipt.valid == 1 &&
          metadata.state != kSlotFree &&
          metadata.reservation_id == receipt.reservation_id &&
          metadata.reservation_age == receipt.reservation_age &&
-         metadata.raw_payload_base_address ==
-             receipt.raw_payload_base_address &&
          metadata.target_operation_seq == receipt.target_operation_seq &&
          metadata.producer_operation_seq ==
              receipt.producer_operation_seq &&
@@ -337,6 +417,7 @@ status_kind maybe_make_ready(slot_metadata_v0 *metadata,
   const bool required_field_mask_complete =
       metadata->valid_operand_mask == metadata->required_operand_mask;
   if (metadata->state != kSlotReservedWaitDataOrCommit ||
+      metadata->recovery_descriptor_pending != 0 ||
       !raw_global_operands_complete ||
       !private_shared_operands_complete ||
       !producer_commit_gate_complete ||
@@ -364,6 +445,10 @@ status_kind fill_in_queue(Slot *slots, uint8_t capacity,
   if (!receipt_matches(slot.metadata, reservation)) {
     return slot.metadata.state == kSlotFree ? kStatusUnknownReservation
                                             : kStatusStaleReservation;
+  }
+  if (slot.metadata.raw_payload_base_address !=
+      reservation.raw_payload_base_address) {
+    return kStatusStaleReservation;
   }
   if (raw_payload_bytes != slot.metadata.raw_payload_bytes ||
       raw_payload_bytes > sizeof(slot.raw_payload)) {
@@ -395,6 +480,10 @@ status_kind fill_chunk_in_queue(
   if (!receipt_matches(slot.metadata, reservation)) {
     return slot.metadata.state == kSlotFree ? kStatusUnknownReservation
                                             : kStatusStaleReservation;
+  }
+  if (slot.metadata.raw_payload_base_address !=
+      reservation.raw_payload_base_address) {
+    return kStatusStaleReservation;
   }
   if (chunk_count != slot.metadata.expected_raw_chunk_count ||
       chunk_count == 0 || chunk_count > 4 || chunk_id >= chunk_count ||
@@ -527,6 +616,163 @@ status_kind fill_private_chunk_in_queue(
         kOperandMutableRayValid | kOperandDecodeContextValid |
         kOperandCommittedHitValid);
   }
+  return maybe_make_ready(&slot.metadata, fifo, capacity,
+                          reservation.slot_index);
+}
+
+struct expected_recovery_descriptor_chunk_v0 {
+  uint16_t slot_chunk_offset;
+  uint32_t byte_mask;
+};
+
+const expected_recovery_descriptor_chunk_v0
+    kExpectedRecoveryDescriptorChunks[kStackSpillRecoveryChunks] = {
+        {0x280, 0xffffff00u},
+        {0x2a0, 0xffffffffu},
+        {0x2c0, 0xffffffffu},
+        {0x2e0, 0xffffffffu},
+        {0x300, 0x000000ffu},
+};
+
+template <typename Slot>
+status_kind fill_recovery_descriptor_chunk_in_queue(
+    Slot *slots, uint8_t capacity, ready_fifo_v0 *fifo,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes],
+    reservation_receipt_v0 *updated_reservation,
+    typed_node::selected_child_fetch_work_item_v0 *selected_fetch) {
+  if (reservation.slot_index >= capacity) return kStatusUnknownReservation;
+  Slot &slot = slots[reservation.slot_index];
+  if (!receipt_matches(slot.metadata, reservation)) {
+    return slot.metadata.state == kSlotFree ? kStatusUnknownReservation
+                                            : kStatusStaleReservation;
+  }
+  if (slot.metadata.recovery_descriptor_pending != 1 ||
+      chunk_count != kStackSpillRecoveryChunks ||
+      chunk_id >= chunk_count ||
+      slot_chunk_offset !=
+          kExpectedRecoveryDescriptorChunks[chunk_id].slot_chunk_offset ||
+      byte_mask !=
+          kExpectedRecoveryDescriptorChunks[chunk_id].byte_mask) {
+    return kStatusRecoveryDescriptorShapeMismatch;
+  }
+  const uint8_t chunk_bit =
+      static_cast<uint8_t>(uint8_t{1} << chunk_id);
+  if ((slot.metadata.received_recovery_descriptor_chunk_mask &
+       chunk_bit) != 0) {
+    return kStatusDuplicateRecoveryDescriptorChunk;
+  }
+
+  for (unsigned byte = 0;
+       byte < private_frontier::kSharedAccessChunkBytes; ++byte) {
+    if ((byte_mask & (uint32_t{1} << byte)) == 0) {
+      if (payload[byte] != 0) {
+        return kStatusRecoveryDescriptorShapeMismatch;
+      }
+      continue;
+    }
+    const uint32_t private_slot_offset = slot_chunk_offset + byte;
+    if (private_slot_offset < private_frontier::kTransitionSpillOffset ||
+        private_slot_offset >=
+            private_frontier::kTransitionSpillOffset +
+                private_frontier::kStackTransitionSpillBytes) {
+      return kStatusRecoveryDescriptorShapeMismatch;
+    }
+    slot.metadata.recovery_descriptor_bytes[
+        private_slot_offset -
+        private_frontier::kTransitionSpillOffset] = payload[byte];
+  }
+  slot.metadata.received_recovery_descriptor_chunk_mask |= chunk_bit;
+  if (slot.metadata.pending_recovery_descriptor_response_count == 0) {
+    return kStatusReadyFifoInvariant;
+  }
+  --slot.metadata.pending_recovery_descriptor_response_count;
+  const uint8_t complete_mask = static_cast<uint8_t>(
+      (uint8_t{1} << kStackSpillRecoveryChunks) - 1);
+  if (slot.metadata.received_recovery_descriptor_chunk_mask !=
+      complete_mask) {
+    return kStatusOk;
+  }
+  if (slot.metadata.pending_recovery_descriptor_response_count != 0 ||
+      !bytes_are_zero(
+          slot.metadata.recovery_descriptor_bytes +
+              private_frontier::kStackSelectedFetchBytes,
+          private_frontier::kStackTransitionSpillBytes -
+              private_frontier::kStackSelectedFetchBytes)) {
+    return kStatusRecoveryDescriptorShapeMismatch;
+  }
+
+  private_frontier::shadow_slot_v0 spill_slot = {};
+  spill_slot.owner = slot.metadata.owner;
+  std::memcpy(
+      spill_slot.bytes + private_frontier::kTransitionSpillOffset,
+      slot.metadata.recovery_descriptor_bytes,
+      private_frontier::kStackTransitionSpillBytes);
+  typed_node::selected_child_fetch_work_item_v0 decoded = {};
+  target_kind decoded_target = kTargetInvalid;
+  uint16_t decoded_raw_bytes = 0;
+  if (private_frontier::decode_stack_selected_fetch_spill(
+          spill_slot, slot.metadata.owner, &decoded) !=
+          private_frontier::kStatusOk ||
+      classify_selected_fetch(
+          decoded, &decoded_target, &decoded_raw_bytes) != kStatusOk ||
+      decoded_target !=
+          static_cast<target_kind>(slot.metadata.target_kind) ||
+      decoded_raw_bytes != slot.metadata.raw_payload_bytes) {
+    return kStatusRecoveryDescriptorKindMismatch;
+  }
+
+  slot.metadata.target_reference.payload_offset =
+      decoded.child.payload_offset;
+  slot.metadata.target_reference.near_t_bits =
+      decoded.child.near_t_bits;
+  slot.metadata.target_reference.payload_byte_count =
+      decoded_raw_bytes;
+  slot.metadata.target_reference.payload_kind =
+      decoded.child.payload_kind;
+  slot.metadata.target_reference.level =
+      decoded.decode_context.as_object.as_type == 1
+          ? typed_node::kLevelTlas
+          : typed_node::kLevelBlas;
+  slot.metadata.target_reference.source_kind =
+      kTargetReferenceSelectedFetchCompatibilityAdapter;
+  slot.metadata.target_reference.proxy_delegated = 1;
+  slot.metadata.raw_payload_base_address =
+      decoded.decode_context.device_base +
+      decoded.child.payload_offset;
+  slot.metadata.valid_operand_mask |=
+      kOperandTargetReferenceValid;
+  slot.metadata.recovery_descriptor_pending = 0;
+  build_receipt(slot.metadata, reservation.slot_index,
+                updated_reservation);
+  *selected_fetch = decoded;
+  return maybe_make_ready(&slot.metadata, fifo, capacity,
+                          reservation.slot_index);
+}
+
+template <typename Slot>
+status_kind fill_recovery_ray_policy_in_queue(
+    Slot *slots, uint8_t capacity, ready_fifo_v0 *fifo,
+    const reservation_receipt_v0 &reservation,
+    const typed_node::ray_policy_v0 &ray_policy) {
+  if (reservation.slot_index >= capacity) return kStatusUnknownReservation;
+  Slot &slot = slots[reservation.slot_index];
+  if (!receipt_matches(slot.metadata, reservation)) {
+    return slot.metadata.state == kSlotFree ? kStatusUnknownReservation
+                                            : kStatusStaleReservation;
+  }
+  if (!bytes_are_zero(ray_policy.reserved_zero,
+                      sizeof(ray_policy.reserved_zero))) {
+    return kStatusRecoveryDescriptorShapeMismatch;
+  }
+  if ((slot.metadata.valid_operand_mask &
+       kOperandRayPolicyValid) != 0) {
+    return kStatusDuplicateRecoveryRayPolicy;
+  }
+  slot.metadata.ray_policy = ray_policy;
+  slot.metadata.valid_operand_mask |= kOperandRayPolicyValid;
   return maybe_make_ready(&slot.metadata, fifo, capacity,
                           reservation.slot_index);
 }
@@ -912,6 +1158,41 @@ status_kind try_reserve_selected_fetch(
   return try_reserve(state, input, reservation_cycle, receipt);
 }
 
+status_kind try_reserve_recovery(
+    engine_state_v0 *state,
+    const recovery_reservation_input_v0 &input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt) {
+  if (state == NULL || receipt == NULL || state->initialized != 1 ||
+      !recovery_reservation_identity_valid(input)) {
+    return kStatusInvalidArgument;
+  }
+  *receipt = reservation_receipt_v0();
+  const target_kind target =
+      static_cast<target_kind>(input.target_kind);
+  switch (target) {
+    case kTargetNode:
+      return reserve_recovery_in_queue(
+          state->node_slots, state->config.node_capacity,
+          &state->node_window, state->config.node_reservation_width,
+          state, input, target, reservation_cycle, receipt);
+    case kTargetPrimitive:
+      return reserve_recovery_in_queue(
+          state->primitive_slots, state->config.primitive_capacity,
+          &state->primitive_window,
+          state->config.primitive_reservation_width, state, input,
+          target, reservation_cycle, receipt);
+    case kTargetInstance:
+      return reserve_recovery_in_queue(
+          state->instance_slots, state->config.instance_capacity,
+          &state->instance_window,
+          state->config.instance_reservation_width, state, input,
+          target, reservation_cycle, receipt);
+    case kTargetInvalid:
+      break;
+  }
+  return kStatusInvalidSelectedFetch;
+}
+
 status_kind try_reserve_prefill(
     engine_state_v0 *state,
     const stack_commit::forwarding_decision_input_v0 &decision,
@@ -1064,6 +1345,86 @@ status_kind fill_private_operand_chunk(
           staged.instance_slots, staged.config.instance_capacity,
           &staged.instance_ready, reservation, chunk_id, chunk_count,
           field_kind, slot_chunk_offset, byte_mask, payload);
+      break;
+    case kTargetInvalid:
+      return kStatusInvalidArgument;
+  }
+  if (status == kStatusOk) *state = staged;
+  return status;
+}
+
+status_kind fill_recovery_descriptor_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes],
+    reservation_receipt_v0 *updated_reservation,
+    typed_node::selected_child_fetch_work_item_v0 *selected_fetch) {
+  if (state == NULL || payload == NULL ||
+      updated_reservation == NULL || selected_fetch == NULL ||
+      state->initialized != 1 || reservation.valid != 1) {
+    return kStatusInvalidArgument;
+  }
+  *updated_reservation = reservation_receipt_v0();
+  *selected_fetch =
+      typed_node::selected_child_fetch_work_item_v0();
+  engine_state_v0 staged = *state;
+  status_kind status = kStatusInvalidArgument;
+  switch (static_cast<target_kind>(reservation.target_kind)) {
+    case kTargetNode:
+      status = fill_recovery_descriptor_chunk_in_queue(
+          staged.node_slots, staged.config.node_capacity,
+          &staged.node_ready, reservation, chunk_id, chunk_count,
+          slot_chunk_offset, byte_mask, payload, updated_reservation,
+          selected_fetch);
+      break;
+    case kTargetPrimitive:
+      status = fill_recovery_descriptor_chunk_in_queue(
+          staged.primitive_slots, staged.config.primitive_capacity,
+          &staged.primitive_ready, reservation, chunk_id, chunk_count,
+          slot_chunk_offset, byte_mask, payload, updated_reservation,
+          selected_fetch);
+      break;
+    case kTargetInstance:
+      status = fill_recovery_descriptor_chunk_in_queue(
+          staged.instance_slots, staged.config.instance_capacity,
+          &staged.instance_ready, reservation, chunk_id, chunk_count,
+          slot_chunk_offset, byte_mask, payload, updated_reservation,
+          selected_fetch);
+      break;
+    case kTargetInvalid:
+      return kStatusInvalidArgument;
+  }
+  if (status == kStatusOk) *state = staged;
+  return status;
+}
+
+status_kind fill_recovery_ray_policy(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation,
+    const typed_node::ray_policy_v0 &ray_policy) {
+  if (state == NULL || state->initialized != 1 ||
+      reservation.valid != 1) {
+    return kStatusInvalidArgument;
+  }
+  engine_state_v0 staged = *state;
+  status_kind status = kStatusInvalidArgument;
+  switch (static_cast<target_kind>(reservation.target_kind)) {
+    case kTargetNode:
+      status = fill_recovery_ray_policy_in_queue(
+          staged.node_slots, staged.config.node_capacity,
+          &staged.node_ready, reservation, ray_policy);
+      break;
+    case kTargetPrimitive:
+      status = fill_recovery_ray_policy_in_queue(
+          staged.primitive_slots, staged.config.primitive_capacity,
+          &staged.primitive_ready, reservation, ray_policy);
+      break;
+    case kTargetInstance:
+      status = fill_recovery_ray_policy_in_queue(
+          staged.instance_slots, staged.config.instance_capacity,
+          &staged.instance_ready, reservation, ray_policy);
       break;
     case kTargetInvalid:
       return kStatusInvalidArgument;
@@ -1265,6 +1626,14 @@ const char *status_name(status_kind status) {
       return "private_operand_shape_mismatch";
     case kStatusDuplicatePrivateChunk:
       return "duplicate_private_chunk";
+    case kStatusRecoveryDescriptorShapeMismatch:
+      return "recovery_descriptor_shape_mismatch";
+    case kStatusDuplicateRecoveryDescriptorChunk:
+      return "duplicate_recovery_descriptor_chunk";
+    case kStatusRecoveryDescriptorKindMismatch:
+      return "recovery_descriptor_kind_mismatch";
+    case kStatusDuplicateRecoveryRayPolicy:
+      return "duplicate_recovery_ray_policy";
     case kStatusUnknownProducerCommit:
       return "unknown_producer_commit";
     case kStatusDuplicateProducerCommit:

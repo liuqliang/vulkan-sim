@@ -53,8 +53,20 @@ bool lane_is_quiescent(const lane_control_state_v0 &lane) {
          lane.live_commit_producer_operation_seq == 0 &&
          lane.live_commit_epoch == 0 &&
          lane.pending_recovery_operation_seq == 0 &&
+         lane.pending_recovery_target_kind ==
+             kPendingRecoveryTargetInvalid &&
+         lane.pending_recovery_route_kind ==
+             kPendingRecoveryRouteInvalid &&
+         lane.pending_recovery_reservation_retained == 0 &&
          lane.live_memory_transaction_count == 0 &&
          lane.live_commit_memory_transaction_count == 0;
+}
+
+bool valid_pending_recovery_metadata(uint8_t target_kind,
+                                     uint8_t route_kind) {
+  return target_kind >= kPendingRecoveryTargetNode &&
+         target_kind <= kPendingRecoveryTargetInstance &&
+         route_kind == kPendingRecoveryRouteStackSelectedFetch;
 }
 
 status_kind validate_plan_epoch(const state_v0 &state, bool plan_valid,
@@ -367,9 +379,11 @@ status_kind allocate_commit_successor_operation(
 status_kind mark_commit_successor_pending_recovery(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
-    uint32_t target_operation_seq) {
+    uint32_t target_operation_seq, uint8_t target_kind,
+    uint8_t route_kind) {
   if (state == NULL || producer_operation_seq == 0 || commit_epoch == 0 ||
-      target_operation_seq == 0 || !state->initialized) {
+      target_operation_seq == 0 || !state->initialized ||
+      !valid_pending_recovery_metadata(target_kind, route_kind)) {
     return kStatusInvalidArgument;
   }
   lane_control_state_v0 *control = find_lane_control(state, owner);
@@ -381,12 +395,127 @@ status_kind mark_commit_successor_pending_recovery(
       control->live_commit_epoch != commit_epoch ||
       control->live_target_operation_seq != target_operation_seq ||
       control->pending_recovery_operation_seq != 0 ||
+      control->pending_recovery_target_kind !=
+          kPendingRecoveryTargetInvalid ||
+      control->pending_recovery_route_kind !=
+          kPendingRecoveryRouteInvalid ||
+      control->pending_recovery_reservation_retained != 0 ||
       control->live_memory_transaction_count != 0) {
     return kStatusCommitMismatch;
   }
   control->pending_recovery_operation_seq = target_operation_seq;
+  control->pending_recovery_target_kind = target_kind;
+  control->pending_recovery_route_kind = route_kind;
   ++state->mutation_epoch;
   return kStatusOk;
+}
+
+status_kind mark_pending_recovery_reservation_retained(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t target_operation_seq, uint8_t target_kind,
+    uint8_t route_kind) {
+  if (state == NULL || target_operation_seq == 0 || !state->initialized ||
+      !valid_pending_recovery_metadata(target_kind, route_kind)) {
+    return kStatusInvalidArgument;
+  }
+  lane_control_state_v0 *control = find_lane_control(state, owner);
+  if (control == NULL || !validate_owner_binding(*state, owner)) {
+    return kStatusOwnerMismatch;
+  }
+  if (control->live_target_operation_seq != target_operation_seq ||
+      control->pending_recovery_operation_seq != target_operation_seq ||
+      control->pending_recovery_target_kind != target_kind ||
+      control->pending_recovery_route_kind != route_kind ||
+      control->pending_recovery_reservation_retained != 0 ||
+      control->live_commit_producer_operation_seq != 0 ||
+      control->live_commit_epoch != 0 ||
+      control->live_memory_transaction_count == 0) {
+    return kStatusCommitMismatch;
+  }
+  control->pending_recovery_reservation_retained = 1;
+  ++state->mutation_epoch;
+  return kStatusOk;
+}
+
+status_kind complete_pending_recovery_request_retention(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t target_operation_seq, uint8_t target_kind,
+    uint8_t route_kind) {
+  if (state == NULL || target_operation_seq == 0 || !state->initialized ||
+      !valid_pending_recovery_metadata(target_kind, route_kind)) {
+    return kStatusInvalidArgument;
+  }
+  lane_control_state_v0 *control = find_lane_control(state, owner);
+  if (control == NULL || !validate_owner_binding(*state, owner)) {
+    return kStatusOwnerMismatch;
+  }
+  if (control->live_target_operation_seq != target_operation_seq ||
+      control->pending_recovery_operation_seq != target_operation_seq ||
+      control->pending_recovery_target_kind != target_kind ||
+      control->pending_recovery_route_kind != route_kind ||
+      control->pending_recovery_reservation_retained != 1 ||
+      control->live_commit_producer_operation_seq != 0 ||
+      control->live_commit_epoch != 0 ||
+      control->live_memory_transaction_count == 0) {
+    return kStatusCommitMismatch;
+  }
+  control->pending_recovery_operation_seq = 0;
+  control->pending_recovery_target_kind =
+      kPendingRecoveryTargetInvalid;
+  control->pending_recovery_route_kind =
+      kPendingRecoveryRouteInvalid;
+  control->pending_recovery_reservation_retained = 0;
+  ++state->mutation_epoch;
+  return kStatusOk;
+}
+
+status_kind find_pending_recovery(
+    const state_v0 &state, uint16_t first_request_control_slot,
+    pending_recovery_snapshot_v0 *snapshot) {
+  if (!state.initialized || snapshot == NULL ||
+      first_request_control_slot >=
+          request_owner::kRequestControlCapacity) {
+    return kStatusInvalidArgument;
+  }
+  std::memset(snapshot, 0, sizeof(*snapshot));
+  for (uint32_t offset = 0;
+       offset < request_owner::kRequestControlCapacity; ++offset) {
+    const uint16_t slot = static_cast<uint16_t>(
+        (first_request_control_slot + offset) %
+        request_owner::kRequestControlCapacity);
+    const lane_control_state_v0 &control = state.lane_controls[slot];
+    if (!control.live || control.pending_recovery_operation_seq == 0 ||
+        control.pending_recovery_reservation_retained != 0) {
+      continue;
+    }
+    const bool producer_commit_active =
+        control.live_commit_producer_operation_seq != 0 &&
+        control.live_commit_epoch != 0;
+    if (producer_commit_active) {
+      continue;
+    }
+    if (!valid_pending_recovery_metadata(
+            control.pending_recovery_target_kind,
+            control.pending_recovery_route_kind) ||
+        control.live_target_operation_seq !=
+            control.pending_recovery_operation_seq ||
+        control.live_commit_producer_operation_seq != 0 ||
+        control.live_commit_epoch != 0 ||
+        control.live_commit_memory_transaction_count != 0) {
+      return kStatusCommitMismatch;
+    }
+    snapshot->owner = control.owner;
+    snapshot->target_operation_seq =
+        control.pending_recovery_operation_seq;
+    snapshot->request_control_slot = slot;
+    snapshot->target_kind =
+        control.pending_recovery_target_kind;
+    snapshot->route_kind =
+        control.pending_recovery_route_kind;
+    snapshot->valid = 1;
+    return kStatusOk;
+  }
+  return kStatusInvalidRequestKey;
 }
 
 status_kind begin_memory_transaction(
@@ -405,10 +534,6 @@ status_kind begin_memory_transaction(
       control->live_commit_producer_operation_seq == operation_seq;
   if (target_transaction == commit_transaction) {
     return kStatusMemoryTransactionMismatch;
-  }
-  if (target_transaction &&
-      control->pending_recovery_operation_seq == operation_seq) {
-    return kStatusOperationInFlight;
   }
   uint16_t &transaction_count =
       target_transaction ? control->live_memory_transaction_count

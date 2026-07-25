@@ -789,6 +789,23 @@ status_kind apply_stack_selected_fetch_spill(
   return kStatusOk;
 }
 
+status_kind build_stack_selected_fetch_spill_read_plan(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region, access_plan_v0 *read_plan) {
+  if (read_plan == NULL) return kStatusInvalidArgument;
+  std::memset(read_plan, 0, sizeof(*read_plan));
+  const status_kind owner_status = validate_slot_owner(slot, owner);
+  if (owner_status != kStatusOk) return owner_status;
+  uint64_t ignored_slot_base = 0;
+  const status_kind address_status =
+      slot_base_address(owner, region, &ignored_slot_base);
+  if (address_status != kStatusOk) return address_status;
+  initialize_plan(read_plan, owner);
+  return append_range_to_plan(
+      read_plan, owner, region, kFieldTransitionSpill, kAccessRead,
+      kTransitionSpillOffset, kStackTransitionSpillBytes);
+}
+
 status_kind decode_stack_selected_fetch_spill(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     typed_node::selected_child_fetch_work_item_v0 *selected_fetch) {
