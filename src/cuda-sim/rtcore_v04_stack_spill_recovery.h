@@ -17,9 +17,13 @@ static const uint8_t kSpillReadCount =
     fetch_target::kStackSpillRecoveryChunks;
 static const uint8_t kHandoffReadCount = 1;
 static const uint8_t kPrivateReadCount =
+    target_shared_memory::kRootPrivateReadChunks;
+static const uint8_t kMaxPrivateReadCount =
     target_shared_memory::kMaxPrivateReadChunks;
 static const uint8_t kInitialRequestCount =
     kSpillReadCount + kHandoffReadCount + kPrivateReadCount;
+static const uint8_t kMaxInitialRequestCount =
+    kSpillReadCount + kHandoffReadCount + kMaxPrivateReadCount;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -39,7 +43,7 @@ enum status_kind : uint8_t {
 
 struct initial_request_plan_v0 {
   fetch_target::reservation_receipt_v0 reservation;
-  rtcore_memory_unit_request_snapshot requests[kInitialRequestCount];
+  rtcore_memory_unit_request_snapshot requests[kMaxInitialRequestCount];
   uint8_t request_count;
   uint8_t valid;
   uint8_t reserved_zero[6];

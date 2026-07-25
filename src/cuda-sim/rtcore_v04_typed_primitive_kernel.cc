@@ -277,6 +277,41 @@ bool make_raw_procedural_payload(const void *raw_primitive_bytes,
   return true;
 }
 
+bool extract_geometry_policy(
+    const raw_primitive_payload_v0 &raw_primitive,
+    geometry_policy_projection_v0 *geometry_policy) {
+  if (geometry_policy == NULL ||
+      raw_primitive.header.expected_chunk_count != 2 ||
+      raw_primitive.header.payload_byte_count != 64 ||
+      raw_primitive.header.received_chunk_mask != 0x03 ||
+      !bytes_are_zero(raw_primitive.header.reserved_zero,
+                      sizeof(raw_primitive.header.reserved_zero)) ||
+      (raw_primitive.header.expected_payload_kind !=
+           kQuadPayloadKind &&
+       raw_primitive.header.expected_payload_kind !=
+           kProceduralPayloadKind)) {
+    return false;
+  }
+  const uint32_t descriptor1 =
+      read_le_u32(raw_primitive.raw_bytes + 4);
+  const uint8_t leaf_type =
+      static_cast<uint8_t>((descriptor1 >> 29) & 0x1u);
+  const uint8_t expected_leaf_type =
+      raw_primitive.header.expected_payload_kind ==
+              kProceduralPayloadKind
+          ? 1
+          : 0;
+  const uint8_t geometry_flags =
+      static_cast<uint8_t>((descriptor1 >> 30) & 0x3u);
+  if (leaf_type != expected_leaf_type ||
+      geometry_flags > kGeometryOpaque) {
+    return false;
+  }
+  *geometry_policy = geometry_policy_projection_v0();
+  geometry_policy->geometry_flags = geometry_flags;
+  return true;
+}
+
 candidate_result_v0 execute(const candidate_input_v0 &input) {
   candidate_result_v0 result = {};
   result.status = kStatusInvalidArgument;

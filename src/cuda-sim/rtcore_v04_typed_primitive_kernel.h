@@ -307,6 +307,10 @@ bool make_raw_primitive_payload(const void *raw_primitive_bytes,
 bool make_raw_procedural_payload(const void *raw_primitive_bytes,
                                  raw_primitive_payload_v0 *payload);
 
+bool extract_geometry_policy(
+    const raw_primitive_payload_v0 &raw_primitive,
+    geometry_policy_projection_v0 *geometry_policy);
+
 candidate_result_v0 execute(const candidate_input_v0 &input);
 
 procedural_result_v0 execute_procedural(const procedural_input_v0 &input);

@@ -10,7 +10,7 @@ namespace stack_spill_recovery {
 namespace {
 
 static const unsigned kResponseTargetRtcore = 1;
-static const uint32_t kRecoveryRequiredOperandMask =
+static const uint32_t kRecoveryBaseRequiredOperandMask =
     fetch_target::kOperandTargetReferenceValid |
     fetch_target::kOperandRawPayloadValid |
     fetch_target::kOperandMutableRayValid |
@@ -124,7 +124,10 @@ bool common_transport_valid(
          request.v04_target_raw_read.target_slot_generation != 0 &&
          producer_valid &&
          request.v04_target_raw_read.private_chunk_count ==
-             kPrivateReadCount &&
+             (request.v04_target_raw_read.target_kind ==
+                      fetch_target::kTargetPrimitive
+                  ? target_shared_memory::kPrimitivePrivateReadChunks
+                  : target_shared_memory::kRootPrivateReadChunks) &&
          request.v04_target_raw_read.transfer_bytes ==
              private_frontier::kSharedAccessChunkBytes &&
          bytes_are_zero(request.v04_target_raw_read.reserved_zero,
@@ -300,8 +303,11 @@ status_kind try_reserve_and_prepare_initial_requests(
   input.owner = private_owner;
   input.target_operation_seq = pending.target_operation_seq;
   input.target_kind = pending.target_kind;
-  input.required_operand_mask =
-      static_cast<uint8_t>(kRecoveryRequiredOperandMask);
+  input.required_operand_mask = static_cast<uint8_t>(
+      kRecoveryBaseRequiredOperandMask |
+      (pending.target_kind == fetch_target::kTargetPrimitive
+           ? fetch_target::kOperandCurrentInstanceValid
+           : 0));
   fetch_target::reservation_receipt_v0 reservation = {};
   const fetch_target::status_kind reserve_status =
       fetch_target::try_reserve_recovery(
@@ -321,8 +327,11 @@ status_kind try_reserve_and_prepare_initial_requests(
           backing, private_owner, &spill_read_plan) !=
           private_shared::kStatusOk ||
       spill_read_plan.access_count != kSpillReadCount ||
-      private_shared::prepare_root_operand_read_plan(
-          backing, private_owner, &private_read_plan) !=
+      (pending.target_kind == fetch_target::kTargetPrimitive
+           ? private_shared::prepare_primitive_operand_read_plan(
+                 backing, private_owner, &private_read_plan)
+           : private_shared::prepare_root_operand_read_plan(
+                 backing, private_owner, &private_read_plan)) !=
           private_shared::kStatusOk) {
     return kStatusPrivateReadPlanRejected;
   }
@@ -330,9 +339,15 @@ status_kind try_reserve_and_prepare_initial_requests(
   if (target_shared_memory::prepare_request_plan(
           reservation, private_read_plan, reservation_cycle,
           &private_requests) != target_shared_memory::kStatusOk ||
-      private_requests.request_count != kPrivateReadCount) {
+      private_requests.request_count !=
+          (pending.target_kind == fetch_target::kTargetPrimitive
+               ? target_shared_memory::kPrimitivePrivateReadChunks
+               : target_shared_memory::kRootPrivateReadChunks)) {
     return kStatusTransportPlanRejected;
   }
+  const uint8_t actual_request_count = static_cast<uint8_t>(
+      kSpillReadCount + kHandoffReadCount +
+      private_requests.request_count);
 
   for (unsigned index = 0; index < spill_read_plan.access_count; ++index) {
     const private_frontier::shared_chunk_access_v0 &access =
@@ -386,7 +401,7 @@ status_kind try_reserve_and_prepare_initial_requests(
       private_requests.requests,
       sizeof(private_requests.requests[0]) *
           private_requests.request_count);
-  for (unsigned index = 0; index < kInitialRequestCount; ++index) {
+  for (unsigned index = 0; index < actual_request_count; ++index) {
     if (timing_driver::begin_memory_transaction(
             &staged_timing, pending.owner,
             pending.target_operation_seq) != timing_driver::kStatusOk) {
@@ -401,7 +416,7 @@ status_kind try_reserve_and_prepare_initial_requests(
   }
 
   plan->reservation = reservation;
-  plan->request_count = kInitialRequestCount;
+  plan->request_count = actual_request_count;
   plan->valid = 1;
   *target_state = staged_target;
   *timing_state = staged_timing;

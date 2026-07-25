@@ -81,7 +81,8 @@ extern "C" bool rtcore_bind_resident_rt_warp_lane_identity(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask, unsigned static_inst_uid, unsigned lane_id,
     unsigned thread_uid, unsigned long long context_ptr,
-    unsigned long long handoff_window_base, unsigned token_id,
+    unsigned long long handoff_window_base,
+    memory_space *handoff_memory_backing, unsigned token_id,
     unsigned token_allocator_generation, unsigned window_generation);
 extern "C" bool rtcore_validate_shader_visible_resubmit_lane(
     unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
@@ -7916,7 +7917,6 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     operands.decode_context.device_base = tlas.device_base_address;
     operands.decode_context.device_range_bytes = tlas.size_bytes;
     operands.committed_hit.valid = 0;
-    operands.committed_hit.hit_t = context.ray_tmax;
     lane_input.ray_policy.ray_flags = context.ray_flags;
     lane_input.ray_policy.cull_mask =
         static_cast<uint8_t>(context.cull_mask);
@@ -33468,6 +33468,7 @@ void rtcore_traversal_completion_adapter_publish(
           event.warp_metadata.warp_id, event.warp_metadata.active_mask,
           event.warp_metadata.static_inst_uid, event.lane_slot_index,
           thread->get_uid(), event.context_ptr, event.handoff_window_base,
+          thread->get_global_memory(),
           resident_token->second.token_id,
           resident_token->second.allocator_generation,
           resident_window->second.submit_transaction_id);

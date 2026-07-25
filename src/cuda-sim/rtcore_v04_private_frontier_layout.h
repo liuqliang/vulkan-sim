@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "rtcore_v04_typed_primitive_kernel.h"
 #include "rtcore_v04_typed_stack_kernel.h"
 
 namespace rtcore {
@@ -25,6 +26,10 @@ static const uint32_t kCurrentInstanceOffset = 0x070;
 static const uint32_t kCurrentInstanceBytes = 24;
 static const uint32_t kCommittedHitOffset = 0x088;
 static const uint32_t kCommittedHitBytes = 64;
+static const uint32_t kRetainedCandidateOffset = 0x0c8;
+static const uint32_t kRetainedCandidateBytes = 48;
+static const uint32_t kPrimitiveResumeOffset = 0x0f8;
+static const uint32_t kPrimitiveResumeBytes = 16;
 static const uint32_t kFrontierEntriesOffset = 0x108;
 static const uint32_t kFrontierEntryBytes = 16;
 static const uint32_t kFrontierEntryCapacity = 16;
@@ -74,6 +79,8 @@ enum field_kind : uint8_t {
   kFieldCommittedHit = 6,
   kFieldParentFrame = 7,
   kFieldCurrentInstance = 8,
+  kFieldRetainedCandidate = 9,
+  kFieldPrimitiveResume = 10,
 };
 
 struct owner_binding_v0 {
@@ -113,6 +120,12 @@ struct root_private_operands_v0 {
   mutable_ray_state_v0 mutable_ray;
   typed_blas::as_decode_context_v0 decode_context;
   committed_hit_projection_v0 committed_hit;
+};
+
+struct retained_candidate_projection_v0 {
+  typed_primitive::primitive_identity_policy_facts_v0
+      identity_and_policy;
+  typed_primitive::triangle_hit_facts_v0 triangle_hit;
 };
 
 struct shared_chunk_access_v0 {
@@ -159,6 +172,21 @@ static_assert(kCurrentInstanceOffset + kCurrentInstanceBytes ==
               "committed hit must follow current Instance projection");
 static_assert(sizeof(committed_hit_projection_v0) == kCommittedHitBytes,
               "committed hit projection must remain 64 bytes");
+static_assert(sizeof(retained_candidate_projection_v0) ==
+                  kRetainedCandidateBytes,
+              "retained candidate projection must remain 48 bytes");
+static_assert(kCommittedHitOffset + kCommittedHitBytes ==
+                  kRetainedCandidateOffset,
+              "retained candidate must follow committed hit");
+static_assert(kRetainedCandidateOffset + kRetainedCandidateBytes ==
+                  kPrimitiveResumeOffset,
+              "Primitive resume must follow retained candidate");
+static_assert(sizeof(typed_primitive::primitive_resume_data_v0) ==
+                  kPrimitiveResumeBytes,
+              "Primitive resume data must remain 16 bytes");
+static_assert(kPrimitiveResumeOffset + kPrimitiveResumeBytes ==
+                  kFrontierEntriesOffset,
+              "frontier entries must follow Primitive resume");
 static_assert(sizeof(typed_node::compact_child_work_item_v0) ==
                   kFrontierEntryBytes,
               "private frontier entry must remain 16 bytes");
@@ -197,6 +225,10 @@ status_kind initialize_root_shadow_slot(
     access_plan_v0 *initial_write_plan);
 
 status_kind build_root_operand_read_plan(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region, access_plan_v0 *read_plan);
+
+status_kind build_primitive_operand_read_plan(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region, access_plan_v0 *read_plan);
 
@@ -242,6 +274,22 @@ status_kind decode_current_instance(
 status_kind decode_committed_hit(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     committed_hit_projection_v0 *committed_hit);
+
+status_kind decode_retained_candidate(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    retained_candidate_projection_v0 *retained_candidate);
+
+status_kind decode_primitive_resume(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    typed_primitive::primitive_resume_data_v0 *primitive_resume);
+
+status_kind apply_primitive_result_state(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const committed_hit_projection_v0 *committed_hit,
+    const retained_candidate_projection_v0 *retained_candidate,
+    const typed_primitive::primitive_resume_data_v0 *primitive_resume,
+    access_plan_v0 *write_plan);
 
 status_kind capture_parent_frame(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,

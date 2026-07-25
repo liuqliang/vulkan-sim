@@ -138,7 +138,15 @@ bool reservation_identity_valid(const reservation_input_v0 &input) {
   const uint8_t private_mask = static_cast<uint8_t>(
       input.required_operand_mask &
       (kOperandMutableRayValid | kOperandDecodeContextValid |
-       kOperandCommittedHitValid));
+       kOperandCommittedHitValid | kOperandCurrentInstanceValid));
+  const uint8_t root_private_mask = static_cast<uint8_t>(
+      kOperandMutableRayValid | kOperandDecodeContextValid |
+      kOperandCommittedHitValid);
+  const uint8_t expected_private_mask = static_cast<uint8_t>(
+      root_private_mask |
+      (input.target_kind == kTargetPrimitive
+           ? kOperandCurrentInstanceValid
+           : 0));
   return valid_owner(input.owner) && input.target_operation_seq != 0 &&
          producer_tag_valid && input.raw_payload_base_address != 0 &&
          input.raw_payload_bytes != 0 &&
@@ -152,10 +160,7 @@ bool reservation_identity_valid(const reservation_input_v0 &input) {
           ~input.required_operand_mask) == 0 &&
          (input.forwarded_operand_mask &
           ~(kOperandRayPolicyValid)) == 0 &&
-         (private_mask == 0 ||
-          private_mask ==
-              (kOperandMutableRayValid | kOperandDecodeContextValid |
-               kOperandCommittedHitValid)) &&
+         (private_mask == 0 || private_mask == expected_private_mask) &&
          bytes_are_zero(input.forwarded_ray_policy.reserved_zero,
                         sizeof(input.forwarded_ray_policy.reserved_zero)) &&
          bytes_are_zero(input.reserved_zero, sizeof(input.reserved_zero)) &&
@@ -192,11 +197,16 @@ bool recovery_reservation_identity_valid(
       kOperandTargetReferenceValid | kOperandRawPayloadValid |
       kOperandMutableRayValid | kOperandRayPolicyValid |
       kOperandDecodeContextValid | kOperandCommittedHitValid);
+  const uint8_t expected_operand_mask = static_cast<uint8_t>(
+      complete_operand_mask |
+      (input.target_kind == kTargetPrimitive
+           ? kOperandCurrentInstanceValid
+           : 0));
   return valid_owner(input.owner) &&
          input.target_operation_seq != 0 &&
          input.target_kind >= kTargetNode &&
          input.target_kind <= kTargetInstance &&
-         input.required_operand_mask == complete_operand_mask &&
+         input.required_operand_mask == expected_operand_mask &&
          bytes_are_zero(input.reserved_zero,
                         sizeof(input.reserved_zero));
 }
@@ -294,9 +304,12 @@ status_kind reserve_in_queue(
   const uint8_t private_required_mask = static_cast<uint8_t>(
       metadata.required_operand_mask &
       (kOperandMutableRayValid | kOperandDecodeContextValid |
-       kOperandCommittedHitValid));
+       kOperandCommittedHitValid | kOperandCurrentInstanceValid));
   metadata.expected_private_chunk_count =
-      private_required_mask == 0 ? 0 : 7;
+      private_required_mask == 0
+          ? 0
+          : static_cast<uint8_t>(
+                target == kTargetPrimitive ? 9 : 7);
   metadata.pending_private_response_count =
       metadata.expected_private_chunk_count;
   metadata.producer_commit_required = input.producer_commit_required;
@@ -353,7 +366,8 @@ status_kind reserve_recovery_in_queue(
       raw_payload_bytes / private_frontier::kSharedAccessChunkBytes);
   metadata.pending_raw_response_count =
       metadata.expected_raw_chunk_count;
-  metadata.expected_private_chunk_count = 7;
+  metadata.expected_private_chunk_count =
+      target == kTargetPrimitive ? 9 : 7;
   metadata.pending_private_response_count =
       metadata.expected_private_chunk_count;
   metadata.producer_commit_complete = 1;
@@ -599,6 +613,18 @@ const expected_private_chunk_v0 kExpectedRootPrivateChunks[7] = {
     {private_frontier::kFieldCommittedHit, 0x0c0, 0x000000ffu},
 };
 
+const expected_private_chunk_v0 kExpectedPrimitivePrivateChunks[9] = {
+    {private_frontier::kFieldMutableRayState, 0x000, 0xffffffffu},
+    {private_frontier::kFieldMutableRayState, 0x020, 0x00000fffu},
+    {private_frontier::kFieldAsDecodeContext, 0x040, 0xffffff00u},
+    {private_frontier::kFieldAsDecodeContext, 0x060, 0x0000ffffu},
+    {private_frontier::kFieldCommittedHit, 0x080, 0xffffff00u},
+    {private_frontier::kFieldCommittedHit, 0x0a0, 0xffffffffu},
+    {private_frontier::kFieldCommittedHit, 0x0c0, 0x000000ffu},
+    {private_frontier::kFieldCurrentInstance, 0x060, 0xffff0000u},
+    {private_frontier::kFieldCurrentInstance, 0x080, 0x000000ffu},
+};
+
 const expected_private_chunk_v0 kExpectedParentFrameChunks[5] = {
     {private_frontier::kFieldParentFrame, 0x200, 0xffffff00u},
     {private_frontier::kFieldParentFrame, 0x220, 0xffffffffu},
@@ -623,6 +649,10 @@ uint8_t *private_field_bytes(slot_metadata_v0 *metadata, uint8_t field_kind,
       *field_offset = private_frontier::kCommittedHitOffset;
       *field_bytes = private_frontier::kCommittedHitBytes;
       return metadata->committed_hit_bytes;
+    case private_frontier::kFieldCurrentInstance:
+      *field_offset = private_frontier::kCurrentInstanceOffset;
+      *field_bytes = private_frontier::kCurrentInstanceBytes;
+      return metadata->current_instance_bytes;
     case private_frontier::kFieldParentFrame:
       *field_offset = private_frontier::kParentFrameOffset;
       *field_bytes = private_frontier::kParentFrameBytes;
@@ -648,10 +678,16 @@ status_kind fill_private_chunk_in_queue(
   }
   const bool parent_restore =
       slot.metadata.operation_kind == kOperationInstanceRestoreParent;
+  const bool primitive_fetch =
+      !parent_restore &&
+      slot.metadata.target_kind == kTargetPrimitive;
   const expected_private_chunk_v0 *expected =
       parent_restore ? kExpectedParentFrameChunks
-                     : kExpectedRootPrivateChunks;
-  const uint8_t expected_count = parent_restore ? 5 : 7;
+                     : (primitive_fetch
+                            ? kExpectedPrimitivePrivateChunks
+                            : kExpectedRootPrivateChunks);
+  const uint8_t expected_count =
+      parent_restore ? 5 : (primitive_fetch ? 9 : 7);
   if (chunk_count != slot.metadata.expected_private_chunk_count ||
       chunk_count != expected_count || chunk_id >= chunk_count ||
       field_kind != expected[chunk_id].field_kind ||
@@ -659,7 +695,8 @@ status_kind fill_private_chunk_in_queue(
       byte_mask != expected[chunk_id].byte_mask) {
     return kStatusPrivateOperandShapeMismatch;
   }
-  const uint8_t chunk_bit = static_cast<uint8_t>(uint8_t{1} << chunk_id);
+  const uint16_t chunk_bit =
+      static_cast<uint16_t>(uint16_t{1} << chunk_id);
   if ((slot.metadata.received_private_chunk_mask & chunk_bit) != 0) {
     return kStatusDuplicatePrivateChunk;
   }
@@ -689,7 +726,7 @@ status_kind fill_private_chunk_in_queue(
   }
   --slot.metadata.pending_private_response_count;
   if (slot.metadata.received_private_chunk_mask ==
-      static_cast<uint8_t>((uint8_t{1} << chunk_count) - 1)) {
+      static_cast<uint16_t>((uint16_t{1} << chunk_count) - 1)) {
     if (slot.metadata.pending_private_response_count != 0) {
       return kStatusReadyFifoInvariant;
     }
@@ -698,7 +735,10 @@ status_kind fill_private_chunk_in_queue(
             ? static_cast<uint8_t>(kOperandParentFrameValid)
             : static_cast<uint8_t>(
                   kOperandMutableRayValid | kOperandDecodeContextValid |
-                  kOperandCommittedHitValid);
+                  kOperandCommittedHitValid |
+                  (primitive_fetch
+                       ? kOperandCurrentInstanceValid
+                       : 0));
   }
   return maybe_make_ready(&slot.metadata, fifo, capacity,
                           reservation.slot_index);
@@ -968,10 +1008,25 @@ status_kind build_operation_packet(const Slot &slot, target_kind target,
       return kStatusPrivateOperandShapeMismatch;
     }
   }
+  private_frontier::instance_shader_projection_v0 current_instance = {};
+  if ((slot.metadata.required_operand_mask &
+       kOperandCurrentInstanceValid) != 0) {
+    private_frontier::shadow_slot_v0 private_slot = {};
+    private_slot.owner = slot.metadata.owner;
+    std::memcpy(
+        private_slot.bytes + private_frontier::kCurrentInstanceOffset,
+        slot.metadata.current_instance_bytes,
+        sizeof(slot.metadata.current_instance_bytes));
+    if (private_frontier::decode_current_instance(
+            private_slot, slot.metadata.owner,
+            &current_instance) != private_frontier::kStatusOk) {
+      return kStatusPrivateOperandShapeMismatch;
+    }
+  }
   return build_ready_operation_packet(
       input, slot.metadata.reservation_id, slot.metadata.reservation_age,
-      slot.metadata.slot_generation, private_operands, slot.raw_payload,
-      packet);
+      slot.metadata.slot_generation, private_operands, current_instance,
+      slot.raw_payload, packet);
 }
 
 template <typename Slot>
@@ -1131,6 +1186,7 @@ status_kind build_ready_operation_packet(
     const reservation_input_v0 &input, uint64_t reservation_id,
     uint64_t reservation_age, uint32_t slot_generation,
     const private_frontier::root_private_operands_v0 &private_operands,
+    const private_frontier::instance_shader_projection_v0 &current_instance,
     const uint8_t *raw_payload, operation_packet_v0 *packet) {
   if (packet == NULL || raw_payload == NULL ||
       !reservation_identity_valid(input) || reservation_id == 0 ||
@@ -1155,6 +1211,7 @@ status_kind build_ready_operation_packet(
   packet->target_reference = input.target_reference;
   packet->ray_policy = input.forwarded_ray_policy;
   packet->private_operands = private_operands;
+  packet->current_instance = current_instance;
   std::memcpy(packet->raw_payload, raw_payload, input.raw_payload_bytes);
   return kStatusOk;
 }
@@ -1174,7 +1231,9 @@ status_kind build_ready_node_operation_packet(
   }
   return build_ready_operation_packet(
       input, reservation_id, reservation_age, slot_generation,
-      private_operands, raw_payload, packet);
+      private_operands,
+      private_frontier::instance_shader_projection_v0(),
+      raw_payload, packet);
 }
 
 status_kind initialize(engine_state_v0 *state, const config_v0 &config) {
@@ -1327,8 +1386,11 @@ status_kind try_reserve_selected_fetch(
   input.target_kind = target;
   input.producer_commit_required =
       selected_input.producer_commit_required;
-  input.required_operand_mask =
-      selected_input.required_operand_mask;
+  input.required_operand_mask = static_cast<uint8_t>(
+      selected_input.required_operand_mask |
+      (target == kTargetPrimitive
+           ? kOperandCurrentInstanceValid
+           : 0));
   input.forwarded_operand_mask =
       selected_input.forwarded_operand_mask;
   return try_reserve(state, input, reservation_cycle, receipt);

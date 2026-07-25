@@ -11,11 +11,15 @@ namespace rtcore {
 namespace v04 {
 namespace primitive_semantic {
 
+static const uint8_t kMaxWriteFragmentCount = 4;
+
 enum status_kind : uint8_t {
   kStatusOk = 0,
   kStatusInvalidArgument,
   kStatusInvalidOperationIdentity,
   kStatusInvalidTypedResult,
+  kStatusLayoutRejected,
+  kStatusInvalidWriteFragment,
 };
 
 enum route_kind : uint8_t {
@@ -26,10 +30,16 @@ enum route_kind : uint8_t {
   kRouteFinalHitBoundary = 4,
 };
 
-struct retained_candidate_projection_v0 {
-  typed_primitive::primitive_identity_policy_facts_v0
-      identity_and_policy;
-  typed_primitive::triangle_hit_facts_v0 triangle_hit;
+typedef private_frontier::retained_candidate_projection_v0
+    retained_candidate_projection_v0;
+
+struct private_write_fragment_v0 {
+  uint64_t aligned_32b_address;
+  uint32_t byte_mask;
+  uint16_t slot_byte_offset;
+  uint8_t byte_count;
+  uint8_t field_kind;
+  uint8_t payload[private_frontier::kSharedAccessChunkBytes];
 };
 
 struct semantic_plan_v0 {
@@ -49,10 +59,24 @@ struct semantic_plan_v0 {
       intersection_boundary;
 };
 
+struct private_commit_plan_v0 {
+  semantic_plan_v0 semantic_plan;
+  uint8_t valid;
+  uint8_t write_fragment_count;
+  uint8_t required_ack_count;
+  uint8_t reserved_zero[5];
+  private_write_fragment_v0
+      write_fragments[kMaxWriteFragmentCount];
+};
+
 static_assert(sizeof(retained_candidate_projection_v0) == 48,
               "Primitive retained candidate must remain 48 bytes");
 static_assert(offsetof(retained_candidate_projection_v0, triangle_hit) == 32,
               "Primitive retained triangle facts offset changed");
+static_assert(sizeof(private_write_fragment_v0) == 48,
+              "Primitive private write fragment must remain 48 bytes");
+static_assert(offsetof(private_write_fragment_v0, payload) == 16,
+              "Primitive private write payload offset changed");
 
 status_kind prepare_result(
     const private_frontier::owner_binding_v0 &owner,
@@ -60,6 +84,15 @@ status_kind prepare_result(
     const typed_primitive::route_input_v0 &input,
     const typed_primitive::route_result_v0 &result,
     semantic_plan_v0 *plan);
+
+bool validate_private_write_fragment(
+    const private_write_fragment_v0 &fragment);
+
+status_kind prepare_private_commit(
+    const semantic_plan_v0 &semantic_plan,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    private_commit_plan_v0 *plan);
 
 const char *status_name(status_kind status);
 const char *route_name(route_kind route);

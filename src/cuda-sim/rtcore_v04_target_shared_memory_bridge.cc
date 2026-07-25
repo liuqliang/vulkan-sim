@@ -42,7 +42,10 @@ bool receipt_shape_valid(
       reservation.producer_commit_required == 0;
   const bool fetch_shape =
       reservation.operation_kind == fetch_target::kOperationFetchTarget &&
-      reservation.private_chunk_count == kMaxPrivateReadChunks;
+      reservation.private_chunk_count ==
+          (reservation.target_kind == fetch_target::kTargetPrimitive
+               ? kPrimitivePrivateReadChunks
+               : kRootPrivateReadChunks);
   return reservation.valid == 1 && reservation.reservation_id != 0 &&
          reservation.reservation_age != 0 &&
          reservation.target_operation_seq != 0 &&
@@ -82,12 +85,18 @@ bool request_shape_valid(
       extension.field_kind == private_frontier::kFieldParentFrame;
   const bool fetch_shape =
       extension.operation_kind == fetch_target::kOperationFetchTarget &&
-      request.chunk_count == kMaxPrivateReadChunks &&
-      extension.private_chunk_count == kMaxPrivateReadChunks &&
-      extension.field_kind >=
-          private_frontier::kFieldMutableRayState &&
-      extension.field_kind <=
-          private_frontier::kFieldCommittedHit;
+      request.chunk_count ==
+          (extension.target_kind == fetch_target::kTargetPrimitive
+               ? kPrimitivePrivateReadChunks
+               : kRootPrivateReadChunks) &&
+      extension.private_chunk_count == request.chunk_count &&
+      ((extension.field_kind >=
+            private_frontier::kFieldMutableRayState &&
+        extension.field_kind <=
+            private_frontier::kFieldCommittedHit) ||
+       (extension.target_kind == fetch_target::kTargetPrimitive &&
+        extension.field_kind ==
+            private_frontier::kFieldCurrentInstance));
   return request.valid &&
          request.address_space == RTCORE_MEMORY_ADDRESS_SPACE_SHARED &&
          request.operation == RTCORE_MEMORY_OPERATION_READ &&

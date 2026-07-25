@@ -11,7 +11,9 @@ namespace rtcore {
 namespace v04 {
 namespace target_shared_memory {
 
-static const uint8_t kMaxPrivateReadChunks = 7;
+static const uint8_t kRootPrivateReadChunks = 7;
+static const uint8_t kPrimitivePrivateReadChunks = 9;
+static const uint8_t kMaxPrivateReadChunks = kPrimitivePrivateReadChunks;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,

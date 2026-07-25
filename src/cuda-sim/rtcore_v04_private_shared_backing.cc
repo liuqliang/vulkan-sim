@@ -132,6 +132,14 @@ static bool field_contains_offset(uint8_t field_kind, uint32_t offset) {
       return offset >= private_frontier::kCurrentInstanceOffset &&
              offset < private_frontier::kCurrentInstanceOffset +
                           private_frontier::kCurrentInstanceBytes;
+    case private_frontier::kFieldRetainedCandidate:
+      return offset >= private_frontier::kRetainedCandidateOffset &&
+             offset < private_frontier::kRetainedCandidateOffset +
+                          private_frontier::kRetainedCandidateBytes;
+    case private_frontier::kFieldPrimitiveResume:
+      return offset >= private_frontier::kPrimitiveResumeOffset &&
+             offset < private_frontier::kPrimitiveResumeOffset +
+                          private_frontier::kPrimitiveResumeBytes;
     default:
       return false;
   }
@@ -1000,6 +1008,31 @@ status_kind prepare_root_operand_read_plan(
   region.private_region_base = private_region_base(state.owner_hw_sid);
   const private_frontier::status_kind status =
       private_frontier::build_root_operand_read_plan(
+          lane->canonical_slot, owner, region, read_plan);
+  return status == private_frontier::kStatusOk ? kStatusOk
+                                               : kStatusPlannerFailure;
+}
+
+status_kind prepare_primitive_operand_read_plan(
+    const backing_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    private_frontier::access_plan_v0 *read_plan) {
+  if (!state.initialized || read_plan == NULL) {
+    return kStatusInvalidArgument;
+  }
+  const lane_slot_state_v0 *lane = find_live_lane(state, owner);
+  if (lane == NULL) return kStatusInvalidOwner;
+  const resident_warp_state_v0 &warp =
+      state.resident_warps[owner.resident_warp_id];
+  if (!warp.live || !warp.scheduler_ready) {
+    return kStatusNoAckReady;
+  }
+  private_frontier::region_binding_v0 region = {};
+  region.profile_id = private_frontier::kLayoutProfileId;
+  region.slot_count = 256;
+  region.private_region_base = private_region_base(state.owner_hw_sid);
+  const private_frontier::status_kind status =
+      private_frontier::build_primitive_operand_read_plan(
           lane->canonical_slot, owner, region, read_plan);
   return status == private_frontier::kStatusOk ? kStatusOk
                                                : kStatusPlannerFailure;

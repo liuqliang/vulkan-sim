@@ -68,6 +68,7 @@ enum operand_valid_bit : uint8_t {
   kOperandDecodeContextValid = 1u << 4,
   kOperandCommittedHitValid = 1u << 5,
   kOperandParentFrameValid = 1u << 6,
+  kOperandCurrentInstanceValid = 1u << 7,
 };
 
 enum operation_kind : uint8_t {
@@ -194,6 +195,7 @@ struct operation_packet_v0 {
   target_reference_v0 target_reference;
   typed_node::ray_policy_v0 ray_policy;
   private_frontier::root_private_operands_v0 private_operands;
+  private_frontier::instance_shader_projection_v0 current_instance;
   private_frontier::traversal_frame_projection_v0 parent_frame;
   uint8_t raw_payload[kMaxRawPayloadBytes];
 };
@@ -217,7 +219,7 @@ struct slot_metadata_v0 {
   uint8_t received_raw_chunk_mask;
   uint8_t pending_private_response_count;
   uint8_t expected_private_chunk_count;
-  uint8_t received_private_chunk_mask;
+  uint16_t received_private_chunk_mask;
   uint8_t producer_commit_required;
   uint8_t producer_commit_complete;
   uint8_t ready_enqueued;
@@ -230,6 +232,7 @@ struct slot_metadata_v0 {
   uint8_t mutable_ray_bytes[private_frontier::kMutableRayStateBytes];
   uint8_t decode_context_bytes[private_frontier::kAsDecodeContextBytes];
   uint8_t committed_hit_bytes[private_frontier::kCommittedHitBytes];
+  uint8_t current_instance_bytes[private_frontier::kCurrentInstanceBytes];
   uint8_t parent_frame_bytes[private_frontier::kParentFrameBytes];
   uint8_t recovery_descriptor_bytes[
       private_frontier::kStackTransitionSpillBytes];
@@ -357,6 +360,7 @@ status_kind build_ready_operation_packet(
     const reservation_input_v0 &input, uint64_t reservation_id,
     uint64_t reservation_age, uint32_t slot_generation,
     const private_frontier::root_private_operands_v0 &private_operands,
+    const private_frontier::instance_shader_projection_v0 &current_instance,
     const uint8_t *raw_payload, operation_packet_v0 *packet);
 
 bool validate_target_reference_shape(

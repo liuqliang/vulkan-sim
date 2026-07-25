@@ -137,9 +137,12 @@ status_kind try_accept_direct(
   target_shared_memory::request_plan_v0 private_request_plan = {};
   if (target_memory::prepare_raw_read_plan(
           reservation, &raw_read_plan) != target_memory::kStatusOk ||
-      private_shared::prepare_root_operand_read_plan(
-          private_backing, input.owner,
-          &private_read_plan) != private_shared::kStatusOk ||
+      (reservation.target_kind == fetch_target::kTargetPrimitive
+           ? private_shared::prepare_primitive_operand_read_plan(
+                 private_backing, input.owner, &private_read_plan)
+           : private_shared::prepare_root_operand_read_plan(
+                 private_backing, input.owner, &private_read_plan)) !=
+          private_shared::kStatusOk ||
       target_shared_memory::prepare_request_plan(
           reservation, private_read_plan,
           input.reservation_cycle,

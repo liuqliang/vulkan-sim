@@ -4,6 +4,7 @@
 #include <type_traits>
 
 #include "memory.h"
+#include "rtcore_v04_target_shared_memory_bridge.h"
 
 namespace rtcore {
 namespace v04 {
@@ -59,7 +60,8 @@ bool common_transport_shape_valid(
          extension.operand_kind ==
              RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL &&
          extension.field_kind == 0 &&
-         extension.private_chunk_count <= 7 &&
+         extension.private_chunk_count <=
+             target_shared_memory::kMaxPrivateReadChunks &&
          extension.transfer_bytes ==
              target_memory::kRawReadChunkBytes &&
          bytes_are_zero(extension.reserved_zero,

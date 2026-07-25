@@ -135,6 +135,10 @@ status_kind execute_one_primitive(
     const private_frontier::shadow_slot_v0 &canonical_slot,
     primitive_execution_v0 *execution);
 
+status_kind prepare_primitive_operator_input(
+    const fetch_target::operation_packet_v0 &packet,
+    typed_primitive::route_input_v0 *input);
+
 const char *status_name(status_kind status);
 
 }  // namespace functional_driver

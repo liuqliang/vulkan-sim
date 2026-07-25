@@ -323,6 +323,72 @@ static committed_hit_projection_v0 decode_committed_hit_bytes(
   return hit;
 }
 
+static void encode_retained_candidate_bytes(
+    uint8_t *destination,
+    const retained_candidate_projection_v0 &candidate) {
+  const typed_primitive::primitive_identity_policy_facts_v0 &identity =
+      candidate.identity_and_policy;
+  encode_u64_le(destination + 0, identity.instance_metadata_ref);
+  encode_u32_le(destination + 8, identity.primitive_index);
+  encode_u32_le(destination + 12, identity.geometry_index);
+  encode_u32_le(destination + 16, identity.instance_index);
+  encode_u32_le(destination + 20, identity.instance_custom_index);
+  encode_u32_le(destination + 24, identity.instance_sbt_contribution);
+  destination[28] = identity.geometry_type;
+  destination[29] = identity.geometry_policy_flags;
+  destination[30] = identity.instance_policy_flags;
+  destination[31] = identity.effective_policy_flags;
+  const typed_primitive::triangle_hit_facts_v0 &triangle =
+      candidate.triangle_hit;
+  encode_u32_le(destination + 32, triangle.hit_t_bits);
+  encode_u32_le(destination + 36, triangle.bary_vertex1_bits);
+  encode_u32_le(destination + 40, triangle.bary_vertex2_bits);
+  destination[44] = triangle.hit_kind;
+  std::memcpy(destination + 45, triangle.reserved_zero,
+              sizeof(triangle.reserved_zero));
+}
+
+static retained_candidate_projection_v0
+decode_retained_candidate_bytes(const uint8_t *source) {
+  retained_candidate_projection_v0 candidate = {};
+  typed_primitive::primitive_identity_policy_facts_v0 &identity =
+      candidate.identity_and_policy;
+  identity.instance_metadata_ref = decode_u64_le(source + 0);
+  identity.primitive_index = decode_u32_le(source + 8);
+  identity.geometry_index = decode_u32_le(source + 12);
+  identity.instance_index = decode_u32_le(source + 16);
+  identity.instance_custom_index = decode_u32_le(source + 20);
+  identity.instance_sbt_contribution = decode_u32_le(source + 24);
+  identity.geometry_type = source[28];
+  identity.geometry_policy_flags = source[29];
+  identity.instance_policy_flags = source[30];
+  identity.effective_policy_flags = source[31];
+  typed_primitive::triangle_hit_facts_v0 &triangle =
+      candidate.triangle_hit;
+  triangle.hit_t_bits = decode_u32_le(source + 32);
+  triangle.bary_vertex1_bits = decode_u32_le(source + 36);
+  triangle.bary_vertex2_bits = decode_u32_le(source + 40);
+  triangle.hit_kind = source[44];
+  std::memcpy(triangle.reserved_zero, source + 45,
+              sizeof(triangle.reserved_zero));
+  return candidate;
+}
+
+static void encode_primitive_resume_bytes(
+    uint8_t *destination,
+    const typed_primitive::primitive_resume_data_v0 &resume) {
+  encode_u64_le(destination + 0, resume.leaf_fetch_address);
+  encode_u64_le(destination + 8, resume.remaining_slot_mask);
+}
+
+static typed_primitive::primitive_resume_data_v0
+decode_primitive_resume_bytes(const uint8_t *source) {
+  typed_primitive::primitive_resume_data_v0 resume = {};
+  resume.leaf_fetch_address = decode_u64_le(source + 0);
+  resume.remaining_slot_mask = decode_u64_le(source + 8);
+  return resume;
+}
+
 static void encode_instance_projection_bytes(
     uint8_t *destination,
     const typed_stack::instance_shader_projection_v0 &instance) {
@@ -474,7 +540,9 @@ static status_kind append_range_to_plan(
        field != kFieldAsDecodeContext &&
        field != kFieldCommittedHit &&
        field != kFieldParentFrame &&
-       field != kFieldCurrentInstance)) {
+       field != kFieldCurrentInstance &&
+       field != kFieldRetainedCandidate &&
+       field != kFieldPrimitiveResume)) {
     return kStatusInvalidArgument;
   }
   if (slot_offset >= kPrivateDataSlotBytes ||
@@ -765,6 +833,34 @@ status_kind build_root_operand_read_plan(
   return kStatusOk;
 }
 
+status_kind build_primitive_operand_read_plan(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region, access_plan_v0 *read_plan) {
+  if (read_plan == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldMutableRayState, kAccessRead,
+      kMutableRayStateOffset, kMutableRayStateBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldAsDecodeContext, kAccessRead,
+      kAsDecodeContextOffset, kAsDecodeContextBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldCommittedHit, kAccessRead,
+      kCommittedHitOffset, kCommittedHitBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldCurrentInstance, kAccessRead,
+      kCurrentInstanceOffset, kCurrentInstanceBytes);
+  if (status != kStatusOk) return status;
+  *read_plan = plan;
+  return kStatusOk;
+}
+
 status_kind decode_root_private_operands(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     root_private_operands_v0 *operands) {
@@ -846,6 +942,93 @@ status_kind decode_committed_hit(
       decode_committed_hit_bytes(slot.bytes + kCommittedHitOffset);
   if (!valid_committed_hit(decoded)) return kStatusInvalidArgument;
   *committed_hit = decoded;
+  return kStatusOk;
+}
+
+status_kind decode_retained_candidate(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    retained_candidate_projection_v0 *retained_candidate) {
+  if (retained_candidate == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  *retained_candidate = decode_retained_candidate_bytes(
+      slot.bytes + kRetainedCandidateOffset);
+  return kStatusOk;
+}
+
+status_kind decode_primitive_resume(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    typed_primitive::primitive_resume_data_v0 *primitive_resume) {
+  if (primitive_resume == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  *primitive_resume = decode_primitive_resume_bytes(
+      slot.bytes + kPrimitiveResumeOffset);
+  return kStatusOk;
+}
+
+status_kind apply_primitive_result_state(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const committed_hit_projection_v0 *committed_hit,
+    const retained_candidate_projection_v0 *retained_candidate,
+    const typed_primitive::primitive_resume_data_v0 *primitive_resume,
+    access_plan_v0 *write_plan) {
+  if (slot == NULL || write_plan == NULL ||
+      (committed_hit == NULL && retained_candidate == NULL &&
+       primitive_resume == NULL) ||
+      (committed_hit != NULL && retained_candidate != NULL)) {
+    return kStatusInvalidArgument;
+  }
+  status_kind status = validate_slot_owner(*slot, owner);
+  if (status != kStatusOk) return status;
+  if ((committed_hit != NULL && !valid_committed_hit(*committed_hit)) ||
+      (retained_candidate != NULL &&
+       (retained_candidate->identity_and_policy.instance_metadata_ref == 0 ||
+        (retained_candidate->identity_and_policy.geometry_type !=
+             typed_primitive::kGeometryTypeTriangle &&
+         retained_candidate->identity_and_policy.geometry_type !=
+             typed_primitive::kGeometryTypeProcedural) ||
+        !bytes_are_zero(
+            retained_candidate->triangle_hit.reserved_zero,
+            sizeof(retained_candidate->triangle_hit.reserved_zero)))) ||
+      (primitive_resume != NULL &&
+       (primitive_resume->leaf_fetch_address == 0 ||
+        (primitive_resume->leaf_fetch_address &
+         uint64_t{kSharedAccessChunkBytes - 1}) != 0 ||
+        primitive_resume->remaining_slot_mask == 0))) {
+    return kStatusInvalidArgument;
+  }
+
+  shadow_slot_v0 updated = *slot;
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  if (committed_hit != NULL) {
+    status = append_range_to_plan(
+        &plan, owner, region, kFieldCommittedHit, kAccessWrite,
+        kCommittedHitOffset, kCommittedHitBytes);
+    if (status != kStatusOk) return status;
+    encode_committed_hit_bytes(
+        updated.bytes + kCommittedHitOffset, *committed_hit);
+  }
+  if (retained_candidate != NULL) {
+    status = append_range_to_plan(
+        &plan, owner, region, kFieldRetainedCandidate, kAccessWrite,
+        kRetainedCandidateOffset, kRetainedCandidateBytes);
+    if (status != kStatusOk) return status;
+    encode_retained_candidate_bytes(
+        updated.bytes + kRetainedCandidateOffset, *retained_candidate);
+  }
+  if (primitive_resume != NULL) {
+    status = append_range_to_plan(
+        &plan, owner, region, kFieldPrimitiveResume, kAccessWrite,
+        kPrimitiveResumeOffset, kPrimitiveResumeBytes);
+    if (status != kStatusOk) return status;
+    encode_primitive_resume_bytes(
+        updated.bytes + kPrimitiveResumeOffset, *primitive_resume);
+  }
+  *slot = updated;
+  *write_plan = plan;
   return kStatusOk;
 }
 

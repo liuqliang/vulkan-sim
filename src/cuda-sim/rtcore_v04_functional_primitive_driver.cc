@@ -113,6 +113,8 @@ bool canonical_primitive_input_matches(
                      sizeof(input.ray_policy)) == 0 &&
          std::memcmp(&input.current_instance, &current_instance,
                      sizeof(current_instance)) == 0 &&
+         std::memcmp(&packet.current_instance, &current_instance,
+                     sizeof(current_instance)) == 0 &&
          std::memcmp(&input.current_committed_hit,
                      &packet.private_operands.committed_hit,
                      sizeof(input.current_committed_hit)) == 0 &&
@@ -139,6 +141,41 @@ bool canonical_primitive_input_matches(
 }
 
 }  // namespace
+
+status_kind prepare_primitive_operator_input(
+    const fetch_target::operation_packet_v0 &packet,
+    typed_primitive::route_input_v0 *input) {
+  if (input == NULL) return kStatusInvalidArgument;
+  *input = typed_primitive::route_input_v0();
+  if (!primitive_packet_shape_valid(packet)) {
+    return kStatusInvalidOperationPacket;
+  }
+  typed_primitive::route_input_v0 prepared = {};
+  prepared.profile_id = typed_primitive::kGenRtDerivedProfileId;
+  prepared.operation_kind = typed_primitive::kOperationTestLeaf;
+  prepared.ray = packet.private_operands.mutable_ray;
+  prepared.ray_policy = packet.ray_policy;
+  prepared.leaf_fetch_address = packet.raw_payload_base_address;
+  const bool raw_ready =
+      packet.target_reference.payload_kind ==
+              typed_node::kQuadPayloadKind
+          ? typed_primitive::make_raw_primitive_payload(
+                packet.raw_payload, &prepared.raw_primitive)
+          : typed_primitive::make_raw_procedural_payload(
+                packet.raw_payload, &prepared.raw_primitive);
+  if (!raw_ready ||
+      !typed_primitive::extract_geometry_policy(
+          prepared.raw_primitive, &prepared.geometry_policy)) {
+    return kStatusInvalidOperationPacket;
+  }
+  prepared.input_slot_mask = uint64_t{1};
+  prepared.decode_context = packet.private_operands.decode_context;
+  prepared.current_instance = packet.current_instance;
+  prepared.current_committed_hit =
+      packet.private_operands.committed_hit;
+  *input = prepared;
+  return kStatusOk;
+}
 
 status_kind execute_one_primitive(
     const fetch_target::operation_packet_v0 &packet,

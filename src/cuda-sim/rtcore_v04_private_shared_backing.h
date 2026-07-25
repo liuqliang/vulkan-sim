@@ -266,6 +266,11 @@ status_kind prepare_root_operand_read_plan(
     const private_frontier::owner_binding_v0 &owner,
     private_frontier::access_plan_v0 *read_plan);
 
+status_kind prepare_primitive_operand_read_plan(
+    const backing_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    private_frontier::access_plan_v0 *read_plan);
+
 status_kind prepare_stack_selected_fetch_spill_read_plan(
     const backing_state_v0 &state,
     const private_frontier::owner_binding_v0 &owner,
