@@ -171,6 +171,9 @@ bool validate_push_result(const push_result_v0 &result);
 
 pop_result_v0 execute_pop(const pop_input_v0 &input);
 
+bool validate_pop_result(const pop_input_v0 &input,
+                         const pop_result_v0 &result);
+
 const char *status_name(status_kind status);
 
 }  // namespace typed_stack

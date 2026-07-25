@@ -38,11 +38,13 @@ enum pending_recovery_target_kind : uint8_t {
   kPendingRecoveryTargetNode = 1,
   kPendingRecoveryTargetPrimitive = 2,
   kPendingRecoveryTargetInstance = 3,
+  kPendingRecoveryTargetStack = 4,
 };
 
 enum pending_recovery_route_kind : uint8_t {
   kPendingRecoveryRouteInvalid = 0,
   kPendingRecoveryRouteStackSelectedFetch = 1,
+  kPendingRecoveryRouteStackPopNext = 2,
 };
 
 struct result_commit_control_state_v0 {
@@ -58,6 +60,7 @@ struct lane_control_state_v0 {
   uint32_t live_commit_producer_operation_seq;
   uint32_t live_commit_epoch;
   uint32_t pending_recovery_operation_seq;
+  uint32_t pending_recovery_producer_operation_seq;
   uint8_t pending_recovery_target_kind;
   uint8_t pending_recovery_route_kind;
   uint8_t pending_recovery_reservation_retained;
@@ -69,6 +72,7 @@ struct lane_control_state_v0 {
 struct pending_recovery_snapshot_v0 {
   request_owner::lane_binding_v0 owner;
   uint32_t target_operation_seq;
+  uint32_t producer_operation_seq;
   uint16_t request_control_slot;
   uint8_t target_kind;
   uint8_t route_kind;

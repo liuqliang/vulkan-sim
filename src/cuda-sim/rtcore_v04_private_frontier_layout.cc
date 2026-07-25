@@ -487,6 +487,48 @@ status_kind build_frontier_metadata_read_plan(
   return build_metadata_plan(read_plan, owner, region, kAccessRead);
 }
 
+status_kind build_nonempty_pop_operand_read_plan(
+    const owner_binding_v0 &owner, const region_binding_v0 &region,
+    const frontier_metadata_image_v0 &returned_metadata,
+    access_plan_v0 *read_plan) {
+  if (read_plan == NULL || !valid_metadata(returned_metadata) ||
+      returned_metadata.frontier_top == 0 ||
+      returned_metadata.frontier_count == 0) {
+    return kStatusInvalidMetadata;
+  }
+  uint64_t ignored_slot_base = 0;
+  status_kind status =
+      slot_base_address(owner, region, &ignored_slot_base);
+  if (status != kStatusOk) return status;
+
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  const uint32_t top_index = returned_metadata.frontier_top - 1;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldFrontierEntry, kAccessRead,
+      kFrontierEntriesOffset + top_index * kFrontierEntryBytes,
+      kFrontierEntryBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldMutableRayState, kAccessRead,
+      kMutableRayStateOffset, kMutableRayStateBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldAsDecodeContext, kAccessRead,
+      kAsDecodeContextOffset, kAsDecodeContextBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldCommittedHit, kAccessRead,
+      kCommittedHitOffset, kCommittedHitBytes);
+  if (status != kStatusOk) return status;
+  if (plan.access_count == 0 ||
+      plan.access_count > kMaxNonemptyPopOperandChunks) {
+    return kStatusPlanCapacityExceeded;
+  }
+  *read_plan = plan;
+  return kStatusOk;
+}
+
 status_kind initialize_root_shadow_slot(
     shadow_slot_v0 *slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region,
@@ -770,6 +812,22 @@ status_kind apply_stack_selected_fetch_spill(
               typed_stack::kSelectedFetchValid)) {
     return kStatusInvalidSpillPayload;
   }
+  return apply_stack_selected_fetch_spill_payload(
+      slot, owner, region, result.selected_fetch, write_plan);
+}
+
+status_kind apply_stack_selected_fetch_spill_payload(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const typed_node::selected_child_fetch_work_item_v0 &selected_fetch,
+    access_plan_v0 *write_plan) {
+  if (slot == NULL || write_plan == NULL) return kStatusInvalidArgument;
+  std::memset(write_plan, 0, sizeof(*write_plan));
+  status_kind status = validate_slot_owner(*slot, owner);
+  if (status != kStatusOk) return status;
+  uint64_t ignored_slot_base = 0;
+  status = slot_base_address(owner, region, &ignored_slot_base);
+  if (status != kStatusOk) return status;
 
   access_plan_v0 plan = {};
   initialize_plan(&plan, owner);
@@ -783,7 +841,7 @@ status_kind apply_stack_selected_fetch_spill(
               kStackTransitionSpillBytes);
   encode_selected_fetch_bytes(
       updated.bytes + kTransitionSpillOffset,
-      result.selected_fetch);
+      selected_fetch);
   *slot = updated;
   *write_plan = plan;
   return kStatusOk;

@@ -100,6 +100,13 @@ void populate_common_request(
 
 bool common_transport_valid(
     const rtcore_memory_unit_request_snapshot &request) {
+  const bool producer_valid =
+      request.v04_target_raw_read.producer_commit_required == 0
+          ? request.v04_target_raw_read.producer_operation_seq == 0 &&
+                request.v04_target_raw_read.producer_commit_epoch == 0
+          : request.v04_target_raw_read.producer_commit_required == 1 &&
+                request.v04_target_raw_read.producer_operation_seq != 0 &&
+                request.v04_target_raw_read.producer_commit_epoch != 0;
   return request.valid &&
          request.operation == RTCORE_MEMORY_OPERATION_READ &&
          request.destination ==
@@ -115,9 +122,7 @@ bool common_transport_valid(
          request.v04_target_raw_read.reservation_age != 0 &&
          request.v04_target_raw_read.target_operation_seq != 0 &&
          request.v04_target_raw_read.target_slot_generation != 0 &&
-         request.v04_target_raw_read.producer_operation_seq == 0 &&
-         request.v04_target_raw_read.producer_commit_epoch == 0 &&
-         request.v04_target_raw_read.producer_commit_required == 0 &&
+         producer_valid &&
          request.v04_target_raw_read.private_chunk_count ==
              kPrivateReadCount &&
          request.v04_target_raw_read.transfer_bytes ==
@@ -141,6 +146,38 @@ static_assert(abi_v04::kCullMask.word == 13 &&
                   abi_v04::kCullMask.lsb == 0 &&
                   abi_v04::kCullMask.width == 8,
               "recovery handoff cull-mask field changed");
+
+status_kind prepare_handoff_ray_policy_request(
+    const fetch_target::reservation_receipt_v0 &reservation,
+    uint64_t handoff_lane_address, uint64_t issue_cycle,
+    rtcore_memory_unit_request_snapshot *request) {
+  if (request == NULL || reservation.valid != 1 ||
+      reservation.target_operation_seq == 0 ||
+      handoff_lane_address == 0 ||
+      (handoff_lane_address &
+       (private_frontier::kSharedAccessChunkBytes - 1)) != 0 ||
+      handoff_lane_address >
+          UINT64_MAX - kHandoffRayPolicyChunkOffset) {
+    return kStatusInvalidArgument;
+  }
+  *request = rtcore_memory_unit_request_snapshot();
+  populate_common_request(reservation, issue_cycle, request);
+  request->address_space = RTCORE_MEMORY_ADDRESS_SPACE_SHARED;
+  request->memory_op_seq = kHandoffMemoryOpSeq;
+  request->chunk_id = 0;
+  request->chunk_count = 1;
+  request->access_kind =
+      RTCORE_MEMORY_ACCESS_HANDOFF_RAY_POLICY_READ;
+  request->aligned_32b_addr =
+      handoff_lane_address + kHandoffRayPolicyChunkOffset;
+  request->byte_mask = kHandoffRayPolicyByteMask;
+  request->v04_target_raw_read.slot_chunk_offset =
+      kHandoffRayPolicySlotOffset;
+  request->v04_target_raw_read.operand_kind =
+      RTCORE_MEMORY_TARGET_OPERAND_HANDOFF_RAY_POLICY;
+  return common_transport_valid(*request) ? kStatusOk
+                                          : kStatusMalformedTransport;
+}
 
 bool reconstruct_reservation(
     const rtcore_memory_unit_request_snapshot &request,
@@ -386,6 +423,7 @@ status_kind accept_spill_read_response(
           RTCORE_MEMORY_TARGET_OPERAND_STACK_SPILL ||
       request.v04_target_raw_read.field_kind !=
           private_frontier::kFieldTransitionSpill ||
+      request.v04_target_raw_read.producer_commit_required != 0 ||
       request.chunk_count != kSpillReadCount ||
       request.chunk_id >= request.chunk_count ||
       request.memory_op_seq != kSpillMemoryOpSeqBase + request.chunk_id ||

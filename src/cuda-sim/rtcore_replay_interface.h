@@ -165,13 +165,18 @@ struct rtcore_v04_stack_private_read_transport_snapshot {
   uint64_t reservation_id;
   uint64_t reservation_age;
   uint32_t target_operation_seq;
-  uint32_t source_node_operation_seq;
+  union {
+    uint32_t producer_operation_seq;
+    uint32_t source_node_operation_seq;
+  };
   uint32_t target_slot_generation;
   uint16_t slot_chunk_offset;
   uint8_t target_slot_index;
   uint8_t field_kind;
+  uint8_t operation_kind;
+  uint8_t read_phase;
   uint8_t valid;
-  uint8_t reserved_zero[7];
+  uint8_t reserved_zero[5];
 };
 
 struct rtcore_v04_private_write_transport_snapshot {
@@ -230,6 +235,7 @@ static const unsigned RTCORE_MEMORY_TARGET_OPERAND_HANDOFF_RAY_POLICY = 4u;
 
 extern "C" bool
 rtcore_v04_private_frontier_live_init_memory_issue_profile_active();
+extern "C" bool rtcore_v04_live_stack_pop_next_loop_gate_active();
 
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE = 0xfffffff0u;
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT = 4u;

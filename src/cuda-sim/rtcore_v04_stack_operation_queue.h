@@ -11,6 +11,8 @@ namespace stack_operation {
 
 static const uint8_t kMaxSlots = 4;
 static const uint8_t kFrontierMetadataReadChunks = 2;
+static const uint8_t kMaxPopOperandReadChunks =
+    private_frontier::kMaxNonemptyPopOperandChunks;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -25,6 +27,10 @@ enum status_kind : uint8_t {
   kStatusChunkShapeMismatch,
   kStatusDuplicateChunk,
   kStatusInvalidFrontierMetadata,
+  kStatusPopOperandPlanRequired,
+  kStatusPopOperandPlanMismatch,
+  kStatusDuplicatePopOperandChunk,
+  kStatusEmptyFrontierBoundary,
   kStatusNoReadyOperation,
   kStatusUnitInputBackpressure,
 };
@@ -32,7 +38,10 @@ enum status_kind : uint8_t {
 enum slot_state_kind : uint8_t {
   kSlotFree = 0,
   kSlotReservedWaitMetadata = 1,
-  kSlotReady = 2,
+  kSlotReservedWaitPopPlan = 2,
+  kSlotReservedWaitPopOperands = 3,
+  kSlotEmptyFrontierBoundary = 4,
+  kSlotReady = 5,
 };
 
 struct config_v0 {
@@ -47,8 +56,12 @@ struct reservation_input_v0 {
   typed_node::ray_policy_v0 ray_policy;
   uint32_t current_traversal_bound_bits;
   uint32_t target_operation_seq;
-  uint32_t source_node_operation_seq;
-  uint8_t reserved_zero[4];
+  union {
+    uint32_t producer_operation_seq;
+    uint32_t source_node_operation_seq;
+  };
+  uint8_t operation_kind;
+  uint8_t reserved_zero[3];
 };
 
 struct reservation_receipt_v0 {
@@ -56,12 +69,15 @@ struct reservation_receipt_v0 {
   uint64_t reservation_id;
   uint64_t reservation_age;
   uint32_t target_operation_seq;
-  uint32_t source_node_operation_seq;
+  union {
+    uint32_t producer_operation_seq;
+    uint32_t source_node_operation_seq;
+  };
   uint32_t slot_generation;
   uint8_t slot_index;
   uint8_t metadata_chunk_count;
+  uint8_t operation_kind;
   uint8_t valid;
-  uint8_t reserved_zero;
 };
 
 struct operation_packet_v0 {
@@ -69,13 +85,18 @@ struct operation_packet_v0 {
   uint64_t reservation_id;
   uint64_t reservation_age;
   uint32_t target_operation_seq;
-  uint32_t source_node_operation_seq;
+  union {
+    uint32_t producer_operation_seq;
+    uint32_t source_node_operation_seq;
+  };
   uint32_t slot_generation;
+  uint8_t operation_kind;
   uint8_t valid;
-  uint8_t reserved_zero[3];
+  uint8_t reserved_zero[2];
   private_frontier::frontier_metadata_image_v0 frontier_metadata;
   typed_node::ray_policy_v0 ray_policy;
   typed_stack::push_input_v0 input;
+  typed_stack::pop_input_v0 pop_input;
 };
 
 struct slot_v0 {
@@ -85,9 +106,20 @@ struct slot_v0 {
   uint32_t current_traversal_bound_bits;
   uint32_t metadata_byte_valid_mask;
   uint8_t metadata_bytes[private_frontier::kFrontierMetadataBytes];
-  uint8_t received_chunk_mask;
+  private_frontier::access_plan_v0 pop_operand_read_plan;
+  uint8_t top_entry_bytes[private_frontier::kFrontierEntryBytes];
+  uint8_t mutable_ray_bytes[private_frontier::kMutableRayStateBytes];
+  uint8_t decode_context_bytes[private_frontier::kAsDecodeContextBytes];
+  uint8_t committed_hit_bytes[private_frontier::kCommittedHitBytes];
+  uint64_t mutable_ray_byte_valid_mask;
+  uint64_t decode_context_byte_valid_mask;
+  uint64_t committed_hit_byte_valid_mask;
+  uint16_t top_entry_byte_valid_mask;
+  uint16_t received_pop_operand_chunk_mask;
+  uint8_t received_metadata_chunk_mask;
+  uint8_t expected_pop_operand_chunk_count;
   uint8_t state;
-  uint8_t reserved_zero[2];
+  uint8_t reserved_zero[1];
 };
 
 struct reservation_window_v0 {
@@ -123,6 +155,23 @@ status_kind fill_frontier_metadata_chunk(
     uint8_t chunk_count, uint16_t slot_chunk_offset, uint32_t byte_mask,
     const uint8_t payload[private_frontier::kSharedAccessChunkBytes]);
 
+status_kind bind_pop_operand_read_plan(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation,
+    const private_frontier::access_plan_v0 &read_plan);
+
+status_kind fill_pop_operand_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint8_t field_kind, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes]);
+
+status_kind peek_frontier_metadata(
+    const engine_state_v0 &state,
+    const reservation_receipt_v0 &reservation,
+    private_frontier::frontier_metadata_image_v0 *metadata);
+
 status_kind peek_ready_reservation(
     const engine_state_v0 &state,
     const reservation_receipt_v0 &reservation,
@@ -137,6 +186,7 @@ status_kind pop_ready_operation(engine_state_v0 *state,
 
 uint8_t active_slot_count(const engine_state_v0 &state);
 uint8_t ready_slot_count(const engine_state_v0 &state);
+uint8_t empty_boundary_slot_count(const engine_state_v0 &state);
 
 const char *status_name(status_kind status);
 

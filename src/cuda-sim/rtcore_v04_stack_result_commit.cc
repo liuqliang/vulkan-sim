@@ -360,7 +360,8 @@ status_kind capture_stack_push_result_with_selector(
   receipt->write_count = prepared_tracker.expected_write_count;
   receipt->forwarding_kind = forwarding;
   receipt->immediate_ready = prepared_tracker.ready;
-  if (forwarding == kForwardingRegistered) {
+  if (forwarding == kForwardingRegistered ||
+      forwarding == kForwardingSpillToMemory) {
     receipt->registered_prefill = result.selected_fetch;
   }
 
@@ -399,6 +400,143 @@ status_kind capture_stack_push_result_from_projection_with_selector(
       state, owner, producer_operation_seq, commit_epoch,
       target_operation_seq, region, projected_slot, input, result,
       forwarded_ray_policy, selector, selector_context, receipt);
+}
+
+status_kind capture_stack_pop_result_from_projection_with_selector(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::frontier_metadata_image_v0
+        &frontier_metadata,
+    const typed_stack::pop_input_v0 &input,
+    const typed_stack::pop_result_v0 &result,
+    const typed_node::ray_policy_v0 &forwarded_ray_policy,
+    forwarding_selector_v0 selector, void *selector_context,
+    issue_receipt_v0 *receipt) {
+  if (state == NULL || receipt == NULL || state->initialized != 1 ||
+      selector == NULL || producer_operation_seq == 0 ||
+      target_operation_seq == 0 || commit_epoch == 0 ||
+      !bytes_are_zero(forwarded_ray_policy.reserved_zero,
+                      sizeof(forwarded_ray_policy.reserved_zero))) {
+    return kStatusInvalidArgument;
+  }
+  std::memset(receipt, 0, sizeof(*receipt));
+  if (operation_is_live(*state, owner, producer_operation_seq)) {
+    return kStatusDuplicateOperation;
+  }
+  const int result_slot = find_free_result_entry(*state);
+  if (result_slot < 0) return kStatusResultCommitBackpressure;
+  const int tracker_slot = find_free_tracker(*state);
+  if (tracker_slot < 0) return kStatusTrackerBackpressure;
+  if (state->next_issue_age == 0) {
+    return kStatusOperationSequenceExhausted;
+  }
+
+  stack_semantic::pop_commit_plan_v0 semantic_plan = {};
+  if (stack_semantic::prepare_stack_pop_next(
+          owner, producer_operation_seq, region, frontier_metadata,
+          input, result, &semantic_plan) !=
+      stack_semantic::kStatusOk) {
+    return kStatusSemanticPlanRejected;
+  }
+
+  forwarding_kind forwarding = kForwardingRetryStackPop;
+  if (result.result_kind == typed_stack::kStackSelectedNext) {
+    forwarding_decision_input_v0 decision_input = {};
+    decision_input.owner = owner;
+    decision_input.producer_operation_seq =
+        producer_operation_seq;
+    decision_input.target_operation_seq = target_operation_seq;
+    decision_input.commit_epoch = commit_epoch;
+    decision_input.persistent_write_count =
+        semantic_plan.write_fragment_count;
+    decision_input.forwarded_ray_policy = forwarded_ray_policy;
+    decision_input.selected_fetch = result.selected_fetch;
+    forwarding = selector(selector_context, decision_input);
+    if (forwarding != kForwardingRegistered &&
+        forwarding != kForwardingSpillToMemory) {
+      return kStatusForwardingDecisionRejected;
+    }
+  }
+
+  result_commit_entry_v0 prepared_entry = {};
+  prepared_entry.owner = owner;
+  prepared_entry.issue_age = state->next_issue_age;
+  prepared_entry.operation_seq = producer_operation_seq;
+  prepared_entry.target_operation_seq = target_operation_seq;
+  prepared_entry.commit_epoch = commit_epoch;
+  prepared_entry.forwarding_kind = forwarding;
+  prepared_entry.tracker_slot = static_cast<uint8_t>(tracker_slot);
+  prepared_entry.write_count = semantic_plan.write_fragment_count;
+  for (unsigned index = 0;
+       index < semantic_plan.write_fragment_count; ++index) {
+    prepared_entry.writes[index] =
+        semantic_plan.write_fragments[index];
+  }
+
+  if (forwarding == kForwardingSpillToMemory) {
+    private_frontier::shadow_slot_v0 spill_slot = {};
+    private_frontier::access_plan_v0 ignored_init_plan = {};
+    private_frontier::access_plan_v0 spill_plan = {};
+    if (private_frontier::initialize_shadow_slot(
+            &spill_slot, owner, region, frontier_metadata,
+            &ignored_init_plan) != private_frontier::kStatusOk ||
+        private_frontier::apply_stack_selected_fetch_spill_payload(
+            &spill_slot, owner, region, result.selected_fetch,
+            &spill_plan) != private_frontier::kStatusOk ||
+        spill_plan.access_count != kStackSpillWriteFragments ||
+        prepared_entry.write_count >
+            kMaxWritesPerTransaction - spill_plan.access_count) {
+      return kStatusSpillPlanRejected;
+    }
+    for (unsigned index = 0; index < spill_plan.access_count;
+         ++index) {
+      stack_semantic::private_write_fragment_v0 fragment = {};
+      if (!materialize_fragment(
+              spill_slot, spill_plan.accesses[index], &fragment)) {
+        return kStatusSpillPlanRejected;
+      }
+      prepared_entry.writes[prepared_entry.write_count++] =
+          fragment;
+    }
+  }
+
+  request_commit_tracker_v0 prepared_tracker = {};
+  prepared_tracker.owner = owner;
+  prepared_tracker.issue_age = state->next_issue_age;
+  prepared_tracker.operation_seq = producer_operation_seq;
+  prepared_tracker.target_operation_seq = target_operation_seq;
+  prepared_tracker.commit_epoch = commit_epoch;
+  prepared_tracker.expected_write_count = prepared_entry.write_count;
+  prepared_tracker.forwarding_kind = forwarding;
+  prepared_tracker.valid = 1;
+  if (prepared_entry.write_count == 0) {
+    prepared_tracker.payload_transferred = 1;
+    prepared_tracker.ready = 1;
+  } else {
+    prepared_entry.valid = 1;
+  }
+  state->trackers[tracker_slot] = prepared_tracker;
+  if (prepared_entry.valid != 0) {
+    state->result_entries[result_slot] = prepared_entry;
+  }
+
+  receipt->producer_operation_seq =
+      prepared_tracker.operation_seq;
+  receipt->target_operation_seq =
+      prepared_tracker.target_operation_seq;
+  receipt->commit_epoch = prepared_tracker.commit_epoch;
+  receipt->write_count = prepared_tracker.expected_write_count;
+  receipt->forwarding_kind = forwarding;
+  receipt->immediate_ready = prepared_tracker.ready;
+  if (forwarding == kForwardingRegistered ||
+      forwarding == kForwardingSpillToMemory) {
+    receipt->registered_prefill = result.selected_fetch;
+  }
+  ++state->next_issue_age;
+  return kStatusOk;
 }
 
 status_kind peek_write_offer(const engine_state_v0 &state,
@@ -534,9 +672,12 @@ status_kind pop_ready_event(engine_state_v0 *state, ready_event_v0 *event) {
   event->producer_operation_seq = tracker.operation_seq;
   event->target_operation_seq = tracker.target_operation_seq;
   event->commit_epoch = tracker.commit_epoch;
-  event->ready_kind = tracker.forwarding_kind == kForwardingRegistered
-                          ? kReadyForwardedTarget
-                          : kReadySpillRecovery;
+  event->ready_kind =
+      tracker.forwarding_kind == kForwardingRegistered
+          ? kReadyForwardedTarget
+          : tracker.forwarding_kind == kForwardingSpillToMemory
+                ? kReadySpillRecovery
+                : kReadyStackPopRetry;
   std::memset(&state->trackers[selected], 0, sizeof(state->trackers[selected]));
   return kStatusOk;
 }

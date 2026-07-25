@@ -48,6 +48,7 @@ struct unit_state_v0 {
 struct pipeline_entry_v0 {
   stack_operation::operation_packet_v0 operation_packet;
   typed_stack::push_result_v0 typed_result;
+  typed_stack::pop_result_v0 typed_pop_result;
   uint64_t issue_age;
   uint64_t issue_cycle;
   uint64_t result_ready_cycle;
@@ -60,6 +61,7 @@ struct pipeline_entry_v0 {
 struct completed_push_receipt_v0 {
   stack_operation::operation_packet_v0 operation_packet;
   typed_stack::push_result_v0 typed_result;
+  typed_stack::pop_result_v0 typed_pop_result;
   uint64_t issue_age;
   uint64_t issue_cycle;
   uint64_t result_ready_cycle;
@@ -68,9 +70,11 @@ struct completed_push_receipt_v0 {
   uint32_t commit_epoch;
   uint32_t target_operation_seq;
   uint8_t valid;
+  uint8_t operation_kind;
   uint8_t operator_invocation_count;
   uint8_t used_transition_spill;
   uint8_t target_materialized;
+  uint8_t reserved_zero[3];
 };
 
 enum result_sink_kind : uint8_t {

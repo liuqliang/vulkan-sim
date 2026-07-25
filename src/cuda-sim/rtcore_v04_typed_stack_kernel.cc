@@ -345,6 +345,59 @@ pop_result_v0 execute_pop(const pop_input_v0 &input) {
   return result;
 }
 
+bool validate_pop_result(const pop_input_v0 &input,
+                         const pop_result_v0 &result) {
+  if (input.profile_id != kGenRtDerivedProfileId ||
+      input.operation_kind != kPopNext || input.has_top_entry != 1 ||
+      !bytes_are_zero(input.reserved_zero,
+                      sizeof(input.reserved_zero)) ||
+      input.frontier.frontier_top == 0 ||
+      input.frontier.frontier_count == 0 ||
+      input.frontier.frontier_top != input.frontier.frontier_count ||
+      input.frontier.frontier_top > input.frontier.frontier_capacity ||
+      !std::isfinite(fp32_value(input.current_traversal_bound_bits)) ||
+      !valid_decode_context(input.current_decode_context) ||
+      !valid_child_item(input.top_entry,
+                        input.current_decode_context) ||
+      result.status != kStatusOk ||
+      !bytes_are_zero(result.reserved_zero0,
+                      sizeof(result.reserved_zero0)) ||
+      !bytes_are_zero(result.reserved_zero_tail,
+                      sizeof(result.reserved_zero_tail)) ||
+      result.frontier_delta.action != kFrontierActionPopChild ||
+      result.frontier_delta.pop_count != 1 ||
+      result.frontier_delta.reserved_zero != 0 ||
+      result.frontier_delta.popped_index !=
+          input.frontier.frontier_top - 1 ||
+      result.frontier_delta.new_frontier_top !=
+          input.frontier.frontier_top - 1 ||
+      result.frontier_delta.new_frontier_count !=
+          input.frontier.frontier_count - 1) {
+    return false;
+  }
+
+  const bool selected =
+      fp32_value(input.top_entry.near_t_bits) <=
+      fp32_value(input.current_traversal_bound_bits);
+  const uint8_t expected_mask = static_cast<uint8_t>(
+      kFrontierDeltaValid |
+      (selected ? kSelectedFetchValid : 0));
+  if (result.result_kind !=
+          (selected ? kStackSelectedNext
+                    : kStackPrunedRetryPop) ||
+      result.output_valid_mask != expected_mask) {
+    return false;
+  }
+  typed_node::selected_child_fetch_work_item_v0 expected_selected = {};
+  if (selected) {
+    expected_selected.child = input.top_entry;
+    expected_selected.decode_context =
+        input.current_decode_context;
+  }
+  return std::memcmp(&result.selected_fetch, &expected_selected,
+                     sizeof(expected_selected)) == 0;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:

@@ -83,14 +83,22 @@ bool live_target_matches(
 
 bool operation_packet_valid(
     const stack_operation::operation_packet_v0 &packet) {
+  const bool push_valid =
+      packet.operation_kind ==
+          typed_stack::kPushRemainderAndForwardSelected &&
+      packet.input.operation_kind ==
+          typed_stack::kPushRemainderAndForwardSelected;
+  const bool pop_valid =
+      packet.operation_kind == typed_stack::kPopNext &&
+      packet.pop_input.operation_kind == typed_stack::kPopNext &&
+      packet.pop_input.has_top_entry == 1;
   return packet.valid == 1 && packet.reservation_id != 0 &&
          packet.reservation_age != 0 &&
          packet.target_operation_seq != 0 &&
-         packet.source_node_operation_seq != 0 &&
-         packet.target_operation_seq != packet.source_node_operation_seq &&
+         packet.producer_operation_seq != 0 &&
+         packet.target_operation_seq != packet.producer_operation_seq &&
          packet.slot_generation != 0 &&
-         packet.input.operation_kind ==
-             typed_stack::kPushRemainderAndForwardSelected &&
+         (push_valid || pop_valid) &&
          bytes_are_zero(packet.reserved_zero,
                         sizeof(packet.reserved_zero)) &&
          bytes_are_zero(packet.ray_policy.reserved_zero,
@@ -149,8 +157,16 @@ status_kind capture_matured_result(
   }
 
   pipeline_entry_v0 &pipeline = state->pipeline[pipeline_index];
+  const bool push =
+      pipeline.operation_packet.operation_kind ==
+      typed_stack::kPushRemainderAndForwardSelected;
   if (!operation_packet_valid(pipeline.operation_packet) ||
-      !typed_stack::validate_push_result(pipeline.typed_result) ||
+      (push
+           ? !typed_stack::validate_push_result(
+                 pipeline.typed_result)
+           : !typed_stack::validate_pop_result(
+                 pipeline.operation_packet.pop_input,
+                 pipeline.typed_pop_result)) ||
       pipeline.operator_invocation_count != 1) {
     return kStatusInvalidOperationPacket;
   }
@@ -177,6 +193,7 @@ status_kind capture_matured_result(
   completed_push_receipt_v0 receipt = {};
   receipt.operation_packet = pipeline.operation_packet;
   receipt.typed_result = pipeline.typed_result;
+  receipt.typed_pop_result = pipeline.typed_pop_result;
   receipt.issue_age = pipeline.issue_age;
   receipt.issue_cycle = pipeline.issue_cycle;
   receipt.result_ready_cycle = pipeline.result_ready_cycle;
@@ -186,6 +203,8 @@ status_kind capture_matured_result(
   receipt.commit_epoch = commit_epoch;
   receipt.target_operation_seq = target_operation_seq;
   receipt.valid = 1;
+  receipt.operation_kind =
+      pipeline.operation_packet.operation_kind;
   receipt.operator_invocation_count =
       pipeline.operator_invocation_count;
 
@@ -251,10 +270,21 @@ status_kind issue_operations(
       return kStatusOwnerMismatch;
     }
 
-    const typed_stack::push_result_v0 typed_result =
-        typed_stack::execute_push(candidate.input);
-    if (!typed_stack::validate_push_result(typed_result)) {
-      return kStatusOperatorFailed;
+    typed_stack::push_result_v0 typed_result = {};
+    typed_stack::pop_result_v0 typed_pop_result = {};
+    if (candidate.operation_kind ==
+        typed_stack::kPushRemainderAndForwardSelected) {
+      typed_result = typed_stack::execute_push(candidate.input);
+      if (!typed_stack::validate_push_result(typed_result)) {
+        return kStatusOperatorFailed;
+      }
+    } else {
+      typed_pop_result =
+          typed_stack::execute_pop(candidate.pop_input);
+      if (!typed_stack::validate_pop_result(
+              candidate.pop_input, typed_pop_result)) {
+        return kStatusOperatorFailed;
+      }
     }
     stack_operation::operation_packet_v0 packet = {};
     if (stack_operation::pop_ready_operation(
@@ -267,6 +297,7 @@ status_kind issue_operations(
     std::memset(&pipeline, 0, sizeof(pipeline));
     pipeline.operation_packet = packet;
     pipeline.typed_result = typed_result;
+    pipeline.typed_pop_result = typed_pop_result;
     pipeline.issue_age = state->next_issue_age++;
     pipeline.issue_cycle = service_cycle;
     pipeline.result_ready_cycle =

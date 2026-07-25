@@ -53,12 +53,14 @@ enum forwarding_kind : uint8_t {
   kForwardingInvalid = 0,
   kForwardingRegistered = 1,
   kForwardingSpillToMemory = 2,
+  kForwardingRetryStackPop = 3,
 };
 
 enum ready_kind : uint8_t {
   kReadyInvalid = 0,
   kReadyForwardedTarget = 1,
   kReadySpillRecovery = 2,
+  kReadyStackPopRetry = 3,
 };
 
 struct forwarding_decision_input_v0 {
@@ -192,6 +194,20 @@ status_kind capture_stack_push_result_from_projection_with_selector(
     const private_frontier::frontier_metadata_image_v0 &frontier_metadata,
     const typed_stack::push_input_v0 &input,
     const typed_stack::push_result_v0 &result,
+    const typed_node::ray_policy_v0 &forwarded_ray_policy,
+    forwarding_selector_v0 selector, void *selector_context,
+    issue_receipt_v0 *receipt);
+
+status_kind capture_stack_pop_result_from_projection_with_selector(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::frontier_metadata_image_v0
+        &frontier_metadata,
+    const typed_stack::pop_input_v0 &input,
+    const typed_stack::pop_result_v0 &result,
     const typed_node::ray_policy_v0 &forwarded_ray_policy,
     forwarding_selector_v0 selector, void *selector_context,
     issue_receipt_v0 *receipt);

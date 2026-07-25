@@ -31,6 +31,8 @@ static const unsigned kFrontierMetadataFragments =
     private_frontier::kSharedAccessChunkBytes;
 static const uint8_t kMaxPrivateWriteFragments =
     kMaxAppendEntryFragments + kFrontierMetadataFragments;
+static const uint8_t kMaxPopPrivateWriteFragments =
+    kFrontierMetadataFragments;
 static_assert(kMaxPrivateWriteFragments == 6,
               "Stack append fragment bound changed");
 static_assert(kMaxPrivateWriteFragments <=
@@ -56,6 +58,8 @@ enum status_kind : uint8_t {
 enum route_kind : uint8_t {
   kRouteInvalid = 0,
   kRouteStackPushedAndSelected = 1,
+  kRouteStackPoppedAndSelected = 2,
+  kRouteStackPrunedRetryPop = 3,
 };
 
 enum target_selector_kind : uint8_t {
@@ -97,6 +101,22 @@ struct append_commit_plan_v0 {
       write_fragments[kMaxPrivateWriteFragments];
 };
 
+struct pop_commit_plan_v0 {
+  private_frontier::owner_binding_v0 owner;
+  uint32_t operation_seq;
+  uint8_t valid;
+  uint8_t route_kind;
+  uint8_t required_output_mask;
+  uint8_t forward_mask;
+  uint8_t persist_mask;
+  uint8_t write_fragment_count;
+  uint8_t required_ack_count;
+  uint8_t reserved_zero;
+  typed_node::selected_child_fetch_work_item_v0 selected_fetch;
+  private_write_fragment_v0
+      write_fragments[kMaxPopPrivateWriteFragments];
+};
+
 static_assert(sizeof(private_write_fragment_v0) == 48,
               "private write fragment must remain 48 bytes");
 static_assert(offsetof(private_write_fragment_v0, payload) == 16,
@@ -112,6 +132,16 @@ status_kind prepare_stack_pushed_and_selected(
     const private_frontier::shadow_slot_v0 &canonical_slot,
     const typed_stack::push_result_v0 &result,
     append_commit_plan_v0 *plan);
+
+status_kind prepare_stack_pop_next(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::frontier_metadata_image_v0
+        &frontier_metadata,
+    const typed_stack::pop_input_v0 &input,
+    const typed_stack::pop_result_v0 &result,
+    pop_commit_plan_v0 *plan);
 
 bool validate_append_commit_plan(
     const append_commit_plan_v0 &plan,

@@ -53,6 +53,7 @@ bool lane_is_quiescent(const lane_control_state_v0 &lane) {
          lane.live_commit_producer_operation_seq == 0 &&
          lane.live_commit_epoch == 0 &&
          lane.pending_recovery_operation_seq == 0 &&
+         lane.pending_recovery_producer_operation_seq == 0 &&
          lane.pending_recovery_target_kind ==
              kPendingRecoveryTargetInvalid &&
          lane.pending_recovery_route_kind ==
@@ -64,9 +65,11 @@ bool lane_is_quiescent(const lane_control_state_v0 &lane) {
 
 bool valid_pending_recovery_metadata(uint8_t target_kind,
                                      uint8_t route_kind) {
-  return target_kind >= kPendingRecoveryTargetNode &&
-         target_kind <= kPendingRecoveryTargetInstance &&
-         route_kind == kPendingRecoveryRouteStackSelectedFetch;
+  return (target_kind >= kPendingRecoveryTargetNode &&
+          target_kind <= kPendingRecoveryTargetInstance &&
+          route_kind == kPendingRecoveryRouteStackSelectedFetch) ||
+         (target_kind == kPendingRecoveryTargetStack &&
+          route_kind == kPendingRecoveryRouteStackPopNext);
 }
 
 status_kind validate_plan_epoch(const state_v0 &state, bool plan_valid,
@@ -395,6 +398,7 @@ status_kind mark_commit_successor_pending_recovery(
       control->live_commit_epoch != commit_epoch ||
       control->live_target_operation_seq != target_operation_seq ||
       control->pending_recovery_operation_seq != 0 ||
+      control->pending_recovery_producer_operation_seq != 0 ||
       control->pending_recovery_target_kind !=
           kPendingRecoveryTargetInvalid ||
       control->pending_recovery_route_kind !=
@@ -404,6 +408,8 @@ status_kind mark_commit_successor_pending_recovery(
     return kStatusCommitMismatch;
   }
   control->pending_recovery_operation_seq = target_operation_seq;
+  control->pending_recovery_producer_operation_seq =
+      producer_operation_seq;
   control->pending_recovery_target_kind = target_kind;
   control->pending_recovery_route_kind = route_kind;
   ++state->mutation_epoch;
@@ -424,6 +430,7 @@ status_kind mark_pending_recovery_reservation_retained(
   }
   if (control->live_target_operation_seq != target_operation_seq ||
       control->pending_recovery_operation_seq != target_operation_seq ||
+      control->pending_recovery_producer_operation_seq == 0 ||
       control->pending_recovery_target_kind != target_kind ||
       control->pending_recovery_route_kind != route_kind ||
       control->pending_recovery_reservation_retained != 0 ||
@@ -451,6 +458,7 @@ status_kind complete_pending_recovery_request_retention(
   }
   if (control->live_target_operation_seq != target_operation_seq ||
       control->pending_recovery_operation_seq != target_operation_seq ||
+      control->pending_recovery_producer_operation_seq == 0 ||
       control->pending_recovery_target_kind != target_kind ||
       control->pending_recovery_route_kind != route_kind ||
       control->pending_recovery_reservation_retained != 1 ||
@@ -460,6 +468,7 @@ status_kind complete_pending_recovery_request_retention(
     return kStatusCommitMismatch;
   }
   control->pending_recovery_operation_seq = 0;
+  control->pending_recovery_producer_operation_seq = 0;
   control->pending_recovery_target_kind =
       kPendingRecoveryTargetInvalid;
   control->pending_recovery_route_kind =
@@ -499,6 +508,7 @@ status_kind find_pending_recovery(
             control.pending_recovery_route_kind) ||
         control.live_target_operation_seq !=
             control.pending_recovery_operation_seq ||
+        control.pending_recovery_producer_operation_seq == 0 ||
         control.live_commit_producer_operation_seq != 0 ||
         control.live_commit_epoch != 0 ||
         control.live_commit_memory_transaction_count != 0) {
@@ -507,6 +517,8 @@ status_kind find_pending_recovery(
     snapshot->owner = control.owner;
     snapshot->target_operation_seq =
         control.pending_recovery_operation_seq;
+    snapshot->producer_operation_seq =
+        control.pending_recovery_producer_operation_seq;
     snapshot->request_control_slot = slot;
     snapshot->target_kind =
         control.pending_recovery_target_kind;

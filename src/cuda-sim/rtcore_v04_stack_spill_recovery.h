@@ -50,6 +50,11 @@ struct handoff_authority_binding_v0 {
   uint64_t handoff_window_base;
 };
 
+status_kind prepare_handoff_ray_policy_request(
+    const fetch_target::reservation_receipt_v0 &reservation,
+    uint64_t handoff_lane_address, uint64_t issue_cycle,
+    rtcore_memory_unit_request_snapshot *request);
+
 status_kind try_reserve_and_prepare_initial_requests(
     fetch_target::engine_state_v0 *target_state,
     timing_driver::state_v0 *timing_state,
