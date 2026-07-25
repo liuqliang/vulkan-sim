@@ -67,6 +67,12 @@ enum operand_valid_bit : uint8_t {
   kOperandRayPolicyValid = 1u << 3,
   kOperandDecodeContextValid = 1u << 4,
   kOperandCommittedHitValid = 1u << 5,
+  kOperandParentFrameValid = 1u << 6,
+};
+
+enum operation_kind : uint8_t {
+  kOperationFetchTarget = 0,
+  kOperationInstanceRestoreParent = 1,
 };
 
 enum target_reference_source_kind : uint8_t {
@@ -123,6 +129,13 @@ struct recovery_reservation_input_v0 {
   uint8_t reserved_zero[6];
 };
 
+struct instance_restore_reservation_input_v0 {
+  private_frontier::owner_binding_v0 owner;
+  uint32_t target_operation_seq;
+  uint8_t required_operand_mask;
+  uint8_t reserved_zero[3];
+};
+
 struct config_v0 {
   uint8_t node_capacity;
   uint8_t node_reservation_width;
@@ -149,7 +162,8 @@ struct reservation_receipt_v0 {
   uint8_t private_chunk_count;
   uint8_t producer_commit_required;
   uint8_t valid;
-  uint8_t reserved_zero[2];
+  uint8_t operation_kind;
+  uint8_t reserved_zero[1];
 };
 
 struct operation_packet_v0 {
@@ -164,9 +178,12 @@ struct operation_packet_v0 {
   uint16_t raw_payload_bytes;
   uint8_t target_kind;
   uint8_t valid;
+  uint8_t operation_kind;
+  uint8_t reserved_zero[7];
   target_reference_v0 target_reference;
   typed_node::ray_policy_v0 ray_policy;
   private_frontier::root_private_operands_v0 private_operands;
+  private_frontier::traversal_frame_projection_v0 parent_frame;
   uint8_t raw_payload[kMaxRawPayloadBytes];
 };
 
@@ -196,12 +213,13 @@ struct slot_metadata_v0 {
   uint8_t recovery_descriptor_pending;
   uint8_t pending_recovery_descriptor_response_count;
   uint8_t received_recovery_descriptor_chunk_mask;
-  uint8_t reserved_zero0;
+  uint8_t operation_kind;
   target_reference_v0 target_reference;
   typed_node::ray_policy_v0 ray_policy;
   uint8_t mutable_ray_bytes[private_frontier::kMutableRayStateBytes];
   uint8_t decode_context_bytes[private_frontier::kAsDecodeContextBytes];
   uint8_t committed_hit_bytes[private_frontier::kCommittedHitBytes];
+  uint8_t parent_frame_bytes[private_frontier::kParentFrameBytes];
   uint8_t recovery_descriptor_bytes[
       private_frontier::kStackTransitionSpillBytes];
 };
@@ -272,6 +290,11 @@ status_kind try_reserve_recovery(
     const recovery_reservation_input_v0 &input,
     uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
 
+status_kind try_reserve_instance_restore_parent(
+    engine_state_v0 *state,
+    const instance_restore_reservation_input_v0 &input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
+
 status_kind try_reserve_prefill(
     engine_state_v0 *state,
     const stack_commit::forwarding_decision_input_v0 &decision,
@@ -333,6 +356,15 @@ status_kind pop_ready_operation(engine_state_v0 *state, target_kind target,
 status_kind peek_ready_operation(const engine_state_v0 &state,
                                  target_kind target,
                                  operation_packet_v0 *packet);
+
+status_kind pop_ready_operation_kind(
+    engine_state_v0 *state, target_kind target,
+    operation_kind required_operation_kind, bool unit_input_accepts,
+    operation_packet_v0 *packet);
+
+status_kind peek_ready_operation_kind(
+    const engine_state_v0 &state, target_kind target,
+    operation_kind required_operation_kind, operation_packet_v0 *packet);
 
 status_kind peek_ready_reservation(
     const engine_state_v0 &state,

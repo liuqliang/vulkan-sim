@@ -138,6 +138,7 @@ bool reservation_identity_valid(const reservation_input_v0 &input) {
          input.producer_commit_required <= 1 &&
          (input.required_operand_mask & kOperandTargetReferenceValid) != 0 &&
          (input.required_operand_mask & kOperandRawPayloadValid) != 0 &&
+         (input.required_operand_mask & kOperandParentFrameValid) == 0 &&
          (input.forwarded_operand_mask &
           ~input.required_operand_mask) == 0 &&
          (input.forwarded_operand_mask &
@@ -153,6 +154,13 @@ bool reservation_identity_valid(const reservation_input_v0 &input) {
              input.target_reference,
              static_cast<target_kind>(input.target_kind),
              input.raw_payload_bytes, input.raw_payload_base_address);
+}
+
+bool instance_restore_reservation_identity_valid(
+    const instance_restore_reservation_input_v0 &input) {
+  return valid_owner(input.owner) && input.target_operation_seq != 0 &&
+         input.required_operand_mask == kOperandParentFrameValid &&
+         bytes_are_zero(input.reserved_zero, sizeof(input.reserved_zero));
 }
 
 uint16_t raw_payload_bytes_for_target(target_kind target) {
@@ -229,6 +237,7 @@ void build_receipt(const slot_metadata_v0 &metadata, uint8_t slot_index,
   receipt->private_chunk_count = metadata.expected_private_chunk_count;
   receipt->producer_commit_required =
       metadata.producer_commit_required;
+  receipt->operation_kind = metadata.operation_kind;
   receipt->valid = 1;
 }
 
@@ -265,6 +274,7 @@ status_kind reserve_in_queue(
   metadata.slot_generation = slot_generation;
   metadata.raw_payload_bytes = raw_payload_bytes;
   metadata.target_kind = target;
+  metadata.operation_kind = kOperationFetchTarget;
   metadata.state = kSlotReservedWaitDataOrCommit;
   metadata.valid_operand_mask = static_cast<uint8_t>(
       kOperandTargetReferenceValid | input.forwarded_operand_mask);
@@ -327,6 +337,7 @@ status_kind reserve_recovery_in_queue(
   metadata.slot_generation = slot_generation;
   metadata.raw_payload_bytes = raw_payload_bytes;
   metadata.target_kind = target;
+  metadata.operation_kind = kOperationFetchTarget;
   metadata.state = kSlotReservedWaitDataOrCommit;
   metadata.required_operand_mask = input.required_operand_mask;
   metadata.expected_raw_chunk_count = static_cast<uint8_t>(
@@ -340,6 +351,48 @@ status_kind reserve_recovery_in_queue(
   metadata.recovery_descriptor_pending = 1;
   metadata.pending_recovery_descriptor_response_count =
       kStackSpillRecoveryChunks;
+
+  consume_reservation_budget(window, cycle);
+  build_receipt(metadata, static_cast<uint8_t>(slot_index), receipt);
+  ++state->next_reservation_id;
+  ++state->next_reservation_age;
+  return kStatusOk;
+}
+
+status_kind reserve_instance_restore_in_queue(
+    instance_slot_v0 *slots, uint8_t capacity,
+    reservation_window_v0 *window, uint8_t reservation_width,
+    engine_state_v0 *state,
+    const instance_restore_reservation_input_v0 &input, uint64_t cycle,
+    reservation_receipt_v0 *receipt) {
+  if (!reservation_budget_available(*window, reservation_width, cycle)) {
+    return kStatusReservationBudgetBackpressure;
+  }
+  const int slot_index = find_free_slot(slots, capacity);
+  if (slot_index < 0) return kStatusCapacityBackpressure;
+  if (state->next_reservation_id == 0 ||
+      state->next_reservation_age == 0 ||
+      slots[slot_index].metadata.slot_generation ==
+          std::numeric_limits<uint32_t>::max()) {
+    return kStatusReservationSequenceExhausted;
+  }
+
+  const uint32_t slot_generation =
+      slots[slot_index].metadata.slot_generation + 1;
+  std::memset(&slots[slot_index], 0, sizeof(slots[slot_index]));
+  slot_metadata_v0 &metadata = slots[slot_index].metadata;
+  metadata.owner = input.owner;
+  metadata.reservation_id = state->next_reservation_id;
+  metadata.reservation_age = state->next_reservation_age;
+  metadata.target_operation_seq = input.target_operation_seq;
+  metadata.slot_generation = slot_generation;
+  metadata.target_kind = kTargetInstance;
+  metadata.operation_kind = kOperationInstanceRestoreParent;
+  metadata.state = kSlotReservedWaitDataOrCommit;
+  metadata.required_operand_mask = input.required_operand_mask;
+  metadata.expected_private_chunk_count = 5;
+  metadata.pending_private_response_count = 5;
+  metadata.producer_commit_complete = 1;
 
   consume_reservation_budget(window, cycle);
   build_receipt(metadata, static_cast<uint8_t>(slot_index), receipt);
@@ -365,6 +418,7 @@ bool receipt_matches(const slot_metadata_v0 &metadata,
          metadata.expected_raw_chunk_count == receipt.raw_chunk_count &&
          metadata.expected_private_chunk_count ==
              receipt.private_chunk_count &&
+         metadata.operation_kind == receipt.operation_kind &&
          private_frontier::owners_equal(metadata.owner, receipt.owner);
 }
 
@@ -404,10 +458,11 @@ status_kind maybe_make_ready(slot_metadata_v0 *metadata,
   const uint8_t private_required_mask = static_cast<uint8_t>(
       metadata->required_operand_mask &
       (kOperandMutableRayValid | kOperandDecodeContextValid |
-       kOperandCommittedHitValid));
+       kOperandCommittedHitValid | kOperandParentFrameValid));
   const bool raw_global_operands_complete =
-      (metadata->valid_operand_mask & kOperandRawPayloadValid) != 0 &&
-      metadata->pending_raw_response_count == 0;
+      (metadata->required_operand_mask & kOperandRawPayloadValid) == 0 ||
+      ((metadata->valid_operand_mask & kOperandRawPayloadValid) != 0 &&
+       metadata->pending_raw_response_count == 0);
   const bool private_shared_operands_complete =
       (metadata->valid_operand_mask & private_required_mask) ==
           private_required_mask &&
@@ -535,6 +590,14 @@ const expected_private_chunk_v0 kExpectedRootPrivateChunks[7] = {
     {private_frontier::kFieldCommittedHit, 0x0c0, 0x000000ffu},
 };
 
+const expected_private_chunk_v0 kExpectedParentFrameChunks[5] = {
+    {private_frontier::kFieldParentFrame, 0x200, 0xffffff00u},
+    {private_frontier::kFieldParentFrame, 0x220, 0xffffffffu},
+    {private_frontier::kFieldParentFrame, 0x240, 0xffffffffu},
+    {private_frontier::kFieldParentFrame, 0x260, 0xffffffffu},
+    {private_frontier::kFieldParentFrame, 0x280, 0x000000ffu},
+};
+
 uint8_t *private_field_bytes(slot_metadata_v0 *metadata, uint8_t field_kind,
                              uint16_t *field_offset,
                              uint16_t *field_bytes) {
@@ -551,6 +614,10 @@ uint8_t *private_field_bytes(slot_metadata_v0 *metadata, uint8_t field_kind,
       *field_offset = private_frontier::kCommittedHitOffset;
       *field_bytes = private_frontier::kCommittedHitBytes;
       return metadata->committed_hit_bytes;
+    case private_frontier::kFieldParentFrame:
+      *field_offset = private_frontier::kParentFrameOffset;
+      *field_bytes = private_frontier::kParentFrameBytes;
+      return metadata->parent_frame_bytes;
     default:
       break;
   }
@@ -570,12 +637,17 @@ status_kind fill_private_chunk_in_queue(
     return slot.metadata.state == kSlotFree ? kStatusUnknownReservation
                                             : kStatusStaleReservation;
   }
+  const bool parent_restore =
+      slot.metadata.operation_kind == kOperationInstanceRestoreParent;
+  const expected_private_chunk_v0 *expected =
+      parent_restore ? kExpectedParentFrameChunks
+                     : kExpectedRootPrivateChunks;
+  const uint8_t expected_count = parent_restore ? 5 : 7;
   if (chunk_count != slot.metadata.expected_private_chunk_count ||
-      chunk_count != 7 || chunk_id >= chunk_count ||
-      field_kind != kExpectedRootPrivateChunks[chunk_id].field_kind ||
-      slot_chunk_offset !=
-          kExpectedRootPrivateChunks[chunk_id].slot_chunk_offset ||
-      byte_mask != kExpectedRootPrivateChunks[chunk_id].byte_mask) {
+      chunk_count != expected_count || chunk_id >= chunk_count ||
+      field_kind != expected[chunk_id].field_kind ||
+      slot_chunk_offset != expected[chunk_id].slot_chunk_offset ||
+      byte_mask != expected[chunk_id].byte_mask) {
     return kStatusPrivateOperandShapeMismatch;
   }
   const uint8_t chunk_bit = static_cast<uint8_t>(uint8_t{1} << chunk_id);
@@ -612,9 +684,12 @@ status_kind fill_private_chunk_in_queue(
     if (slot.metadata.pending_private_response_count != 0) {
       return kStatusReadyFifoInvariant;
     }
-    slot.metadata.valid_operand_mask |= static_cast<uint8_t>(
-        kOperandMutableRayValid | kOperandDecodeContextValid |
-        kOperandCommittedHitValid);
+    slot.metadata.valid_operand_mask |=
+        parent_restore
+            ? static_cast<uint8_t>(kOperandParentFrameValid)
+            : static_cast<uint8_t>(
+                  kOperandMutableRayValid | kOperandDecodeContextValid |
+                  kOperandCommittedHitValid);
   }
   return maybe_make_ready(&slot.metadata, fifo, capacity,
                           reservation.slot_index);
@@ -812,6 +887,39 @@ template <typename Slot>
 status_kind build_operation_packet(const Slot &slot, target_kind target,
                                    operation_packet_v0 *packet) {
   if (packet == NULL) return kStatusInvalidArgument;
+  if (slot.metadata.operation_kind ==
+      kOperationInstanceRestoreParent) {
+    if (target != kTargetInstance ||
+        slot.metadata.required_operand_mask !=
+            kOperandParentFrameValid ||
+        slot.metadata.raw_payload_bytes != 0) {
+      return kStatusPrivateOperandShapeMismatch;
+    }
+    private_frontier::shadow_slot_v0 private_slot = {};
+    private_slot.owner = slot.metadata.owner;
+    std::memcpy(
+        private_slot.bytes + private_frontier::kParentFrameOffset,
+        slot.metadata.parent_frame_bytes,
+        sizeof(slot.metadata.parent_frame_bytes));
+    private_frontier::traversal_frame_projection_v0 parent_frame = {};
+    if (private_frontier::decode_parent_frame(
+            private_slot, slot.metadata.owner, &parent_frame) !=
+        private_frontier::kStatusOk) {
+      return kStatusPrivateOperandShapeMismatch;
+    }
+    *packet = operation_packet_v0();
+    packet->owner = slot.metadata.owner;
+    packet->reservation_id = slot.metadata.reservation_id;
+    packet->reservation_age = slot.metadata.reservation_age;
+    packet->target_operation_seq =
+        slot.metadata.target_operation_seq;
+    packet->slot_generation = slot.metadata.slot_generation;
+    packet->target_kind = kTargetInstance;
+    packet->operation_kind = kOperationInstanceRestoreParent;
+    packet->parent_frame = parent_frame;
+    packet->valid = 1;
+    return kStatusOk;
+  }
   reservation_input_v0 input = {};
   input.owner = slot.metadata.owner;
   input.target_reference = slot.metadata.target_reference;
@@ -858,15 +966,13 @@ status_kind build_operation_packet(const Slot &slot, target_kind target,
 }
 
 template <typename Slot>
-status_kind pop_from_queue(Slot *slots, uint8_t capacity,
-                           ready_fifo_v0 *fifo, target_kind target,
-                           bool unit_input_accepts,
-                           operation_packet_v0 *packet) {
-  if (fifo->count == 0) return kStatusNoReadyOperation;
-  if (!unit_input_accepts) return kStatusUnitInputBackpressure;
-  const uint8_t slot_index = fifo->indices[0];
+status_kind validate_ready_position(const Slot *slots, uint8_t capacity,
+                                    const ready_fifo_v0 &fifo,
+                                    target_kind target, uint8_t position) {
+  if (position >= fifo.count) return kStatusNoReadyOperation;
+  const uint8_t slot_index = fifo.indices[position];
   if (slot_index >= capacity) return kStatusReadyFifoInvariant;
-  Slot &slot = slots[slot_index];
+  const Slot &slot = slots[slot_index];
   if (slot.metadata.state != kSlotReady ||
       slot.metadata.ready_enqueued != 1 ||
       slot.metadata.target_kind != target ||
@@ -878,13 +984,48 @@ status_kind pop_from_queue(Slot *slots, uint8_t capacity,
       slot.metadata.raw_payload_bytes > sizeof(slot.raw_payload)) {
     return kStatusReadyFifoInvariant;
   }
+  return kStatusOk;
+}
+
+template <typename Slot>
+status_kind find_ready_position_kind(
+    const Slot *slots, uint8_t capacity, const ready_fifo_v0 &fifo,
+    target_kind target, operation_kind required_operation_kind,
+    uint8_t *position) {
+  if (position == NULL) return kStatusInvalidArgument;
+  *position = 0;
+  if (fifo.count == 0) return kStatusNoReadyOperation;
+  for (uint8_t index = 0; index < fifo.count; ++index) {
+    const status_kind status =
+        validate_ready_position(slots, capacity, fifo, target, index);
+    if (status != kStatusOk) return status;
+    if (slots[fifo.indices[index]].metadata.operation_kind ==
+        required_operation_kind) {
+      *position = index;
+      return kStatusOk;
+    }
+  }
+  return kStatusNoReadyOperation;
+}
+
+template <typename Slot>
+status_kind pop_from_queue_position(
+    Slot *slots, uint8_t capacity, ready_fifo_v0 *fifo,
+    target_kind target, uint8_t position, bool unit_input_accepts,
+    operation_packet_v0 *packet) {
+  const status_kind ready_status =
+      validate_ready_position(slots, capacity, *fifo, target, position);
+  if (ready_status != kStatusOk) return ready_status;
+  if (!unit_input_accepts) return kStatusUnitInputBackpressure;
+  const uint8_t slot_index = fifo->indices[position];
+  Slot &slot = slots[slot_index];
 
   const status_kind packet_status =
       build_operation_packet(slot, target, packet);
   if (packet_status != kStatusOk) return packet_status;
 
   slot.metadata.state = kSlotIssued;
-  for (unsigned index = 1; index < fifo->count; ++index) {
+  for (unsigned index = position + 1; index < fifo->count; ++index) {
     fifo->indices[index - 1] = fifo->indices[index];
     fifo->reservation_ages[index - 1] =
         fifo->reservation_ages[index];
@@ -899,26 +1040,32 @@ status_kind pop_from_queue(Slot *slots, uint8_t capacity,
 }
 
 template <typename Slot>
+status_kind pop_from_queue(Slot *slots, uint8_t capacity,
+                           ready_fifo_v0 *fifo, target_kind target,
+                           bool unit_input_accepts,
+                           operation_packet_v0 *packet) {
+  return pop_from_queue_position(slots, capacity, fifo, target, 0,
+                                 unit_input_accepts, packet);
+}
+
+template <typename Slot>
+status_kind peek_from_queue_position(
+    const Slot *slots, uint8_t capacity, const ready_fifo_v0 &fifo,
+    target_kind target, uint8_t position, operation_packet_v0 *packet) {
+  const status_kind ready_status =
+      validate_ready_position(slots, capacity, fifo, target, position);
+  if (ready_status != kStatusOk) return ready_status;
+  const Slot &slot = slots[fifo.indices[position]];
+  return build_operation_packet(slot, target, packet);
+}
+
+template <typename Slot>
 status_kind peek_from_queue(const Slot *slots, uint8_t capacity,
                             const ready_fifo_v0 &fifo,
                             target_kind target,
                             operation_packet_v0 *packet) {
-  if (fifo.count == 0) return kStatusNoReadyOperation;
-  const uint8_t slot_index = fifo.indices[0];
-  if (slot_index >= capacity) return kStatusReadyFifoInvariant;
-  const Slot &slot = slots[slot_index];
-  if (slot.metadata.state != kSlotReady ||
-      slot.metadata.ready_enqueued != 1 ||
-      slot.metadata.target_kind != target ||
-      slot.metadata.valid_operand_mask !=
-          slot.metadata.required_operand_mask ||
-      slot.metadata.producer_commit_complete != 1 ||
-      slot.metadata.pending_raw_response_count != 0 ||
-      slot.metadata.pending_private_response_count != 0 ||
-      slot.metadata.raw_payload_bytes > sizeof(slot.raw_payload)) {
-    return kStatusReadyFifoInvariant;
-  }
-  return build_operation_packet(slot, target, packet);
+  return peek_from_queue_position(slots, capacity, fifo, target, 0,
+                                  packet);
 }
 
 template <typename Slot>
@@ -987,6 +1134,7 @@ status_kind build_ready_operation_packet(
   packet->slot_generation = slot_generation;
   packet->raw_payload_bytes = input.raw_payload_bytes;
   packet->target_kind = input.target_kind;
+  packet->operation_kind = kOperationFetchTarget;
   packet->valid = 1;
   packet->target_reference = input.target_reference;
   packet->ray_policy = input.forwarded_ray_policy;
@@ -1191,6 +1339,21 @@ status_kind try_reserve_recovery(
       break;
   }
   return kStatusInvalidSelectedFetch;
+}
+
+status_kind try_reserve_instance_restore_parent(
+    engine_state_v0 *state,
+    const instance_restore_reservation_input_v0 &input,
+    uint64_t reservation_cycle, reservation_receipt_v0 *receipt) {
+  if (state == NULL || receipt == NULL || state->initialized != 1 ||
+      !instance_restore_reservation_identity_valid(input)) {
+    return kStatusInvalidArgument;
+  }
+  *receipt = reservation_receipt_v0();
+  return reserve_instance_restore_in_queue(
+      state->instance_slots, state->config.instance_capacity,
+      &state->instance_window, state->config.instance_reservation_width,
+      state, input, reservation_cycle, receipt);
 }
 
 status_kind try_reserve_prefill(
@@ -1526,6 +1689,98 @@ status_kind peek_ready_operation(const engine_state_v0 &state,
       return peek_from_queue(
           state.instance_slots, state.config.instance_capacity,
           state.instance_ready, target, packet);
+    case kTargetInvalid:
+      return kStatusInvalidArgument;
+  }
+  return kStatusInvalidArgument;
+}
+
+status_kind pop_ready_operation_kind(
+    engine_state_v0 *state, target_kind target,
+    operation_kind required_operation_kind, bool unit_input_accepts,
+    operation_packet_v0 *packet) {
+  if (state == NULL || packet == NULL || state->initialized != 1 ||
+      (required_operation_kind != kOperationFetchTarget &&
+       required_operation_kind != kOperationInstanceRestoreParent)) {
+    return kStatusInvalidArgument;
+  }
+  *packet = operation_packet_v0();
+  uint8_t position = 0;
+  status_kind status = kStatusInvalidArgument;
+  switch (target) {
+    case kTargetNode:
+      status = find_ready_position_kind(
+          state->node_slots, state->config.node_capacity,
+          state->node_ready, target, required_operation_kind, &position);
+      if (status != kStatusOk) return status;
+      return pop_from_queue_position(
+          state->node_slots, state->config.node_capacity,
+          &state->node_ready, target, position, unit_input_accepts,
+          packet);
+    case kTargetPrimitive:
+      status = find_ready_position_kind(
+          state->primitive_slots, state->config.primitive_capacity,
+          state->primitive_ready, target, required_operation_kind,
+          &position);
+      if (status != kStatusOk) return status;
+      return pop_from_queue_position(
+          state->primitive_slots, state->config.primitive_capacity,
+          &state->primitive_ready, target, position, unit_input_accepts,
+          packet);
+    case kTargetInstance:
+      status = find_ready_position_kind(
+          state->instance_slots, state->config.instance_capacity,
+          state->instance_ready, target, required_operation_kind,
+          &position);
+      if (status != kStatusOk) return status;
+      return pop_from_queue_position(
+          state->instance_slots, state->config.instance_capacity,
+          &state->instance_ready, target, position, unit_input_accepts,
+          packet);
+    case kTargetInvalid:
+      return kStatusInvalidArgument;
+  }
+  return kStatusInvalidArgument;
+}
+
+status_kind peek_ready_operation_kind(
+    const engine_state_v0 &state, target_kind target,
+    operation_kind required_operation_kind, operation_packet_v0 *packet) {
+  if (packet == NULL || state.initialized != 1 ||
+      (required_operation_kind != kOperationFetchTarget &&
+       required_operation_kind != kOperationInstanceRestoreParent)) {
+    return kStatusInvalidArgument;
+  }
+  *packet = operation_packet_v0();
+  uint8_t position = 0;
+  status_kind status = kStatusInvalidArgument;
+  switch (target) {
+    case kTargetNode:
+      status = find_ready_position_kind(
+          state.node_slots, state.config.node_capacity, state.node_ready,
+          target, required_operation_kind, &position);
+      if (status != kStatusOk) return status;
+      return peek_from_queue_position(
+          state.node_slots, state.config.node_capacity, state.node_ready,
+          target, position, packet);
+    case kTargetPrimitive:
+      status = find_ready_position_kind(
+          state.primitive_slots, state.config.primitive_capacity,
+          state.primitive_ready, target, required_operation_kind,
+          &position);
+      if (status != kStatusOk) return status;
+      return peek_from_queue_position(
+          state.primitive_slots, state.config.primitive_capacity,
+          state.primitive_ready, target, position, packet);
+    case kTargetInstance:
+      status = find_ready_position_kind(
+          state.instance_slots, state.config.instance_capacity,
+          state.instance_ready, target, required_operation_kind,
+          &position);
+      if (status != kStatusOk) return status;
+      return peek_from_queue_position(
+          state.instance_slots, state.config.instance_capacity,
+          state.instance_ready, target, position, packet);
     case kTargetInvalid:
       return kStatusInvalidArgument;
   }

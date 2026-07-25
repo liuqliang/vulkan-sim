@@ -32,11 +32,22 @@ bool receipt_shape_valid(
                 reservation.producer_commit_epoch == 0
           : reservation.producer_operation_seq != 0 &&
                 reservation.producer_commit_epoch != 0;
+  const bool restore_shape =
+      reservation.operation_kind ==
+          fetch_target::kOperationInstanceRestoreParent &&
+      reservation.target_kind == fetch_target::kTargetInstance &&
+      reservation.raw_payload_bytes == 0 &&
+      reservation.raw_chunk_count == 0 &&
+      reservation.private_chunk_count == 5 &&
+      reservation.producer_commit_required == 0;
+  const bool fetch_shape =
+      reservation.operation_kind == fetch_target::kOperationFetchTarget &&
+      reservation.private_chunk_count == kMaxPrivateReadChunks;
   return reservation.valid == 1 && reservation.reservation_id != 0 &&
          reservation.reservation_age != 0 &&
          reservation.target_operation_seq != 0 &&
          producer_tag_valid && reservation.slot_generation != 0 &&
-         reservation.private_chunk_count == kMaxPrivateReadChunks &&
+         (restore_shape || fetch_shape) &&
          reservation.owner.request_identity != 0 &&
          reservation.owner.generation != 0 &&
          reservation.owner.lane_id < 32 &&
@@ -50,12 +61,33 @@ bool request_shape_valid(
     const rtcore_memory_unit_request_snapshot &request) {
   const rtcore_v04_target_raw_read_transport_snapshot &extension =
       request.v04_target_raw_read;
+  const uint64_t expected_private_slot_base =
+      UINT64_C(0xff00000000000000) +
+      static_cast<uint64_t>(request.owner_hw_sid) * UINT64_C(0x1000000) +
+      static_cast<uint64_t>(request.private_slot_id) *
+          private_frontier::kPrivateDataSlotBytes;
   const bool producer_tag_valid =
       extension.producer_commit_required == 0
           ? extension.producer_operation_seq == 0 &&
                 extension.producer_commit_epoch == 0
           : extension.producer_operation_seq != 0 &&
                 extension.producer_commit_epoch != 0;
+  const bool restore_shape =
+      extension.operation_kind ==
+          fetch_target::kOperationInstanceRestoreParent &&
+      extension.target_kind == fetch_target::kTargetInstance &&
+      extension.raw_payload_bytes == 0 &&
+      request.chunk_count == 5 &&
+      extension.private_chunk_count == 5 &&
+      extension.field_kind == private_frontier::kFieldParentFrame;
+  const bool fetch_shape =
+      extension.operation_kind == fetch_target::kOperationFetchTarget &&
+      request.chunk_count == kMaxPrivateReadChunks &&
+      extension.private_chunk_count == kMaxPrivateReadChunks &&
+      extension.field_kind >=
+          private_frontier::kFieldMutableRayState &&
+      extension.field_kind <=
+          private_frontier::kFieldCommittedHit;
   return request.valid &&
          request.address_space == RTCORE_MEMORY_ADDRESS_SPACE_SHARED &&
          request.operation == RTCORE_MEMORY_OPERATION_READ &&
@@ -66,7 +98,7 @@ bool request_shape_valid(
          request.resident_warp_id < 8 &&
          request.request_generation != 0 &&
          request.private_slot_id < 256 &&
-         request.chunk_count == kMaxPrivateReadChunks &&
+         (restore_shape || fetch_shape) &&
          request.chunk_id < request.chunk_count &&
          request.memory_op_seq ==
              static_cast<unsigned>(request.chunk_id) +
@@ -78,6 +110,8 @@ bool request_shape_valid(
              RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ &&
          (request.aligned_32b_addr &
           (private_frontier::kSharedAccessChunkBytes - 1)) == 0 &&
+         request.aligned_32b_addr ==
+             expected_private_slot_base + extension.slot_chunk_offset &&
          request.byte_mask != 0 && !request.is_write &&
          extension.valid == 1 && extension.reservation_id != 0 &&
          extension.reservation_age != 0 &&
@@ -89,11 +123,6 @@ bool request_shape_valid(
              private_frontier::kSharedAccessChunkBytes &&
          extension.operand_kind ==
              RTCORE_MEMORY_TARGET_OPERAND_PRIVATE_SHARED &&
-         extension.field_kind >=
-             private_frontier::kFieldMutableRayState &&
-         extension.field_kind <=
-             private_frontier::kFieldCommittedHit &&
-         extension.private_chunk_count == kMaxPrivateReadChunks &&
          bytes_are_zero(extension.reserved_zero,
                         sizeof(extension.reserved_zero));
 }
@@ -132,6 +161,7 @@ fetch_target::reservation_receipt_v0 reconstruct_reservation(
       extension.private_chunk_count;
   reservation.producer_commit_required =
       extension.producer_commit_required;
+  reservation.operation_kind = extension.operation_kind;
   reservation.valid = 1;
   return reservation;
 }
@@ -147,7 +177,7 @@ status_kind prepare_request_plan(
   if (!receipt_shape_valid(reservation) ||
       !private_frontier::owners_equal(reservation.owner,
                                       read_plan.owner) ||
-      read_plan.access_count != kMaxPrivateReadChunks) {
+      read_plan.access_count != reservation.private_chunk_count) {
     return kStatusMalformedPlan;
   }
   const uint64_t slot_base = private_slot_base(reservation.owner);
@@ -212,6 +242,7 @@ status_kind prepare_request_plan(
     extension.field_kind = access.field_kind;
     extension.private_chunk_count =
         reservation.private_chunk_count;
+    extension.operation_kind = reservation.operation_kind;
     extension.valid = 1;
     if (!request_shape_valid(request)) return kStatusMalformedPlan;
   }

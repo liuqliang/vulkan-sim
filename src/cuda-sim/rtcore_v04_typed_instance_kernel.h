@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "rtcore_v04_typed_blas_decode_context.h"
+#include "rtcore_v04_typed_stack_kernel.h"
 
 namespace rtcore {
 namespace v04 {
@@ -27,6 +28,7 @@ enum status_kind : uint8_t {
   kStatusInvalidRay,
   kStatusDegenerateTransform,
   kStatusInvalidTransitionBinding,
+  kStatusInvalidParentFrame,
 };
 
 enum level_kind : uint8_t {
@@ -45,6 +47,20 @@ enum enter_output_valid_bit : uint8_t {
   kObjectRayValid = 1u << 0,
   kInstanceProjectionValid = 1u << 1,
   kRootFetchValid = 1u << 2,
+};
+
+enum restore_operation_kind : uint8_t {
+  kRestoreOperationInvalid = 0,
+  kRestoreParent = 1,
+};
+
+enum restore_result_kind : uint8_t {
+  kRestoreResultInvalid = 0,
+  kInstanceParentRestored = 1,
+};
+
+enum restore_output_valid_bit : uint8_t {
+  kParentStateRestoredValid = 1u << 3,
 };
 
 struct raw_payload_header_v0 {
@@ -154,6 +170,21 @@ struct alignas(16) enter_result_v0 {
   root_fetch_work_item_v0 root_fetch;
 };
 
+struct alignas(16) restore_parent_input_v0 {
+  uint32_t profile_id;
+  uint8_t operation_kind;
+  uint8_t reserved_zero[11];
+  typed_stack::traversal_frame_projection_v0 parent_frame;
+};
+
+struct alignas(16) restore_parent_result_v0 {
+  uint8_t status;
+  uint8_t result_kind;
+  uint8_t output_valid_mask;
+  uint8_t reserved_zero[13];
+  typed_stack::traversal_frame_projection_v0 restored_parent;
+};
+
 static_assert(sizeof(raw_payload_header_v0) == 8,
               "raw payload header must remain 8 bytes");
 static_assert(sizeof(raw_instance_payload_v0) == 136,
@@ -210,6 +241,14 @@ static_assert(offsetof(enter_result_v0, instance_projection) == 64,
               "typed Instance shader projection offset changed");
 static_assert(offsetof(enter_result_v0, root_fetch) == 96,
               "typed Instance root fetch offset changed");
+static_assert(sizeof(restore_parent_input_v0) == 144,
+              "typed Instance restore input must remain 144 bytes");
+static_assert(sizeof(restore_parent_result_v0) == 144,
+              "typed Instance restore result must remain 144 bytes");
+static_assert(offsetof(restore_parent_input_v0, parent_frame) == 16,
+              "typed Instance restore input frame offset changed");
+static_assert(offsetof(restore_parent_result_v0, restored_parent) == 16,
+              "typed Instance restore result frame offset changed");
 
 bool make_raw_instance_payload(const void *raw_instance_bytes,
                                raw_instance_payload_v0 *payload);
@@ -221,6 +260,13 @@ bool make_mutable_ray_state(const float origin[3], const float direction[3],
                             mutable_ray_state_v0 *ray);
 
 enter_result_v0 execute_enter(const enter_input_v0 &input);
+
+restore_parent_result_v0 execute_restore_parent(
+    const restore_parent_input_v0 &input);
+
+bool validate_restore_parent_result(
+    const restore_parent_input_v0 &input,
+    const restore_parent_result_v0 &result);
 
 const char *status_name(status_kind status);
 

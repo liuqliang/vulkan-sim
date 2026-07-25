@@ -105,6 +105,43 @@ static bool valid_instance_reference(
          uint64_t{128} <= tlas_context.device_range_bytes - offset;
 }
 
+static bool valid_parent_frame(
+    const typed_stack::traversal_frame_projection_v0 &frame) {
+  bool any_direction = false;
+  for (unsigned component = 0; component < 3; ++component) {
+    if (!std::isfinite(frame.ray.origin[component]) ||
+        !std::isfinite(frame.ray.direction[component]) ||
+        !valid_inverse_component(frame.ray.direction[component],
+                                 frame.ray.inverse_direction[component])) {
+      return false;
+    }
+    any_direction =
+        any_direction || frame.ray.direction[component] != 0.0f;
+  }
+  const typed_blas::as_decode_context_v0 &context =
+      frame.current_decode_context;
+  return any_direction && std::isfinite(frame.ray.t_min) &&
+         std::isfinite(frame.ray.t_max) &&
+         frame.ray.t_min <= frame.ray.t_max &&
+         frame.traversal_level == 0 &&
+         frame.frontier_marker.frontier_top ==
+             frame.frontier_marker.frontier_count &&
+         frame.frontier_marker.frontier_top <= 16 &&
+         frame.frontier_marker.level_frame_depth == 0 &&
+         frame.frontier_marker.reserved_zero == 0 &&
+         context.bvh_format_profile_id == kGenRtDerivedProfileId &&
+         context.reserved_zero == 0 &&
+         context.as_object.object_id != 0 &&
+         context.as_object.generation != 0 &&
+         context.as_object.as_type == kAsTypeTlas &&
+         bytes_are_zero(context.as_object.reserved_zero,
+                        sizeof(context.as_object.reserved_zero)) &&
+         context.device_base != 0 &&
+         context.device_range_bytes >= 64 &&
+         bytes_are_zero(frame.current_instance.reserved_zero,
+                        sizeof(frame.current_instance.reserved_zero));
+}
+
 static bool nondegenerate_matrix(const uint32_t bits[kMatrixElementCount]) {
   const float m00 = fp32_from_bits(bits[0]);
   const float m01 = fp32_from_bits(bits[1]);
@@ -369,6 +406,45 @@ enter_result_v0 execute_enter(const enter_input_v0 &input) {
   return result;
 }
 
+restore_parent_result_v0 execute_restore_parent(
+    const restore_parent_input_v0 &input) {
+  restore_parent_result_v0 result = {};
+  result.status = kStatusInvalidArgument;
+  if (input.profile_id != kGenRtDerivedProfileId) {
+    result.status = kStatusUnsupportedProfile;
+    return result;
+  }
+  if (input.operation_kind != kRestoreParent ||
+      !bytes_are_zero(input.reserved_zero, sizeof(input.reserved_zero))) {
+    return result;
+  }
+  if (!valid_parent_frame(input.parent_frame)) {
+    result.status = kStatusInvalidParentFrame;
+    return result;
+  }
+  result.status = kStatusOk;
+  result.result_kind = kInstanceParentRestored;
+  result.output_valid_mask = kParentStateRestoredValid;
+  result.restored_parent = input.parent_frame;
+  return result;
+}
+
+bool validate_restore_parent_result(
+    const restore_parent_input_v0 &input,
+    const restore_parent_result_v0 &result) {
+  return input.profile_id == kGenRtDerivedProfileId &&
+         input.operation_kind == kRestoreParent &&
+         bytes_are_zero(input.reserved_zero, sizeof(input.reserved_zero)) &&
+         valid_parent_frame(input.parent_frame) &&
+         result.status == kStatusOk &&
+         result.result_kind == kInstanceParentRestored &&
+         result.output_valid_mask == kParentStateRestoredValid &&
+         bytes_are_zero(result.reserved_zero,
+                        sizeof(result.reserved_zero)) &&
+         std::memcmp(&result.restored_parent, &input.parent_frame,
+                     sizeof(input.parent_frame)) == 0;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:
@@ -391,6 +467,8 @@ const char *status_name(status_kind status) {
       return "degenerate_transform";
     case kStatusInvalidTransitionBinding:
       return "invalid_transition_binding";
+    case kStatusInvalidParentFrame:
+      return "invalid_parent_frame";
   }
   return "unknown";
 }

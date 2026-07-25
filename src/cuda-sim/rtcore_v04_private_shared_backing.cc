@@ -128,6 +128,10 @@ static bool field_contains_offset(uint8_t field_kind, uint32_t offset) {
     case private_frontier::kFieldParentFrame:
       return offset >= private_frontier::kParentFrameOffset &&
              offset < private_frontier::kParentFrameEnd;
+    case private_frontier::kFieldCurrentInstance:
+      return offset >= private_frontier::kCurrentInstanceOffset &&
+             offset < private_frontier::kCurrentInstanceOffset +
+                          private_frontier::kCurrentInstanceBytes;
     default:
       return false;
   }
@@ -1099,6 +1103,31 @@ status_kind prepare_empty_pop_operand_read_plan(
   const private_frontier::status_kind status =
       private_frontier::build_empty_pop_operand_read_plan(
           owner, region, returned_metadata, read_plan);
+  return status == private_frontier::kStatusOk ? kStatusOk
+                                               : kStatusPlannerFailure;
+}
+
+status_kind prepare_parent_frame_read_plan(
+    const backing_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    private_frontier::access_plan_v0 *read_plan) {
+  if (!state.initialized || read_plan == NULL) {
+    return kStatusInvalidArgument;
+  }
+  const lane_slot_state_v0 *lane = find_live_lane(state, owner);
+  if (lane == NULL) return kStatusInvalidOwner;
+  const resident_warp_state_v0 &warp =
+      state.resident_warps[owner.resident_warp_id];
+  if (!warp.live || !warp.scheduler_ready) {
+    return kStatusNoAckReady;
+  }
+  private_frontier::region_binding_v0 region = {};
+  region.profile_id = private_frontier::kLayoutProfileId;
+  region.slot_count = 256;
+  region.private_region_base = private_region_base(state.owner_hw_sid);
+  const private_frontier::status_kind status =
+      private_frontier::build_parent_frame_read_plan(
+          lane->canonical_slot, owner, region, read_plan);
   return status == private_frontier::kStatusOk ? kStatusOk
                                                : kStatusPlannerFailure;
 }

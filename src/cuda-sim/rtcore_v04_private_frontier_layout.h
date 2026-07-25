@@ -21,6 +21,8 @@ static const uint32_t kFrontierMetadataOffset = 0x02c;
 static const uint32_t kFrontierMetadataBytes = 24;
 static const uint32_t kAsDecodeContextOffset = 0x048;
 static const uint32_t kAsDecodeContextBytes = 40;
+static const uint32_t kCurrentInstanceOffset = 0x070;
+static const uint32_t kCurrentInstanceBytes = 24;
 static const uint32_t kCommittedHitOffset = 0x088;
 static const uint32_t kCommittedHitBytes = 64;
 static const uint32_t kFrontierEntriesOffset = 0x108;
@@ -71,6 +73,7 @@ enum field_kind : uint8_t {
   kFieldAsDecodeContext = 5,
   kFieldCommittedHit = 6,
   kFieldParentFrame = 7,
+  kFieldCurrentInstance = 8,
 };
 
 struct owner_binding_v0 {
@@ -103,6 +106,8 @@ typedef typed_stack::committed_hit_projection_v0
     committed_hit_projection_v0;
 typedef typed_stack::traversal_frame_projection_v0
     traversal_frame_projection_v0;
+typedef typed_stack::instance_shader_projection_v0
+    instance_shader_projection_v0;
 
 struct root_private_operands_v0 {
   mutable_ray_state_v0 mutable_ray;
@@ -143,6 +148,15 @@ static_assert(sizeof(mutable_ray_state_v0) == kMutableRayStateBytes,
 static_assert(sizeof(typed_blas::as_decode_context_v0) ==
                   kAsDecodeContextBytes,
               "AS decode context must remain 40 bytes");
+static_assert(sizeof(instance_shader_projection_v0) ==
+                  kCurrentInstanceBytes,
+              "current Instance projection must remain 24 bytes");
+static_assert(kAsDecodeContextOffset + kAsDecodeContextBytes ==
+                  kCurrentInstanceOffset,
+              "current Instance projection must follow AS context");
+static_assert(kCurrentInstanceOffset + kCurrentInstanceBytes ==
+                  kCommittedHitOffset,
+              "committed hit must follow current Instance projection");
 static_assert(sizeof(committed_hit_projection_v0) == kCommittedHitBytes,
               "committed hit projection must remain 64 bytes");
 static_assert(sizeof(typed_node::compact_child_work_item_v0) ==
@@ -200,6 +214,10 @@ status_kind build_empty_pop_operand_read_plan(
     const frontier_metadata_image_v0 &returned_metadata,
     access_plan_v0 *read_plan);
 
+status_kind build_parent_frame_read_plan(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region, access_plan_v0 *read_plan);
+
 status_kind decode_root_private_operands(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     root_private_operands_v0 *operands);
@@ -217,6 +235,10 @@ status_kind decode_parent_frame(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     traversal_frame_projection_v0 *parent_frame);
 
+status_kind decode_current_instance(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    instance_shader_projection_v0 *current_instance);
+
 status_kind decode_committed_hit(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     committed_hit_projection_v0 *committed_hit);
@@ -231,6 +253,12 @@ status_kind apply_parent_restore_delta(
     shadow_slot_v0 *slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region,
     const typed_stack::frontier_level_delta_v0 &delta,
+    access_plan_v0 *write_plan);
+
+status_kind apply_parent_state_restore(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const traversal_frame_projection_v0 &parent_frame,
     access_plan_v0 *write_plan);
 
 status_kind apply_append_delta(

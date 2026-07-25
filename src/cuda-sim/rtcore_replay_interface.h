@@ -158,7 +158,8 @@ struct rtcore_v04_target_raw_read_transport_snapshot {
   uint8_t field_kind;
   uint8_t private_chunk_count;
   uint8_t valid;
-  uint8_t reserved_zero[2];
+  uint8_t operation_kind;
+  uint8_t reserved_zero[1];
 };
 
 struct rtcore_v04_stack_private_read_transport_snapshot {
@@ -236,6 +237,7 @@ static const unsigned RTCORE_MEMORY_TARGET_OPERAND_HANDOFF_RAY_POLICY = 4u;
 extern "C" bool
 rtcore_v04_private_frontier_live_init_memory_issue_profile_active();
 extern "C" bool rtcore_v04_live_stack_pop_next_loop_gate_active();
+extern "C" bool rtcore_v04_live_instance_restore_parent_gate_active();
 
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE = 0xfffffff0u;
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT = 4u;

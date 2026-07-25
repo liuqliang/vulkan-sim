@@ -288,6 +288,11 @@ status_kind prepare_empty_pop_operand_read_plan(
     const private_frontier::frontier_metadata_image_v0 &returned_metadata,
     private_frontier::access_plan_v0 *read_plan);
 
+status_kind prepare_parent_frame_read_plan(
+    const backing_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    private_frontier::access_plan_v0 *read_plan);
+
 status_kind read_canonical_chunk(
     const backing_state_v0 &state,
     const private_frontier::owner_binding_v0 &owner,

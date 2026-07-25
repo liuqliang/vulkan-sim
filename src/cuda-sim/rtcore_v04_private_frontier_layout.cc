@@ -473,7 +473,8 @@ static status_kind append_range_to_plan(
        field != kFieldMutableRayState &&
        field != kFieldAsDecodeContext &&
        field != kFieldCommittedHit &&
-       field != kFieldParentFrame)) {
+       field != kFieldParentFrame &&
+       field != kFieldCurrentInstance)) {
     return kStatusInvalidArgument;
   }
   if (slot_offset >= kPrivateDataSlotBytes ||
@@ -672,6 +673,23 @@ status_kind build_empty_pop_operand_read_plan(
   return kStatusOk;
 }
 
+status_kind build_parent_frame_read_plan(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region, access_plan_v0 *read_plan) {
+  if (read_plan == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldParentFrame, kAccessRead,
+      kParentFrameOffset, kParentFrameBytes);
+  if (status != kStatusOk) return status;
+  if (plan.access_count != 5) return kStatusPlanCapacityExceeded;
+  *read_plan = plan;
+  return kStatusOk;
+}
+
 status_kind initialize_root_shadow_slot(
     shadow_slot_v0 *slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region,
@@ -807,6 +825,17 @@ status_kind decode_parent_frame(
   return kStatusOk;
 }
 
+status_kind decode_current_instance(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    instance_shader_projection_v0 *current_instance) {
+  if (current_instance == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  *current_instance = decode_instance_projection_bytes(
+      slot.bytes + kCurrentInstanceOffset);
+  return kStatusOk;
+}
+
 status_kind decode_committed_hit(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     committed_hit_projection_v0 *committed_hit) {
@@ -906,6 +935,46 @@ status_kind apply_parent_restore_delta(
   metadata.level_frame_depth = delta.new_level_frame_depth;
   encode_metadata_bytes(updated.bytes + kFrontierMetadataOffset,
                         metadata);
+  *slot = updated;
+  *write_plan = plan;
+  return kStatusOk;
+}
+
+status_kind apply_parent_state_restore(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const traversal_frame_projection_v0 &parent_frame,
+    access_plan_v0 *write_plan) {
+  if (slot == NULL || write_plan == NULL ||
+      !valid_parent_frame(parent_frame)) {
+    return kStatusInvalidArgument;
+  }
+  status_kind status = validate_slot_owner(*slot, owner);
+  if (status != kStatusOk) return status;
+
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldMutableRayState, kAccessWrite,
+      kMutableRayStateOffset, kMutableRayStateBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldAsDecodeContext, kAccessWrite,
+      kAsDecodeContextOffset, kAsDecodeContextBytes);
+  if (status != kStatusOk) return status;
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldCurrentInstance, kAccessWrite,
+      kCurrentInstanceOffset, kCurrentInstanceBytes);
+  if (status != kStatusOk) return status;
+  if (plan.access_count != 6) return kStatusPlanCapacityExceeded;
+
+  shadow_slot_v0 updated = *slot;
+  encode_mutable_ray_bytes(updated.bytes + kMutableRayStateOffset,
+                           parent_frame.ray);
+  encode_decode_context_bytes(updated.bytes + kAsDecodeContextOffset,
+                              parent_frame.current_decode_context);
+  encode_instance_projection_bytes(updated.bytes + kCurrentInstanceOffset,
+                                   parent_frame.current_instance);
   *slot = updated;
   *write_plan = plan;
   return kStatusOk;
