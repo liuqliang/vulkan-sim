@@ -539,6 +539,86 @@ status_kind capture_stack_pop_result_from_projection_with_selector(
   return kStatusOk;
 }
 
+status_kind capture_stack_restore_parent_result(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const typed_stack::empty_input_v0 &input,
+    const typed_stack::empty_result_v0 &result,
+    issue_receipt_v0 *receipt) {
+  if (state == NULL || receipt == NULL || state->initialized != 1 ||
+      producer_operation_seq == 0 || commit_epoch == 0 ||
+      target_operation_seq == 0 ||
+      producer_operation_seq == target_operation_seq) {
+    return kStatusInvalidArgument;
+  }
+  std::memset(receipt, 0, sizeof(*receipt));
+  if (operation_is_live(*state, owner, producer_operation_seq)) {
+    return kStatusDuplicateOperation;
+  }
+  const int result_slot = find_free_result_entry(*state);
+  if (result_slot < 0) return kStatusResultCommitBackpressure;
+  const int tracker_slot = find_free_tracker(*state);
+  if (tracker_slot < 0) return kStatusTrackerBackpressure;
+  if (state->next_issue_age == 0) {
+    return kStatusOperationSequenceExhausted;
+  }
+
+  stack_semantic::pop_commit_plan_v0 semantic_plan = {};
+  if (stack_semantic::prepare_stack_restore_parent(
+          owner, producer_operation_seq, region, input, result,
+          &semantic_plan) != stack_semantic::kStatusOk) {
+    return kStatusSemanticPlanRejected;
+  }
+
+  result_commit_entry_v0 prepared_entry = {};
+  prepared_entry.owner = owner;
+  prepared_entry.issue_age = state->next_issue_age;
+  prepared_entry.operation_seq = producer_operation_seq;
+  prepared_entry.target_operation_seq = target_operation_seq;
+  prepared_entry.commit_epoch = commit_epoch;
+  prepared_entry.forwarding_kind = kForwardingRestoreParent;
+  prepared_entry.tracker_slot = static_cast<uint8_t>(tracker_slot);
+  prepared_entry.write_count = semantic_plan.write_fragment_count;
+  for (unsigned index = 0;
+       index < semantic_plan.write_fragment_count; ++index) {
+    prepared_entry.writes[index] =
+        semantic_plan.write_fragments[index];
+  }
+
+  request_commit_tracker_v0 prepared_tracker = {};
+  prepared_tracker.owner = owner;
+  prepared_tracker.issue_age = state->next_issue_age;
+  prepared_tracker.operation_seq = producer_operation_seq;
+  prepared_tracker.target_operation_seq = target_operation_seq;
+  prepared_tracker.commit_epoch = commit_epoch;
+  prepared_tracker.expected_write_count =
+      prepared_entry.write_count;
+  prepared_tracker.forwarding_kind = kForwardingRestoreParent;
+  prepared_tracker.valid = 1;
+  if (prepared_entry.write_count == 0) {
+    prepared_tracker.payload_transferred = 1;
+    prepared_tracker.ready = 1;
+  } else {
+    prepared_entry.valid = 1;
+  }
+  state->trackers[tracker_slot] = prepared_tracker;
+  if (prepared_entry.valid != 0) {
+    state->result_entries[result_slot] = prepared_entry;
+  }
+
+  receipt->producer_operation_seq = producer_operation_seq;
+  receipt->target_operation_seq = target_operation_seq;
+  receipt->commit_epoch = commit_epoch;
+  receipt->write_count = prepared_tracker.expected_write_count;
+  receipt->forwarding_kind = kForwardingRestoreParent;
+  receipt->immediate_ready = prepared_tracker.ready;
+  ++state->next_issue_age;
+  return kStatusOk;
+}
+
 status_kind peek_write_offer(const engine_state_v0 &state,
                              write_offer_v0 *offer) {
   if (offer == NULL || state.initialized != 1) {
@@ -677,7 +757,10 @@ status_kind pop_ready_event(engine_state_v0 *state, ready_event_v0 *event) {
           ? kReadyForwardedTarget
           : tracker.forwarding_kind == kForwardingSpillToMemory
                 ? kReadySpillRecovery
-                : kReadyStackPopRetry;
+                : tracker.forwarding_kind ==
+                          kForwardingRestoreParent
+                      ? kReadyInstanceRestoreParent
+                      : kReadyStackPopRetry;
   std::memset(&state->trackers[selected], 0, sizeof(state->trackers[selected]));
   return kStatusOk;
 }

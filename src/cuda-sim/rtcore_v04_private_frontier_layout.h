@@ -27,6 +27,9 @@ static const uint32_t kFrontierEntriesOffset = 0x108;
 static const uint32_t kFrontierEntryBytes = 16;
 static const uint32_t kFrontierEntryCapacity = 16;
 static const uint32_t kFrontierEntriesEnd = 0x208;
+static const uint32_t kParentFrameOffset = 0x208;
+static const uint32_t kParentFrameBytes = 128;
+static const uint32_t kParentFrameEnd = 0x288;
 static const uint32_t kTransitionSpillOffset = 0x288;
 static const uint32_t kTransitionSpillBytes = 184;
 static const uint32_t kStackTransitionSpillBytes = 128;
@@ -36,6 +39,7 @@ static const uint32_t kTransitionSpillEnd =
     kTransitionSpillOffset + kTransitionSpillBytes;
 static const uint32_t kMaxAccessChunks = 12;
 static const uint32_t kMaxNonemptyPopOperandChunks = 9;
+static const uint32_t kMaxEmptyPopOperandChunks = 5;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -66,6 +70,7 @@ enum field_kind : uint8_t {
   kFieldMutableRayState = 4,
   kFieldAsDecodeContext = 5,
   kFieldCommittedHit = 6,
+  kFieldParentFrame = 7,
 };
 
 struct owner_binding_v0 {
@@ -93,33 +98,11 @@ struct frontier_metadata_image_v0 {
   uint32_t max_level_depth;
 };
 
-struct mutable_ray_state_v0 {
-  float origin[3];
-  float direction[3];
-  float inverse_direction[3];
-  float t_min;
-  float t_max;
-};
-
-struct committed_hit_projection_v0 {
-  uint8_t valid;
-  uint8_t geometry_type;
-  uint8_t hit_kind;
-  uint8_t attribute_word_count;
-  uint8_t attribute_location;
-  uint8_t attribute_format;
-  uint8_t reserved_zero0[2];
-  float hit_t;
-  uint32_t policy_flags;
-  uint64_t instance_metadata_ref;
-  uint32_t primitive_index;
-  uint32_t geometry_index;
-  uint32_t instance_index;
-  uint32_t instance_custom_index;
-  uint32_t instance_sbt_contribution;
-  uint32_t reserved_zero1;
-  uint32_t inline_attributes[4];
-};
+typedef typed_stack::mutable_ray_state_v0 mutable_ray_state_v0;
+typedef typed_stack::committed_hit_projection_v0
+    committed_hit_projection_v0;
+typedef typed_stack::traversal_frame_projection_v0
+    traversal_frame_projection_v0;
 
 struct root_private_operands_v0 {
   mutable_ray_state_v0 mutable_ray;
@@ -169,6 +152,12 @@ static_assert(kFrontierEntriesOffset +
                       kFrontierEntryCapacity * kFrontierEntryBytes ==
                   kFrontierEntriesEnd,
               "private frontier entry range changed");
+static_assert(kParentFrameOffset == kFrontierEntriesEnd,
+              "parent frame must follow frontier entries");
+static_assert(kParentFrameEnd == kTransitionSpillOffset,
+              "parent frame must end at transition spill");
+static_assert(sizeof(traversal_frame_projection_v0) == kParentFrameBytes,
+              "private parent frame must remain 128 bytes");
 static_assert(kTransitionSpillEnd == kPrivateDataSlotBytes,
               "transition spill must end at private-slot boundary");
 static_assert(kStackSelectedFetchBytes == 56,
@@ -206,6 +195,11 @@ status_kind build_nonempty_pop_operand_read_plan(
     const frontier_metadata_image_v0 &returned_metadata,
     access_plan_v0 *read_plan);
 
+status_kind build_empty_pop_operand_read_plan(
+    const owner_binding_v0 &owner, const region_binding_v0 &region,
+    const frontier_metadata_image_v0 &returned_metadata,
+    access_plan_v0 *read_plan);
+
 status_kind decode_root_private_operands(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     root_private_operands_v0 *operands);
@@ -218,6 +212,26 @@ status_kind decode_entry(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     uint32_t entry_index,
     typed_node::compact_child_work_item_v0 *entry);
+
+status_kind decode_parent_frame(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    traversal_frame_projection_v0 *parent_frame);
+
+status_kind decode_committed_hit(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    committed_hit_projection_v0 *committed_hit);
+
+status_kind apply_parent_frame_push(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const traversal_frame_projection_v0 &parent_frame,
+    access_plan_v0 *write_plan);
+
+status_kind apply_parent_restore_delta(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const typed_stack::frontier_level_delta_v0 &delta,
+    access_plan_v0 *write_plan);
 
 status_kind apply_append_delta(
     shadow_slot_v0 *slot, const owner_binding_v0 &owner,

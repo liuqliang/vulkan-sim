@@ -32,6 +32,9 @@ enum status_kind : uint8_t {
   kStatusInvalidRemainderOrder,
   kStatusFrontierCapacityExceeded,
   kStatusMissingFrontierOperand,
+  kStatusInvalidLevelTransition,
+  kStatusInvalidParentFrame,
+  kStatusInvalidCommittedHit,
 };
 
 enum result_kind : uint8_t {
@@ -39,23 +42,90 @@ enum result_kind : uint8_t {
   kStackPushedAndSelected = 1,
   kStackPrunedRetryPop = 2,
   kStackSelectedNext = 3,
+  kStackRestoreParent = 4,
+  kStackFinalHit = 5,
+  kStackFinalMiss = 6,
 };
 
 enum output_valid_bit : uint8_t {
   kFrontierDeltaValid = 1u << 0,
   kSelectedFetchValid = 1u << 1,
+  kParentFrameValid = 1u << 2,
+  kTerminalHitValid = 1u << 4,
 };
 
 enum frontier_action : uint8_t {
   kFrontierActionNone = 0,
   kFrontierActionAppendChildren = 1,
   kFrontierActionPopChild = 2,
+  kFrontierActionPopFrame = 3,
 };
 
 struct frontier_metadata_v0 {
   uint32_t frontier_top;
   uint32_t frontier_count;
   uint32_t frontier_capacity;
+};
+
+struct frontier_state_v0 {
+  uint32_t frontier_top;
+  uint32_t frontier_count;
+  uint32_t frontier_capacity;
+  uint32_t current_level;
+  uint32_t level_frame_depth;
+  uint32_t max_level_depth;
+};
+
+struct mutable_ray_state_v0 {
+  float origin[3];
+  float direction[3];
+  float inverse_direction[3];
+  float t_min;
+  float t_max;
+};
+
+struct instance_shader_projection_v0 {
+  uint64_t instance_metadata_ref;
+  uint32_t instance_index;
+  uint32_t instance_custom_index;
+  uint32_t instance_sbt_contribution;
+  uint8_t instance_policy_flags;
+  uint8_t reserved_zero[3];
+};
+
+struct parent_frontier_marker_v0 {
+  uint32_t frontier_top;
+  uint32_t frontier_count;
+  uint32_t level_frame_depth;
+  uint32_t reserved_zero;
+};
+
+struct traversal_frame_projection_v0 {
+  mutable_ray_state_v0 ray;
+  uint32_t traversal_level;
+  parent_frontier_marker_v0 frontier_marker;
+  typed_blas::as_decode_context_v0 current_decode_context;
+  instance_shader_projection_v0 current_instance;
+};
+
+struct committed_hit_projection_v0 {
+  uint8_t valid;
+  uint8_t geometry_type;
+  uint8_t hit_kind;
+  uint8_t attribute_word_count;
+  uint8_t attribute_location;
+  uint8_t attribute_format;
+  uint8_t reserved_zero0[2];
+  float hit_t;
+  uint32_t policy_flags;
+  uint64_t instance_metadata_ref;
+  uint32_t primitive_index;
+  uint32_t geometry_index;
+  uint32_t instance_index;
+  uint32_t instance_custom_index;
+  uint32_t instance_sbt_contribution;
+  uint32_t reserved_zero1;
+  uint32_t inline_attributes[4];
 };
 
 struct alignas(16) push_input_v0 {
@@ -120,8 +190,60 @@ struct alignas(16) pop_result_v0 {
   uint8_t reserved_zero_tail[8];
 };
 
+struct alignas(16) empty_input_v0 {
+  uint32_t profile_id;
+  uint8_t operation_kind;
+  uint8_t parent_frame_available;
+  uint8_t reserved_zero[2];
+  frontier_state_v0 frontier;
+  committed_hit_projection_v0 current_committed_hit;
+  traversal_frame_projection_v0 parent_frame;
+};
+
+struct frontier_level_delta_v0 {
+  uint8_t action;
+  uint8_t reserved_zero[3];
+  uint32_t new_frontier_top;
+  uint32_t new_frontier_count;
+  uint32_t new_current_level;
+  uint32_t new_level_frame_depth;
+  uint32_t max_level_depth;
+};
+
+struct alignas(16) empty_result_v0 {
+  uint8_t status;
+  uint8_t result_kind;
+  uint8_t output_valid_mask;
+  uint8_t reserved_zero0[13];
+  frontier_level_delta_v0 frontier_delta;
+  traversal_frame_projection_v0 parent_frame;
+  committed_hit_projection_v0 terminal_hit;
+  uint8_t reserved_zero_tail[8];
+};
+
 static_assert(sizeof(frontier_metadata_v0) == 12,
               "frontier metadata must remain 12 bytes");
+static_assert(sizeof(frontier_state_v0) == 24,
+              "frontier state must remain 24 bytes");
+static_assert(sizeof(mutable_ray_state_v0) == 44,
+              "Stack mutable ray must remain 44 bytes");
+static_assert(sizeof(instance_shader_projection_v0) == 24,
+              "Stack instance projection must remain 24 bytes");
+static_assert(sizeof(parent_frontier_marker_v0) == 16,
+              "Stack parent frontier marker must remain 16 bytes");
+static_assert(sizeof(traversal_frame_projection_v0) == 128,
+              "Stack parent frame must remain 128 bytes");
+static_assert(offsetof(traversal_frame_projection_v0, traversal_level) == 44,
+              "Stack parent level offset changed");
+static_assert(offsetof(traversal_frame_projection_v0, frontier_marker) == 48,
+              "Stack parent frontier marker offset changed");
+static_assert(offsetof(traversal_frame_projection_v0,
+                       current_decode_context) == 64,
+              "Stack parent AS context offset changed");
+static_assert(offsetof(traversal_frame_projection_v0, current_instance) == 104,
+              "Stack parent instance offset changed");
+static_assert(sizeof(committed_hit_projection_v0) == 64,
+              "Stack committed-hit projection must remain 64 bytes");
 static_assert(sizeof(push_input_v0) == 192,
               "typed Stack push input must remain 192 bytes");
 static_assert(alignof(push_input_v0) == 16,
@@ -164,6 +286,28 @@ static_assert(offsetof(pop_result_v0, selected_fetch) == 32,
               "typed Stack pop selected fetch offset changed");
 static_assert(offsetof(pop_result_v0, reserved_zero_tail) == 88,
               "typed Stack pop result tail offset changed");
+static_assert(sizeof(empty_input_v0) == 224,
+              "typed Stack empty input must remain 224 bytes");
+static_assert(alignof(empty_input_v0) == 16,
+              "typed Stack empty input must remain aligned");
+static_assert(offsetof(empty_input_v0, frontier) == 8,
+              "typed Stack empty frontier offset changed");
+static_assert(offsetof(empty_input_v0, current_committed_hit) == 32,
+              "typed Stack empty committed-hit offset changed");
+static_assert(offsetof(empty_input_v0, parent_frame) == 96,
+              "typed Stack empty parent-frame offset changed");
+static_assert(sizeof(frontier_level_delta_v0) == 24,
+              "Stack level delta must remain 24 bytes");
+static_assert(sizeof(empty_result_v0) == 240,
+              "typed Stack empty result must remain 240 bytes");
+static_assert(alignof(empty_result_v0) == 16,
+              "typed Stack empty result must remain aligned");
+static_assert(offsetof(empty_result_v0, frontier_delta) == 16,
+              "typed Stack empty delta offset changed");
+static_assert(offsetof(empty_result_v0, parent_frame) == 40,
+              "typed Stack empty parent-frame result offset changed");
+static_assert(offsetof(empty_result_v0, terminal_hit) == 168,
+              "typed Stack empty terminal-hit offset changed");
 
 push_result_v0 execute_push(const push_input_v0 &input);
 
@@ -173,6 +317,11 @@ pop_result_v0 execute_pop(const pop_input_v0 &input);
 
 bool validate_pop_result(const pop_input_v0 &input,
                          const pop_result_v0 &result);
+
+empty_result_v0 execute_empty(const empty_input_v0 &input);
+
+bool validate_empty_result(const empty_input_v0 &input,
+                           const empty_result_v0 &result);
 
 const char *status_name(status_kind status);
 

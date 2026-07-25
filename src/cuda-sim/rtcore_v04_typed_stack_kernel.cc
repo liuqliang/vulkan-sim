@@ -98,6 +98,44 @@ static bool checked_add_u32(uint32_t lhs, uint32_t rhs,
   return true;
 }
 
+static bool valid_committed_hit(
+    const committed_hit_projection_v0 &hit) {
+  if (hit.valid > 1 || hit.attribute_word_count > 4 ||
+      !bytes_are_zero(hit.reserved_zero0,
+                      sizeof(hit.reserved_zero0)) ||
+      hit.reserved_zero1 != 0) {
+    return false;
+  }
+  if (hit.valid == 0) {
+    const committed_hit_projection_v0 empty = {};
+    return std::memcmp(&hit, &empty, sizeof(empty)) == 0;
+  }
+  return std::isfinite(hit.hit_t);
+}
+
+static bool valid_parent_frame(
+    const traversal_frame_projection_v0 &frame,
+    uint32_t frontier_capacity) {
+  const mutable_ray_state_v0 &ray = frame.ray;
+  for (unsigned component = 0; component < 3; ++component) {
+    if (!std::isfinite(ray.origin[component]) ||
+        !std::isfinite(ray.direction[component])) {
+      return false;
+    }
+  }
+  return std::isfinite(ray.t_min) && std::isfinite(ray.t_max) &&
+         ray.t_min <= ray.t_max && frame.traversal_level == 0 &&
+         frame.frontier_marker.frontier_top ==
+             frame.frontier_marker.frontier_count &&
+         frame.frontier_marker.frontier_top <= frontier_capacity &&
+         frame.frontier_marker.level_frame_depth == 0 &&
+         frame.frontier_marker.reserved_zero == 0 &&
+         valid_decode_context(frame.current_decode_context) &&
+         frame.current_decode_context.as_object.as_type == 1 &&
+         bytes_are_zero(frame.current_instance.reserved_zero,
+                        sizeof(frame.current_instance.reserved_zero));
+}
+
 }  // namespace
 
 push_result_v0 execute_push(const push_input_v0 &input) {
@@ -398,6 +436,165 @@ bool validate_pop_result(const pop_input_v0 &input,
                      sizeof(expected_selected)) == 0;
 }
 
+empty_result_v0 execute_empty(const empty_input_v0 &input) {
+  empty_result_v0 result = {};
+  result.status = kStatusInvalidArgument;
+
+  if (input.profile_id != kGenRtDerivedProfileId) {
+    result.status = kStatusUnsupportedProfile;
+    return result;
+  }
+  if (input.operation_kind != kPopNext ||
+      input.parent_frame_available > 1 ||
+      !bytes_are_zero(input.reserved_zero,
+                      sizeof(input.reserved_zero))) {
+    return result;
+  }
+  if (input.frontier.frontier_top !=
+          input.frontier.frontier_count ||
+      input.frontier.frontier_capacity != 16 ||
+      input.frontier.max_level_depth != 1 ||
+      input.frontier.level_frame_depth >
+          input.frontier.max_level_depth) {
+    result.status = kStatusInvalidFrontierMetadata;
+    return result;
+  }
+  if (!valid_committed_hit(input.current_committed_hit)) {
+    result.status = kStatusInvalidCommittedHit;
+    return result;
+  }
+
+  if (input.frontier.current_level == 1 &&
+      input.frontier.level_frame_depth == 1) {
+    if (input.parent_frame_available != 1 ||
+        !valid_parent_frame(input.parent_frame,
+                            input.frontier.frontier_capacity) ||
+        input.frontier.frontier_top !=
+            input.parent_frame.frontier_marker.frontier_top ||
+        input.frontier.frontier_count !=
+            input.parent_frame.frontier_marker.frontier_count) {
+      result.status = kStatusInvalidParentFrame;
+      return result;
+    }
+    result.status = kStatusOk;
+    result.result_kind = kStackRestoreParent;
+    result.output_valid_mask =
+        static_cast<uint8_t>(kFrontierDeltaValid |
+                             kParentFrameValid);
+    result.frontier_delta.action = kFrontierActionPopFrame;
+    result.frontier_delta.new_frontier_top =
+        input.parent_frame.frontier_marker.frontier_top;
+    result.frontier_delta.new_frontier_count =
+        input.parent_frame.frontier_marker.frontier_count;
+    result.frontier_delta.new_current_level =
+        input.parent_frame.traversal_level;
+    result.frontier_delta.new_level_frame_depth =
+        input.parent_frame.frontier_marker.level_frame_depth;
+    result.frontier_delta.max_level_depth =
+        input.frontier.max_level_depth;
+    result.parent_frame = input.parent_frame;
+    return result;
+  }
+
+  if (input.frontier.current_level != 0 ||
+      input.frontier.level_frame_depth != 0 ||
+      input.parent_frame_available != 0 ||
+      input.frontier.frontier_top != 0 ||
+      input.frontier.frontier_count != 0) {
+    result.status = kStatusInvalidLevelTransition;
+    return result;
+  }
+
+  result.status = kStatusOk;
+  if (input.current_committed_hit.valid != 0) {
+    result.result_kind = kStackFinalHit;
+    result.output_valid_mask = kTerminalHitValid;
+    result.terminal_hit = input.current_committed_hit;
+  } else {
+    result.result_kind = kStackFinalMiss;
+  }
+  return result;
+}
+
+bool validate_empty_result(const empty_input_v0 &input,
+                           const empty_result_v0 &result) {
+  if (input.profile_id != kGenRtDerivedProfileId ||
+      input.operation_kind != kPopNext ||
+      !bytes_are_zero(input.reserved_zero,
+                      sizeof(input.reserved_zero)) ||
+      input.frontier.frontier_top !=
+          input.frontier.frontier_count ||
+      input.frontier.frontier_capacity != 16 ||
+      input.frontier.max_level_depth != 1 ||
+      input.frontier.level_frame_depth >
+          input.frontier.max_level_depth ||
+      !valid_committed_hit(input.current_committed_hit) ||
+      result.status != kStatusOk ||
+      !bytes_are_zero(result.reserved_zero0,
+                      sizeof(result.reserved_zero0)) ||
+      !bytes_are_zero(result.reserved_zero_tail,
+                      sizeof(result.reserved_zero_tail))) {
+    return false;
+  }
+
+  if (input.frontier.current_level == 1 &&
+      input.frontier.level_frame_depth == 1) {
+    return input.parent_frame_available == 1 &&
+           valid_parent_frame(input.parent_frame,
+                              input.frontier.frontier_capacity) &&
+           input.frontier.frontier_top ==
+               input.parent_frame.frontier_marker.frontier_top &&
+           input.frontier.frontier_count ==
+               input.parent_frame.frontier_marker.frontier_count &&
+           result.result_kind == kStackRestoreParent &&
+           result.output_valid_mask ==
+               static_cast<uint8_t>(kFrontierDeltaValid |
+                                    kParentFrameValid) &&
+           result.frontier_delta.action ==
+               kFrontierActionPopFrame &&
+           bytes_are_zero(result.frontier_delta.reserved_zero,
+                          sizeof(result.frontier_delta.reserved_zero)) &&
+           result.frontier_delta.new_frontier_top ==
+               input.parent_frame.frontier_marker.frontier_top &&
+           result.frontier_delta.new_frontier_count ==
+               input.parent_frame.frontier_marker.frontier_count &&
+           result.frontier_delta.new_current_level ==
+               input.parent_frame.traversal_level &&
+           result.frontier_delta.new_level_frame_depth ==
+               input.parent_frame.frontier_marker.level_frame_depth &&
+           result.frontier_delta.max_level_depth ==
+               input.frontier.max_level_depth &&
+           std::memcmp(&result.parent_frame, &input.parent_frame,
+                       sizeof(result.parent_frame)) == 0 &&
+           result.terminal_hit.valid == 0;
+  }
+
+  const frontier_level_delta_v0 empty_delta = {};
+  const traversal_frame_projection_v0 empty_frame = {};
+  const bool terminal_common =
+      input.frontier.current_level == 0 &&
+      input.frontier.level_frame_depth == 0 &&
+      input.parent_frame_available == 0 &&
+      valid_committed_hit(input.current_committed_hit) &&
+      std::memcmp(&result.frontier_delta, &empty_delta,
+                  sizeof(empty_delta)) == 0 &&
+      std::memcmp(&result.parent_frame, &empty_frame,
+                  sizeof(empty_frame)) == 0;
+  if (!terminal_common) return false;
+  if (input.current_committed_hit.valid != 0) {
+    return result.result_kind == kStackFinalHit &&
+           result.output_valid_mask == kTerminalHitValid &&
+           std::memcmp(&result.terminal_hit,
+                       &input.current_committed_hit,
+                       sizeof(result.terminal_hit)) == 0;
+  }
+  const committed_hit_projection_v0 empty_hit = {};
+  return result.result_kind == kStackFinalMiss &&
+         result.output_valid_mask == 0 &&
+         std::memcmp(&result.terminal_hit, &empty_hit,
+                     sizeof(empty_hit)) == 0;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:
@@ -420,6 +617,12 @@ const char *status_name(status_kind status) {
       return "frontier_capacity_exceeded";
     case kStatusMissingFrontierOperand:
       return "missing_frontier_operand";
+    case kStatusInvalidLevelTransition:
+      return "invalid_level_transition";
+    case kStatusInvalidParentFrame:
+      return "invalid_parent_frame";
+    case kStatusInvalidCommittedHit:
+      return "invalid_committed_hit";
   }
   return "unknown";
 }

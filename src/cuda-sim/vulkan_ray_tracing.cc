@@ -2336,6 +2336,16 @@ static bool rtcore_v04_live_stack_pop_next_loop_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_live_stack_empty_frontier_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_LIVE_STACK_EMPTY_FRONTIER") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled();
@@ -2371,6 +2381,11 @@ extern "C" bool rtcore_v04_live_stack_pop_next_loop_gate_active()
     return rtcore_v04_live_stack_pop_next_loop_enabled();
 }
 
+extern "C" bool rtcore_v04_live_stack_empty_frontier_gate_active()
+{
+    return rtcore_v04_live_stack_empty_frontier_enabled();
+}
+
 extern "C" bool rtcore_v04_root_node_input_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled() ||
@@ -2395,7 +2410,9 @@ extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
             rtcore_v04_live_stack_push_commit_enabled()) &&
            (!rtcore_v04_live_stack_pop_next_loop_enabled() ||
             (rtcore_v04_live_stack_spill_recovery_enabled() &&
-             rtcore_v04_live_stack_push_commit_enabled()));
+             rtcore_v04_live_stack_push_commit_enabled())) &&
+           (!rtcore_v04_live_stack_empty_frontier_enabled() ||
+            rtcore_v04_live_stack_pop_next_loop_enabled());
 }
 
 static void rtcore_v04_require_valid_node_driver_configuration()
@@ -2409,7 +2426,8 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             "functional=%u timing_control=%u root_packet=%u "
             "live_node_timing=%u selected_fetch_transition=%u "
             "stack_operation_ingress=%u stack_push_commit=%u "
-            "stack_spill_recovery=%u stack_pop_next_loop=%u\n",
+            "stack_spill_recovery=%u stack_pop_next_loop=%u "
+            "stack_empty_frontier=%u\n",
             rtcore_v04_functional_node_driver_enabled() ? 1u : 0u,
             rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u,
             rtcore_v04_root_node_ready_packet_enabled() ? 1u : 0u,
@@ -2418,7 +2436,8 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             rtcore_v04_live_stack_operation_ingress_enabled() ? 1u : 0u,
             rtcore_v04_live_stack_push_commit_enabled() ? 1u : 0u,
             rtcore_v04_live_stack_spill_recovery_enabled() ? 1u : 0u,
-            rtcore_v04_live_stack_pop_next_loop_enabled() ? 1u : 0u);
+            rtcore_v04_live_stack_pop_next_loop_enabled() ? 1u : 0u,
+            rtcore_v04_live_stack_empty_frontier_enabled() ? 1u : 0u);
     fflush(stderr);
     abort();
 }
@@ -15477,7 +15496,7 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
                  RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE
              ? snapshot.v04_private_write.field_kind
              : snapshot.v04_target_raw_read.field_kind) >
-            rtcore::v04::private_frontier::kFieldCommittedHit ||
+            rtcore::v04::private_frontier::kFieldParentFrame ||
         !snapshot.is_write) {
         return false;
     }
@@ -16520,11 +16539,20 @@ extern "C" bool rtcore_accept_v04_stack_private_shared_read(
     const stack_operation::reservation_receipt_v0 reservation =
         rtcore_v04_stack_reservation_from_request(*request);
     stack_shared::request_plan_v0 followup_requests = {};
-    if (fill_result.followup_required) {
-        if (stack_shared::prepare_pop_operand_request_plan(
-                reservation, fill_result.followup_read_plan,
-                response_cycle, &followup_requests) !=
-                stack_shared::kStatusOk ||
+    const bool activate_followup =
+        stack_shared::should_activate_live_followup(
+            fill_result,
+            rtcore_v04_live_stack_empty_frontier_enabled());
+    if (activate_followup) {
+        const stack_shared::status_kind plan_status =
+            fill_result.empty_frontier_boundary
+                ? stack_shared::prepare_empty_operand_request_plan(
+                      reservation, fill_result.followup_read_plan,
+                      response_cycle, &followup_requests)
+                : stack_shared::prepare_pop_operand_request_plan(
+                      reservation, fill_result.followup_read_plan,
+                      response_cycle, &followup_requests);
+        if (plan_status != stack_shared::kStatusOk ||
             followup_requests.request_count == 0) {
             return false;
         }
@@ -16549,7 +16577,7 @@ extern "C" bool rtcore_accept_v04_stack_private_shared_read(
     it->second = staged_stack;
     rtcore_v04_timing_driver_for(request->owner_hw_sid) =
         staged_driver;
-    if (fill_result.followup_required) {
+    if (activate_followup) {
         std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
             g_rtcore_memory_unit_request_snapshots_by_owner[
                 request->owner_hw_sid];
@@ -16562,7 +16590,8 @@ extern "C" bool rtcore_accept_v04_stack_private_shared_read(
                "request_identity=%u request_generation=%u "
                "producer_operation_seq=%u stack_operation_seq=%u "
                "reservation_id=%llu operand_chunks=%u "
-               "metadata_derived_top=1 issue_cycle=%llu\n",
+               "metadata_selected_followup=1 read_phase=%u "
+               "issue_cycle=%llu\n",
                reservation.owner.owner_hw_sid,
                reservation.owner.resident_warp_id,
                reservation.owner.lane_id,
@@ -16571,7 +16600,8 @@ extern "C" bool rtcore_accept_v04_stack_private_shared_read(
                reservation.producer_operation_seq,
                reservation.target_operation_seq,
                (unsigned long long)reservation.reservation_id,
-               followup_requests.request_count, response_cycle);
+               followup_requests.request_count,
+               followup_requests.read_phase, response_cycle);
         fflush(stdout);
     }
     if (fill_result.empty_frontier_boundary) {
@@ -16617,8 +16647,8 @@ extern "C" bool rtcore_accept_v04_stack_private_shared_read(
                ready_packet.frontier_metadata.frontier_count,
                ready_packet.frontier_metadata.frontier_capacity,
                request->chunk_count +
-                   (request->v04_stack_private_read.read_phase ==
-                            stack_shared::kReadPhasePopOperands
+                   (request->v04_stack_private_read.read_phase !=
+                            stack_shared::kReadPhaseFrontierMetadata
                         ? stack_operation::kFrontierMetadataReadChunks
                         : 0),
                response_cycle);
@@ -17257,12 +17287,57 @@ rtcore_accept_v04_live_stack_result(
             context->owner_hw_sid ||
         push->producer_operation_seq !=
             push->operation_packet.target_operation_seq ||
-        push->target_operation_seq == 0 ||
-        push->target_operation_seq ==
-            push->producer_operation_seq ||
         push->commit_epoch == 0 ||
         push->operator_invocation_count != 1) {
         return stack_timing::kResultSinkRejected;
+    }
+    const bool empty_operation =
+        push->operation_packet.empty_input.operation_kind ==
+        rtcore::v04::typed_stack::kPopNext;
+    const bool terminal_operation =
+        empty_operation &&
+        (push->typed_empty_result.result_kind ==
+             rtcore::v04::typed_stack::kStackFinalHit ||
+         push->typed_empty_result.result_kind ==
+             rtcore::v04::typed_stack::kStackFinalMiss);
+    const bool restore_operation =
+        empty_operation &&
+        push->typed_empty_result.result_kind ==
+            rtcore::v04::typed_stack::kStackRestoreParent;
+    if ((empty_operation &&
+         !rtcore_v04_live_stack_empty_frontier_enabled()) ||
+        terminal_operation != (push->terminal_boundary != 0) ||
+        (!terminal_operation &&
+         (push->target_operation_seq == 0 ||
+          push->target_operation_seq ==
+              push->producer_operation_seq)) ||
+        (terminal_operation && push->target_operation_seq != 0) ||
+        (empty_operation &&
+         !terminal_operation && !restore_operation)) {
+        return empty_operation &&
+                       !rtcore_v04_live_stack_empty_frontier_enabled()
+                   ? stack_timing::kResultSinkBackpressure
+                   : stack_timing::kResultSinkRejected;
+    }
+
+    rtcore::v04::request_owner::lane_binding_v0 owner = {};
+    if (!rtcore_v04_request_owner_from_private_owner(
+            push->operation_packet.owner, &owner)) {
+        return stack_timing::kResultSinkRejected;
+    }
+    if (terminal_operation) {
+        const uint8_t terminal_kind =
+            push->typed_empty_result.result_kind ==
+                    rtcore::v04::typed_stack::kStackFinalHit
+                ? timing_driver::kTerminalBoundaryFinalHit
+                : timing_driver::kTerminalBoundaryFinalMiss;
+        if (timing_driver::complete_result_commit_to_terminal(
+                staged_timing_state, owner,
+                push->producer_operation_seq, push->commit_epoch,
+                terminal_kind) != timing_driver::kStatusOk) {
+            return stack_timing::kResultSinkRejected;
+        }
+        return stack_timing::kResultSinkAccepted;
     }
 
     rtcore::v04::stack_commit::engine_state_v0 staged_stack =
@@ -17274,7 +17349,16 @@ rtcore_accept_v04_live_stack_result(
         push->operation_kind ==
         rtcore::v04::typed_stack::kPopNext;
     const stack_target::status_kind capture_status =
-        pop_operation
+        restore_operation
+            ? stack_target::capture_live_stack_restore_result(
+                  &staged_stack, push->operation_packet.owner,
+                  push->producer_operation_seq, push->commit_epoch,
+                  push->target_operation_seq,
+                  rtcore_v04_private_region_for(
+                      context->owner_hw_sid),
+                  push->operation_packet.empty_input,
+                  push->typed_empty_result, &receipt)
+            : pop_operation
             ? stack_target::capture_live_stack_pop_result(
                   &staged_stack, &staged_target,
                   push->operation_packet.owner,
@@ -17312,16 +17396,18 @@ rtcore_accept_v04_live_stack_result(
         return stack_timing::kResultSinkRejected;
     }
 
-    rtcore::v04::request_owner::lane_binding_v0 owner = {};
-    if (!rtcore_v04_request_owner_from_private_owner(
-            push->operation_packet.owner, &owner)) {
-        return stack_timing::kResultSinkRejected;
-    }
     std::deque<rtcore_memory_unit_request_snapshot> requests;
     const bool retry_stack_pop =
         receipt.stack_issue.forwarding_kind ==
         rtcore::v04::stack_commit::kForwardingRetryStackPop;
-    if (retry_stack_pop) {
+    const bool restore_parent =
+        receipt.stack_issue.forwarding_kind ==
+        rtcore::v04::stack_commit::kForwardingRestoreParent;
+    if (restore_parent) {
+        if (!restore_operation) {
+            return stack_timing::kResultSinkRejected;
+        }
+    } else if (retry_stack_pop) {
         if (!pop_operation ||
             timing_driver::mark_commit_successor_pending_recovery(
                 staged_timing_state, owner,
@@ -17570,10 +17656,23 @@ static bool rtcore_service_v04_live_stack_ready(
         return false;
     }
     rtcore::v04::request_owner::lane_binding_v0 owner = {};
+    const bool restore_parent_ready =
+        receipt.stack_event.ready_kind ==
+        rtcore::v04::stack_commit::kReadyInstanceRestoreParent;
     if (route_status != stack_target::kStatusOk ||
         !receipt.valid ||
         !rtcore_v04_request_owner_from_private_owner(
             receipt.stack_event.owner, &owner) ||
+        (restore_parent_ready &&
+         timing_driver::mark_commit_successor_pending_recovery(
+             &staged_timing, owner,
+             receipt.stack_event.producer_operation_seq,
+             receipt.stack_event.commit_epoch,
+             receipt.stack_event.target_operation_seq,
+             timing_driver::kPendingRecoveryTargetInstance,
+             timing_driver::
+                 kPendingRecoveryRouteInstanceRestoreParent) !=
+             timing_driver::kStatusOk) ||
         timing_driver::complete_result_commit(
             &staged_timing, owner,
             receipt.stack_event.producer_operation_seq,
@@ -17735,10 +17834,13 @@ static bool rtcore_service_v04_live_stack_timing(
                push.operation_packet.owner.resident_warp_id,
                push.operation_packet.owner.lane_id,
                push.operation_kind,
-               push.operation_kind ==
+               push.operation_packet.empty_input.operation_kind ==
                        rtcore::v04::typed_stack::kPopNext
-                   ? push.typed_pop_result.result_kind
-                   : push.typed_result.result_kind,
+                   ? push.typed_empty_result.result_kind
+                   : push.operation_kind ==
+                             rtcore::v04::typed_stack::kPopNext
+                         ? push.typed_pop_result.result_kind
+                         : push.typed_result.result_kind,
                push.producer_operation_seq, push.commit_epoch,
                push.target_operation_seq,
                push.operator_invocation_count,
@@ -17843,6 +17945,18 @@ static bool rtcore_service_v04_live_stack_spill_recovery(
                 timing_driver::status_name(find_status));
         fflush(stderr);
         abort();
+    }
+    if (pending.route_kind ==
+            timing_driver::
+                kPendingRecoveryRouteInstanceRestoreParent &&
+        pending.target_kind ==
+            timing_driver::kPendingRecoveryTargetInstance) {
+        cursor = static_cast<uint16_t>(
+            (static_cast<uint32_t>(
+                 pending.request_control_slot) +
+             1) %
+            rtcore::v04::request_owner::kRequestControlCapacity);
+        return false;
     }
     if (pending.route_kind ==
             timing_driver::kPendingRecoveryRouteStackPopNext &&

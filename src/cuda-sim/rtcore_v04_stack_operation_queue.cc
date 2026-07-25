@@ -165,10 +165,12 @@ bool metadata_valid(const uint8_t *bytes) {
   const uint32_t current_level = load_u32_le(bytes + 12);
   const uint32_t level_frame_depth = load_u32_le(bytes + 16);
   const uint32_t max_level_depth = load_u32_le(bytes + 20);
+  const bool valid_level_depth =
+      (current_level == 0 && level_frame_depth == 0) ||
+      (current_level == 1 && level_frame_depth == 1);
   return top == count && top <= capacity &&
          capacity == private_frontier::kFrontierEntryCapacity &&
-         current_level <= 1 && max_level_depth == 1 &&
-         level_frame_depth <= max_level_depth;
+         max_level_depth == 1 && valid_level_depth;
 }
 
 private_frontier::frontier_metadata_image_v0 decode_metadata_bytes(
@@ -239,6 +241,31 @@ bool pop_operand_plan_valid(
          std::memcmp(&read_plan, &expected, sizeof(read_plan)) == 0;
 }
 
+bool empty_operand_plan_valid(
+    const reservation_receipt_v0 &reservation,
+    const slot_v0 &slot,
+    const private_frontier::access_plan_v0 &read_plan) {
+  if (slot.state != kSlotReservedWaitEmptyPlan ||
+      reservation.operation_kind != typed_stack::kPopNext ||
+      read_plan.access_count == 0 ||
+      read_plan.access_count > kMaxEmptyOperandReadChunks ||
+      !private_frontier::owners_equal(read_plan.owner,
+                                      reservation.owner)) {
+    return false;
+  }
+  private_frontier::region_binding_v0 region = {};
+  if (!derive_region_from_plan(reservation, read_plan, &region)) {
+    return false;
+  }
+  private_frontier::access_plan_v0 expected = {};
+  const private_frontier::frontier_metadata_image_v0 metadata =
+      decode_metadata_bytes(slot.metadata_bytes);
+  return private_frontier::build_empty_pop_operand_read_plan(
+             reservation.owner, region, metadata, &expected) ==
+             private_frontier::kStatusOk &&
+         std::memcmp(&read_plan, &expected, sizeof(read_plan)) == 0;
+}
+
 bool pop_projection_complete(const slot_v0 &slot) {
   return slot.top_entry_byte_valid_mask ==
              static_cast<uint16_t>(
@@ -250,6 +277,18 @@ bool pop_projection_complete(const slot_v0 &slot) {
              valid_byte_mask(private_frontier::kAsDecodeContextBytes) &&
          slot.committed_hit_byte_valid_mask ==
              valid_byte_mask(private_frontier::kCommittedHitBytes);
+}
+
+bool parent_frame_projection_complete(const slot_v0 &slot) {
+  return slot.parent_frame_byte_valid_mask[0] ==
+             std::numeric_limits<uint64_t>::max() &&
+         slot.parent_frame_byte_valid_mask[1] ==
+             std::numeric_limits<uint64_t>::max();
+}
+
+bool committed_hit_projection_complete(const slot_v0 &slot) {
+  return slot.committed_hit_byte_valid_mask ==
+         valid_byte_mask(private_frontier::kCommittedHitBytes);
 }
 
 bool decode_pop_projection(
@@ -292,6 +331,67 @@ bool decode_pop_projection(
   return true;
 }
 
+bool decode_parent_frame_projection(
+    const slot_v0 &slot,
+    private_frontier::traversal_frame_projection_v0 *frame) {
+  if (frame == NULL || !parent_frame_projection_complete(slot)) {
+    return false;
+  }
+  private_frontier::shadow_slot_v0 projection = {};
+  projection.owner = slot.reservation.owner;
+  std::memcpy(projection.bytes + private_frontier::kParentFrameOffset,
+              slot.parent_frame_bytes,
+              sizeof(slot.parent_frame_bytes));
+  return private_frontier::decode_parent_frame(
+             projection, slot.reservation.owner, frame) ==
+         private_frontier::kStatusOk;
+}
+
+bool decode_committed_hit_projection(
+    const slot_v0 &slot,
+    private_frontier::committed_hit_projection_v0 *hit) {
+  if (hit == NULL || !committed_hit_projection_complete(slot)) {
+    return false;
+  }
+  private_frontier::shadow_slot_v0 projection = {};
+  projection.owner = slot.reservation.owner;
+  std::memcpy(projection.bytes + private_frontier::kCommittedHitOffset,
+              slot.committed_hit_bytes,
+              sizeof(slot.committed_hit_bytes));
+  return private_frontier::decode_committed_hit(
+             projection, slot.reservation.owner, hit) ==
+         private_frontier::kStatusOk;
+}
+
+bool build_empty_projection(
+    const slot_v0 &slot, typed_stack::empty_input_v0 *input) {
+  if (input == NULL) return false;
+  const private_frontier::frontier_metadata_image_v0 metadata =
+      decode_metadata_bytes(slot.metadata_bytes);
+  *input = typed_stack::empty_input_v0();
+  input->profile_id = typed_stack::kGenRtDerivedProfileId;
+  input->operation_kind = typed_stack::kPopNext;
+  input->frontier.frontier_top = metadata.frontier_top;
+  input->frontier.frontier_count = metadata.frontier_count;
+  input->frontier.frontier_capacity = metadata.frontier_capacity;
+  input->frontier.current_level = metadata.current_level;
+  input->frontier.level_frame_depth = metadata.level_frame_depth;
+  input->frontier.max_level_depth = metadata.max_level_depth;
+  if (metadata.current_level == 1 &&
+      metadata.level_frame_depth == 1) {
+    input->parent_frame_available = 1;
+    return decode_parent_frame_projection(
+        slot, &input->parent_frame);
+  }
+  if (metadata.current_level == 0 &&
+      metadata.level_frame_depth == 0 &&
+      metadata.frontier_count == 0) {
+    return decode_committed_hit_projection(
+        slot, &input->current_committed_hit);
+  }
+  return false;
+}
+
 void build_packet(const slot_v0 &slot, operation_packet_v0 *packet) {
   *packet = operation_packet_v0();
   packet->owner = slot.reservation.owner;
@@ -321,6 +421,12 @@ void build_packet(const slot_v0 &slot, operation_packet_v0 *packet) {
     packet->input.current_traversal_bound_bits =
         slot.current_traversal_bound_bits;
     packet->input.node_route = slot.node_route;
+  } else if (slot.empty_input_valid != 0) {
+    const bool decoded =
+        build_empty_projection(slot, &packet->empty_input);
+    if (!decoded) {
+      *packet = operation_packet_v0();
+    }
   } else {
     const bool decoded =
         decode_pop_projection(slot, &packet->pop_input);
@@ -468,9 +574,15 @@ status_kind fill_frontier_metadata_chunk(
     } else {
       const private_frontier::frontier_metadata_image_v0 metadata =
           decode_metadata_bytes(slot.metadata_bytes);
-      slot.state = metadata.frontier_count == 0
-                       ? kSlotEmptyFrontierBoundary
-                       : kSlotReservedWaitPopPlan;
+      if ((metadata.current_level == 0 &&
+           metadata.level_frame_depth == 0 &&
+           metadata.frontier_count == 0) ||
+          (metadata.current_level == 1 &&
+           metadata.level_frame_depth == 1)) {
+        slot.state = kSlotReservedWaitEmptyPlan;
+      } else {
+        slot.state = kSlotReservedWaitPopPlan;
+      }
     }
   }
   return kStatusOk;
@@ -501,6 +613,34 @@ status_kind bind_pop_operand_read_plan(
   slot.pop_operand_read_plan = read_plan;
   slot.expected_pop_operand_chunk_count = read_plan.access_count;
   slot.state = kSlotReservedWaitPopOperands;
+  return kStatusOk;
+}
+
+status_kind bind_empty_operand_read_plan(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation,
+    const private_frontier::access_plan_v0 &read_plan) {
+  if (state == NULL || state->initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  if (reservation.slot_index >= state->config.capacity) {
+    return kStatusUnknownReservation;
+  }
+  slot_v0 &slot = state->slots[reservation.slot_index];
+  if (!receipt_matches_slot(reservation, slot,
+                            reservation.slot_index)) {
+    return slot.state == kSlotFree ? kStatusUnknownReservation
+                                   : kStatusStaleReservation;
+  }
+  if (slot.state != kSlotReservedWaitEmptyPlan) {
+    return kStatusEmptyOperandPlanRequired;
+  }
+  if (!empty_operand_plan_valid(reservation, slot, read_plan)) {
+    return kStatusEmptyOperandPlanMismatch;
+  }
+  slot.empty_operand_read_plan = read_plan;
+  slot.expected_empty_operand_chunk_count = read_plan.access_count;
+  slot.state = kSlotReservedWaitEmptyOperands;
   return kStatusOk;
 }
 
@@ -615,6 +755,116 @@ status_kind fill_pop_operand_chunk(
   return kStatusOk;
 }
 
+status_kind fill_empty_operand_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint8_t field_kind, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes]) {
+  if (state == NULL || payload == NULL || state->initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  if (reservation.slot_index >= state->config.capacity) {
+    return kStatusUnknownReservation;
+  }
+  slot_v0 &slot = state->slots[reservation.slot_index];
+  if (!receipt_matches_slot(reservation, slot,
+                            reservation.slot_index)) {
+    return slot.state == kSlotFree ? kStatusUnknownReservation
+                                   : kStatusStaleReservation;
+  }
+  if (slot.state != kSlotReservedWaitEmptyOperands ||
+      chunk_count != slot.expected_empty_operand_chunk_count ||
+      chunk_id >= chunk_count) {
+    return kStatusEmptyOperandPlanMismatch;
+  }
+  const private_frontier::shared_chunk_access_v0 &expected =
+      slot.empty_operand_read_plan.accesses[chunk_id];
+  const uint16_t expected_chunk_offset = static_cast<uint16_t>(
+      expected.slot_byte_offset -
+      (expected.slot_byte_offset %
+       private_frontier::kSharedAccessChunkBytes));
+  if (field_kind != expected.field_kind ||
+      slot_chunk_offset != expected_chunk_offset ||
+      byte_mask != expected.byte_mask ||
+      expected.access_kind != private_frontier::kAccessRead ||
+      (field_kind != private_frontier::kFieldParentFrame &&
+       field_kind != private_frontier::kFieldCommittedHit)) {
+    return kStatusEmptyOperandPlanMismatch;
+  }
+  const uint8_t chunk_bit = static_cast<uint8_t>(1u << chunk_id);
+  if ((slot.received_empty_operand_chunk_mask & chunk_bit) != 0) {
+    return kStatusDuplicateEmptyOperandChunk;
+  }
+
+  const uint32_t field_offset =
+      field_kind == private_frontier::kFieldParentFrame
+          ? private_frontier::kParentFrameOffset
+          : private_frontier::kCommittedHitOffset;
+  const uint32_t field_bytes =
+      field_kind == private_frontier::kFieldParentFrame
+          ? private_frontier::kParentFrameBytes
+          : private_frontier::kCommittedHitBytes;
+  uint8_t *destination =
+      field_kind == private_frontier::kFieldParentFrame
+          ? slot.parent_frame_bytes
+          : slot.committed_hit_bytes;
+  for (unsigned byte = 0;
+       byte < private_frontier::kSharedAccessChunkBytes; ++byte) {
+    if ((byte_mask & (uint32_t{1} << byte)) == 0) continue;
+    const uint32_t slot_offset = slot_chunk_offset + byte;
+    if (slot_offset < field_offset ||
+        slot_offset >= field_offset + field_bytes) {
+      return kStatusEmptyOperandPlanMismatch;
+    }
+    const uint32_t destination_offset = slot_offset - field_offset;
+    destination[destination_offset] = payload[byte];
+    if (field_kind == private_frontier::kFieldParentFrame) {
+      slot.parent_frame_byte_valid_mask[destination_offset / 64] |=
+          uint64_t{1} << (destination_offset % 64);
+    } else {
+      slot.committed_hit_byte_valid_mask |=
+          uint64_t{1} << destination_offset;
+    }
+  }
+  slot.received_empty_operand_chunk_mask = static_cast<uint8_t>(
+      slot.received_empty_operand_chunk_mask | chunk_bit);
+  const uint8_t all_chunks = static_cast<uint8_t>(
+      (uint8_t{1} << slot.expected_empty_operand_chunk_count) - 1u);
+  if (slot.received_empty_operand_chunk_mask != all_chunks) {
+    return kStatusOk;
+  }
+
+  const private_frontier::frontier_metadata_image_v0 metadata =
+      decode_metadata_bytes(slot.metadata_bytes);
+  if (field_kind == private_frontier::kFieldParentFrame) {
+    private_frontier::traversal_frame_projection_v0 frame = {};
+    if (!decode_parent_frame_projection(slot, &frame) ||
+        metadata.current_level != 1 ||
+        metadata.level_frame_depth != 1 ||
+        metadata.frontier_top <
+            frame.frontier_marker.frontier_top ||
+        metadata.frontier_count <
+            frame.frontier_marker.frontier_count) {
+      return kStatusEmptyOperandPlanMismatch;
+    }
+    if (metadata.frontier_top >
+        frame.frontier_marker.frontier_top) {
+      slot.state = kSlotReservedWaitPopPlan;
+      return kStatusOk;
+    }
+  }
+
+  typed_stack::empty_input_v0 input = {};
+  if (!build_empty_projection(slot, &input)) {
+    return kStatusEmptyOperandPlanMismatch;
+  }
+  slot.empty_input_valid = 1;
+  slot.state = kSlotReady;
+  ++state->total_ready_publications;
+  return kStatusOk;
+}
+
 status_kind peek_frontier_metadata(
     const engine_state_v0 &state,
     const reservation_receipt_v0 &reservation,
@@ -634,6 +884,11 @@ status_kind peek_frontier_metadata(
   }
   if (slot.state == kSlotReservedWaitMetadata) {
     return kStatusPopOperandPlanRequired;
+  }
+  if (slot.state == kSlotReservedWaitEmptyPlan ||
+      slot.state == kSlotReservedWaitEmptyOperands) {
+    *metadata = decode_metadata_bytes(slot.metadata_bytes);
+    return kStatusEmptyOperandPlanRequired;
   }
   *metadata = decode_metadata_bytes(slot.metadata_bytes);
   return slot.state == kSlotEmptyFrontierBoundary
@@ -712,8 +967,12 @@ uint8_t empty_boundary_slot_count(const engine_state_v0 &state) {
   if (state.initialized != 1) return 0;
   uint8_t count = 0;
   for (unsigned index = 0; index < state.config.capacity; ++index) {
-    count += state.slots[index].state ==
-                     kSlotEmptyFrontierBoundary
+    count += (state.slots[index].state ==
+                      kSlotReservedWaitEmptyPlan ||
+              state.slots[index].state ==
+                      kSlotReservedWaitEmptyOperands ||
+              state.slots[index].state ==
+                      kSlotEmptyFrontierBoundary)
                  ? 1
                  : 0;
   }
@@ -752,6 +1011,12 @@ const char *status_name(status_kind status) {
       return "pop_operand_plan_mismatch";
     case kStatusDuplicatePopOperandChunk:
       return "duplicate_pop_operand_chunk";
+    case kStatusEmptyOperandPlanRequired:
+      return "empty_operand_plan_required";
+    case kStatusEmptyOperandPlanMismatch:
+      return "empty_operand_plan_mismatch";
+    case kStatusDuplicateEmptyOperandChunk:
+      return "duplicate_empty_operand_chunk";
     case kStatusEmptyFrontierBoundary:
       return "empty_frontier_boundary";
     case kStatusNoReadyOperation:

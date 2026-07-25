@@ -58,6 +58,11 @@ bool pop_operand_field(uint8_t field_kind) {
          field_kind == private_frontier::kFieldCommittedHit;
 }
 
+bool empty_operand_field(uint8_t field_kind) {
+  return field_kind == private_frontier::kFieldParentFrame ||
+         field_kind == private_frontier::kFieldCommittedHit;
+}
+
 bool request_valid(
     const rtcore_memory_unit_request_snapshot &request) {
   const rtcore_v04_stack_private_read_transport_snapshot &extension =
@@ -85,6 +90,16 @@ bool request_valid(
       request.chunk_count <=
           stack_operation::kMaxPopOperandReadChunks &&
       pop_operand_field(extension.field_kind) &&
+      request.memory_op_seq ==
+          stack_operation::kFrontierMetadataReadChunks +
+              request.chunk_id + 1;
+  const bool empty_operand_phase =
+      extension.read_phase == kReadPhaseEmptyOperands &&
+      extension.operation_kind == typed_stack::kPopNext &&
+      request.chunk_count != 0 &&
+      request.chunk_count <=
+          stack_operation::kMaxEmptyOperandReadChunks &&
+      empty_operand_field(extension.field_kind) &&
       request.memory_op_seq ==
           stack_operation::kFrontierMetadataReadChunks +
               request.chunk_id + 1;
@@ -118,7 +133,9 @@ bool request_valid(
              extension.producer_operation_seq &&
          extension.target_slot_generation != 0 &&
          extension.target_slot_index < stack_operation::kMaxSlots &&
-         operation_valid && (metadata_phase || pop_operand_phase) &&
+         operation_valid &&
+         (metadata_phase || pop_operand_phase ||
+          empty_operand_phase) &&
          bytes_are_zero(extension.reserved_zero,
                         sizeof(extension.reserved_zero));
 }
@@ -167,10 +184,17 @@ status_kind prepare_request_plan_for_phase(
       read_plan.access_count != 0 &&
       read_plan.access_count <=
           stack_operation::kMaxPopOperandReadChunks;
+  const bool empty_operand_phase =
+      read_phase == kReadPhaseEmptyOperands &&
+      reservation.operation_kind == typed_stack::kPopNext &&
+      read_plan.access_count != 0 &&
+      read_plan.access_count <=
+          stack_operation::kMaxEmptyOperandReadChunks;
   if (!receipt_valid(reservation) ||
       !private_frontier::owners_equal(reservation.owner,
                                       read_plan.owner) ||
-      (!metadata_phase && !pop_operand_phase)) {
+      (!metadata_phase && !pop_operand_phase &&
+       !empty_operand_phase)) {
     return kStatusMalformedPlan;
   }
   const uint64_t slot_base = private_slot_base(reservation.owner);
@@ -181,7 +205,9 @@ status_kind prepare_request_plan_for_phase(
         metadata_phase
             ? access.field_kind ==
                   private_frontier::kFieldFrontierMetadata
-            : pop_operand_field(access.field_kind);
+            : pop_operand_phase
+                  ? pop_operand_field(access.field_kind)
+                  : empty_operand_field(access.field_kind);
     if (access.access_kind != private_frontier::kAccessRead ||
         !field_valid || access.aligned_32b_address < slot_base ||
         access.aligned_32b_address - slot_base > UINT16_MAX ||
@@ -243,6 +269,14 @@ status_kind prepare_request_plan_for_phase(
 
 }  // namespace
 
+bool should_activate_live_followup(
+    const fill_result_v0 &fill_result,
+    bool empty_frontier_gate_enabled) {
+  return fill_result.followup_required != 0 &&
+         (fill_result.empty_frontier_boundary == 0 ||
+          empty_frontier_gate_enabled);
+}
+
 status_kind prepare_request_plan(
     const stack_operation::reservation_receipt_v0 &reservation,
     const private_frontier::access_plan_v0 &read_plan,
@@ -258,6 +292,15 @@ status_kind prepare_pop_operand_request_plan(
     uint64_t issue_cycle, request_plan_v0 *request_plan) {
   return prepare_request_plan_for_phase(
       reservation, read_plan, kReadPhasePopOperands,
+      issue_cycle, request_plan);
+}
+
+status_kind prepare_empty_operand_request_plan(
+    const stack_operation::reservation_receipt_v0 &reservation,
+    const private_frontier::access_plan_v0 &read_plan,
+    uint64_t issue_cycle, request_plan_v0 *request_plan) {
+  return prepare_request_plan_for_phase(
+      reservation, read_plan, kReadPhaseEmptyOperands,
       issue_cycle, request_plan);
 }
 
@@ -306,8 +349,15 @@ status_kind accept_request_and_fill(
         static_cast<uint8_t>(request.chunk_id),
         static_cast<uint8_t>(request.chunk_count),
         extension.slot_chunk_offset, request.byte_mask, payload);
-  } else {
+  } else if (extension.read_phase == kReadPhasePopOperands) {
     fill_status = stack_operation::fill_pop_operand_chunk(
+        stack_state, reservation,
+        static_cast<uint8_t>(request.chunk_id),
+        static_cast<uint8_t>(request.chunk_count),
+        extension.field_kind, extension.slot_chunk_offset,
+        request.byte_mask, payload);
+  } else {
+    fill_status = stack_operation::fill_empty_operand_chunk(
         stack_state, reservation,
         static_cast<uint8_t>(request.chunk_id),
         static_cast<uint8_t>(request.chunk_count),
@@ -330,8 +380,19 @@ status_kind accept_request_and_fill(
       return kStatusOk;
     }
     if (metadata_status ==
-        stack_operation::kStatusEmptyFrontierBoundary) {
+        stack_operation::kStatusEmptyOperandPlanRequired) {
+      if (private_shared::prepare_empty_pop_operand_read_plan(
+              backing, reservation.owner, metadata,
+              &result->followup_read_plan) !=
+              private_shared::kStatusOk ||
+          stack_operation::bind_empty_operand_read_plan(
+              stack_state, reservation,
+              result->followup_read_plan) !=
+              stack_operation::kStatusOk) {
+        return kStatusStackFillRejected;
+      }
       result->empty_frontier_boundary = 1;
+      result->followup_required = 1;
       result->valid = 1;
       return kStatusOk;
     }
@@ -355,6 +416,28 @@ status_kind accept_request_and_fill(
           *stack_state, reservation, &ready_packet);
   if (ready_status == stack_operation::kStatusOk) {
     result->ready = 1;
+  } else if (extension.read_phase == kReadPhaseEmptyOperands) {
+    private_frontier::frontier_metadata_image_v0 metadata = {};
+    const stack_operation::status_kind metadata_status =
+        stack_operation::peek_frontier_metadata(
+            *stack_state, reservation, &metadata);
+    if (metadata_status ==
+        stack_operation::kStatusEmptyOperandPlanRequired) {
+      result->valid = 1;
+      return kStatusOk;
+    }
+    if (metadata_status != stack_operation::kStatusOk ||
+        private_shared::prepare_nonempty_pop_operand_read_plan(
+            backing, reservation.owner, metadata,
+            &result->followup_read_plan) !=
+            private_shared::kStatusOk ||
+        stack_operation::bind_pop_operand_read_plan(
+            stack_state, reservation,
+            result->followup_read_plan) !=
+            stack_operation::kStatusOk) {
+      return kStatusStackFillRejected;
+    }
+    result->followup_required = 1;
   } else if (ready_status !=
              stack_operation::kStatusNoReadyOperation) {
     return kStatusStackFillRejected;

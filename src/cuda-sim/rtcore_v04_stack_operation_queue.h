@@ -13,6 +13,8 @@ static const uint8_t kMaxSlots = 4;
 static const uint8_t kFrontierMetadataReadChunks = 2;
 static const uint8_t kMaxPopOperandReadChunks =
     private_frontier::kMaxNonemptyPopOperandChunks;
+static const uint8_t kMaxEmptyOperandReadChunks =
+    private_frontier::kMaxEmptyPopOperandChunks;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -30,6 +32,9 @@ enum status_kind : uint8_t {
   kStatusPopOperandPlanRequired,
   kStatusPopOperandPlanMismatch,
   kStatusDuplicatePopOperandChunk,
+  kStatusEmptyOperandPlanRequired,
+  kStatusEmptyOperandPlanMismatch,
+  kStatusDuplicateEmptyOperandChunk,
   kStatusEmptyFrontierBoundary,
   kStatusNoReadyOperation,
   kStatusUnitInputBackpressure,
@@ -40,8 +45,10 @@ enum slot_state_kind : uint8_t {
   kSlotReservedWaitMetadata = 1,
   kSlotReservedWaitPopPlan = 2,
   kSlotReservedWaitPopOperands = 3,
-  kSlotEmptyFrontierBoundary = 4,
-  kSlotReady = 5,
+  kSlotReservedWaitEmptyPlan = 4,
+  kSlotReservedWaitEmptyOperands = 5,
+  kSlotEmptyFrontierBoundary = 6,
+  kSlotReady = 7,
 };
 
 struct config_v0 {
@@ -97,6 +104,7 @@ struct operation_packet_v0 {
   typed_node::ray_policy_v0 ray_policy;
   typed_stack::push_input_v0 input;
   typed_stack::pop_input_v0 pop_input;
+  typed_stack::empty_input_v0 empty_input;
 };
 
 struct slot_v0 {
@@ -107,17 +115,23 @@ struct slot_v0 {
   uint32_t metadata_byte_valid_mask;
   uint8_t metadata_bytes[private_frontier::kFrontierMetadataBytes];
   private_frontier::access_plan_v0 pop_operand_read_plan;
+  private_frontier::access_plan_v0 empty_operand_read_plan;
   uint8_t top_entry_bytes[private_frontier::kFrontierEntryBytes];
   uint8_t mutable_ray_bytes[private_frontier::kMutableRayStateBytes];
   uint8_t decode_context_bytes[private_frontier::kAsDecodeContextBytes];
   uint8_t committed_hit_bytes[private_frontier::kCommittedHitBytes];
+  uint8_t parent_frame_bytes[private_frontier::kParentFrameBytes];
   uint64_t mutable_ray_byte_valid_mask;
   uint64_t decode_context_byte_valid_mask;
   uint64_t committed_hit_byte_valid_mask;
+  uint64_t parent_frame_byte_valid_mask[2];
   uint16_t top_entry_byte_valid_mask;
   uint16_t received_pop_operand_chunk_mask;
+  uint8_t received_empty_operand_chunk_mask;
   uint8_t received_metadata_chunk_mask;
   uint8_t expected_pop_operand_chunk_count;
+  uint8_t expected_empty_operand_chunk_count;
+  uint8_t empty_input_valid;
   uint8_t state;
   uint8_t reserved_zero[1];
 };
@@ -161,6 +175,18 @@ status_kind bind_pop_operand_read_plan(
     const private_frontier::access_plan_v0 &read_plan);
 
 status_kind fill_pop_operand_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint8_t field_kind, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes]);
+
+status_kind bind_empty_operand_read_plan(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation,
+    const private_frontier::access_plan_v0 &read_plan);
+
+status_kind fill_empty_operand_chunk(
     engine_state_v0 *state,
     const reservation_receipt_v0 &reservation, uint8_t chunk_id,
     uint8_t chunk_count, uint8_t field_kind, uint16_t slot_chunk_offset,

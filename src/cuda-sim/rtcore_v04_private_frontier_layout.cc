@@ -126,12 +126,16 @@ static status_kind slot_base_address(const owner_binding_v0 &owner,
 }
 
 static bool valid_metadata(const frontier_metadata_image_v0 &metadata) {
+  const bool valid_level_depth =
+      (metadata.current_level == 0 &&
+       metadata.level_frame_depth == 0) ||
+      (metadata.current_level == 1 &&
+       metadata.level_frame_depth == 1);
   return metadata.frontier_top == metadata.frontier_count &&
          metadata.frontier_top <= metadata.frontier_capacity &&
          metadata.frontier_count <= metadata.frontier_capacity &&
          metadata.frontier_capacity == kFrontierEntryCapacity &&
-         metadata.current_level <= 1 && metadata.max_level_depth == 1 &&
-         metadata.level_frame_depth <= metadata.max_level_depth;
+         metadata.max_level_depth == 1 && valid_level_depth;
 }
 
 static void encode_metadata_bytes(
@@ -319,6 +323,107 @@ static committed_hit_projection_v0 decode_committed_hit_bytes(
   return hit;
 }
 
+static void encode_instance_projection_bytes(
+    uint8_t *destination,
+    const typed_stack::instance_shader_projection_v0 &instance) {
+  encode_u64_le(destination + 0, instance.instance_metadata_ref);
+  encode_u32_le(destination + 8, instance.instance_index);
+  encode_u32_le(destination + 12, instance.instance_custom_index);
+  encode_u32_le(destination + 16,
+                instance.instance_sbt_contribution);
+  destination[20] = instance.instance_policy_flags;
+  std::memcpy(destination + 21, instance.reserved_zero,
+              sizeof(instance.reserved_zero));
+}
+
+static typed_stack::instance_shader_projection_v0
+decode_instance_projection_bytes(const uint8_t *source) {
+  typed_stack::instance_shader_projection_v0 instance = {};
+  instance.instance_metadata_ref = decode_u64_le(source + 0);
+  instance.instance_index = decode_u32_le(source + 8);
+  instance.instance_custom_index = decode_u32_le(source + 12);
+  instance.instance_sbt_contribution = decode_u32_le(source + 16);
+  instance.instance_policy_flags = source[20];
+  std::memcpy(instance.reserved_zero, source + 21,
+              sizeof(instance.reserved_zero));
+  return instance;
+}
+
+static void encode_parent_frame_bytes(
+    uint8_t *destination,
+    const traversal_frame_projection_v0 &frame) {
+  encode_mutable_ray_bytes(destination + 0, frame.ray);
+  encode_u32_le(destination + 44, frame.traversal_level);
+  encode_u32_le(destination + 48,
+                frame.frontier_marker.frontier_top);
+  encode_u32_le(destination + 52,
+                frame.frontier_marker.frontier_count);
+  encode_u32_le(destination + 56,
+                frame.frontier_marker.level_frame_depth);
+  encode_u32_le(destination + 60,
+                frame.frontier_marker.reserved_zero);
+  encode_decode_context_bytes(destination + 64,
+                              frame.current_decode_context);
+  encode_instance_projection_bytes(destination + 104,
+                                   frame.current_instance);
+}
+
+static traversal_frame_projection_v0 decode_parent_frame_bytes(
+    const uint8_t *source) {
+  traversal_frame_projection_v0 frame = {};
+  frame.ray = decode_mutable_ray_bytes(source + 0);
+  frame.traversal_level = decode_u32_le(source + 44);
+  frame.frontier_marker.frontier_top = decode_u32_le(source + 48);
+  frame.frontier_marker.frontier_count = decode_u32_le(source + 52);
+  frame.frontier_marker.level_frame_depth = decode_u32_le(source + 56);
+  frame.frontier_marker.reserved_zero = decode_u32_le(source + 60);
+  frame.current_decode_context = decode_decode_context_bytes(source + 64);
+  frame.current_instance = decode_instance_projection_bytes(source + 104);
+  return frame;
+}
+
+static bool valid_committed_hit(
+    const committed_hit_projection_v0 &hit) {
+  return hit.valid <= 1 && hit.attribute_word_count <= 4 &&
+         bytes_are_zero(hit.reserved_zero0,
+                        sizeof(hit.reserved_zero0)) &&
+         hit.reserved_zero1 == 0 &&
+         (hit.valid == 0 || std::isfinite(hit.hit_t));
+}
+
+static bool valid_parent_frame(
+    const traversal_frame_projection_v0 &frame) {
+  for (unsigned component = 0; component < 3; ++component) {
+    if (!std::isfinite(frame.ray.origin[component]) ||
+        !std::isfinite(frame.ray.direction[component])) {
+      return false;
+    }
+  }
+  const typed_blas::as_decode_context_v0 &context =
+      frame.current_decode_context;
+  return std::isfinite(frame.ray.t_min) &&
+         std::isfinite(frame.ray.t_max) &&
+         frame.ray.t_min <= frame.ray.t_max &&
+         frame.traversal_level == 0 &&
+         frame.frontier_marker.frontier_top ==
+             frame.frontier_marker.frontier_count &&
+         frame.frontier_marker.frontier_top <=
+             kFrontierEntryCapacity &&
+         frame.frontier_marker.level_frame_depth == 0 &&
+         frame.frontier_marker.reserved_zero == 0 &&
+         context.bvh_format_profile_id == kLayoutProfileId &&
+         context.reserved_zero == 0 &&
+         context.as_object.object_id != 0 &&
+         context.as_object.generation != 0 &&
+         context.as_object.as_type == 1 &&
+         bytes_are_zero(context.as_object.reserved_zero,
+                        sizeof(context.as_object.reserved_zero)) &&
+         context.device_base != 0 &&
+         context.device_range_bytes >= 64 &&
+         bytes_are_zero(frame.current_instance.reserved_zero,
+                        sizeof(frame.current_instance.reserved_zero));
+}
+
 static bool valid_root_operands(const root_private_operands_v0 &operands) {
   const mutable_ray_state_v0 &ray = operands.mutable_ray;
   const typed_blas::as_decode_context_v0 &context =
@@ -340,9 +445,7 @@ static bool valid_root_operands(const root_private_operands_v0 &operands) {
          (context.as_object.as_type == 1 ||
           context.as_object.as_type == typed_blas::kAsTypeBlas) &&
          context.device_base != 0 && context.device_range_bytes >= 64 &&
-         hit.valid <= 1 && hit.attribute_word_count <= 4 &&
-         bytes_are_zero(hit.reserved_zero0, sizeof(hit.reserved_zero0)) &&
-         hit.reserved_zero1 == 0;
+         valid_committed_hit(hit);
 }
 
 static status_kind validate_slot_owner(const shadow_slot_v0 &slot,
@@ -369,7 +472,8 @@ static status_kind append_range_to_plan(
        field != kFieldTransitionSpill &&
        field != kFieldMutableRayState &&
        field != kFieldAsDecodeContext &&
-       field != kFieldCommittedHit)) {
+       field != kFieldCommittedHit &&
+       field != kFieldParentFrame)) {
     return kStatusInvalidArgument;
   }
   if (slot_offset >= kPrivateDataSlotBytes ||
@@ -529,6 +633,45 @@ status_kind build_nonempty_pop_operand_read_plan(
   return kStatusOk;
 }
 
+status_kind build_empty_pop_operand_read_plan(
+    const owner_binding_v0 &owner, const region_binding_v0 &region,
+    const frontier_metadata_image_v0 &returned_metadata,
+    access_plan_v0 *read_plan) {
+  if (read_plan == NULL || !valid_metadata(returned_metadata) ||
+      returned_metadata.frontier_top !=
+          returned_metadata.frontier_count) {
+    return kStatusInvalidMetadata;
+  }
+  uint64_t ignored_slot_base = 0;
+  status_kind status =
+      slot_base_address(owner, region, &ignored_slot_base);
+  if (status != kStatusOk) return status;
+
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  if (returned_metadata.current_level == 1 &&
+      returned_metadata.level_frame_depth == 1) {
+    status = append_range_to_plan(
+        &plan, owner, region, kFieldParentFrame, kAccessRead,
+        kParentFrameOffset, kParentFrameBytes);
+  } else if (returned_metadata.current_level == 0 &&
+             returned_metadata.level_frame_depth == 0 &&
+             returned_metadata.frontier_count == 0) {
+    status = append_range_to_plan(
+        &plan, owner, region, kFieldCommittedHit, kAccessRead,
+        kCommittedHitOffset, kCommittedHitBytes);
+  } else {
+    return kStatusInvalidMetadata;
+  }
+  if (status != kStatusOk) return status;
+  if (plan.access_count == 0 ||
+      plan.access_count > kMaxEmptyPopOperandChunks) {
+    return kStatusPlanCapacityExceeded;
+  }
+  *read_plan = plan;
+  return kStatusOk;
+}
+
 status_kind initialize_root_shadow_slot(
     shadow_slot_v0 *slot, const owner_binding_v0 &owner,
     const region_binding_v0 &region,
@@ -648,6 +791,123 @@ status_kind decode_entry(
   *entry = decode_entry_bytes(
       slot.bytes + kFrontierEntriesOffset +
       entry_index * kFrontierEntryBytes);
+  return kStatusOk;
+}
+
+status_kind decode_parent_frame(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    traversal_frame_projection_v0 *parent_frame) {
+  if (parent_frame == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  const traversal_frame_projection_v0 decoded =
+      decode_parent_frame_bytes(slot.bytes + kParentFrameOffset);
+  if (!valid_parent_frame(decoded)) return kStatusInvalidArgument;
+  *parent_frame = decoded;
+  return kStatusOk;
+}
+
+status_kind decode_committed_hit(
+    const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
+    committed_hit_projection_v0 *committed_hit) {
+  if (committed_hit == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(slot, owner);
+  if (status != kStatusOk) return status;
+  const committed_hit_projection_v0 decoded =
+      decode_committed_hit_bytes(slot.bytes + kCommittedHitOffset);
+  if (!valid_committed_hit(decoded)) return kStatusInvalidArgument;
+  *committed_hit = decoded;
+  return kStatusOk;
+}
+
+status_kind apply_parent_frame_push(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const traversal_frame_projection_v0 &parent_frame,
+    access_plan_v0 *write_plan) {
+  if (slot == NULL || write_plan == NULL ||
+      !valid_parent_frame(parent_frame)) {
+    return kStatusInvalidArgument;
+  }
+  status_kind status = validate_slot_owner(*slot, owner);
+  if (status != kStatusOk) return status;
+  frontier_metadata_image_v0 metadata = {};
+  status = decode_metadata(*slot, owner, &metadata);
+  if (status != kStatusOk) return status;
+  if (metadata.current_level != 0 ||
+      metadata.level_frame_depth != 0 ||
+      parent_frame.frontier_marker.frontier_top !=
+          metadata.frontier_top ||
+      parent_frame.frontier_marker.frontier_count !=
+          metadata.frontier_count) {
+    return kStatusInvalidDelta;
+  }
+
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldParentFrame, kAccessWrite,
+      kParentFrameOffset, kParentFrameBytes);
+  if (status != kStatusOk) return status;
+  status = build_metadata_plan(&plan, owner, region, kAccessWrite);
+  if (status != kStatusOk) return status;
+
+  shadow_slot_v0 updated = *slot;
+  encode_parent_frame_bytes(updated.bytes + kParentFrameOffset,
+                            parent_frame);
+  metadata.current_level = 1;
+  metadata.level_frame_depth = 1;
+  encode_metadata_bytes(updated.bytes + kFrontierMetadataOffset,
+                        metadata);
+  *slot = updated;
+  *write_plan = plan;
+  return kStatusOk;
+}
+
+status_kind apply_parent_restore_delta(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const typed_stack::frontier_level_delta_v0 &delta,
+    access_plan_v0 *write_plan) {
+  if (slot == NULL || write_plan == NULL) return kStatusInvalidArgument;
+  status_kind status = validate_slot_owner(*slot, owner);
+  if (status != kStatusOk) return status;
+  frontier_metadata_image_v0 metadata = {};
+  status = decode_metadata(*slot, owner, &metadata);
+  if (status != kStatusOk) return status;
+  traversal_frame_projection_v0 frame = {};
+  status = decode_parent_frame(*slot, owner, &frame);
+  if (status != kStatusOk) return status;
+  if (metadata.current_level != 1 ||
+      metadata.level_frame_depth != 1 ||
+      metadata.frontier_top != frame.frontier_marker.frontier_top ||
+      metadata.frontier_count != frame.frontier_marker.frontier_count ||
+      delta.action != typed_stack::kFrontierActionPopFrame ||
+      !bytes_are_zero(delta.reserved_zero,
+                      sizeof(delta.reserved_zero)) ||
+      delta.new_frontier_top != frame.frontier_marker.frontier_top ||
+      delta.new_frontier_count !=
+          frame.frontier_marker.frontier_count ||
+      delta.new_current_level != frame.traversal_level ||
+      delta.new_level_frame_depth !=
+          frame.frontier_marker.level_frame_depth ||
+      delta.max_level_depth != metadata.max_level_depth) {
+    return kStatusInvalidDelta;
+  }
+
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  status = build_metadata_plan(&plan, owner, region, kAccessWrite);
+  if (status != kStatusOk) return status;
+  shadow_slot_v0 updated = *slot;
+  metadata.frontier_top = delta.new_frontier_top;
+  metadata.frontier_count = delta.new_frontier_count;
+  metadata.current_level = delta.new_current_level;
+  metadata.level_frame_depth = delta.new_level_frame_depth;
+  encode_metadata_bytes(updated.bytes + kFrontierMetadataOffset,
+                        metadata);
+  *slot = updated;
+  *write_plan = plan;
   return kStatusOk;
 }
 

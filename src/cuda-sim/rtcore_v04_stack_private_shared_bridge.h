@@ -24,6 +24,7 @@ enum read_phase_kind : uint8_t {
   kReadPhaseInvalid = 0,
   kReadPhaseFrontierMetadata = 1,
   kReadPhasePopOperands = 2,
+  kReadPhaseEmptyOperands = 3,
 };
 
 struct request_plan_v0 {
@@ -44,12 +45,21 @@ struct fill_result_v0 {
   uint8_t reserved_zero[4];
 };
 
+bool should_activate_live_followup(
+    const fill_result_v0 &fill_result,
+    bool empty_frontier_gate_enabled);
+
 status_kind prepare_request_plan(
     const stack_operation::reservation_receipt_v0 &reservation,
     const private_frontier::access_plan_v0 &read_plan,
     uint64_t issue_cycle, request_plan_v0 *request_plan);
 
 status_kind prepare_pop_operand_request_plan(
+    const stack_operation::reservation_receipt_v0 &reservation,
+    const private_frontier::access_plan_v0 &read_plan,
+    uint64_t issue_cycle, request_plan_v0 *request_plan);
+
+status_kind prepare_empty_operand_request_plan(
     const stack_operation::reservation_receipt_v0 &reservation,
     const private_frontier::access_plan_v0 &read_plan,
     uint64_t issue_cycle, request_plan_v0 *request_plan);

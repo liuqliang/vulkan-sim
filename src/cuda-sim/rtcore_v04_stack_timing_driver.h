@@ -49,6 +49,7 @@ struct pipeline_entry_v0 {
   stack_operation::operation_packet_v0 operation_packet;
   typed_stack::push_result_v0 typed_result;
   typed_stack::pop_result_v0 typed_pop_result;
+  typed_stack::empty_result_v0 typed_empty_result;
   uint64_t issue_age;
   uint64_t issue_cycle;
   uint64_t result_ready_cycle;
@@ -62,6 +63,7 @@ struct completed_push_receipt_v0 {
   stack_operation::operation_packet_v0 operation_packet;
   typed_stack::push_result_v0 typed_result;
   typed_stack::pop_result_v0 typed_pop_result;
+  typed_stack::empty_result_v0 typed_empty_result;
   uint64_t issue_age;
   uint64_t issue_cycle;
   uint64_t result_ready_cycle;
@@ -74,7 +76,8 @@ struct completed_push_receipt_v0 {
   uint8_t operator_invocation_count;
   uint8_t used_transition_spill;
   uint8_t target_materialized;
-  uint8_t reserved_zero[3];
+  uint8_t terminal_boundary;
+  uint8_t reserved_zero[2];
 };
 
 enum result_sink_kind : uint8_t {

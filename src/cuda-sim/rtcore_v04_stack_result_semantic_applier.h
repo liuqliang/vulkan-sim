@@ -60,6 +60,7 @@ enum route_kind : uint8_t {
   kRouteStackPushedAndSelected = 1,
   kRouteStackPoppedAndSelected = 2,
   kRouteStackPrunedRetryPop = 3,
+  kRouteStackRestoreParent = 4,
 };
 
 enum target_selector_kind : uint8_t {
@@ -141,6 +142,14 @@ status_kind prepare_stack_pop_next(
         &frontier_metadata,
     const typed_stack::pop_input_v0 &input,
     const typed_stack::pop_result_v0 &result,
+    pop_commit_plan_v0 *plan);
+
+status_kind prepare_stack_restore_parent(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const typed_stack::empty_input_v0 &input,
+    const typed_stack::empty_result_v0 &result,
     pop_commit_plan_v0 *plan);
 
 bool validate_append_commit_plan(

@@ -92,13 +92,17 @@ bool operation_packet_valid(
       packet.operation_kind == typed_stack::kPopNext &&
       packet.pop_input.operation_kind == typed_stack::kPopNext &&
       packet.pop_input.has_top_entry == 1;
+  const bool empty_valid =
+      packet.operation_kind == typed_stack::kPopNext &&
+      packet.empty_input.operation_kind == typed_stack::kPopNext &&
+      packet.empty_input.parent_frame_available <= 1;
   return packet.valid == 1 && packet.reservation_id != 0 &&
          packet.reservation_age != 0 &&
          packet.target_operation_seq != 0 &&
          packet.producer_operation_seq != 0 &&
          packet.target_operation_seq != packet.producer_operation_seq &&
          packet.slot_generation != 0 &&
-         (push_valid || pop_valid) &&
+         (push_valid || pop_valid || empty_valid) &&
          bytes_are_zero(packet.reserved_zero,
                         sizeof(packet.reserved_zero)) &&
          bytes_are_zero(packet.ray_policy.reserved_zero,
@@ -160,11 +164,19 @@ status_kind capture_matured_result(
   const bool push =
       pipeline.operation_packet.operation_kind ==
       typed_stack::kPushRemainderAndForwardSelected;
+  const bool empty =
+      !push &&
+      pipeline.operation_packet.empty_input.operation_kind ==
+          typed_stack::kPopNext;
   if (!operation_packet_valid(pipeline.operation_packet) ||
       (push
            ? !typed_stack::validate_push_result(
                  pipeline.typed_result)
-           : !typed_stack::validate_pop_result(
+           : empty
+                 ? !typed_stack::validate_empty_result(
+                       pipeline.operation_packet.empty_input,
+                       pipeline.typed_empty_result)
+                 : !typed_stack::validate_pop_result(
                  pipeline.operation_packet.pop_input,
                  pipeline.typed_pop_result)) ||
       pipeline.operator_invocation_count != 1) {
@@ -179,14 +191,21 @@ status_kind capture_matured_result(
   timing_driver::state_v0 staged_timing = *timing_state;
   uint32_t commit_epoch = 0;
   uint32_t target_operation_seq = 0;
+  const bool terminal =
+      empty &&
+      (pipeline.typed_empty_result.result_kind ==
+           typed_stack::kStackFinalHit ||
+       pipeline.typed_empty_result.result_kind ==
+           typed_stack::kStackFinalMiss);
   if (timing_driver::begin_result_commit(
           &staged_timing, request_binding,
           pipeline.operation_packet.target_operation_seq,
           &commit_epoch) != timing_driver::kStatusOk ||
-      timing_driver::allocate_commit_successor_operation(
-          &staged_timing, request_binding,
-          pipeline.operation_packet.target_operation_seq, commit_epoch,
-          &target_operation_seq) != timing_driver::kStatusOk) {
+      (!terminal &&
+       timing_driver::allocate_commit_successor_operation(
+           &staged_timing, request_binding,
+           pipeline.operation_packet.target_operation_seq, commit_epoch,
+           &target_operation_seq) != timing_driver::kStatusOk)) {
     return kStatusTimingControlRejected;
   }
 
@@ -194,6 +213,7 @@ status_kind capture_matured_result(
   receipt.operation_packet = pipeline.operation_packet;
   receipt.typed_result = pipeline.typed_result;
   receipt.typed_pop_result = pipeline.typed_pop_result;
+  receipt.typed_empty_result = pipeline.typed_empty_result;
   receipt.issue_age = pipeline.issue_age;
   receipt.issue_cycle = pipeline.issue_cycle;
   receipt.result_ready_cycle = pipeline.result_ready_cycle;
@@ -207,6 +227,7 @@ status_kind capture_matured_result(
       pipeline.operation_packet.operation_kind;
   receipt.operator_invocation_count =
       pipeline.operator_invocation_count;
+  receipt.terminal_boundary = terminal ? 1 : 0;
 
   const result_sink_kind sink_status =
       result_sink->accept(&receipt, &staged_timing,
@@ -272,10 +293,19 @@ status_kind issue_operations(
 
     typed_stack::push_result_v0 typed_result = {};
     typed_stack::pop_result_v0 typed_pop_result = {};
+    typed_stack::empty_result_v0 typed_empty_result = {};
     if (candidate.operation_kind ==
         typed_stack::kPushRemainderAndForwardSelected) {
       typed_result = typed_stack::execute_push(candidate.input);
       if (!typed_stack::validate_push_result(typed_result)) {
+        return kStatusOperatorFailed;
+      }
+    } else if (candidate.empty_input.operation_kind ==
+               typed_stack::kPopNext) {
+      typed_empty_result =
+          typed_stack::execute_empty(candidate.empty_input);
+      if (!typed_stack::validate_empty_result(
+              candidate.empty_input, typed_empty_result)) {
         return kStatusOperatorFailed;
       }
     } else {
@@ -298,6 +328,7 @@ status_kind issue_operations(
     pipeline.operation_packet = packet;
     pipeline.typed_result = typed_result;
     pipeline.typed_pop_result = typed_pop_result;
+    pipeline.typed_empty_result = typed_empty_result;
     pipeline.issue_age = state->next_issue_age++;
     pipeline.issue_cycle = service_cycle;
     pipeline.result_ready_cycle =

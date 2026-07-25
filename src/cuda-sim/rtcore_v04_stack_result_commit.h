@@ -54,6 +54,7 @@ enum forwarding_kind : uint8_t {
   kForwardingRegistered = 1,
   kForwardingSpillToMemory = 2,
   kForwardingRetryStackPop = 3,
+  kForwardingRestoreParent = 4,
 };
 
 enum ready_kind : uint8_t {
@@ -61,6 +62,7 @@ enum ready_kind : uint8_t {
   kReadyForwardedTarget = 1,
   kReadySpillRecovery = 2,
   kReadyStackPopRetry = 3,
+  kReadyInstanceRestoreParent = 4,
 };
 
 struct forwarding_decision_input_v0 {
@@ -210,6 +212,16 @@ status_kind capture_stack_pop_result_from_projection_with_selector(
     const typed_stack::pop_result_v0 &result,
     const typed_node::ray_policy_v0 &forwarded_ray_policy,
     forwarding_selector_v0 selector, void *selector_context,
+    issue_receipt_v0 *receipt);
+
+status_kind capture_stack_restore_parent_result(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const typed_stack::empty_input_v0 &input,
+    const typed_stack::empty_result_v0 &result,
     issue_receipt_v0 *receipt);
 
 status_kind peek_write_offer(const engine_state_v0 &state,

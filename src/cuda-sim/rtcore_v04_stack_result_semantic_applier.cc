@@ -328,6 +328,128 @@ status_kind prepare_stack_pop_next(
   return kStatusOk;
 }
 
+status_kind prepare_stack_restore_parent(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const typed_stack::empty_input_v0 &input,
+    const typed_stack::empty_result_v0 &result,
+    pop_commit_plan_v0 *plan) {
+  if (plan == NULL) return kStatusInvalidArgument;
+  std::memset(plan, 0, sizeof(*plan));
+  if (operation_seq == 0) return kStatusInvalidOperationIdentity;
+  if (!typed_stack::validate_empty_result(input, result) ||
+      result.result_kind != typed_stack::kStackRestoreParent ||
+      result.output_valid_mask !=
+          static_cast<uint8_t>(typed_stack::kFrontierDeltaValid |
+                               typed_stack::kParentFrameValid)) {
+    return kStatusInvalidTypedResult;
+  }
+
+  private_frontier::frontier_metadata_image_v0 parent_metadata = {};
+  parent_metadata.frontier_top =
+      input.parent_frame.frontier_marker.frontier_top;
+  parent_metadata.frontier_count =
+      input.parent_frame.frontier_marker.frontier_count;
+  parent_metadata.frontier_capacity =
+      input.frontier.frontier_capacity;
+  parent_metadata.current_level =
+      input.parent_frame.traversal_level;
+  parent_metadata.level_frame_depth =
+      input.parent_frame.frontier_marker.level_frame_depth;
+  parent_metadata.max_level_depth =
+      input.frontier.max_level_depth;
+
+  private_frontier::shadow_slot_v0 projected_slot = {};
+  private_frontier::access_plan_v0 ignored_plan = {};
+  private_frontier::status_kind layout_status =
+      private_frontier::initialize_shadow_slot(
+          &projected_slot, owner, region, parent_metadata,
+          &ignored_plan);
+  if (layout_status != private_frontier::kStatusOk) {
+    return translate_layout_status(layout_status);
+  }
+  layout_status = private_frontier::apply_parent_frame_push(
+      &projected_slot, owner, region, input.parent_frame,
+      &ignored_plan);
+  if (layout_status != private_frontier::kStatusOk) {
+    return translate_layout_status(layout_status);
+  }
+  private_frontier::frontier_metadata_image_v0 projected_metadata = {};
+  layout_status = private_frontier::decode_metadata(
+      projected_slot, owner, &projected_metadata);
+  if (layout_status != private_frontier::kStatusOk ||
+      projected_metadata.frontier_top !=
+          input.frontier.frontier_top ||
+      projected_metadata.frontier_count !=
+          input.frontier.frontier_count ||
+      projected_metadata.frontier_capacity !=
+          input.frontier.frontier_capacity ||
+      projected_metadata.current_level !=
+          input.frontier.current_level ||
+      projected_metadata.level_frame_depth !=
+          input.frontier.level_frame_depth ||
+      projected_metadata.max_level_depth !=
+          input.frontier.max_level_depth) {
+    return kStatusInvalidFrontierState;
+  }
+
+  private_frontier::access_plan_v0 write_plan = {};
+  layout_status = private_frontier::apply_parent_restore_delta(
+      &projected_slot, owner, region, result.frontier_delta,
+      &write_plan);
+  if (layout_status != private_frontier::kStatusOk) {
+    return translate_layout_status(layout_status);
+  }
+  if (write_plan.access_count == 0 ||
+      write_plan.access_count > kMaxPopPrivateWriteFragments ||
+      !private_frontier::owners_equal(write_plan.owner, owner)) {
+    return kStatusPlanCapacityExceeded;
+  }
+
+  pop_commit_plan_v0 prepared = {};
+  prepared.owner = owner;
+  prepared.operation_seq = operation_seq;
+  prepared.valid = 1;
+  prepared.route_kind = kRouteStackRestoreParent;
+  prepared.required_output_mask = result.output_valid_mask;
+  prepared.persist_mask = typed_stack::kFrontierDeltaValid;
+  prepared.write_fragment_count = write_plan.access_count;
+  prepared.required_ack_count = write_plan.access_count;
+  for (unsigned index = 0; index < write_plan.access_count; ++index) {
+    const private_frontier::shared_chunk_access_v0 &access =
+        write_plan.accesses[index];
+    if (access.access_kind != private_frontier::kAccessWrite ||
+        access.field_kind !=
+            private_frontier::kFieldFrontierMetadata) {
+      return kStatusInvalidWriteFragment;
+    }
+    const uint32_t aligned_slot_offset =
+        access.slot_byte_offset -
+        (access.slot_byte_offset %
+         private_frontier::kSharedAccessChunkBytes);
+    private_write_fragment_v0 &fragment =
+        prepared.write_fragments[index];
+    fragment.aligned_32b_address = access.aligned_32b_address;
+    fragment.byte_mask = access.byte_mask;
+    fragment.slot_byte_offset = access.slot_byte_offset;
+    fragment.byte_count = access.byte_count;
+    fragment.field_kind = access.field_kind;
+    for (unsigned byte = 0;
+         byte < private_frontier::kSharedAccessChunkBytes; ++byte) {
+      if ((access.byte_mask & (uint32_t{1} << byte)) != 0) {
+        fragment.payload[byte] =
+            projected_slot.bytes[aligned_slot_offset + byte];
+      }
+    }
+    if (!fragment_is_valid(fragment)) {
+      return kStatusInvalidWriteFragment;
+    }
+  }
+  *plan = prepared;
+  return kStatusOk;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:

@@ -385,6 +385,55 @@ status_kind capture_live_stack_pop_result(
   return kStatusOk;
 }
 
+status_kind capture_live_stack_restore_result(
+    stack_commit::engine_state_v0 *stack_state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const typed_stack::empty_input_v0 &input,
+    const typed_stack::empty_result_v0 &result,
+    issue_receipt_v0 *receipt) {
+  if (stack_state == NULL || receipt == NULL ||
+      stack_state->initialized != 1 ||
+      producer_operation_seq == 0 || commit_epoch == 0 ||
+      target_operation_seq == 0 ||
+      producer_operation_seq == target_operation_seq) {
+    return kStatusInvalidArgument;
+  }
+  std::memset(receipt, 0, sizeof(*receipt));
+
+  stack_commit::engine_state_v0 staged_stack = *stack_state;
+  stack_commit::issue_receipt_v0 stack_receipt = {};
+  const stack_commit::status_kind stack_status =
+      stack_commit::capture_stack_restore_parent_result(
+          &staged_stack, owner, producer_operation_seq,
+          commit_epoch, target_operation_seq, region, input,
+          result, &stack_receipt);
+  if (stack_status != stack_commit::kStatusOk) {
+    if (stack_status ==
+            stack_commit::kStatusResultCommitBackpressure ||
+        stack_status == stack_commit::kStatusTrackerBackpressure) {
+      return kStatusStackCommitBackpressure;
+    }
+    return kStatusStackIssueRejected;
+  }
+  if (stack_receipt.producer_operation_seq !=
+          producer_operation_seq ||
+      stack_receipt.target_operation_seq !=
+          target_operation_seq ||
+      stack_receipt.commit_epoch != commit_epoch ||
+      stack_receipt.forwarding_kind !=
+          stack_commit::kForwardingRestoreParent) {
+    return kStatusReservationDecisionMismatch;
+  }
+
+  *stack_state = staged_stack;
+  receipt->valid = 1;
+  receipt->stack_issue = stack_receipt;
+  return kStatusOk;
+}
+
 status_kind route_next_ready_event(
     stack_commit::engine_state_v0 *stack_state,
     fetch_target::engine_state_v0 *target_state,
@@ -416,7 +465,9 @@ status_kind route_next_ready_event(
       return kStatusTargetCommitRejected;
     }
   } else if (event.ready_kind != stack_commit::kReadySpillRecovery &&
-             event.ready_kind != stack_commit::kReadyStackPopRetry) {
+             event.ready_kind != stack_commit::kReadyStackPopRetry &&
+             event.ready_kind !=
+                 stack_commit::kReadyInstanceRestoreParent) {
     return kStatusTargetCommitRejected;
   }
 
