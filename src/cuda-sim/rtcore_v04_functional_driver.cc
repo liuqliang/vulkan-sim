@@ -106,6 +106,8 @@ const char *status_name(status_kind status) {
       return "invalid_argument";
     case kStatusInvalidOperationPacket:
       return "invalid_operation_packet";
+    case kStatusCanonicalInputMismatch:
+      return "canonical_input_mismatch";
     case kStatusTypedOperatorFailed:
       return "typed_operator_failed";
     case kStatusSemanticApplyFailed:

@@ -205,6 +205,25 @@ static bool transform_ray(
 
 }  // namespace
 
+bool validate_enter_transition_binding(const enter_input_v0 &input) {
+  if (!valid_decode_context(
+          input.tlas_decode_context, kAsTypeTlas, 128) ||
+      !valid_decode_context(
+          input.blas_decode_context, kAsTypeBlas, 64) ||
+      !valid_instance_reference(
+          input.instance_blas_reference, input.tlas_decode_context,
+          input.blas_decode_context)) {
+    return false;
+  }
+  typed_blas::root_binding_input_v0 root_input = {};
+  root_input.decode_context = input.blas_decode_context;
+  root_input.root_descriptor = input.blas_root_descriptor;
+  const typed_blas::root_binding_result_v0 root =
+      typed_blas::execute_root_binding(root_input);
+  return root.status == typed_blas::kStatusOk &&
+         root.root_payload_kind_valid == 1;
+}
+
 bool make_raw_instance_payload(const void *raw_instance_bytes,
                                raw_instance_payload_v0 *payload) {
   if (raw_instance_bytes == NULL || payload == NULL) return false;

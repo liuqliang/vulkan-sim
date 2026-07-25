@@ -1120,6 +1120,13 @@ uint8_t count_active(const Slot *slots, uint8_t capacity) {
 
 }  // namespace
 
+bool validate_target_reference_shape(
+    const target_reference_v0 &reference, target_kind target,
+    uint16_t payload_bytes, uint64_t raw_payload_base_address) {
+  return target_reference_shape_valid(
+      reference, target, payload_bytes, raw_payload_base_address);
+}
+
 status_kind build_ready_operation_packet(
     const reservation_input_v0 &input, uint64_t reservation_id,
     uint64_t reservation_age, uint32_t slot_generation,

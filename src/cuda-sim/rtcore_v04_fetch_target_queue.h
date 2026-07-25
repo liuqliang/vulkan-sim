@@ -359,6 +359,10 @@ status_kind build_ready_operation_packet(
     const private_frontier::root_private_operands_v0 &private_operands,
     const uint8_t *raw_payload, operation_packet_v0 *packet);
 
+bool validate_target_reference_shape(
+    const target_reference_v0 &reference, target_kind target,
+    uint16_t payload_bytes, uint64_t raw_payload_base_address);
+
 status_kind build_ready_node_operation_packet(
     const reservation_input_v0 &input, uint64_t reservation_id,
     uint64_t reservation_age, uint32_t slot_generation,

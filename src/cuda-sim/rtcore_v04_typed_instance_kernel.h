@@ -261,6 +261,8 @@ bool make_mutable_ray_state(const float origin[3], const float direction[3],
 
 enter_result_v0 execute_enter(const enter_input_v0 &input);
 
+bool validate_enter_transition_binding(const enter_input_v0 &input);
+
 restore_parent_result_v0 execute_restore_parent(
     const restore_parent_input_v0 &input);
 

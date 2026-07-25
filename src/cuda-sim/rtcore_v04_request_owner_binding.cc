@@ -128,6 +128,26 @@ status_kind unpack_internal_request_key(
   return fields->request_generation == 0 ? kStatusInvalidKey : kStatusOk;
 }
 
+bool validate_private_frontier_owner_identity(
+    const private_frontier::owner_binding_v0 &owner) {
+  if (owner.request_identity == 0 || owner.generation == 0 ||
+      owner.generation > kRequestGenerationMax ||
+      owner.resident_warp_id >= kResidentWarpCapacity ||
+      owner.private_slot_id >= kRequestControlCapacity ||
+      owner.lane_id >= kLaneCapacity ||
+      owner.reserved_zero[0] != 0 || owner.reserved_zero[1] != 0 ||
+      owner.reserved_zero[2] != 0) {
+    return false;
+  }
+  internal_request_key_fields_v0 fields = {};
+  return unpack_internal_request_key(
+             owner.request_identity, &fields) == kStatusOk &&
+         fields.resident_warp_slot == owner.resident_warp_id &&
+         fields.request_control_slot == owner.private_slot_id &&
+         fields.lane_id == owner.lane_id &&
+         fields.request_generation == owner.generation;
+}
+
 status_kind prepare_new_warp(const allocator_state_v0 &state,
                              const warp_identity_v0 &identity,
                              new_warp_plan_v0 *plan) {

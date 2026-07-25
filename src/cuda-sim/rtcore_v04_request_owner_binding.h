@@ -118,6 +118,9 @@ status_kind pack_internal_request_key(
 status_kind unpack_internal_request_key(
     uint32_t packed_key, internal_request_key_fields_v0 *fields);
 
+bool validate_private_frontier_owner_identity(
+    const private_frontier::owner_binding_v0 &owner);
+
 status_kind prepare_new_warp(const allocator_state_v0 &state,
                              const warp_identity_v0 &identity,
                              new_warp_plan_v0 *plan);
