@@ -1,5 +1,6 @@
 #include "rtcore_v04_functional_driver.h"
 #include "rtcore_v04_request_owner_binding.h"
+#include "rtcore_v04_typed_diagnostic_collector.h"
 
 #include <cstring>
 
@@ -350,6 +351,47 @@ status_kind execute_one_stack(
     }
     execution->semantic_plan_kind = kSemanticPlanStackPop;
   }
+  typed_diagnostic::record_v0 diagnostic = {};
+  diagnostic.owner = packet.owner;
+  diagnostic.operation_seq = packet.target_operation_seq;
+  diagnostic.driver = typed_diagnostic::kDriverFunctionalOnly;
+  diagnostic.unit = typed_diagnostic::kUnitStack;
+  diagnostic.operation_kind = packet.operation_kind;
+  diagnostic.semantic_plan_kind = execution->semantic_plan_kind;
+  diagnostic.boundary_kind = execution->terminal_boundary;
+  if (packet.operation_kind ==
+      typed_stack::kPushRemainderAndForwardSelected) {
+    diagnostic.route_kind = execution->append_plan.route_kind;
+    diagnostic.typed_input = &packet.input;
+    diagnostic.typed_input_bytes = sizeof(packet.input);
+    diagnostic.typed_result = &execution->push_result;
+    diagnostic.typed_result_bytes = sizeof(execution->push_result);
+    diagnostic.semantic_plan = &execution->append_plan;
+    diagnostic.semantic_plan_bytes = sizeof(execution->append_plan);
+  } else if (packet.empty_input.operation_kind ==
+             typed_stack::kPopNext) {
+    diagnostic.route_kind = execution->semantic_plan_kind;
+    diagnostic.typed_input = &packet.empty_input;
+    diagnostic.typed_input_bytes = sizeof(packet.empty_input);
+    diagnostic.typed_result = &execution->empty_result;
+    diagnostic.typed_result_bytes = sizeof(execution->empty_result);
+    if (!execution->terminal_boundary) {
+      diagnostic.semantic_plan = &execution->pop_plan;
+      diagnostic.semantic_plan_bytes = sizeof(execution->pop_plan);
+      diagnostic.route_kind = execution->pop_plan.route_kind;
+    }
+  } else {
+    diagnostic.route_kind = execution->pop_plan.route_kind;
+    diagnostic.typed_input = &packet.pop_input;
+    diagnostic.typed_input_bytes = sizeof(packet.pop_input);
+    diagnostic.typed_result = &execution->pop_result;
+    diagnostic.typed_result_bytes = sizeof(execution->pop_result);
+    diagnostic.semantic_plan = &execution->pop_plan;
+    diagnostic.semantic_plan_bytes = sizeof(execution->pop_plan);
+  }
+  if (!typed_diagnostic::emit_record(diagnostic)) {
+    return kStatusDiagnosticRejected;
+  }
   execution->valid = 1;
   return kStatusOk;
 }
@@ -387,6 +429,23 @@ status_kind execute_one_instance_enter(
     return kStatusSemanticApplyFailed;
   }
   execution->semantic_plan_kind = kSemanticPlanInstanceEnter;
+  typed_diagnostic::record_v0 diagnostic = {};
+  diagnostic.owner = packet.owner;
+  diagnostic.operation_seq = packet.target_operation_seq;
+  diagnostic.driver = typed_diagnostic::kDriverFunctionalOnly;
+  diagnostic.unit = typed_diagnostic::kUnitInstance;
+  diagnostic.operation_kind = packet.operation_kind;
+  diagnostic.semantic_plan_kind = execution->semantic_plan_kind;
+  diagnostic.route_kind = execution->semantic_plan.route_kind;
+  diagnostic.typed_input = &execution->operator_input;
+  diagnostic.typed_input_bytes = sizeof(execution->operator_input);
+  diagnostic.typed_result = &execution->operator_result;
+  diagnostic.typed_result_bytes = sizeof(execution->operator_result);
+  diagnostic.semantic_plan = &execution->semantic_plan;
+  diagnostic.semantic_plan_bytes = sizeof(execution->semantic_plan);
+  if (!typed_diagnostic::emit_record(diagnostic)) {
+    return kStatusDiagnosticRejected;
+  }
   execution->valid = 1;
   return kStatusOk;
 }
@@ -428,6 +487,23 @@ status_kind execute_one_instance_restore(
     return kStatusSemanticApplyFailed;
   }
   execution->semantic_plan_kind = kSemanticPlanInstanceRestore;
+  typed_diagnostic::record_v0 diagnostic = {};
+  diagnostic.owner = packet.owner;
+  diagnostic.operation_seq = packet.target_operation_seq;
+  diagnostic.driver = typed_diagnostic::kDriverFunctionalOnly;
+  diagnostic.unit = typed_diagnostic::kUnitInstance;
+  diagnostic.operation_kind = packet.operation_kind;
+  diagnostic.semantic_plan_kind = execution->semantic_plan_kind;
+  diagnostic.route_kind = execution->semantic_plan.route_kind;
+  diagnostic.typed_input = &execution->operator_input;
+  diagnostic.typed_input_bytes = sizeof(execution->operator_input);
+  diagnostic.typed_result = &execution->operator_result;
+  diagnostic.typed_result_bytes = sizeof(execution->operator_result);
+  diagnostic.semantic_plan = &execution->semantic_plan;
+  diagnostic.semantic_plan_bytes = sizeof(execution->semantic_plan);
+  if (!typed_diagnostic::emit_record(diagnostic)) {
+    return kStatusDiagnosticRejected;
+  }
   execution->valid = 1;
   return kStatusOk;
 }

@@ -1,5 +1,6 @@
 #include "rtcore_v04_functional_driver.h"
 #include "rtcore_v04_request_owner_binding.h"
+#include "rtcore_v04_typed_diagnostic_collector.h"
 
 #include <cstring>
 
@@ -211,6 +212,32 @@ status_kind execute_one_primitive(
     return kStatusSemanticApplyFailed;
   }
   execution->semantic_plan_kind = kSemanticPlanPrimitive;
+  typed_diagnostic::record_v0 diagnostic = {};
+  diagnostic.owner = packet.owner;
+  diagnostic.operation_seq = packet.target_operation_seq;
+  diagnostic.driver = typed_diagnostic::kDriverFunctionalOnly;
+  diagnostic.unit = typed_diagnostic::kUnitPrimitive;
+  diagnostic.operation_kind = packet.operation_kind;
+  diagnostic.semantic_plan_kind = execution->semantic_plan_kind;
+  diagnostic.route_kind = execution->semantic_plan.route_kind;
+  diagnostic.boundary_kind =
+      execution->semantic_plan.route_kind ==
+              primitive_semantic::kRouteAnyHitBoundary ||
+          execution->semantic_plan.route_kind ==
+              primitive_semantic::kRouteIntersectionBoundary ||
+          execution->semantic_plan.route_kind ==
+              primitive_semantic::kRouteFinalHitBoundary
+          ? 1
+          : 0;
+  diagnostic.typed_input = &execution->operator_input;
+  diagnostic.typed_input_bytes = sizeof(execution->operator_input);
+  diagnostic.typed_result = &execution->operator_result;
+  diagnostic.typed_result_bytes = sizeof(execution->operator_result);
+  diagnostic.semantic_plan = &execution->semantic_plan;
+  diagnostic.semantic_plan_bytes = sizeof(execution->semantic_plan);
+  if (!typed_diagnostic::emit_record(diagnostic)) {
+    return kStatusDiagnosticRejected;
+  }
   execution->valid = 1;
   return kStatusOk;
 }

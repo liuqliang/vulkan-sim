@@ -20,6 +20,7 @@ enum status_kind : uint8_t {
   kStatusCanonicalInputMismatch,
   kStatusTypedOperatorFailed,
   kStatusSemanticApplyFailed,
+  kStatusDiagnosticRejected,
 };
 
 enum semantic_plan_kind : uint8_t {

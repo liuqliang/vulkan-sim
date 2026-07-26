@@ -3,6 +3,8 @@
 #include <cstring>
 #include <limits>
 
+#include "rtcore_v04_typed_diagnostic_collector.h"
+
 namespace rtcore {
 namespace v04 {
 namespace node_timing {
@@ -270,6 +272,12 @@ status_kind capture_matured_results(
             &semantic_plan) != result_semantic::kStatusOk) {
       return kStatusSemanticApplyFailed;
     }
+    typed_node::route_input_v0 typed_input = {};
+    if (functional_driver::prepare_node_operator_input(
+            pipeline.operation_packet, &typed_input) !=
+            functional_driver::kStatusOk) {
+      return kStatusInvalidOperationPacket;
+    }
     uint32_t commit_epoch = 0;
     if (timing_driver::begin_result_commit(
             timing_state, request_binding,
@@ -297,6 +305,26 @@ status_kind capture_matured_results(
     entry.operator_invocation_count =
         pipeline.operator_invocation_count;
     entry.valid = 1;
+    typed_diagnostic::record_v0 diagnostic = {};
+    diagnostic.owner = pipeline.operation_packet.owner;
+    diagnostic.operation_seq =
+        pipeline.operation_packet.target_operation_seq;
+    diagnostic.driver = typed_diagnostic::kDriverTiming;
+    diagnostic.unit = typed_diagnostic::kUnitNode;
+    diagnostic.operation_kind =
+        pipeline.operation_packet.operation_kind;
+    diagnostic.semantic_plan_kind =
+        functional_driver::kSemanticPlanNode;
+    diagnostic.route_kind = semantic_plan.route_kind;
+    diagnostic.typed_input = &typed_input;
+    diagnostic.typed_input_bytes = sizeof(typed_input);
+    diagnostic.typed_result = &pipeline.typed_result;
+    diagnostic.typed_result_bytes = sizeof(pipeline.typed_result);
+    diagnostic.semantic_plan = &semantic_plan;
+    diagnostic.semantic_plan_bytes = sizeof(semantic_plan);
+    if (!typed_diagnostic::emit_record(diagnostic)) {
+      return kStatusSemanticApplyFailed;
+    }
     std::memset(&pipeline, 0, sizeof(pipeline));
     ++result->captured_result_count;
   }

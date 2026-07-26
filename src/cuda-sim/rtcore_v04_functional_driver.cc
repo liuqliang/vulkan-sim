@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "rtcore_v04_typed_diagnostic_collector.h"
+
 namespace rtcore {
 namespace v04 {
 namespace functional_driver {
@@ -94,6 +96,23 @@ status_kind execute_one_node(
   if (semantic_status != result_semantic::kStatusOk) {
     return kStatusSemanticApplyFailed;
   }
+  typed_diagnostic::record_v0 diagnostic = {};
+  diagnostic.owner = packet.owner;
+  diagnostic.operation_seq = packet.target_operation_seq;
+  diagnostic.driver = typed_diagnostic::kDriverFunctionalOnly;
+  diagnostic.unit = typed_diagnostic::kUnitNode;
+  diagnostic.operation_kind = packet.operation_kind;
+  diagnostic.semantic_plan_kind = kSemanticPlanNode;
+  diagnostic.route_kind = execution->semantic_plan.route_kind;
+  diagnostic.typed_input = &execution->operator_input;
+  diagnostic.typed_input_bytes = sizeof(execution->operator_input);
+  diagnostic.typed_result = &execution->operator_result;
+  diagnostic.typed_result_bytes = sizeof(execution->operator_result);
+  diagnostic.semantic_plan = &execution->semantic_plan;
+  diagnostic.semantic_plan_bytes = sizeof(execution->semantic_plan);
+  if (!typed_diagnostic::emit_record(diagnostic)) {
+    return kStatusDiagnosticRejected;
+  }
   execution->valid = 1;
   return kStatusOk;
 }
@@ -112,6 +131,8 @@ const char *status_name(status_kind status) {
       return "typed_operator_failed";
     case kStatusSemanticApplyFailed:
       return "semantic_apply_failed";
+    case kStatusDiagnosticRejected:
+      return "diagnostic_rejected";
   }
   return "unknown";
 }

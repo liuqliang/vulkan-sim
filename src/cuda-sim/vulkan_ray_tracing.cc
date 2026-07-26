@@ -58,6 +58,7 @@
 #include "rtcore_v04_target_shared_memory_bridge.h"
 #include "rtcore_v04_timing_driver.h"
 #include "rtcore_v04_typed_blas_decode_context.h"
+#include "rtcore_v04_typed_diagnostic_collector.h"
 #include "rtcore_v04_typed_instance_kernel.h"
 #include "rtcore_v04_typed_node_kernel.h"
 #include "rtcore_v04_typed_primitive_kernel.h"
@@ -18518,6 +18519,124 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
 }
 
 static rtcore::v04::stack_timing::result_sink_kind
+rtcore_emit_v04_timing_stack_diagnostic(
+    const rtcore::v04::stack_timing::completed_push_receipt_v0 &push,
+    unsigned owner_hw_sid)
+{
+    namespace functional_driver = rtcore::v04::functional_driver;
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace stack_semantic = rtcore::v04::stack_semantic;
+    namespace typed_diagnostic = rtcore::v04::typed_diagnostic;
+    namespace typed_stack = rtcore::v04::typed_stack;
+    if (!typed_diagnostic::enabled()) {
+        return rtcore::v04::stack_timing::kResultSinkAccepted;
+    }
+
+    typed_diagnostic::record_v0 diagnostic = {};
+    diagnostic.owner = push.operation_packet.owner;
+    diagnostic.operation_seq = push.producer_operation_seq;
+    diagnostic.driver = typed_diagnostic::kDriverTiming;
+    diagnostic.unit = typed_diagnostic::kUnitStack;
+    diagnostic.operation_kind = push.operation_packet.operation_kind;
+    const bool push_operation =
+        push.operation_packet.operation_kind ==
+        typed_stack::kPushRemainderAndForwardSelected;
+    const bool empty_operation =
+        push.operation_packet.empty_input.operation_kind ==
+        typed_stack::kPopNext;
+    if (push_operation) {
+        const private_shared::lane_slot_state_v0 *lane_slot =
+            private_shared::find_live_lane(
+                rtcore_v04_private_shared_backing_for(owner_hw_sid),
+                push.operation_packet.owner);
+        stack_semantic::append_commit_plan_v0 plan = {};
+        if (lane_slot == NULL ||
+            stack_semantic::prepare_stack_pushed_and_selected(
+                push.operation_packet.owner,
+                push.producer_operation_seq,
+                rtcore_v04_private_region_for(owner_hw_sid),
+                lane_slot->canonical_slot, push.typed_result,
+                &plan) != stack_semantic::kStatusOk) {
+            return rtcore::v04::stack_timing::kResultSinkRejected;
+        }
+        diagnostic.semantic_plan_kind =
+            functional_driver::kSemanticPlanStackAppend;
+        diagnostic.route_kind = plan.route_kind;
+        diagnostic.typed_input = &push.operation_packet.input;
+        diagnostic.typed_input_bytes =
+            sizeof(push.operation_packet.input);
+        diagnostic.typed_result = &push.typed_result;
+        diagnostic.typed_result_bytes = sizeof(push.typed_result);
+        diagnostic.semantic_plan = &plan;
+        diagnostic.semantic_plan_bytes = sizeof(plan);
+        return typed_diagnostic::emit_record(diagnostic)
+                   ? rtcore::v04::stack_timing::kResultSinkAccepted
+                   : rtcore::v04::stack_timing::kResultSinkRejected;
+    }
+    if (empty_operation) {
+        diagnostic.typed_input = &push.operation_packet.empty_input;
+        diagnostic.typed_input_bytes =
+            sizeof(push.operation_packet.empty_input);
+        diagnostic.typed_result = &push.typed_empty_result;
+        diagnostic.typed_result_bytes =
+            sizeof(push.typed_empty_result);
+        if (push.terminal_boundary != 0) {
+            diagnostic.boundary_kind = 1;
+            diagnostic.semantic_plan_kind =
+                push.typed_empty_result.result_kind ==
+                        typed_stack::kStackFinalHit
+                    ? functional_driver::kSemanticPlanStackTerminalHit
+                    : functional_driver::kSemanticPlanStackTerminalMiss;
+            diagnostic.route_kind = diagnostic.semantic_plan_kind;
+            return typed_diagnostic::emit_record(diagnostic)
+                       ? rtcore::v04::stack_timing::kResultSinkAccepted
+                       : rtcore::v04::stack_timing::kResultSinkRejected;
+        }
+        stack_semantic::pop_commit_plan_v0 plan = {};
+        if (stack_semantic::prepare_stack_restore_parent(
+                push.operation_packet.owner,
+                push.producer_operation_seq,
+                rtcore_v04_private_region_for(owner_hw_sid),
+                push.operation_packet.empty_input,
+                push.typed_empty_result,
+                &plan) != stack_semantic::kStatusOk) {
+            return rtcore::v04::stack_timing::kResultSinkRejected;
+        }
+        diagnostic.semantic_plan_kind =
+            functional_driver::kSemanticPlanStackRestoreParent;
+        diagnostic.route_kind = plan.route_kind;
+        diagnostic.semantic_plan = &plan;
+        diagnostic.semantic_plan_bytes = sizeof(plan);
+        return typed_diagnostic::emit_record(diagnostic)
+                   ? rtcore::v04::stack_timing::kResultSinkAccepted
+                   : rtcore::v04::stack_timing::kResultSinkRejected;
+    }
+
+    stack_semantic::pop_commit_plan_v0 plan = {};
+    if (stack_semantic::prepare_stack_pop_next(
+            push.operation_packet.owner, push.producer_operation_seq,
+            rtcore_v04_private_region_for(owner_hw_sid),
+            push.operation_packet.frontier_metadata,
+            push.operation_packet.pop_input, push.typed_pop_result,
+            &plan) != stack_semantic::kStatusOk) {
+        return rtcore::v04::stack_timing::kResultSinkRejected;
+    }
+    diagnostic.semantic_plan_kind =
+        functional_driver::kSemanticPlanStackPop;
+    diagnostic.route_kind = plan.route_kind;
+    diagnostic.typed_input = &push.operation_packet.pop_input;
+    diagnostic.typed_input_bytes =
+        sizeof(push.operation_packet.pop_input);
+    diagnostic.typed_result = &push.typed_pop_result;
+    diagnostic.typed_result_bytes = sizeof(push.typed_pop_result);
+    diagnostic.semantic_plan = &plan;
+    diagnostic.semantic_plan_bytes = sizeof(plan);
+    return typed_diagnostic::emit_record(diagnostic)
+               ? rtcore::v04::stack_timing::kResultSinkAccepted
+               : rtcore::v04::stack_timing::kResultSinkRejected;
+}
+
+static rtcore::v04::stack_timing::result_sink_kind
 rtcore_accept_v04_live_stack_result(
     rtcore::v04::stack_timing::completed_push_receipt_v0 *push,
     rtcore::v04::timing_driver::state_v0 *staged_timing_state,
@@ -18591,7 +18710,8 @@ rtcore_accept_v04_live_stack_result(
                 terminal_kind) != timing_driver::kStatusOk) {
             return stack_timing::kResultSinkRejected;
         }
-        return stack_timing::kResultSinkAccepted;
+        return rtcore_emit_v04_timing_stack_diagnostic(
+            *push, context->owner_hw_sid);
     }
 
     rtcore::v04::stack_commit::engine_state_v0 staged_stack =
@@ -18664,7 +18784,6 @@ rtcore_accept_v04_live_stack_result(
         fflush(stderr);
         return stack_timing::kResultSinkRejected;
     }
-
     std::deque<rtcore_memory_unit_request_snapshot> requests;
     const bool retry_stack_pop =
         receipt.stack_issue.forwarding_kind ==
@@ -18858,6 +18977,11 @@ rtcore_accept_v04_live_stack_result(
         push->used_transition_spill = 1;
     }
 
+    if (rtcore_emit_v04_timing_stack_diagnostic(
+            *push, context->owner_hw_sid) !=
+        stack_timing::kResultSinkAccepted) {
+        return stack_timing::kResultSinkRejected;
+    }
     rtcore_v04_live_stack_commit_for(context->owner_hw_sid) =
         staged_stack;
     rtcore_v04_live_target_engine_for(context->owner_hw_sid) =
@@ -19517,6 +19641,97 @@ rtcore_prepare_v04_live_instance_enter_input(
 }
 
 static rtcore::v04::instance_timing::result_sink_kind
+rtcore_emit_v04_timing_instance_restore_diagnostic(
+    const rtcore::v04::instance_timing::completed_restore_receipt_v0
+        &restore,
+    const rtcore::v04::private_frontier::shadow_slot_v0
+        &canonical_slot,
+    unsigned owner_hw_sid)
+{
+    namespace functional_driver = rtcore::v04::functional_driver;
+    namespace instance_semantic = rtcore::v04::instance_semantic;
+    namespace typed_diagnostic = rtcore::v04::typed_diagnostic;
+    namespace typed_instance = rtcore::v04::typed_instance;
+    if (!typed_diagnostic::enabled()) {
+        return rtcore::v04::instance_timing::kResultSinkAccepted;
+    }
+    typed_instance::restore_parent_input_v0 input = {};
+    input.profile_id = typed_instance::kGenRtDerivedProfileId;
+    input.operation_kind = typed_instance::kRestoreParent;
+    input.parent_frame = restore.operation_packet.parent_frame;
+    instance_semantic::restore_commit_plan_v0 plan = {};
+    if (instance_semantic::prepare_restore_parent(
+            restore.operation_packet.owner,
+            restore.producer_operation_seq,
+            rtcore_v04_private_region_for(owner_hw_sid),
+            canonical_slot, restore.typed_result,
+            &plan) != instance_semantic::kStatusOk) {
+        return rtcore::v04::instance_timing::kResultSinkRejected;
+    }
+    typed_diagnostic::record_v0 diagnostic = {};
+    diagnostic.owner = restore.operation_packet.owner;
+    diagnostic.operation_seq = restore.producer_operation_seq;
+    diagnostic.driver = typed_diagnostic::kDriverTiming;
+    diagnostic.unit = typed_diagnostic::kUnitInstance;
+    diagnostic.operation_kind =
+        restore.operation_packet.operation_kind;
+    diagnostic.semantic_plan_kind =
+        functional_driver::kSemanticPlanInstanceRestore;
+    diagnostic.route_kind = plan.route_kind;
+    diagnostic.typed_input = &input;
+    diagnostic.typed_input_bytes = sizeof(input);
+    diagnostic.typed_result = &restore.typed_result;
+    diagnostic.typed_result_bytes = sizeof(restore.typed_result);
+    diagnostic.semantic_plan = &plan;
+    diagnostic.semantic_plan_bytes = sizeof(plan);
+    return typed_diagnostic::emit_record(diagnostic)
+               ? rtcore::v04::instance_timing::kResultSinkAccepted
+               : rtcore::v04::instance_timing::kResultSinkRejected;
+}
+
+static rtcore::v04::instance_timing::result_sink_kind
+rtcore_emit_v04_timing_instance_enter_diagnostic(
+    const rtcore::v04::instance_timing::completed_enter_receipt_v0 &enter,
+    const rtcore::v04::private_frontier::shadow_slot_v0
+        &canonical_slot,
+    unsigned owner_hw_sid)
+{
+    namespace functional_driver = rtcore::v04::functional_driver;
+    namespace instance_semantic = rtcore::v04::instance_semantic;
+    namespace typed_diagnostic = rtcore::v04::typed_diagnostic;
+    if (!typed_diagnostic::enabled()) {
+        return rtcore::v04::instance_timing::kResultSinkAccepted;
+    }
+    instance_semantic::enter_commit_plan_v0 plan = {};
+    if (instance_semantic::prepare_enter(
+            enter.operation_packet.owner,
+            enter.producer_operation_seq,
+            rtcore_v04_private_region_for(owner_hw_sid),
+            canonical_slot, enter.typed_input, enter.typed_result,
+            &plan) != instance_semantic::kStatusOk) {
+        return rtcore::v04::instance_timing::kResultSinkRejected;
+    }
+    typed_diagnostic::record_v0 diagnostic = {};
+    diagnostic.owner = enter.operation_packet.owner;
+    diagnostic.operation_seq = enter.producer_operation_seq;
+    diagnostic.driver = typed_diagnostic::kDriverTiming;
+    diagnostic.unit = typed_diagnostic::kUnitInstance;
+    diagnostic.operation_kind = enter.operation_packet.operation_kind;
+    diagnostic.semantic_plan_kind =
+        functional_driver::kSemanticPlanInstanceEnter;
+    diagnostic.route_kind = plan.route_kind;
+    diagnostic.typed_input = &enter.typed_input;
+    diagnostic.typed_input_bytes = sizeof(enter.typed_input);
+    diagnostic.typed_result = &enter.typed_result;
+    diagnostic.typed_result_bytes = sizeof(enter.typed_result);
+    diagnostic.semantic_plan = &plan;
+    diagnostic.semantic_plan_bytes = sizeof(plan);
+    return typed_diagnostic::emit_record(diagnostic)
+               ? rtcore::v04::instance_timing::kResultSinkAccepted
+               : rtcore::v04::instance_timing::kResultSinkRejected;
+}
+
+static rtcore::v04::instance_timing::result_sink_kind
 rtcore_accept_v04_live_instance_result(
     rtcore::v04::instance_timing::completed_restore_receipt_v0 *restore,
     rtcore::v04::timing_driver::state_v0 *staged_timing_state,
@@ -19587,6 +19802,12 @@ rtcore_accept_v04_live_instance_result(
         receipt.write_count !=
             rtcore::v04::instance_semantic::
                 kRestoreWriteFragmentCount) {
+        return instance_timing::kResultSinkRejected;
+    }
+    if (rtcore_emit_v04_timing_instance_restore_diagnostic(
+            *restore, lane_slot->canonical_slot,
+            context->owner_hw_sid) !=
+        instance_timing::kResultSinkAccepted) {
         return instance_timing::kResultSinkRejected;
     }
     rtcore_v04_live_instance_shared_for(context->owner_hw_sid) =
@@ -19663,6 +19884,12 @@ rtcore_accept_v04_live_instance_enter_result(
         receipt.target_operation_seq !=
             enter->target_operation_seq ||
         receipt.write_count != expected_writes) {
+        return instance_timing::kResultSinkRejected;
+    }
+    if (rtcore_emit_v04_timing_instance_enter_diagnostic(
+            *enter, lane_slot->canonical_slot,
+            context->owner_hw_sid) !=
+        instance_timing::kResultSinkAccepted) {
         return instance_timing::kResultSinkRejected;
     }
     rtcore_v04_live_instance_shared_for(context->owner_hw_sid) =
@@ -20061,6 +20288,54 @@ struct rtcore_v04_primitive_result_sink_context {
 };
 
 static rtcore::v04::primitive_timing::result_sink_kind
+rtcore_emit_v04_timing_primitive_diagnostic(
+    const rtcore::v04::primitive_timing::completed_receipt_v0
+        &completed)
+{
+    namespace functional_driver = rtcore::v04::functional_driver;
+    namespace primitive_semantic = rtcore::v04::primitive_semantic;
+    namespace typed_diagnostic = rtcore::v04::typed_diagnostic;
+    if (!typed_diagnostic::enabled()) {
+        return rtcore::v04::primitive_timing::kResultSinkAccepted;
+    }
+    primitive_semantic::semantic_plan_v0 plan = {};
+    if (primitive_semantic::prepare_result(
+            completed.operation_packet.owner,
+            completed.producer_operation_seq, completed.typed_input,
+            completed.typed_result,
+            &plan) != primitive_semantic::kStatusOk) {
+        return rtcore::v04::primitive_timing::kResultSinkRejected;
+    }
+    typed_diagnostic::record_v0 diagnostic = {};
+    diagnostic.owner = completed.operation_packet.owner;
+    diagnostic.operation_seq = completed.producer_operation_seq;
+    diagnostic.driver = typed_diagnostic::kDriverTiming;
+    diagnostic.unit = typed_diagnostic::kUnitPrimitive;
+    diagnostic.operation_kind =
+        completed.operation_packet.operation_kind;
+    diagnostic.semantic_plan_kind =
+        functional_driver::kSemanticPlanPrimitive;
+    diagnostic.route_kind = plan.route_kind;
+    diagnostic.boundary_kind =
+        plan.route_kind == primitive_semantic::kRouteAnyHitBoundary ||
+            plan.route_kind ==
+                primitive_semantic::kRouteIntersectionBoundary ||
+            plan.route_kind ==
+                primitive_semantic::kRouteFinalHitBoundary
+            ? 1
+            : 0;
+    diagnostic.typed_input = &completed.typed_input;
+    diagnostic.typed_input_bytes = sizeof(completed.typed_input);
+    diagnostic.typed_result = &completed.typed_result;
+    diagnostic.typed_result_bytes = sizeof(completed.typed_result);
+    diagnostic.semantic_plan = &plan;
+    diagnostic.semantic_plan_bytes = sizeof(plan);
+    return typed_diagnostic::emit_record(diagnostic)
+               ? rtcore::v04::primitive_timing::kResultSinkAccepted
+               : rtcore::v04::primitive_timing::kResultSinkRejected;
+}
+
+static rtcore::v04::primitive_timing::result_sink_kind
 rtcore_accept_v04_live_primitive_result(
     rtcore::v04::primitive_timing::completed_receipt_v0 *completed,
     rtcore::v04::timing_driver::state_v0 *staged_timing_state,
@@ -20129,6 +20404,10 @@ rtcore_accept_v04_live_primitive_result(
         receipt.write_count >
             rtcore::v04::primitive_semantic::
                 kMaxWriteFragmentCount) {
+        return primitive_timing::kResultSinkRejected;
+    }
+    if (rtcore_emit_v04_timing_primitive_diagnostic(*completed) !=
+        primitive_timing::kResultSinkAccepted) {
         return primitive_timing::kResultSinkRejected;
     }
     rtcore_v04_live_primitive_shared_for(context->owner_hw_sid) =
