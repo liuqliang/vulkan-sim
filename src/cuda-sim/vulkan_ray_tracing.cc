@@ -22928,6 +22928,29 @@ extern "C" bool rtcore_pop_v02_lsu_sideband_request_for_sm(
                                                  sideband_snapshot);
 }
 
+extern "C" bool rtcore_peek_memory_unit_request_for_sm(
+    unsigned owner_hw_sid,
+    rtcore_memory_unit_request_snapshot *sideband_snapshot)
+{
+    if (sideband_snapshot) {
+        *sideband_snapshot = rtcore_memory_unit_request_snapshot();
+    }
+    std::map<unsigned,
+             std::deque<rtcore_memory_unit_request_snapshot> >::
+        const_iterator queue_it =
+            g_rtcore_memory_unit_request_snapshots_by_owner.find(
+                owner_hw_sid);
+    if (queue_it ==
+            g_rtcore_memory_unit_request_snapshots_by_owner.end() ||
+        queue_it->second.empty()) {
+        return false;
+    }
+    if (sideband_snapshot) {
+        *sideband_snapshot = queue_it->second.front();
+    }
+    return true;
+}
+
 extern "C" bool rtcore_push_front_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     const rtcore_memory_unit_request_snapshot *sideband_snapshot)

@@ -3,6 +3,8 @@
 #include <cstring>
 #include <limits>
 
+#include "rtcore_v04_stall_attribution.h"
+
 namespace rtcore {
 namespace v04 {
 namespace primitive_timing {
@@ -81,6 +83,33 @@ bool live_target_matches(
          control->live_commit_memory_transaction_count == 0;
 }
 
+void emit_attempt(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq, uint64_t service_cycle,
+    uint16_t arbitration_slot,
+    stall_attribution::stage_kind stage,
+    stall_attribution::outcome_kind outcome,
+    stall_attribution::action_kind action,
+    stall_attribution::reason_kind reason) {
+  if (!stall_attribution::enabled()) return;
+  stall_attribution::attempt_record_v0 record = {};
+  record.service_cycle = service_cycle;
+  record.owner_hw_sid = owner.owner_hw_sid;
+  record.request_identity = owner.request_identity;
+  record.request_generation = owner.generation;
+  record.operation_seq = operation_seq;
+  record.chunk_id = 0;
+  record.chunk_count = 1;
+  record.arbitration_slot = arbitration_slot;
+  record.lane_id = owner.lane_id;
+  record.unit = stall_attribution::kUnitPrimitive;
+  record.stage = stage;
+  record.outcome = outcome;
+  record.action = action;
+  record.reason = reason;
+  stall_attribution::emit_attempt(record);
+}
+
 unsigned population_count(uint64_t mask) {
   unsigned count = 0;
   while (mask != 0) {
@@ -152,6 +181,14 @@ status_kind capture_matured(
     if (result_sink == NULL || result_sink->accept == NULL) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallResultSinkBackpressure);
+      emit_attempt(
+          unit.operation_packet.owner,
+          unit.operation_packet.target_operation_seq, service_cycle,
+          static_cast<uint16_t>(captured),
+          stall_attribution::kStageCapture,
+          stall_attribution::kOutcomeStall,
+          stall_attribution::kActionNone,
+          stall_attribution::kReasonResultSinkCapacity);
       return kStatusOk;
     }
     if (unit.operator_invocation_count != 1 ||
@@ -203,6 +240,14 @@ status_kind capture_matured(
     if (sink_status == kResultSinkBackpressure) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallResultSinkBackpressure);
+      emit_attempt(
+          unit.operation_packet.owner,
+          unit.operation_packet.target_operation_seq, service_cycle,
+          static_cast<uint16_t>(captured),
+          stall_attribution::kStageCapture,
+          stall_attribution::kOutcomeStall,
+          stall_attribution::kActionNone,
+          stall_attribution::kReasonResultSinkCapacity);
       return kStatusOk;
     }
     if (sink_status != kResultSinkAccepted) {
@@ -211,6 +256,14 @@ status_kind capture_matured(
 
     *timing_state = staged_timing;
     result->completed[result->captured_result_count++] = receipt;
+    emit_attempt(
+        unit.operation_packet.owner,
+        unit.operation_packet.target_operation_seq, service_cycle,
+        static_cast<uint16_t>(captured),
+        stall_attribution::kStageCapture,
+        stall_attribution::kOutcomeProgress,
+        stall_attribution::kActionCapture,
+        stall_attribution::kReasonNone);
     unit = unit_state_v0();
     ++state->total_results_captured;
   }
@@ -237,6 +290,13 @@ status_kind issue_operations(
     if (unit_index < 0) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallUnitUnavailable);
+      emit_attempt(
+          packet.owner, packet.target_operation_seq, service_cycle,
+          static_cast<uint16_t>(issued),
+          stall_attribution::kStageIssue,
+          stall_attribution::kOutcomeStall,
+          stall_attribution::kActionNone,
+          stall_attribution::kReasonUnitBusy);
       return kStatusOk;
     }
     request_owner::lane_binding_v0 request_binding = {};
@@ -284,6 +344,13 @@ status_kind issue_operations(
     unit.operator_invocation_count = 1;
     ++state->total_operator_invocations;
     ++result->issued_count;
+    emit_attempt(
+        popped.owner, popped.target_operation_seq, service_cycle,
+        static_cast<uint16_t>(issued),
+        stall_attribution::kStageIssue,
+        stall_attribution::kOutcomeProgress,
+        stall_attribution::kActionIssue,
+        stall_attribution::kReasonNone);
   }
   return kStatusOk;
 }

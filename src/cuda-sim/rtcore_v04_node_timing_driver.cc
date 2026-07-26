@@ -3,6 +3,7 @@
 #include <cstring>
 #include <limits>
 
+#include "rtcore_v04_stall_attribution.h"
 #include "rtcore_v04_typed_diagnostic_collector.h"
 
 namespace rtcore {
@@ -109,6 +110,51 @@ bool live_target_matches(
          control->live_commit_memory_transaction_count == 0;
 }
 
+void emit_attempt(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq, uint64_t service_cycle,
+    uint16_t arbitration_slot,
+    stall_attribution::stage_kind stage,
+    stall_attribution::outcome_kind outcome,
+    stall_attribution::action_kind action,
+    stall_attribution::reason_kind reason) {
+  if (!stall_attribution::enabled()) return;
+  stall_attribution::attempt_record_v0 record = {};
+  record.service_cycle = service_cycle;
+  record.owner_hw_sid = owner.owner_hw_sid;
+  record.request_identity = owner.request_identity;
+  record.request_generation = owner.generation;
+  record.operation_seq = operation_seq;
+  record.chunk_id = 0;
+  record.chunk_count = 1;
+  record.arbitration_slot = arbitration_slot;
+  record.lane_id = owner.lane_id;
+  record.unit = stall_attribution::kUnitNode;
+  record.stage = stage;
+  record.outcome = outcome;
+  record.action = action;
+  record.reason = reason;
+  stall_attribution::emit_attempt(record);
+}
+
+void emit_ready_issue_stall(
+    const fetch_target::engine_state_v0 &target_state,
+    uint64_t service_cycle, uint16_t arbitration_slot,
+    stall_attribution::reason_kind reason) {
+  if (!stall_attribution::enabled()) return;
+  fetch_target::operation_packet_v0 packet = {};
+  if (fetch_target::peek_ready_operation(
+          target_state, fetch_target::kTargetNode, &packet) !=
+      fetch_target::kStatusOk) {
+    return;
+  }
+  emit_attempt(
+      packet.owner, packet.target_operation_seq, service_cycle,
+      arbitration_slot, stall_attribution::kStageIssue,
+      stall_attribution::kOutcomeStall, stall_attribution::kActionNone,
+      reason);
+}
+
 int find_free_pipeline(const state_v0 &state) {
   for (unsigned index = 0; index < kMaxNodePipelineEntries; ++index) {
     if (state.node_pipeline[index].valid == 0) {
@@ -180,6 +226,18 @@ status_kind commit_results(
     if (active_result_count(*state) != 0) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallResultCommitNotAccepted);
+      const int result_index = find_oldest_result(*state);
+      if (result_index >= 0) {
+        const result_commit_entry_v0 &entry =
+            state->result_commits[result_index];
+        emit_attempt(
+            entry.result_identity.owner,
+            entry.result_identity.target_operation_seq, service_cycle, 0,
+            stall_attribution::kStageCommit,
+            stall_attribution::kOutcomeStall,
+            stall_attribution::kActionNone,
+            stall_attribution::kReasonResultSinkCapacity);
+      }
     }
     return kStatusOk;
   }
@@ -225,6 +283,14 @@ status_kind commit_results(
       if (sink_result == kRouteSinkBackpressure) {
         result->stall_mask = static_cast<uint8_t>(
             result->stall_mask | kStallRouteSinkBackpressure);
+        emit_attempt(
+            entry.result_identity.owner,
+            entry.result_identity.target_operation_seq, service_cycle,
+            static_cast<uint16_t>(committed),
+            stall_attribution::kStageCommit,
+            stall_attribution::kOutcomeStall,
+            stall_attribution::kActionNone,
+            stall_attribution::kReasonResultSinkCapacity);
         return kStatusOk;
       }
       if (sink_result != kRouteSinkAccepted) {
@@ -234,6 +300,14 @@ status_kind commit_results(
     *timing_state = staged_timing;
     result->committed_routes[result->committed_route_count++] =
         receipt;
+    emit_attempt(
+        entry.result_identity.owner,
+        entry.result_identity.target_operation_seq, service_cycle,
+        static_cast<uint16_t>(committed),
+        stall_attribution::kStageCommit,
+        stall_attribution::kOutcomeProgress,
+        stall_attribution::kActionCommit,
+        stall_attribution::kReasonNone);
     std::memset(&entry, 0, sizeof(entry));
     ++state->total_routes_committed;
   }
@@ -251,6 +325,16 @@ status_kind capture_matured_results(
     if (result_index < 0) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallResultCommitFull);
+      const node_pipeline_entry_v0 &pipeline =
+          state->node_pipeline[pipeline_index];
+      emit_attempt(
+          pipeline.operation_packet.owner,
+          pipeline.operation_packet.target_operation_seq, service_cycle,
+          result->captured_result_count,
+          stall_attribution::kStageCapture,
+          stall_attribution::kOutcomeStall,
+          stall_attribution::kActionNone,
+          stall_attribution::kReasonResultCommitCapacity);
       return kStatusOk;
     }
 
@@ -325,6 +409,14 @@ status_kind capture_matured_results(
     if (!typed_diagnostic::emit_record(diagnostic)) {
       return kStatusSemanticApplyFailed;
     }
+    emit_attempt(
+        pipeline.operation_packet.owner,
+        pipeline.operation_packet.target_operation_seq, service_cycle,
+        result->captured_result_count,
+        stall_attribution::kStageCapture,
+        stall_attribution::kOutcomeProgress,
+        stall_attribution::kActionCapture,
+        stall_attribution::kReasonNone);
     std::memset(&pipeline, 0, sizeof(pipeline));
     ++result->captured_result_count;
   }
@@ -341,6 +433,9 @@ status_kind issue_node_operations(
     if (pipeline_index < 0) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallNodePipelineFull);
+      emit_ready_issue_stall(
+          *target_state, service_cycle, static_cast<uint16_t>(issued),
+          stall_attribution::kReasonPipelineCapacity);
       return kStatusOk;
     }
     const int unit_index =
@@ -350,6 +445,9 @@ status_kind issue_node_operations(
               *target_state, fetch_target::kTargetNode) != 0) {
         result->stall_mask = static_cast<uint8_t>(
             result->stall_mask | kStallNodeUnitUnavailable);
+        emit_ready_issue_stall(
+            *target_state, service_cycle, static_cast<uint16_t>(issued),
+            stall_attribution::kReasonUnitBusy);
       }
       return kStatusOk;
     }
@@ -408,6 +506,13 @@ status_kind issue_node_operations(
         issued_unit_mask | (1u << unit_index));
     ++state->total_operator_invocations;
     ++result->issued_count;
+    emit_attempt(
+        popped.owner, popped.target_operation_seq, service_cycle,
+        static_cast<uint16_t>(issued),
+        stall_attribution::kStageIssue,
+        stall_attribution::kOutcomeProgress,
+        stall_attribution::kActionIssue,
+        stall_attribution::kReasonNone);
   }
   return kStatusOk;
 }

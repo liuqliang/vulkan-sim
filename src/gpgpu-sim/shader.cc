@@ -50,6 +50,7 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include "../cuda-sim/rtcore_v04_request_owner_binding.h"
 #include "../cuda-sim/rtcore_v04_root_node_packet.h"
 #include "../cuda-sim/rtcore_v04_shadow_shader_return.h"
+#include "../cuda-sim/rtcore_v04_stall_attribution.h"
 #include "../statwrapper.h"
 #include "addrdec.h"
 #include "dram.h"
@@ -108,6 +109,9 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     rtcore_replay_service_cycle_identity_snapshot *identity_snapshot,
     rtcore_memory_unit_request_snapshot *sideband_snapshot);
 extern "C" bool rtcore_pop_memory_unit_request_for_sm(
+    unsigned owner_hw_sid,
+    rtcore_memory_unit_request_snapshot *sideband_snapshot);
+extern "C" bool rtcore_peek_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     rtcore_memory_unit_request_snapshot *sideband_snapshot);
 extern "C" bool rtcore_push_front_memory_unit_request_for_sm(
@@ -3739,7 +3743,81 @@ static void rtcore_register_memory_unit_same_cycle_32b_merge_source(
   g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key[key] = mf->get_request_uid();
 }
 
-static void rtcore_maybe_accept_memory_unit_l1d_client(
+enum rtcore_memory_unit_offer_outcome {
+  RTCORE_MEMORY_UNIT_OFFER_NONE = 0,
+  RTCORE_MEMORY_UNIT_OFFER_PROGRESS,
+  RTCORE_MEMORY_UNIT_OFFER_L1D_RESERVATION_BLOCKED,
+  RTCORE_MEMORY_UNIT_OFFER_REJECTED,
+};
+
+struct rtcore_memory_attempt_identity {
+  unsigned rt_request_id;
+  unsigned request_generation;
+  unsigned memory_op_seq;
+  unsigned chunk_id;
+};
+
+static bool rtcore_v04_memory_attempt_is_bound(
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  return snapshot.valid && snapshot.rt_request_id != 0 &&
+         snapshot.request_generation != 0 &&
+         snapshot.memory_op_seq != 0 && snapshot.lane_id < 32;
+}
+
+static rtcore_memory_attempt_identity rtcore_memory_attempt_identity_from(
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  rtcore_memory_attempt_identity identity = {};
+  identity.rt_request_id = snapshot.rt_request_id;
+  identity.request_generation = snapshot.request_generation;
+  identity.memory_op_seq = snapshot.memory_op_seq;
+  identity.chunk_id = snapshot.chunk_id;
+  return identity;
+}
+
+static bool rtcore_memory_attempt_identity_matches(
+    const rtcore_memory_attempt_identity &identity,
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  return identity.rt_request_id == snapshot.rt_request_id &&
+         identity.request_generation == snapshot.request_generation &&
+         identity.memory_op_seq == snapshot.memory_op_seq &&
+         identity.chunk_id == snapshot.chunk_id;
+}
+
+static void rtcore_emit_memory_unit_attempt(
+    const rtcore_memory_unit_request_snapshot &snapshot,
+    unsigned long long service_cycle, unsigned arbitration_slot,
+    rtcore::v04::stall_attribution::stage_kind stage,
+    rtcore::v04::stall_attribution::outcome_kind outcome,
+    rtcore::v04::stall_attribution::action_kind action,
+    rtcore::v04::stall_attribution::reason_kind reason) {
+  if (!rtcore::v04::stall_attribution::enabled()) return;
+  // Compatibility control and shader-continuation sideband requests predate
+  // the V0.4 lane-operation identity contract. They remain visible through
+  // their existing counters but are outside this attempt-accounting boundary.
+  if (!rtcore_v04_memory_attempt_is_bound(snapshot)) {
+    return;
+  }
+  rtcore::v04::stall_attribution::attempt_record_v0 record = {};
+  record.service_cycle = service_cycle;
+  record.owner_hw_sid = snapshot.owner_hw_sid;
+  record.request_identity = snapshot.rt_request_id;
+  record.request_generation = snapshot.request_generation;
+  record.operation_seq = snapshot.memory_op_seq;
+  record.chunk_id = snapshot.chunk_id;
+  record.chunk_count = snapshot.chunk_count;
+  record.arbitration_slot = static_cast<uint16_t>(
+      std::min(arbitration_slot, 0xffffu));
+  record.lane_id = static_cast<uint8_t>(snapshot.lane_id);
+  record.unit = rtcore::v04::stall_attribution::kUnitMemory;
+  record.stage = stage;
+  record.outcome = outcome;
+  record.action = action;
+  record.reason = reason;
+  rtcore::v04::stall_attribution::emit_attempt(record);
+}
+
+static rtcore_memory_unit_offer_outcome
+rtcore_maybe_accept_memory_unit_l1d_client(
     const rtcore_replay_cycle_hook_result &result,
     shader_core_mem_fetch_allocator *mf_allocator,
     const shader_core_config *config, shader_core_ctx *core,
@@ -3749,7 +3827,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
   (void)l0_cache;
   if (!result.lsu_sideband_valid ||
       !rtcore_replay_memory_unit_l1d_client_enabled()) {
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_NONE;
   }
   const bool supported_rtcore_access_kind =
       result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE ||
@@ -3777,7 +3855,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
   if (!supported_rtcore_access && !supported_shader_continuation_access) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_rejected_count++;
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_REJECTED;
   }
 
   baseline_cache *cache = l1d_cache;
@@ -3811,7 +3889,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
     }
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_rejected_count++;
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_REJECTED;
   }
 
   const new_addr_type addr = rtcore_memory_unit_effective_addr(result);
@@ -3834,7 +3912,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
              result.lsu_sideband_aligned_32b_addr, result.cycle);
       fflush(stdout);
     }
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_PROGRESS;
   }
 
   mem_fetch *mf = mf_allocator->alloc(
@@ -3918,7 +3996,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
         .v02_lsu_sideband_cache_reservation_fail_count++;
     rtcore_requeue_v02_lsu_sideband_request_for_retry(result);
     delete mf;
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_L1D_RESERVATION_BLOCKED;
   }
 
   g_rtcore_replay_cycle_hook_consumer_stats
@@ -3955,7 +4033,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
         snapshot, result.cycle, core->get_gpu()->get_global_memory(),
         mf->get_addr());
     delete mf;
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_PROGRESS;
   }
   if (status == HIT && is_write) {
     g_rtcore_replay_cycle_hook_consumer_stats
@@ -3968,7 +4046,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
         snapshot, false, result.cycle);
     rtcore_register_memory_unit_same_cycle_32b_merge_source(result, addr, mf);
     rtcore_v02_lsu_update_sideband_pending_count();
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_PROGRESS;
   }
   if (status != MISS && status != SECTOR_MISS) {
     if (supported_shader_continuation_access) {
@@ -4001,7 +4079,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_real_mem_fetch_count--;
     delete mf;
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_L1D_RESERVATION_BLOCKED;
   }
 
   if (supported_shader_continuation_access) {
@@ -4032,6 +4110,7 @@ static void rtcore_maybe_accept_memory_unit_l1d_client(
       snapshot, false, result.cycle);
   rtcore_register_memory_unit_same_cycle_32b_merge_source(result, addr, mf);
   rtcore_v02_lsu_update_sideband_pending_count();
+  return RTCORE_MEMORY_UNIT_OFFER_PROGRESS;
 }
 
 static rtcore_replay_cycle_hook_result
@@ -4055,14 +4134,15 @@ rtcore_make_result_with_v02_lsu_sideband_snapshot(
   return result;
 }
 
-static void rtcore_consume_memory_unit_request_offer_from_rt_unit(
+static rtcore_memory_unit_offer_outcome
+rtcore_consume_memory_unit_request_offer_from_rt_unit(
     const rtcore_replay_cycle_hook_result &result,
     shader_core_mem_fetch_allocator *mf_allocator,
     const shader_core_config *config, shader_core_ctx *core,
     baseline_cache *l1d_cache, baseline_cache *l0_cache,
     shader_core_stats *stats, unsigned sid) {
   if (!result.lsu_sideband_valid) {
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_NONE;
   }
   if (result.memory_unit_snapshot.address_space ==
       RTCORE_MEMORY_ADDRESS_SPACE_SHARED) {
@@ -4136,7 +4216,7 @@ static void rtcore_consume_memory_unit_request_offer_from_rt_unit(
         result.memory_unit_snapshot, false, result.cycle);
     rtcore_record_v04_memory_conservation_or_abort(
         result.memory_unit_snapshot, true, result.cycle);
-    return;
+    return RTCORE_MEMORY_UNIT_OFFER_PROGRESS;
   }
   g_rtcore_replay_cycle_hook_consumer_stats
       .memory_unit_request_offered_count++;
@@ -4191,9 +4271,11 @@ static void rtcore_consume_memory_unit_request_offer_from_rt_unit(
         .v02_lsu_sideband_max_chunk_count =
         result.lsu_sideband_chunk_count;
   }
-  rtcore_maybe_accept_memory_unit_l1d_client(
+  const rtcore_memory_unit_offer_outcome outcome =
+      rtcore_maybe_accept_memory_unit_l1d_client(
       result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
   rtcore_maybe_log_memory_unit_request_offer_stats(result.owner_hw_sid);
+  return outcome;
 }
 
 static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
@@ -4367,6 +4449,50 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
       rtcore_shared_lsu_frontend_budget_per_cycle();
   unsigned sideband_issued_this_cycle = 0;
   unsigned rt_memory_issued_this_cycle = 0;
+  unsigned memory_offer_attempt_count = 0;
+  std::vector<rtcore_memory_attempt_identity>
+      frontend_accepted_attempts;
+  const auto account_memory_offer =
+      [&](rtcore_memory_unit_offer_outcome outcome,
+          const rtcore_memory_unit_request_snapshot &snapshot) {
+        if (outcome == RTCORE_MEMORY_UNIT_OFFER_NONE) return;
+        const unsigned arbitration_slot = memory_offer_attempt_count++;
+        rtcore_emit_memory_unit_attempt(
+            snapshot, result.cycle, arbitration_slot,
+            rtcore::v04::stall_attribution::kStageFrontend,
+            rtcore::v04::stall_attribution::kOutcomeProgress,
+            rtcore::v04::stall_attribution::kActionFrontendAccept,
+            rtcore::v04::stall_attribution::kReasonNone);
+        if (rtcore::v04::stall_attribution::enabled() &&
+            rtcore_v04_memory_attempt_is_bound(snapshot)) {
+          frontend_accepted_attempts.push_back(
+              rtcore_memory_attempt_identity_from(snapshot));
+        }
+        if (outcome == RTCORE_MEMORY_UNIT_OFFER_PROGRESS) {
+          rtcore_emit_memory_unit_attempt(
+              snapshot, result.cycle, arbitration_slot,
+              rtcore::v04::stall_attribution::kStageBackend,
+              rtcore::v04::stall_attribution::kOutcomeProgress,
+              rtcore::v04::stall_attribution::kActionMemoryAccept,
+              rtcore::v04::stall_attribution::kReasonNone);
+        } else if (
+            outcome ==
+            RTCORE_MEMORY_UNIT_OFFER_L1D_RESERVATION_BLOCKED) {
+          rtcore_emit_memory_unit_attempt(
+              snapshot, result.cycle, arbitration_slot,
+              rtcore::v04::stall_attribution::kStageBackend,
+              rtcore::v04::stall_attribution::kOutcomeStall,
+              rtcore::v04::stall_attribution::kActionNone,
+              rtcore::v04::stall_attribution::kReasonL1dReservation);
+        } else {
+          rtcore_emit_memory_unit_attempt(
+              snapshot, result.cycle, arbitration_slot,
+              rtcore::v04::stall_attribution::kStageBackend,
+              rtcore::v04::stall_attribution::kOutcomeInvalid,
+              rtcore::v04::stall_attribution::kActionNone,
+              rtcore::v04::stall_attribution::kReasonInvalidOffer);
+        }
+      };
   if (issue_bandwidth_gate_enabled) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_issue_bandwidth_evaluations++;
@@ -4513,8 +4639,13 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     }
   }
   if (!direct_sideband_requeued) {
-    rtcore_consume_memory_unit_request_offer_from_rt_unit(
-        result, mf_allocator, config, core, l1d_cache, l0_cache, stats, sid);
+    const rtcore_memory_unit_request_snapshot direct_snapshot =
+        rtcore_v02_lsu_sideband_snapshot_from_result(result);
+    account_memory_offer(
+        rtcore_consume_memory_unit_request_offer_from_rt_unit(
+            result, mf_allocator, config, core, l1d_cache, l0_cache, stats,
+            sid),
+        direct_snapshot);
   }
   if (result.lsu_sideband_valid && !direct_sideband_requeued &&
       !direct_shared_request) {
@@ -4672,9 +4803,11 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     const rtcore_replay_cycle_hook_result drained_result =
         rtcore_make_result_with_v02_lsu_sideband_snapshot(result,
                                                           sideband_snapshot);
-    rtcore_consume_memory_unit_request_offer_from_rt_unit(
-        drained_result, mf_allocator, config, core, l1d_cache, l0_cache, stats,
-        sid);
+    account_memory_offer(
+        rtcore_consume_memory_unit_request_offer_from_rt_unit(
+            drained_result, mf_allocator, config, core, l1d_cache, l0_cache,
+            stats, sid),
+        sideband_snapshot);
     drained_sideband_count++;
     sideband_issued_this_cycle++;
     rt_memory_issued_this_cycle++;
@@ -4691,12 +4824,12 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     g_rtcore_v02_lsu_shared_frontend_blocked_by_owner[result.owner_hw_sid] =
         false;
   }
+  const unsigned deferred_count =
+      rtcore_count_memory_unit_requests_for_sm(result.owner_hw_sid);
   if (issue_bandwidth_gate_enabled) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_issue_bandwidth_issued_count +=
         sideband_issued_this_cycle;
-    const unsigned deferred_count =
-        rtcore_count_memory_unit_requests_for_sm(result.owner_hw_sid);
     if (deferred_count > 0) {
       g_rtcore_replay_cycle_hook_consumer_stats
           .v02_lsu_sideband_issue_bandwidth_deferred_count += deferred_count;
@@ -4715,6 +4848,38 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     }
     if (deferred_count > 0) {
       rtcore_maybe_log_memory_unit_request_offer_stats(result.owner_hw_sid);
+    }
+  }
+  if (deferred_count != 0) {
+    rtcore_memory_unit_request_snapshot blocked = {};
+    if (rtcore_peek_memory_unit_request_for_sm(
+            result.owner_hw_sid, &blocked)) {
+      bool already_attempted = false;
+      for (std::vector<rtcore_memory_attempt_identity>::const_iterator it =
+               frontend_accepted_attempts.begin();
+           it != frontend_accepted_attempts.end(); ++it) {
+        if (rtcore_memory_attempt_identity_matches(*it, blocked)) {
+          already_attempted = true;
+          break;
+        }
+      }
+      const bool issue_budget_blocked =
+          issue_bandwidth_gate_enabled &&
+          rt_memory_issued_this_cycle >= issue_budget_per_cycle;
+      const bool frontend_budget_blocked =
+          shared_frontend_gate_enabled &&
+          max_sideband_drain_per_cycle == drained_sideband_count;
+      if (!already_attempted &&
+          (issue_budget_blocked || frontend_budget_blocked)) {
+        rtcore_emit_memory_unit_attempt(
+            blocked, result.cycle, memory_offer_attempt_count,
+            rtcore::v04::stall_attribution::kStageFrontend,
+            rtcore::v04::stall_attribution::kOutcomeStall,
+            rtcore::v04::stall_attribution::kActionNone,
+            issue_budget_blocked
+                ? rtcore::v04::stall_attribution::kReasonIssueBudget
+                : rtcore::v04::stall_attribution::kReasonFrontendBudget);
+      }
     }
   }
 }

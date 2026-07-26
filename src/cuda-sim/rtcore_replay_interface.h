@@ -317,6 +317,10 @@ bool rtcore_pop_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     rtcore_memory_unit_request_snapshot *sideband_snapshot);
 
+bool rtcore_peek_memory_unit_request_for_sm(
+    unsigned owner_hw_sid,
+    rtcore_memory_unit_request_snapshot *sideband_snapshot);
+
 bool rtcore_push_front_memory_unit_request_for_sm(
     unsigned owner_hw_sid,
     const rtcore_memory_unit_request_snapshot *sideband_snapshot);

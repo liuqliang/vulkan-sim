@@ -3,6 +3,8 @@
 #include <cstring>
 #include <limits>
 
+#include "rtcore_v04_stall_attribution.h"
+
 namespace rtcore {
 namespace v04 {
 namespace instance_timing {
@@ -81,6 +83,33 @@ bool live_target_matches(
          control->pending_recovery_operation_seq == 0 &&
          control->live_memory_transaction_count == 0 &&
          control->live_commit_memory_transaction_count == 0;
+}
+
+void emit_attempt(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq, uint64_t service_cycle,
+    uint16_t arbitration_slot,
+    stall_attribution::stage_kind stage,
+    stall_attribution::outcome_kind outcome,
+    stall_attribution::action_kind action,
+    stall_attribution::reason_kind reason) {
+  if (!stall_attribution::enabled()) return;
+  stall_attribution::attempt_record_v0 record = {};
+  record.service_cycle = service_cycle;
+  record.owner_hw_sid = owner.owner_hw_sid;
+  record.request_identity = owner.request_identity;
+  record.request_generation = owner.generation;
+  record.operation_seq = operation_seq;
+  record.chunk_id = 0;
+  record.chunk_count = 1;
+  record.arbitration_slot = arbitration_slot;
+  record.lane_id = owner.lane_id;
+  record.unit = stall_attribution::kUnitInstance;
+  record.stage = stage;
+  record.outcome = outcome;
+  record.action = action;
+  record.reason = reason;
+  stall_attribution::emit_attempt(record);
 }
 
 bool restore_packet_valid(
@@ -230,6 +259,14 @@ status_kind capture_matured(
         (enter_operation && result_sink->accept_enter == NULL)) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallResultSinkBackpressure);
+      emit_attempt(
+          pipeline.operation_packet.owner,
+          pipeline.operation_packet.target_operation_seq, service_cycle,
+          static_cast<uint16_t>(captured),
+          stall_attribution::kStageCapture,
+          stall_attribution::kOutcomeStall,
+          stall_attribution::kActionNone,
+          stall_attribution::kReasonResultSinkCapacity);
       return kStatusOk;
     }
     if ((!restore_operation && !enter_operation) ||
@@ -317,6 +354,14 @@ status_kind capture_matured(
     if (sink_status == kResultSinkBackpressure) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallResultSinkBackpressure);
+      emit_attempt(
+          pipeline.operation_packet.owner,
+          pipeline.operation_packet.target_operation_seq, service_cycle,
+          static_cast<uint16_t>(captured),
+          stall_attribution::kStageCapture,
+          stall_attribution::kOutcomeStall,
+          stall_attribution::kActionNone,
+          stall_attribution::kReasonResultSinkCapacity);
       return kStatusOk;
     }
     if (sink_status != kResultSinkAccepted) {
@@ -334,6 +379,14 @@ status_kind capture_matured(
       ++result->captured_enter_count;
     }
     ++result->captured_result_count;
+    emit_attempt(
+        pipeline.operation_packet.owner,
+        pipeline.operation_packet.target_operation_seq, service_cycle,
+        static_cast<uint16_t>(captured),
+        stall_attribution::kStageCapture,
+        stall_attribution::kOutcomeProgress,
+        stall_attribution::kActionCapture,
+        stall_attribution::kReasonNone);
     pipeline = pipeline_entry_v0();
     ++state->total_results_captured;
   }
@@ -368,6 +421,13 @@ status_kind issue_operations(
     if (pipeline_index < 0) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallPipelineFull);
+      emit_attempt(
+          candidate.owner, candidate.target_operation_seq, service_cycle,
+          static_cast<uint16_t>(issued),
+          stall_attribution::kStageIssue,
+          stall_attribution::kOutcomeStall,
+          stall_attribution::kActionNone,
+          stall_attribution::kReasonPipelineCapacity);
       return kStatusOk;
     }
     const int unit_index =
@@ -375,6 +435,13 @@ status_kind issue_operations(
     if (unit_index < 0) {
       result->stall_mask = static_cast<uint8_t>(
           result->stall_mask | kStallUnitUnavailable);
+      emit_attempt(
+          candidate.owner, candidate.target_operation_seq, service_cycle,
+          static_cast<uint16_t>(issued),
+          stall_attribution::kStageIssue,
+          stall_attribution::kOutcomeStall,
+          stall_attribution::kActionNone,
+          stall_attribution::kReasonUnitBusy);
       return kStatusOk;
     }
     request_owner::lane_binding_v0 request_binding = {};
@@ -403,11 +470,25 @@ status_kind issue_operations(
       if (provider_status == kResultSinkBackpressure) {
         result->stall_mask = static_cast<uint8_t>(
             result->stall_mask | kStallResultSinkBackpressure);
+        emit_attempt(
+            candidate.owner, candidate.target_operation_seq,
+            service_cycle, static_cast<uint16_t>(issued),
+            stall_attribution::kStageInputPrepare,
+            stall_attribution::kOutcomeStall,
+            stall_attribution::kActionNone,
+            stall_attribution::kReasonInputProvider);
         return kStatusOk;
       }
       if (provider_status != kResultSinkAccepted) {
         return kStatusResultSinkRejected;
       }
+      emit_attempt(
+          candidate.owner, candidate.target_operation_seq, service_cycle,
+          static_cast<uint16_t>(issued),
+          stall_attribution::kStageInputPrepare,
+          stall_attribution::kOutcomeProgress,
+          stall_attribution::kActionInputPrepareAccept,
+          stall_attribution::kReasonNone);
       enter_result = typed_instance::execute_enter(enter_input);
       if (enter_result.status != typed_instance::kStatusOk) {
         return kStatusOperatorFailed;
@@ -443,6 +524,13 @@ status_kind issue_operations(
         issued_unit_mask | (1u << unit_index));
     ++state->total_operator_invocations;
     ++result->issued_count;
+    emit_attempt(
+        popped.owner, popped.target_operation_seq, service_cycle,
+        static_cast<uint16_t>(issued),
+        stall_attribution::kStageIssue,
+        stall_attribution::kOutcomeProgress,
+        stall_attribution::kActionIssue,
+        stall_attribution::kReasonNone);
   }
   return kStatusOk;
 }
