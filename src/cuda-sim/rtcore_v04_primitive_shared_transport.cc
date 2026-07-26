@@ -193,14 +193,44 @@ status_kind capture_result(
     const typed_primitive::route_input_v0 &input,
     const typed_primitive::route_result_v0 &result,
     capture_receipt_v0 *receipt) {
+  primitive_semantic::semantic_plan_v0 semantic = {};
+  if (primitive_semantic::prepare_result(
+          owner, producer_operation_seq, input, result, &semantic) !=
+      primitive_semantic::kStatusOk) {
+    return kStatusSemanticPlanRejected;
+  }
+  return capture_semantic_plan(
+      state, producer_operation_seq, commit_epoch,
+      target_operation_seq, region, canonical_slot, semantic,
+      receipt);
+}
+
+status_kind capture_semantic_plan(
+    engine_state_v0 *state,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    const primitive_semantic::semantic_plan_v0 &semantic_plan,
+    capture_receipt_v0 *receipt) {
+  const bool terminal_boundary =
+      semantic_plan.route_kind ==
+          primitive_semantic::kRouteFinalHitBoundary &&
+      semantic_plan.shader_return_valid == 1;
   if (state == NULL || receipt == NULL || state->initialized != 1 ||
       producer_operation_seq == 0 || commit_epoch == 0 ||
-      target_operation_seq == 0 ||
-      target_operation_seq == producer_operation_seq) {
+      (!terminal_boundary &&
+       (target_operation_seq == 0 ||
+        target_operation_seq == producer_operation_seq)) ||
+      (terminal_boundary && target_operation_seq != 0) ||
+      semantic_plan.operation_seq != producer_operation_seq ||
+      !private_frontier::owners_equal(
+          semantic_plan.owner, canonical_slot.owner)) {
     return kStatusInvalidArgument;
   }
   *receipt = capture_receipt_v0();
-  if (operation_live(*state, owner, producer_operation_seq)) {
+  if (operation_live(
+          *state, semantic_plan.owner, producer_operation_seq)) {
     return kStatusDuplicateOperation;
   }
   const int tracker_index = find_free_tracker(*state);
@@ -211,19 +241,14 @@ status_kind capture_result(
     return kStatusCounterExhausted;
   }
 
-  primitive_semantic::semantic_plan_v0 semantic = {};
   primitive_semantic::private_commit_plan_v0 commit = {};
-  if (primitive_semantic::prepare_result(
-          owner, producer_operation_seq, input, result, &semantic) !=
-          primitive_semantic::kStatusOk ||
-      primitive_semantic::prepare_private_commit(
-          semantic, region, canonical_slot, &commit) !=
+  if (primitive_semantic::prepare_private_commit(
+          semantic_plan, region, canonical_slot, &commit) !=
           primitive_semantic::kStatusOk ||
       commit.valid != 1 ||
       commit.semantic_plan.route_kind == primitive_semantic::kRouteInvalid) {
     return kStatusSemanticPlanRejected;
   }
-
   const int result_index =
       commit.write_fragment_count == 0 ? -1 : find_free_result(*state);
   if (commit.write_fragment_count != 0 && result_index < 0) {
@@ -231,7 +256,7 @@ status_kind capture_result(
   }
   if (result_index >= 0) {
     result_commit_entry_v0 entry = {};
-    entry.owner = owner;
+    entry.owner = semantic_plan.owner;
     entry.issue_age = state->next_issue_age;
     entry.operation_seq = producer_operation_seq;
     entry.target_operation_seq = target_operation_seq;
@@ -247,7 +272,7 @@ status_kind capture_result(
   }
 
   commit_tracker_v0 tracker = {};
-  tracker.owner = owner;
+  tracker.owner = semantic_plan.owner;
   tracker.issue_age = state->next_issue_age;
   tracker.operation_seq = producer_operation_seq;
   tracker.target_operation_seq = target_operation_seq;
@@ -438,7 +463,12 @@ status_kind enqueue_boundary_receipt(
     engine_state_v0 *state, const ready_event_v0 &event) {
   if (state == NULL || state->initialized != 1 || event.valid != 1 ||
       event.producer_operation_seq == 0 || event.commit_epoch == 0 ||
-      event.target_operation_seq == 0 ||
+      (!(event.route_kind == primitive_semantic::kRouteFinalHitBoundary &&
+         event.semantic_plan.shader_return_valid == 1) &&
+       event.target_operation_seq == 0) ||
+      (event.route_kind == primitive_semantic::kRouteFinalHitBoundary &&
+       event.semantic_plan.shader_return_valid == 1 &&
+       event.target_operation_seq != 0) ||
       event.route_kind != event.semantic_plan.route_kind) {
     return kStatusInvalidArgument;
   }

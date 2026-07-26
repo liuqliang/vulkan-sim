@@ -357,8 +357,8 @@ status_kind prepare_private_commit(
       semantic_plan.operation_seq == 0 ||
       !private_frontier::owners_equal(
           semantic_plan.owner, canonical_slot.owner) ||
-      !bytes_are_zero(semantic_plan.reserved_zero,
-                      sizeof(semantic_plan.reserved_zero))) {
+      semantic_plan.reserved_zero != 0 ||
+      semantic_plan.shader_return_valid > 1) {
     return kStatusInvalidTypedResult;
   }
 
@@ -377,17 +377,27 @@ status_kind prepare_private_commit(
           : NULL;
   const bool has_private_write =
       committed_hit != NULL || retained_candidate != NULL ||
-      primitive_resume != NULL;
+      primitive_resume != NULL ||
+      semantic_plan.shader_return_valid != 0;
 
   private_commit_plan_v0 prepared = {};
   prepared.semantic_plan = semantic_plan;
   if (has_private_write) {
     private_frontier::shadow_slot_v0 updated_slot = canonical_slot;
     private_frontier::access_plan_v0 write_plan = {};
-    if (private_frontier::apply_primitive_result_state(
-            &updated_slot, semantic_plan.owner, region, committed_hit,
-            retained_candidate, primitive_resume,
-            &write_plan) != private_frontier::kStatusOk) {
+    const private_frontier::status_kind layout_status =
+        semantic_plan.shader_return_valid != 0
+            ? private_frontier::apply_shader_return_state(
+                  &updated_slot, semantic_plan.owner, region,
+                  committed_hit, &write_plan)
+            : private_frontier::apply_primitive_result_state(
+                  &updated_slot, semantic_plan.owner, region,
+                  committed_hit, retained_candidate, primitive_resume,
+                  &write_plan);
+    if (layout_status != private_frontier::kStatusOk ||
+        (semantic_plan.shader_return_valid != 0 &&
+         (retained_candidate != NULL || primitive_resume != NULL ||
+          semantic_plan.route_kind != kRouteStackPopNext))) {
       return kStatusLayoutRejected;
     }
     uint8_t fragment_count = 0;

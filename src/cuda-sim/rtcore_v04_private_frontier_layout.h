@@ -291,6 +291,12 @@ status_kind apply_primitive_result_state(
     const typed_primitive::primitive_resume_data_v0 *primitive_resume,
     access_plan_v0 *write_plan);
 
+status_kind apply_shader_return_state(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const committed_hit_projection_v0 *committed_hit,
+    access_plan_v0 *write_plan);
+
 status_kind capture_parent_frame(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     traversal_frame_projection_v0 *parent_frame);

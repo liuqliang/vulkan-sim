@@ -11,7 +11,7 @@ namespace rtcore {
 namespace v04 {
 namespace primitive_semantic {
 
-static const uint8_t kMaxWriteFragmentCount = 4;
+static const uint8_t kMaxWriteFragmentCount = 5;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -51,7 +51,8 @@ struct semantic_plan_v0 {
   uint8_t retained_candidate_valid;
   uint8_t primitive_resume_valid;
   uint8_t intersection_boundary_valid;
-  uint8_t reserved_zero[2];
+  uint8_t shader_return_valid;
+  uint8_t reserved_zero;
   typed_stack::committed_hit_projection_v0 committed_hit;
   retained_candidate_projection_v0 retained_candidate;
   typed_primitive::primitive_resume_data_v0 primitive_resume;

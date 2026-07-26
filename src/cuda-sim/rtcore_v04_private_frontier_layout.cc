@@ -1032,6 +1032,42 @@ status_kind apply_primitive_result_state(
   return kStatusOk;
 }
 
+status_kind apply_shader_return_state(
+    shadow_slot_v0 *slot, const owner_binding_v0 &owner,
+    const region_binding_v0 &region,
+    const committed_hit_projection_v0 *committed_hit,
+    access_plan_v0 *write_plan) {
+  if (slot == NULL || write_plan == NULL ||
+      (committed_hit != NULL && !valid_committed_hit(*committed_hit))) {
+    return kStatusInvalidArgument;
+  }
+  status_kind status = validate_slot_owner(*slot, owner);
+  if (status != kStatusOk) return status;
+
+  shadow_slot_v0 updated = *slot;
+  access_plan_v0 plan = {};
+  initialize_plan(&plan, owner);
+  if (committed_hit != NULL) {
+    status = append_range_to_plan(
+        &plan, owner, region, kFieldCommittedHit, kAccessWrite,
+        kCommittedHitOffset, kCommittedHitBytes);
+    if (status != kStatusOk) return status;
+    encode_committed_hit_bytes(
+        updated.bytes + kCommittedHitOffset, *committed_hit);
+  }
+
+  status = append_range_to_plan(
+      &plan, owner, region, kFieldRetainedCandidate, kAccessWrite,
+      kRetainedCandidateOffset, kRetainedCandidateBytes);
+  if (status != kStatusOk) return status;
+  std::memset(updated.bytes + kRetainedCandidateOffset, 0,
+              kRetainedCandidateBytes);
+
+  *slot = updated;
+  *write_plan = plan;
+  return kStatusOk;
+}
+
 status_kind capture_parent_frame(
     const shadow_slot_v0 &slot, const owner_binding_v0 &owner,
     traversal_frame_projection_v0 *parent_frame) {

@@ -23,14 +23,6 @@ uint32_t fp32_bits(float value) {
   return bits;
 }
 
-bool bytes_are_zero(const void *value, size_t byte_count) {
-  const uint8_t *bytes = static_cast<const uint8_t *>(value);
-  for (size_t index = 0; index < byte_count; ++index) {
-    if (bytes[index] != 0) return false;
-  }
-  return true;
-}
-
 uint8_t publication_chunk_mask(uint32_t word_mask) {
   uint8_t chunk_mask = 0;
   for (unsigned word = 0; word < abi_v04::kWordCount; ++word) {
@@ -46,7 +38,7 @@ bool plan_shape_valid(
     const primitive_semantic::semantic_plan_v0 &plan) {
   if (plan.valid != 1 || plan.operation_seq == 0 ||
       plan.primitive_resume_valid != 0 ||
-      !bytes_are_zero(plan.reserved_zero, sizeof(plan.reserved_zero))) {
+      plan.reserved_zero != 0) {
     return false;
   }
   if (plan.route_kind ==

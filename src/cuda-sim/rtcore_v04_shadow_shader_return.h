@@ -102,11 +102,6 @@ inline shader_return_observation decode_shader_return_words(
     observation.error = kShaderReturnErrorIllegalEffect;
     return observation;
   }
-  if (terminate != 0u) {
-    observation.error = kShaderReturnErrorTerminateUnsupported;
-    return observation;
-  }
-
   if (reason == kReasonAnyHitRequired) {
     observation.update.action = commit_retained != 0u
                                     ? kBoundaryReturnCommitAnyHit
@@ -135,8 +130,15 @@ inline shader_return_observation decode_shader_return_words(
     observation.error = kShaderReturnErrorInvalidReportedHitKind;
     return observation;
   }
-  if (reported_attribute_word_count != 0u ||
-      reported_attribute_format != 0u) {
+  const bool no_attributes =
+      reported_attribute_word_count == 0u &&
+      reported_attribute_format == 0u;
+  const bool inline_attributes =
+      reported_attribute_word_count > 0u &&
+      reported_attribute_word_count <=
+          observation.update.reported_attribute_words.size() &&
+      reported_attribute_format == 0x02u;
+  if (!no_attributes && !inline_attributes) {
     observation.error = kShaderReturnErrorReportedAttributesUnsupported;
     return observation;
   }
@@ -145,6 +147,20 @@ inline shader_return_observation decode_shader_return_words(
   observation.update.reported_t_fp32 =
       extract_field(words, kReportedTFp32);
   observation.update.reported_hit_kind = reported_hit_kind;
+  observation.update.reported_attribute_word_count =
+      reported_attribute_word_count;
+  observation.update.reported_attribute_format =
+      reported_attribute_format;
+  const field_spec reported_attributes[] = {
+      kInlineAttributeWord0,
+      kInlineAttributeWord1,
+      kInlineAttributeWord2,
+      kInlineAttributeWord3,
+  };
+  for (uint32_t word = 0; word < reported_attribute_word_count; ++word) {
+    observation.update.reported_attribute_words[word] =
+        extract_field(words, reported_attributes[word]);
+  }
   return observation;
 }
 
@@ -153,12 +169,6 @@ inline shader_return_observation compare_shader_return_words(
     const boundary_return_update &expected) {
   shader_return_observation observation =
       decode_shader_return_words(words, reason);
-  if (observation.valid() &&
-      expected.action == kBoundaryReturnCommitIntersection &&
-      (expected.reported_attribute_word_count != 0u ||
-       expected.reported_attribute_format != 0u)) {
-    observation.error = kShaderReturnErrorReportedAttributesUnsupported;
-  }
   if (observation.valid() &&
       !boundary_return_updates_equal(observation.update, expected)) {
     observation.error = kShaderReturnErrorSemanticMismatch;

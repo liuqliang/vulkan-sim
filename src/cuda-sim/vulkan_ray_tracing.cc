@@ -33,6 +33,7 @@
 #include "rtcore_tlas_binding_registry.h"
 #include "rtcore_v04_canonical_ray.h"
 #include "rtcore_v04_boundary_publication.h"
+#include "rtcore_v04_continuation_lifecycle.h"
 #include "rtcore_v04_instance_blas_reference_registry.h"
 #include "rtcore_v04_instance_shared_transport.h"
 #include "rtcore_v04_instance_timing_driver.h"
@@ -973,7 +974,7 @@ struct rtcore_resident_rt_warp_record {
           v04_root_packet_valid(false),
           v04_root_private_reads_enqueued_mask(0),
           v04_root_ready_mask(0),
-          v04_boundary_completion()
+          v04_boundary_completion(), v04_continuation_lifecycle()
     {
         memset(v04_root_reservations, 0, sizeof(v04_root_reservations));
     }
@@ -1003,6 +1004,8 @@ struct rtcore_resident_rt_warp_record {
     rtcore_resident_rt_warp_lane_identity lane_identity[32];
     rtcore::v04::boundary_publication::warp_state_v0
         v04_boundary_completion;
+    rtcore::v04::continuation_lifecycle::warp_state_v0
+        v04_continuation_lifecycle;
 };
 
 struct rtcore_replay_warp_completion_entry_state {
@@ -2530,6 +2533,16 @@ static bool rtcore_v04_native_boundary_completion_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_continuation_lifecycle_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_CONTINUATION_LIFECYCLE") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled();
@@ -2590,6 +2603,11 @@ extern "C" bool rtcore_v04_native_boundary_completion_gate_active()
     return rtcore_v04_native_boundary_completion_enabled();
 }
 
+extern "C" bool rtcore_v04_continuation_lifecycle_gate_active()
+{
+    return rtcore_v04_continuation_lifecycle_enabled();
+}
+
 extern "C" bool rtcore_v04_root_node_input_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled() ||
@@ -2634,7 +2652,10 @@ extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
              rtcore_v04_typed_procedural_boundary_seed_enabled())) &&
            (!rtcore_v04_native_boundary_completion_enabled() ||
             (rtcore_v04_live_primitive_timing_route_enabled() &&
-             rtcore_replay_memory_unit_path_active()));
+             rtcore_replay_memory_unit_path_active())) &&
+           (!rtcore_v04_continuation_lifecycle_enabled() ||
+            (rtcore_v04_native_boundary_completion_enabled() &&
+             rtcore_custom_submit_continuation_contract_valid()));
 }
 
 static void rtcore_v04_require_valid_node_driver_configuration()
@@ -6075,9 +6096,21 @@ rtcore_find_v04_native_completion_authority(
              rtcore_resident_rt_warp_record>::const_iterator resident_it =
         g_rtcore_resident_rt_warp_records.find(resident_key);
     if (resident_it == g_rtcore_resident_rt_warp_records.end() ||
-        !resident_it->second.valid ||
-        resident_it->second.current_warp_uid != warp_uid ||
-        resident_it->second.active_mask != active_mask) {
+        !resident_it->second.valid) {
+        return NULL;
+    }
+    const rtcore_resident_rt_warp_record &record = resident_it->second;
+    const bool current_transaction_matches =
+        record.current_warp_uid == warp_uid &&
+        record.active_mask == active_mask;
+    const bool staged_resubmit_matches =
+        rtcore_v04_continuation_lifecycle_enabled() &&
+        record.v04_continuation_lifecycle.initialized == 1 &&
+        record.v04_continuation_lifecycle.resubmit_pending == 1 &&
+        record.v04_continuation_lifecycle.pending_next_warp_uid == warp_uid &&
+        record.v04_continuation_lifecycle.pending_next_active_mask ==
+            active_mask;
+    if (!current_transaction_matches && !staged_resubmit_matches) {
         return NULL;
     }
     return &resident_it->second;
@@ -14369,6 +14402,29 @@ extern "C" bool rtcore_begin_retire_resident_rt_warp_transaction(
             }
         }
     }
+    if (record && strcmp(reason, "accepted") == 0 &&
+        rtcore_v04_continuation_lifecycle_enabled()) {
+        const rtcore::v04::continuation_lifecycle::warp_state_v0 &lifecycle =
+            record->v04_continuation_lifecycle;
+        if (lifecycle.owner_hw_sid != owner_hw_sid ||
+            lifecycle.current_warp_uid != record->current_warp_uid ||
+            lifecycle.warp_id != warp_id ||
+            lifecycle.resident_generation != record->resident_generation ||
+            lifecycle.active_mask != record->active_mask) {
+            reason = "V04_CONTINUATION_RETIRE_IDENTITY_MISMATCH";
+        } else {
+            const rtcore::v04::continuation_lifecycle::status_kind
+                lifecycle_status =
+                    rtcore::v04::continuation_lifecycle::prepare_release(
+                        lifecycle);
+            if (lifecycle_status !=
+                rtcore::v04::continuation_lifecycle::kStatusOk) {
+                reason =
+                    rtcore::v04::continuation_lifecycle::status_name(
+                        lifecycle_status);
+            }
+        }
+    }
 
     unsigned already_released_mask = 0;
     if (record && strcmp(reason, "accepted") == 0) {
@@ -14653,6 +14709,29 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
             }
         }
     }
+    if (record && strcmp(reason, "accepted") == 0 &&
+        rtcore_v04_continuation_lifecycle_enabled()) {
+        const rtcore::v04::continuation_lifecycle::warp_state_v0 &lifecycle =
+            record->v04_continuation_lifecycle;
+        if (lifecycle.owner_hw_sid != owner_hw_sid ||
+            lifecycle.current_warp_uid != record->current_warp_uid ||
+            lifecycle.warp_id != warp_id ||
+            lifecycle.resident_generation != record->resident_generation ||
+            lifecycle.active_mask != record->active_mask) {
+            reason = "V04_CONTINUATION_RETIRE_IDENTITY_MISMATCH";
+        } else {
+            const rtcore::v04::continuation_lifecycle::status_kind
+                lifecycle_status =
+                    rtcore::v04::continuation_lifecycle::prepare_release(
+                        lifecycle);
+            if (lifecycle_status !=
+                rtcore::v04::continuation_lifecycle::kStatusOk) {
+                reason =
+                    rtcore::v04::continuation_lifecycle::status_name(
+                        lifecycle_status);
+            }
+        }
+    }
 
     unsigned resident_generation =
         record ? record->resident_generation : 0;
@@ -14754,6 +14833,32 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
                 fflush(stderr);
                 abort();
             }
+        }
+        if (rtcore_v04_continuation_lifecycle_enabled()) {
+            const rtcore::v04::continuation_lifecycle::status_kind
+                lifecycle_status =
+                    rtcore::v04::continuation_lifecycle::commit_release(
+                        &record->v04_continuation_lifecycle);
+            if (lifecycle_status !=
+                rtcore::v04::continuation_lifecycle::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim "
+                        "RTCORE_V04_CONTINUATION_RETIRE_INVARIANT "
+                        "owner_hw_sid=%u warp_uid=%u warp_id=%u fault=%s\n",
+                        owner_hw_sid, record->current_warp_uid, warp_id,
+                        rtcore::v04::continuation_lifecycle::status_name(
+                            lifecycle_status));
+                fflush(stderr);
+                abort();
+            }
+            printf("GPGPU-Sim RTCORE_V04_CONTINUATION_LIFECYCLE_RELEASE "
+                   "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                   "resident_generation=%u release_once=1 "
+                   "completion_consumed=1 resubmit_pending=0 "
+                   "result=accepted\n",
+                   owner_hw_sid, record->current_warp_uid, warp_id,
+                   record->resident_generation);
+            fflush(stdout);
         }
         rtcore_replay_warp_completion_entry_key current_key = {};
         current_key.owner_hw_sid = record->owner_hw_sid;
@@ -16527,6 +16632,17 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
         }
         return false;
     }
+    if (rtcore_v04_continuation_lifecycle_enabled() &&
+        rtcore::v04::continuation_lifecycle::initialize(
+            &record.v04_continuation_lifecycle, input->owner_hw_sid,
+            input->warp_uid, input->warp_id,
+            record.resident_generation, input->active_mask) !=
+            rtcore::v04::continuation_lifecycle::kStatusOk) {
+        if (failure_reason != NULL) {
+            *failure_reason = "CONTINUATION_LIFECYCLE_INIT_REJECTED";
+        }
+        return false;
+    }
     for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
         if ((input->active_mask & (1u << lane)) == 0) continue;
         record.lane_identity[lane].thread_uid =
@@ -17963,6 +18079,305 @@ static bool rtcore_v04_request_owner_from_private_owner(
     snapshot.private_slot_id = private_owner.private_slot_id;
     return rtcore_v04_owner_binding_from_target_request(
         snapshot, request_owner);
+}
+
+extern "C" bool rtcore_validate_v04_native_continuation_lane_authority(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    unsigned completion_transaction_generation, unsigned lane_id,
+    unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned token_id,
+    unsigned token_allocator_generation, unsigned window_generation,
+    unsigned packed_request_key, unsigned request_generation)
+{
+    if (!rtcore_v04_continuation_lifecycle_enabled() || lane_id >= 32 ||
+        (active_mask & (1u << lane_id)) == 0) {
+        return false;
+    }
+    const rtcore_resident_rt_warp_record_key key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::const_iterator it =
+        g_rtcore_resident_rt_warp_records.find(key);
+    if (it == g_rtcore_resident_rt_warp_records.end()) return false;
+    const rtcore_resident_rt_warp_record &record = it->second;
+    if (!record.valid || record.owner_hw_sid != owner_hw_sid ||
+        record.current_warp_uid != warp_uid ||
+        record.active_mask != active_mask ||
+        record.resident_generation != resident_generation ||
+        record.v04_continuation_lifecycle
+                .completion_transaction_generation !=
+            completion_transaction_generation) {
+        return false;
+    }
+    const rtcore_resident_rt_warp_lane_identity &identity =
+        record.lane_identity[lane_id];
+    const rtcore::v04::request_owner::lane_binding_v0 &owner =
+        identity.v04_request_owner_binding;
+    return identity.valid &&
+           identity.v04_request_owner_binding_valid &&
+           identity.context_ptr == context_ptr &&
+           identity.handoff_window_base == handoff_window_base &&
+           identity.token_id == token_id &&
+           identity.token_allocator_generation ==
+               token_allocator_generation &&
+           identity.window_generation == window_generation &&
+           owner.packed_request_key == packed_request_key &&
+           owner.request_generation == request_generation &&
+           owner.owner_hw_sid == owner_hw_sid &&
+           owner.resident_warp_slot == record.v04_resident_warp_slot &&
+           owner.lane_id == lane_id;
+}
+
+extern "C" bool rtcore_mark_v04_native_continuation_dispatch_complete(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    unsigned completion_transaction_generation,
+    unsigned completed_lane_mask)
+{
+    namespace lifecycle = rtcore::v04::continuation_lifecycle;
+    if (!rtcore_v04_continuation_lifecycle_enabled() ||
+        completed_lane_mask == 0 ||
+        (completed_lane_mask & ~active_mask) != 0) {
+        return false;
+    }
+    const rtcore_resident_rt_warp_record_key key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator it =
+        g_rtcore_resident_rt_warp_records.find(key);
+    if (it == g_rtcore_resident_rt_warp_records.end()) return false;
+    rtcore_resident_rt_warp_record &record = it->second;
+    if (!record.valid || record.current_warp_uid != warp_uid ||
+        record.active_mask != active_mask ||
+        record.resident_generation != resident_generation ||
+        record.v04_continuation_lifecycle
+                .completion_transaction_generation !=
+            completion_transaction_generation) {
+        return false;
+    }
+    lifecycle::warp_state_v0 staged =
+        record.v04_continuation_lifecycle;
+    const lifecycle::status_kind status =
+        lifecycle::mark_dispatch_complete(
+            &staged, completed_lane_mask);
+    if (status != lifecycle::kStatusOk) return false;
+    record.v04_continuation_lifecycle = staged;
+    printf("GPGPU-Sim RTCORE_V04_NATIVE_DISPATCH_COHORT_COMPLETE "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x completed_lane_mask=0x%08x "
+           "dispatch_completed_mask=0x%08x "
+           "dispatch_pending_mask=0x%08x\n",
+           owner_hw_sid, warp_uid, warp_id, active_mask,
+           completed_lane_mask, staged.dispatch_completed_mask,
+           staged.dispatch_pending_mask);
+    fflush(stdout);
+    return true;
+}
+
+extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
+    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
+    unsigned new_static_inst_uid, unsigned next_active_mask,
+    unsigned expected_previous_warp_uid,
+    unsigned expected_resident_generation,
+    unsigned long long handoff_window_base,
+    unsigned long long service_cycle, unsigned *previous_active_mask,
+    unsigned *released_lane_mask, unsigned *reactivated_lane_mask,
+    unsigned *resident_occupancy_before, unsigned *resident_occupancy_after,
+    const char **failure_reason)
+{
+    namespace lifecycle = rtcore::v04::continuation_lifecycle;
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    const char *failure = "accepted";
+    const unsigned occupancy =
+        rtcore_resident_rt_warp_record_occupancy();
+    const rtcore_resident_rt_warp_record_key key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator resident =
+        g_rtcore_resident_rt_warp_records.find(key);
+    rtcore_resident_rt_warp_record *record =
+        resident != g_rtcore_resident_rt_warp_records.end()
+            ? &resident->second
+            : NULL;
+    if (!rtcore_v04_continuation_lifecycle_enabled()) {
+        failure = "V04_CONTINUATION_LIFECYCLE_DISABLED";
+    } else if (record == NULL || !record->valid) {
+        failure = "MISSING_RESIDENT_RECORD";
+    } else if (record->current_warp_uid != expected_previous_warp_uid ||
+               record->resident_generation !=
+                   expected_resident_generation ||
+               new_warp_uid == record->current_warp_uid ||
+               new_static_inst_uid == 0 ||
+               next_active_mask == 0 ||
+               (next_active_mask & ~record->active_mask) != 0) {
+        failure = "RESIDENT_GENERATION_OR_SUBMIT_ID_INVALID";
+    } else if (!record->v04_request_owner_binding_valid ||
+               !record->v04_private_frontier_live_init_valid ||
+               !record->v04_private_frontier_init_committed ||
+               record->v04_boundary_completion.initialized != 1 ||
+               record->v04_boundary_completion.completion_consumed != 1 ||
+               record->v04_continuation_lifecycle.initialized != 1 ||
+               record->v04_continuation_lifecycle.completion_consumed != 1) {
+        failure = "NATIVE_COMPLETION_OR_PRIVATE_STATE_NOT_READY";
+    }
+
+    lifecycle::warp_state_v0 staged_lifecycle = {};
+    rtcore::v04::primitive_semantic::semantic_plan_v0
+        semantic_plans[32] = {};
+    unsigned resume_mask = 0;
+    unsigned shader_terminal_mask = 0;
+    if (strcmp(failure, "accepted") == 0) {
+        staged_lifecycle = record->v04_continuation_lifecycle;
+    }
+
+    const private_shared::backing_state_v0 *backing = NULL;
+    const timing_driver::state_v0 *timing = NULL;
+    if (strcmp(failure, "accepted") == 0) {
+        backing =
+            &rtcore_v04_private_shared_backing_for(owner_hw_sid);
+        timing = &rtcore_v04_timing_driver_for(owner_hw_sid);
+    }
+    for (unsigned lane = 0;
+         strcmp(failure, "accepted") == 0 && lane < 32; ++lane) {
+        const unsigned lane_mask = 1u << lane;
+        if ((next_active_mask & lane_mask) == 0) continue;
+        const rtcore_resident_rt_warp_lane_identity &identity =
+            record->lane_identity[lane];
+        if (!identity.valid ||
+            !identity.v04_request_owner_binding_valid ||
+            identity.handoff_memory_backing == NULL ||
+            identity.handoff_window_base != handoff_window_base ||
+            identity.v04_request_owner_binding.owner_hw_sid !=
+                owner_hw_sid ||
+            identity.v04_request_owner_binding.resident_warp_slot !=
+                record->v04_resident_warp_slot ||
+            identity.v04_request_owner_binding.lane_id != lane) {
+            failure = "RESUBMIT_LANE_NATIVE_OWNER_MISMATCH";
+            break;
+        }
+        const rtcore::v04::request_owner::lane_binding_v0 &owner =
+            identity.v04_request_owner_binding;
+        const timing_driver::lane_control_state_v0 *control =
+            timing_driver::find_live_lane_control(*timing, owner);
+        if (control == NULL ||
+            control->live_target_operation_seq != 0 ||
+            control->live_commit_producer_operation_seq != 0 ||
+            control->live_commit_epoch != 0 ||
+            control->pending_recovery_operation_seq != 0 ||
+            control->pending_terminal_kind !=
+                timing_driver::kTerminalBoundaryInvalid ||
+            control->live_memory_transaction_count != 0 ||
+            control->live_commit_memory_transaction_count != 0 ||
+            control->next_target_operation_seq == 0) {
+            failure = "RESUBMIT_LANE_TIMING_NOT_QUIESCENT";
+            break;
+        }
+        const rtcore::v04::private_frontier::owner_binding_v0
+            private_owner =
+                rtcore::v04::request_owner::
+                    make_private_frontier_owner(owner);
+        const private_shared::lane_slot_state_v0 *private_lane =
+            private_shared::find_live_lane(*backing, private_owner);
+        if (private_lane == NULL) {
+            failure = "RESUBMIT_LANE_PRIVATE_STATE_MISSING";
+            break;
+        }
+        std::array<uint32_t, rtcore::abi_v04::kWordCount> words = {};
+        const unsigned long long lane_address =
+            identity.handoff_window_base +
+            static_cast<unsigned long long>(lane) *
+                rtcore::abi_v04::kLaneSlotBytes;
+        identity.handoff_memory_backing->read_simulator_backing(
+            lane_address, sizeof(words), words.data());
+        const rtcore::v04::boundary_publication::lane_publication_v0
+            &completion =
+                record->v04_boundary_completion.lanes[lane];
+        rtcore::v04::primitive_semantic::semantic_plan_v0
+            semantic_plan = {};
+        const lifecycle::status_kind semantic_status =
+            lifecycle::prepare_shader_return_semantic_plan(
+                private_owner, control->next_target_operation_seq,
+                completion.reason, words, private_lane->canonical_slot,
+                &semantic_plan);
+        if (semantic_status != lifecycle::kStatusOk) {
+            failure = lifecycle::status_name(semantic_status);
+            break;
+        }
+        semantic_plans[lane] = semantic_plan;
+        if (semantic_plan.route_kind ==
+            rtcore::v04::primitive_semantic::kRouteFinalHitBoundary) {
+            shader_terminal_mask |= lane_mask;
+        } else if (semantic_plan.route_kind ==
+                   rtcore::v04::primitive_semantic::kRouteStackPopNext) {
+            resume_mask |= lane_mask;
+        } else {
+            failure = "RESUBMIT_SHADER_RETURN_ROUTE_INVALID";
+            break;
+        }
+    }
+
+    if (strcmp(failure, "accepted") == 0) {
+        const lifecycle::status_kind stage_status =
+            lifecycle::stage_resubmit(
+                &staged_lifecycle, new_warp_uid,
+                new_static_inst_uid, next_active_mask, resume_mask,
+                shader_terminal_mask);
+        if (stage_status != lifecycle::kStatusOk) {
+            failure = lifecycle::status_name(stage_status);
+        }
+    }
+    for (unsigned lane = 0;
+         strcmp(failure, "accepted") == 0 && lane < 32; ++lane) {
+        const unsigned lane_mask = 1u << lane;
+        if ((next_active_mask & lane_mask) == 0) continue;
+        const lifecycle::status_kind stage_status =
+            lifecycle::stage_lane_return(
+                &staged_lifecycle, static_cast<uint8_t>(lane),
+                semantic_plans[lane]);
+        if (stage_status != lifecycle::kStatusOk) {
+            failure = lifecycle::status_name(stage_status);
+        }
+    }
+
+    if (strcmp(failure, "accepted") == 0) {
+        record->v04_continuation_lifecycle = staged_lifecycle;
+        printf("GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_STAGED "
+               "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u "
+               "warp_id=%u resident_generation=%u "
+               "previous_active_mask=0x%08x next_active_mask=0x%08x "
+               "resume_mask=0x%08x shader_terminal_mask=0x%08x "
+               "release_mask=0x%08x return_staged_mask=0x%08x "
+               "legacy_candidate_authority=0 "
+               "legacy_shader_return_apply=0 service_cycle=%llu\n",
+               owner_hw_sid, expected_previous_warp_uid, new_warp_uid,
+               warp_id, expected_resident_generation,
+               record->active_mask, next_active_mask, resume_mask,
+               shader_terminal_mask,
+               record->active_mask & ~next_active_mask,
+               staged_lifecycle.return_staged_mask, service_cycle);
+        fflush(stdout);
+    }
+    if (previous_active_mask != NULL) {
+        *previous_active_mask = record != NULL ? record->active_mask : 0;
+    }
+    if (released_lane_mask != NULL) {
+        *released_lane_mask =
+            record != NULL ? record->active_mask & ~next_active_mask : 0;
+    }
+    if (reactivated_lane_mask != NULL) {
+        *reactivated_lane_mask =
+            strcmp(failure, "accepted") == 0 ? next_active_mask : 0;
+    }
+    if (resident_occupancy_before != NULL) {
+        *resident_occupancy_before = occupancy;
+    }
+    if (resident_occupancy_after != NULL) {
+        *resident_occupancy_after = occupancy;
+    }
+    if (failure_reason != NULL) *failure_reason = failure;
+    return strcmp(failure, "accepted") == 0;
 }
 
 static rtcore::v04::stack_timing::result_sink_kind
@@ -19585,6 +20000,396 @@ rtcore_accept_v04_live_primitive_result(
     return primitive_timing::kResultSinkAccepted;
 }
 
+static bool rtcore_try_commit_v04_native_continuation_resubmit(
+    rtcore_resident_rt_warp_record *record,
+    unsigned long long service_cycle)
+{
+    namespace boundary = rtcore::v04::boundary_publication;
+    namespace lifecycle = rtcore::v04::continuation_lifecycle;
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (record == NULL || !record->valid ||
+        !rtcore_v04_continuation_lifecycle_enabled() ||
+        !lifecycle::resubmit_ready(
+            record->v04_continuation_lifecycle)) {
+        return false;
+    }
+
+    const lifecycle::warp_state_v0 &pending =
+        record->v04_continuation_lifecycle;
+    const unsigned previous_warp_uid = record->current_warp_uid;
+    const unsigned previous_active_mask = record->active_mask;
+    const unsigned next_warp_uid = pending.pending_next_warp_uid;
+    const unsigned next_static_inst_uid =
+        pending.pending_next_static_inst_uid;
+    const unsigned next_active_mask =
+        pending.pending_next_active_mask;
+    if (next_warp_uid == 0 ||
+        next_warp_uid == previous_warp_uid ||
+        next_static_inst_uid == 0 || next_active_mask == 0) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                "owner_hw_sid=%u previous_warp_uid=%u warp_id=%u "
+                "phase=commit fault=lifecycle_staged_identity_invalid\n",
+                record->owner_hw_sid, previous_warp_uid,
+                record->warp_id);
+        fflush(stderr);
+        abort();
+    }
+
+    rtcore_replay_lane_request *requests[32] = {};
+    rtcore_replay_lane_request staged_requests[32] = {};
+    bool release_request_state_capacity[32] = {};
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        if ((previous_active_mask & (1u << lane)) == 0) continue;
+        const rtcore_resident_rt_warp_lane_identity &identity =
+            record->lane_identity[lane];
+        std::map<unsigned, rtcore_replay_lane_request>::iterator request =
+            g_rtcore_replay_lane_requests.find(identity.thread_uid);
+        if (!identity.valid ||
+            request == g_rtcore_replay_lane_requests.end() ||
+            !request->second.valid ||
+            request->second.owner_hw_sid != record->owner_hw_sid ||
+            request->second.warp_uid != previous_warp_uid ||
+            request->second.warp_id != record->warp_id ||
+            request->second.lane_id != lane ||
+            request->second.active_mask != previous_active_mask ||
+            request->second.static_inst_uid !=
+                record->current_static_inst_uid ||
+            !request->second.v04_request_owner_binding_valid ||
+            !identity.v04_request_owner_binding_valid ||
+            request->second.v04_request_owner_binding.owner_hw_sid !=
+                identity.v04_request_owner_binding.owner_hw_sid ||
+            request->second.v04_request_owner_binding
+                    .packed_request_key !=
+                identity.v04_request_owner_binding
+                    .packed_request_key ||
+            request->second.v04_request_owner_binding
+                    .request_control_slot !=
+                identity.v04_request_owner_binding
+                    .request_control_slot ||
+            request->second.v04_request_owner_binding
+                    .request_generation !=
+                identity.v04_request_owner_binding
+                    .request_generation ||
+            request->second.v04_request_owner_binding
+                    .private_slot_id !=
+                identity.v04_request_owner_binding
+                    .private_slot_id ||
+            request->second.v04_request_owner_binding
+                    .resident_warp_slot !=
+                identity.v04_request_owner_binding
+                    .resident_warp_slot ||
+            request->second.v04_request_owner_binding.lane_id != lane) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                    "owner_hw_sid=%u previous_warp_uid=%u warp_id=%u "
+                    "lane_id=%u phase=commit "
+                    "fault=request_carrier_owner_mismatch\n",
+                    record->owner_hw_sid, previous_warp_uid,
+                    record->warp_id, lane);
+            fflush(stderr);
+            abort();
+        }
+        requests[lane] = &request->second;
+        staged_requests[lane] = request->second;
+    }
+
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(record->owner_hw_sid);
+    private_shared::backing_state_v0 staged_private =
+        rtcore_v04_private_shared_backing_for(record->owner_hw_sid);
+    lifecycle::warp_state_v0 staged_lifecycle = pending;
+    timing_driver::resubmit_plan_v0 timing_plan = {};
+    private_shared::mask_shrink_plan_v0 private_plan = {};
+    const timing_driver::status_kind prepare_timing =
+        timing_driver::prepare_continuation_resubmit(
+            staged_timing,
+            static_cast<uint8_t>(record->v04_resident_warp_slot),
+            record->owner_hw_sid, previous_warp_uid, next_warp_uid,
+            record->warp_id, next_active_mask,
+            pending.pending_shader_terminal_mask, &timing_plan);
+    const private_shared::status_kind prepare_private =
+        private_shared::prepare_mask_shrink(
+            staged_private,
+            static_cast<uint8_t>(record->v04_resident_warp_slot),
+            previous_warp_uid, next_warp_uid, record->warp_id,
+            next_active_mask, &private_plan);
+    boundary::warp_state_v0 next_completion = {};
+    if (prepare_timing != timing_driver::kStatusOk ||
+        prepare_private != private_shared::kStatusOk ||
+        timing_driver::commit_resubmit(
+            &staged_timing, timing_plan) !=
+            timing_driver::kStatusOk ||
+        private_shared::commit_mask_shrink(
+            &staged_private, private_plan) !=
+            private_shared::kStatusOk ||
+        lifecycle::commit_resubmit(
+            &staged_lifecycle, next_warp_uid) !=
+            lifecycle::kStatusOk ||
+        boundary::initialize(
+            &next_completion, record->owner_hw_sid, next_warp_uid,
+            record->warp_id, next_active_mask,
+            record->v04_resident_warp_slot) != boundary::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u "
+                "warp_id=%u phase=commit timing=%s private=%s\n",
+                record->owner_hw_sid, previous_warp_uid,
+                next_warp_uid, record->warp_id,
+                timing_driver::status_name(prepare_timing),
+                private_shared::status_name(prepare_private));
+        fflush(stderr);
+        abort();
+    }
+
+    unsigned released_mask = 0;
+    unsigned reactivated_mask = 0;
+    unsigned next_ready_order = g_rtcore_next_replay_ready_order;
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        const unsigned lane_mask = 1u << lane;
+        if ((previous_active_mask & lane_mask) == 0) continue;
+        rtcore_replay_lane_request &request = staged_requests[lane];
+        if ((next_active_mask & lane_mask) == 0) {
+            release_request_state_capacity[lane] =
+                rtcore_replay_lane_request_state_capacity_consumes_entry(
+                    request);
+            request.continuation_boundary_pending = false;
+            request.state = RTCORE_REPLAY_COMPLETED;
+            request.v04_request_owner_binding_valid = false;
+            released_mask |= lane_mask;
+        } else {
+            request.warp_uid = next_warp_uid;
+            request.static_inst_uid = next_static_inst_uid;
+            request.active_mask = next_active_mask;
+            request.state = RTCORE_REPLAY_WAITING_SHADER;
+            request.continuation_boundary_pending = true;
+            request.continuation_segment_event_count = 0;
+            request.ready_order = next_ready_order++;
+            reactivated_mask |= lane_mask;
+        }
+        rtcore_refresh_replay_lane_request_ready_bits(&request);
+    }
+
+    rtcore_v04_timing_driver_for(record->owner_hw_sid) =
+        staged_timing;
+    rtcore_v04_private_shared_backing_for(record->owner_hw_sid) =
+        staged_private;
+    record->v04_continuation_lifecycle = staged_lifecycle;
+    record->v04_boundary_completion = next_completion;
+    g_rtcore_next_replay_ready_order = next_ready_order;
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        const unsigned lane_mask = 1u << lane;
+        if ((previous_active_mask & lane_mask) == 0) continue;
+        *requests[lane] = staged_requests[lane];
+        if ((released_mask & lane_mask) != 0) {
+            record->lane_identity[lane]
+                .v04_request_owner_binding_valid = false;
+            if (release_request_state_capacity[lane]) {
+                rtcore_record_replay_lane_request_state_capacity_release(
+                    *requests[lane], service_cycle);
+            }
+        }
+        rtcore_record_replay_request_state_write();
+    }
+
+    const rtcore_replay_warp_completion_entry_key old_key = {
+        record->owner_hw_sid, previous_warp_uid, record->warp_id,
+        previous_active_mask};
+    record->current_warp_uid = next_warp_uid;
+    record->current_static_inst_uid = next_static_inst_uid;
+    record->active_mask = next_active_mask;
+    record->admitted_lane_mask = next_active_mask;
+    record->retired_lane_mask = 0;
+    record->resubmit_count++;
+    record->v04_request_owner_active_mask = next_active_mask;
+    record->v04_private_frontier_init_active_mask =
+        next_active_mask;
+    g_rtcore_continuation_warp_boundary_states.erase(old_key);
+    g_rtcore_resident_warp_continuation_states.erase(old_key);
+    g_rtcore_continuation_stats.rtcore_modeled_resubmit_count++;
+    g_rtcore_continuation_stats.rtcore_modeled_resubmit_lane_count +=
+        rtcore_count_replay_warp_completion_entry_lanes(
+            reactivated_mask);
+
+    printf("GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_COMMITTED "
+           "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u "
+           "warp_id=%u resident_generation=%u "
+           "previous_active_mask=0x%08x next_active_mask=0x%08x "
+           "released_lane_mask=0x%08x "
+           "reactivated_lane_mask=0x%08x "
+           "completion_transaction_generation=%u "
+           "context_window_token_released=0 "
+           "legacy_candidate_authority=0 service_cycle=%llu\n",
+           record->owner_hw_sid, previous_warp_uid, next_warp_uid,
+           record->warp_id, record->resident_generation,
+           previous_active_mask, next_active_mask, released_mask,
+           reactivated_mask,
+           record->v04_continuation_lifecycle
+               .completion_transaction_generation,
+           service_cycle);
+    fflush(stdout);
+    return true;
+}
+
+static bool rtcore_service_v04_native_continuation_return_ingress(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    namespace lifecycle = rtcore::v04::continuation_lifecycle;
+    namespace primitive_shared = rtcore::v04::primitive_shared;
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (!rtcore_v04_continuation_lifecycle_enabled()) return false;
+
+    for (std::map<rtcore_resident_rt_warp_record_key,
+                  rtcore_resident_rt_warp_record>::iterator it =
+             g_rtcore_resident_rt_warp_records.begin();
+         it != g_rtcore_resident_rt_warp_records.end(); ++it) {
+        rtcore_resident_rt_warp_record &record = it->second;
+        lifecycle::warp_state_v0 &lifecycle_state =
+            record.v04_continuation_lifecycle;
+        if (!record.valid || record.owner_hw_sid != owner_hw_sid ||
+            lifecycle_state.resubmit_pending != 1) {
+            continue;
+        }
+        const unsigned pending_mask =
+            lifecycle_state.pending_next_active_mask &
+            ~lifecycle_state.commit_enqueued_mask;
+        if (pending_mask == 0) continue;
+        unsigned lane = 0;
+        while (lane < 32 &&
+               (pending_mask & (1u << lane)) == 0) {
+            ++lane;
+        }
+        if (lane >= 32) continue;
+
+        const rtcore_resident_rt_warp_lane_identity &identity =
+            record.lane_identity[lane];
+        if (!identity.valid ||
+            !identity.v04_request_owner_binding_valid) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                    "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                    "phase=return_ingress fault=owner_missing\n",
+                    owner_hw_sid, record.current_warp_uid,
+                    record.warp_id, lane);
+            fflush(stderr);
+            abort();
+        }
+        const rtcore::v04::request_owner::lane_binding_v0 &owner =
+            identity.v04_request_owner_binding;
+        const rtcore::v04::private_frontier::owner_binding_v0
+            private_owner =
+                rtcore::v04::request_owner::
+                    make_private_frontier_owner(owner);
+        const private_shared::lane_slot_state_v0 *private_lane =
+            private_shared::find_live_lane(
+                rtcore_v04_private_shared_backing_for(owner_hw_sid),
+                private_owner);
+        if (private_lane == NULL) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                    "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                    "phase=return_ingress fault=private_lane_missing\n",
+                    owner_hw_sid, record.current_warp_uid,
+                    record.warp_id, lane);
+            fflush(stderr);
+            abort();
+        }
+
+        timing_driver::state_v0 staged_timing =
+            rtcore_v04_timing_driver_for(owner_hw_sid);
+        primitive_shared::engine_state_v0 staged_primitive =
+            rtcore_v04_live_primitive_shared_for(owner_hw_sid);
+        lifecycle::warp_state_v0 staged_lifecycle =
+            lifecycle_state;
+        uint32_t producer_operation_seq = 0;
+        uint32_t commit_epoch = 0;
+        uint32_t successor_operation_seq = 0;
+        const timing_driver::status_kind allocate_status =
+            timing_driver::allocate_target_operation(
+                &staged_timing, owner, &producer_operation_seq);
+        const rtcore::v04::primitive_semantic::semantic_plan_v0
+            &semantic_plan = staged_lifecycle.lanes[lane].semantic_plan;
+        const bool terminal_return =
+            semantic_plan.route_kind ==
+            rtcore::v04::primitive_semantic::kRouteFinalHitBoundary;
+        if (allocate_status != timing_driver::kStatusOk ||
+            producer_operation_seq !=
+                semantic_plan.operation_seq ||
+            timing_driver::begin_result_commit(
+                &staged_timing, owner, producer_operation_seq,
+                &commit_epoch) != timing_driver::kStatusOk ||
+            (!terminal_return &&
+             timing_driver::allocate_commit_successor_operation(
+                 &staged_timing, owner, producer_operation_seq,
+                 commit_epoch, &successor_operation_seq) !=
+                 timing_driver::kStatusOk)) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                    "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                    "phase=return_ingress fault=timing_allocation_%s\n",
+                    owner_hw_sid, record.current_warp_uid,
+                    record.warp_id, lane,
+                    timing_driver::status_name(allocate_status));
+            fflush(stderr);
+            abort();
+        }
+        primitive_shared::capture_receipt_v0 receipt = {};
+        const primitive_shared::status_kind capture_status =
+            primitive_shared::capture_semantic_plan(
+                &staged_primitive, producer_operation_seq,
+                commit_epoch, successor_operation_seq,
+                rtcore_v04_private_region_for(owner_hw_sid),
+                private_lane->canonical_slot, semantic_plan, &receipt);
+        if (capture_status ==
+                primitive_shared::kStatusResultBackpressure ||
+            capture_status ==
+                primitive_shared::kStatusTrackerBackpressure) {
+            return false;
+        }
+        const lifecycle::status_kind lifecycle_status =
+            capture_status == primitive_shared::kStatusOk
+                ? lifecycle::mark_lane_commit_enqueued(
+                      &staged_lifecycle, static_cast<uint8_t>(lane),
+                      producer_operation_seq, commit_epoch,
+                      successor_operation_seq)
+                : lifecycle::kStatusInvalidArgument;
+        if (capture_status != primitive_shared::kStatusOk ||
+            !receipt.valid ||
+            lifecycle_status != lifecycle::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                    "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                    "phase=return_ingress capture=%s lifecycle=%s\n",
+                    owner_hw_sid, record.current_warp_uid,
+                    record.warp_id, lane,
+                    primitive_shared::status_name(capture_status),
+                    lifecycle::status_name(lifecycle_status));
+            fflush(stderr);
+            abort();
+        }
+        rtcore_v04_timing_driver_for(owner_hw_sid) =
+            staged_timing;
+        rtcore_v04_live_primitive_shared_for(owner_hw_sid) =
+            staged_primitive;
+        lifecycle_state = staged_lifecycle;
+        printf("GPGPU-Sim RTCORE_V04_NATIVE_SHADER_RETURN_INGRESS "
+               "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+               "producer_operation_seq=%u commit_epoch=%u "
+               "successor_operation_seq=%u write_count=%u "
+               "commit_enqueued_mask=0x%08x service_cycle=%llu\n",
+               owner_hw_sid, record.current_warp_uid,
+               record.warp_id, lane, producer_operation_seq,
+               commit_epoch, successor_operation_seq,
+               receipt.write_count,
+               lifecycle_state.commit_enqueued_mask, service_cycle);
+        fflush(stdout);
+        return true;
+    }
+    return false;
+}
+
 static bool rtcore_service_v04_live_primitive_ready(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -19616,6 +20421,26 @@ static bool rtcore_service_v04_live_primitive_ready(
         abort();
     }
 
+    rtcore_resident_rt_warp_record *native_resubmit_record = NULL;
+    rtcore::v04::continuation_lifecycle::warp_state_v0
+        staged_lifecycle = {};
+    if (event.semantic_plan.shader_return_valid == 1) {
+        native_resubmit_record =
+            rtcore_find_v04_native_boundary_resident(owner);
+        if (native_resubmit_record == NULL ||
+            !rtcore_v04_continuation_lifecycle_enabled()) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                    "owner_hw_sid=%u lane_id=%u phase=commit_ready "
+                    "fault=resident_missing\n",
+                    owner_hw_sid, owner.lane_id);
+            fflush(stderr);
+            abort();
+        }
+        staged_lifecycle =
+            native_resubmit_record->v04_continuation_lifecycle;
+    }
+
     const char *route_name = "invalid";
     if (event.route_kind ==
         primitive_semantic::kRouteStackPopNext) {
@@ -19638,7 +20463,31 @@ static bool rtcore_service_v04_live_primitive_ready(
             fflush(stderr);
             abort();
         }
-        route_name = "stack_pop_next";
+        if (native_resubmit_record != NULL) {
+            const rtcore::v04::continuation_lifecycle::status_kind
+                lifecycle_status =
+                    rtcore::v04::continuation_lifecycle::
+                        mark_lane_commit_ready(
+                            &staged_lifecycle, owner.lane_id,
+                            event.producer_operation_seq,
+                            event.commit_epoch,
+                            event.target_operation_seq);
+            if (lifecycle_status !=
+                rtcore::v04::continuation_lifecycle::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                        "owner_hw_sid=%u lane_id=%u "
+                        "phase=commit_ready fault=%s\n",
+                        owner_hw_sid, owner.lane_id,
+                        rtcore::v04::continuation_lifecycle::
+                            status_name(lifecycle_status));
+                fflush(stderr);
+                abort();
+            }
+            route_name = "shader_return_stack_pop_next";
+        } else {
+            route_name = "stack_pop_next";
+        }
     } else if (
         event.route_kind ==
             primitive_semantic::kRouteAnyHitBoundary ||
@@ -19667,6 +20516,28 @@ static bool rtcore_service_v04_live_primitive_ready(
             fflush(stderr);
             abort();
         }
+        if (native_resubmit_record != NULL) {
+            const rtcore::v04::continuation_lifecycle::status_kind
+                lifecycle_status =
+                    rtcore::v04::continuation_lifecycle::
+                        mark_lane_commit_ready(
+                            &staged_lifecycle, owner.lane_id,
+                            event.producer_operation_seq,
+                            event.commit_epoch,
+                            event.target_operation_seq);
+            if (lifecycle_status !=
+                rtcore::v04::continuation_lifecycle::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                        "owner_hw_sid=%u lane_id=%u "
+                        "phase=terminal_commit_ready fault=%s\n",
+                        owner_hw_sid, owner.lane_id,
+                        rtcore::v04::continuation_lifecycle::
+                            status_name(lifecycle_status));
+                fflush(stderr);
+                abort();
+            }
+        }
         route_name =
             primitive_semantic::route_name(
                 static_cast<primitive_semantic::route_kind>(
@@ -19684,6 +20555,12 @@ static bool rtcore_service_v04_live_primitive_ready(
     rtcore_v04_live_primitive_shared_for(owner_hw_sid) =
         staged_primitive;
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
+    if (native_resubmit_record != NULL) {
+        native_resubmit_record->v04_continuation_lifecycle =
+            staged_lifecycle;
+        (void)rtcore_try_commit_v04_native_continuation_resubmit(
+            native_resubmit_record, service_cycle);
+    }
     printf("GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_COMMIT_READY "
            "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
            "producer_operation_seq=%u commit_epoch=%u "
@@ -19772,6 +20649,9 @@ static bool rtcore_service_v04_live_primitive_timing(
         abort();
     }
 
+    const bool native_return_ingress_progressed =
+        rtcore_service_v04_native_continuation_return_ingress(
+            owner_hw_sid, service_cycle);
     const bool ready_progressed =
         rtcore_service_v04_live_primitive_ready(
             owner_hw_sid, service_cycle);
@@ -19837,7 +20717,7 @@ static bool rtcore_service_v04_live_primitive_timing(
     if (result.issued_count != 0 ||
         result.captured_result_count != 0 ||
         runtime_acks_already_consumed != 0 ||
-        ready_progressed) {
+        ready_progressed || native_return_ingress_progressed) {
         printf("GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_TIMING_CYCLE "
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
                "captured=%u acks=%u commit_ready=%u "
@@ -19860,7 +20740,7 @@ static bool rtcore_service_v04_live_primitive_timing(
     return result.issued_count != 0 ||
            result.captured_result_count != 0 ||
            runtime_acks_already_consumed != 0 ||
-           ready_progressed;
+           ready_progressed || native_return_ingress_progressed;
 }
 
 static unsigned rtcore_service_v04_live_runtime_write_arbitration(
@@ -21037,6 +21917,11 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
             const rtcore_resident_rt_warp_record &record = *native_authority;
             local_snapshot.found = true;
             local_snapshot.v04_native_resident_completion = true;
+            local_snapshot.v04_native_resident_generation =
+                record.resident_generation;
+            local_snapshot.v04_native_completion_transaction_generation =
+                record.v04_continuation_lifecycle
+                    .completion_transaction_generation;
             if (record.v04_boundary_completion.initialized == 1 &&
                 record.v04_boundary_completion.completion_consumed == 0) {
                 const rtcore::v04::boundary_publication::warp_state_v0
@@ -21071,6 +21956,31 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
                     if ((completion.completed_lane_mask & lane_mask) == 0) {
                         continue;
                     }
+                    const rtcore_resident_rt_warp_lane_identity &identity =
+                        record.lane_identity[lane];
+                    if (!identity.valid ||
+                        !identity.v04_request_owner_binding_valid) {
+                        continue;
+                    }
+                    local_snapshot.v04_native_identity_valid_mask |=
+                        lane_mask;
+                    local_snapshot.v04_native_context_ptr[lane] =
+                        identity.context_ptr;
+                    local_snapshot.v04_native_handoff_window_base[lane] =
+                        identity.handoff_window_base;
+                    local_snapshot.v04_native_token_id[lane] =
+                        identity.token_id;
+                    local_snapshot
+                        .v04_native_token_allocator_generation[lane] =
+                            identity.token_allocator_generation;
+                    local_snapshot.v04_native_window_generation[lane] =
+                        identity.window_generation;
+                    local_snapshot.v04_native_packed_request_key[lane] =
+                        identity.v04_request_owner_binding
+                            .packed_request_key;
+                    local_snapshot.v04_native_request_generation[lane] =
+                        identity.v04_request_owner_binding
+                            .request_generation;
                     const rtcore::v04::boundary_publication::
                         lane_publication_v0 &publication =
                             completion.lanes[lane];
@@ -21205,6 +22115,26 @@ extern "C" bool rtcore_release_replay_warp_completion_entry(
                         .completion_consumed != 0) {
                 return false;
             }
+            rtcore::v04::continuation_lifecycle::warp_state_v0
+                staged_lifecycle =
+                    resident_it->second.v04_continuation_lifecycle;
+            if (rtcore_v04_continuation_lifecycle_enabled()) {
+                const rtcore::v04::continuation_lifecycle::status_kind
+                    lifecycle_status =
+                        rtcore::v04::continuation_lifecycle::
+                            consume_completion(
+                                &staged_lifecycle,
+                                resident_it->second
+                                    .v04_boundary_completion
+                                    .continuation_lane_mask,
+                                resident_it->second
+                                    .v04_boundary_completion
+                                    .terminal_lane_mask);
+                if (lifecycle_status !=
+                    rtcore::v04::continuation_lifecycle::kStatusOk) {
+                    return false;
+                }
+            }
             const rtcore::v04::boundary_publication::status_kind status =
                 rtcore::v04::boundary_publication::
                     consume_completion_transaction(
@@ -21212,6 +22142,10 @@ extern "C" bool rtcore_release_replay_warp_completion_entry(
             if (status !=
                 rtcore::v04::boundary_publication::kStatusOk) {
                 return false;
+            }
+            if (rtcore_v04_continuation_lifecycle_enabled()) {
+                resident_it->second.v04_continuation_lifecycle =
+                    staged_lifecycle;
             }
             rtcore_replay_warp_completion_entry_key legacy_key = {};
             legacy_key.owner_hw_sid = owner_hw_sid;
@@ -21225,8 +22159,11 @@ extern "C" bool rtcore_release_replay_warp_completion_entry(
                    "active_mask=0x%08x "
                    "resident_request_state_released=0 "
                    "private_state_released=0 "
-                   "continuation_execution=deferred_to_lt8b\n",
-                   owner_hw_sid, warp_uid, warp_id, active_mask);
+                   "continuation_execution=%s\n",
+                   owner_hw_sid, warp_uid, warp_id, active_mask,
+                   rtcore_v04_continuation_lifecycle_enabled()
+                       ? "shadercore_dispatch_armed"
+                       : "deferred_to_lt8b");
             fflush(stdout);
             return true;
         }

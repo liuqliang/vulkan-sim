@@ -147,6 +147,12 @@ status_kind prepare_resubmit(
     uint32_t owner_hw_sid, uint32_t previous_warp_uid,
     uint32_t next_warp_uid, uint32_t warp_id, uint32_t next_active_mask,
     resubmit_plan_v0 *plan);
+status_kind prepare_continuation_resubmit(
+    const state_v0 &state, uint8_t resident_warp_slot,
+    uint32_t owner_hw_sid, uint32_t previous_warp_uid,
+    uint32_t next_warp_uid, uint32_t warp_id, uint32_t next_active_mask,
+    uint32_t terminal_boundary_mask,
+    resubmit_plan_v0 *plan);
 status_kind commit_resubmit(state_v0 *state,
                             const resubmit_plan_v0 &plan);
 

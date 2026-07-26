@@ -13817,13 +13817,17 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
                         : "RESUBMIT_TOKEN_STALE_OR_INCOMPLETE");
   }
 
+  const bool v04_native_continuation_lifecycle =
+      rtcore_v04_continuation_lifecycle_gate_active();
   const char *validation_failure = "accepted";
-  const bool lane_valid = rtcore_validate_shader_visible_resubmit_lane(
-      metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
-      metadata.active_mask, lane_slot_index, thread->get_uid(), context_ptr,
-      handoff_window_base, token->second.token_id,
-      token->second.allocator_generation,
-      window->second.submit_transaction_id, &validation_failure);
+  const bool lane_valid =
+      v04_native_continuation_lifecycle ||
+      rtcore_validate_shader_visible_resubmit_lane(
+          metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
+          metadata.active_mask, lane_slot_index, thread->get_uid(), context_ptr,
+          handoff_window_base, token->second.token_id,
+          token->second.allocator_generation,
+          window->second.submit_transaction_id, &validation_failure);
   if (!lane_valid) {
     return rtcore_reject_symbolic_resubmit(
         pI, context_ptr, handoff_window_base, lane_slot_index, metadata,
@@ -13905,7 +13909,16 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
       rtcore_v04_shadow_gate(
           rtcore_v04_functional_shader_return_authority_gate_name()) ==
       RTCORE_V04_SHADOW_GATE_ENABLED;
-  if (rtcore_shader_return_application_required()) {
+  if (v04_native_continuation_lifecycle) {
+    committed = rtcore_stage_v04_native_continuation_resubmit(
+        metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
+        metadata.static_inst_uid, metadata.active_mask,
+        transaction.previous_warp_uid, transaction.resident_generation,
+        transaction.handoff_window_base, rtcore_v02_lsu_issue_cycle(thread),
+        &committed_previous_active_mask, &released_lane_mask,
+        &reactivated_lane_mask, &resident_occupancy_before,
+        &resident_occupancy_after, &commit_failure);
+  } else if (rtcore_shader_return_application_required()) {
     const bool v04_shadow_boundary_return_enabled =
         rtcore_v04_shadow_gate(
             rtcore_v04_shadow_boundary_publication_gate_name()) ==
@@ -13992,7 +14005,7 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
     abort();
   }
 
-  if (!committed) {
+  if (!committed && !v04_native_continuation_lifecycle) {
     committed = rtcore_commit_shader_visible_resubmit_admission(
         metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
         metadata.static_inst_uid, metadata.active_mask,

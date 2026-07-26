@@ -102,6 +102,9 @@ struct rtcore_replay_warp_completion_entry_snapshot {
   bool found;
   bool v04_native_resident_completion;
   bool all_active_lanes_complete;
+  unsigned v04_native_resident_generation;
+  unsigned v04_native_completion_transaction_generation;
+  unsigned v04_native_identity_valid_mask;
   unsigned owner_hw_sid;
   unsigned warp_uid;
   unsigned warp_id;
@@ -128,6 +131,13 @@ struct rtcore_replay_warp_completion_entry_snapshot {
   unsigned handoff_software_return_valid_mask;
   unsigned lane_completion_reason[32];
   unsigned lane_continuation_depth[32];
+  unsigned long long v04_native_context_ptr[32];
+  unsigned long long v04_native_handoff_window_base[32];
+  unsigned v04_native_token_id[32];
+  unsigned v04_native_token_allocator_generation[32];
+  unsigned v04_native_window_generation[32];
+  unsigned v04_native_packed_request_key[32];
+  unsigned v04_native_request_generation[32];
   unsigned context_layout_version[32];
   unsigned context_valid_flags[32];
   unsigned pipeline_profile_id[32];
@@ -254,6 +264,7 @@ extern "C" bool rtcore_v04_live_instance_restore_parent_gate_active();
 extern "C" bool rtcore_v04_live_instance_enter_transition_gate_active();
 extern "C" bool rtcore_v04_live_primitive_timing_route_gate_active();
 extern "C" bool rtcore_v04_native_boundary_completion_gate_active();
+extern "C" bool rtcore_v04_continuation_lifecycle_gate_active();
 
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE = 0xfffffff0u;
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT = 4u;
@@ -355,6 +366,32 @@ bool rtcore_commit_v04_functional_shader_visible_resubmit_admission(
     unsigned *released_lane_mask, unsigned *reactivated_lane_mask,
     unsigned *resident_occupancy_before, unsigned *resident_occupancy_after,
     const char **failure_reason);
+
+bool rtcore_stage_v04_native_continuation_resubmit(
+    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
+    unsigned new_static_inst_uid, unsigned next_active_mask,
+    unsigned expected_previous_warp_uid,
+    unsigned expected_resident_generation,
+    unsigned long long handoff_window_base,
+    unsigned long long service_cycle, unsigned *previous_active_mask,
+    unsigned *released_lane_mask, unsigned *reactivated_lane_mask,
+    unsigned *resident_occupancy_before, unsigned *resident_occupancy_after,
+    const char **failure_reason);
+
+bool rtcore_validate_v04_native_continuation_lane_authority(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    unsigned completion_transaction_generation, unsigned lane_id,
+    unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned token_id,
+    unsigned token_allocator_generation, unsigned window_generation,
+    unsigned packed_request_key, unsigned request_generation);
+
+bool rtcore_mark_v04_native_continuation_dispatch_complete(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    unsigned completion_transaction_generation,
+    unsigned completed_lane_mask);
 
 }
 

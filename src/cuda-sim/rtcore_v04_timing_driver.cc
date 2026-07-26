@@ -212,6 +212,61 @@ status_kind prepare_resubmit(
   return kStatusOk;
 }
 
+status_kind prepare_continuation_resubmit(
+    const state_v0 &state, uint8_t resident_warp_slot,
+    uint32_t owner_hw_sid, uint32_t previous_warp_uid,
+    uint32_t next_warp_uid, uint32_t warp_id, uint32_t next_active_mask,
+    uint32_t terminal_boundary_mask,
+    resubmit_plan_v0 *plan) {
+  if (!state.initialized || plan == NULL ||
+      (terminal_boundary_mask & ~next_active_mask) != 0) {
+    return kStatusInvalidArgument;
+  }
+  std::memset(plan, 0, sizeof(*plan));
+  request_owner::mask_shrink_plan_v0 owner_plan = {};
+  const request_owner::status_kind owner_status =
+      request_owner::prepare_mask_shrink(
+          state.request_control, resident_warp_slot, owner_hw_sid,
+          previous_warp_uid, next_warp_uid, warp_id, next_active_mask,
+          &owner_plan);
+  if (owner_status != request_owner::kStatusOk)
+    return map_request_owner_status(owner_status);
+  for (uint32_t lane = 0; lane < request_owner::kLaneCapacity; ++lane) {
+    if ((owner_plan.previous_active_mask & lane_bit(lane)) == 0) continue;
+    const lane_control_state_v0 *control =
+        find_live_lane_control(state, owner_plan.lane_bindings[lane]);
+    if (control == NULL) return kStatusOwnerMismatch;
+    if ((next_active_mask & lane_bit(lane)) == 0) {
+      if (!lane_is_quiescent(*control)) return kStatusOperationInFlight;
+      continue;
+    }
+    const bool terminal_boundary_ready =
+        (terminal_boundary_mask & lane_bit(lane)) != 0 &&
+        lane_is_quiescent(*control);
+    const bool stack_pop_ready =
+        control->live_target_operation_seq != 0 &&
+        control->pending_recovery_operation_seq ==
+            control->live_target_operation_seq &&
+        control->pending_recovery_producer_operation_seq != 0 &&
+        control->pending_recovery_target_kind ==
+            kPendingRecoveryTargetStack &&
+        control->pending_recovery_route_kind ==
+            kPendingRecoveryRouteStackPopNext &&
+        control->pending_recovery_reservation_retained == 0 &&
+        control->live_commit_producer_operation_seq == 0 &&
+        control->live_commit_epoch == 0 &&
+        control->pending_terminal_kind == kTerminalBoundaryInvalid &&
+        control->live_memory_transaction_count == 0 &&
+        control->live_commit_memory_transaction_count == 0;
+    if (!terminal_boundary_ready && !stack_pop_ready)
+      return kStatusOperationInFlight;
+  }
+  plan->valid = true;
+  plan->expected_mutation_epoch = state.mutation_epoch;
+  plan->owner_plan = owner_plan;
+  return kStatusOk;
+}
+
 status_kind commit_resubmit(state_v0 *state,
                             const resubmit_plan_v0 &plan) {
   if (state == NULL) return kStatusInvalidArgument;
