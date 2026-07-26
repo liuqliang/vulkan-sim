@@ -2952,8 +2952,12 @@ static void rtcore_record_v02_lsu_sideband_response_wakeup_kind(
           .v02_lsu_sideband_stack_store_nonblocking_completion_count++;
     } else if (
         snapshot.access_kind ==
-        RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE) {
-      if (!rtcore_v04_live_publication_memory_op_seq(
+            RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
+        snapshot.access_kind ==
+            RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE) {
+      if (snapshot.access_kind ==
+              RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE ||
+          !rtcore_v04_live_publication_memory_op_seq(
               snapshot.memory_op_seq)) {
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_sideband_handoff_publication_store_nonblocking_completion_count++;
@@ -3787,8 +3791,11 @@ static void rtcore_consume_memory_unit_request_offer_from_rt_unit(
       RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_handoff_acquire_offer_count++;
-  } else if (result.lsu_sideband_access_kind ==
-             RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE) {
+  } else if (
+      result.lsu_sideband_access_kind ==
+          RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
+      result.lsu_sideband_access_kind ==
+          RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE) {
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_handoff_publication_store_offer_count++;
   } else if (result.lsu_sideband_access_kind ==
@@ -10473,7 +10480,6 @@ static bool rtcore_validate_replay_completion_packet(
          snapshot.continuation_lane_mask) != expected_active_mask ||
         snapshot.unsupported_reason_mask != 0 ||
         snapshot.handoff_selector_valid_mask != expected_active_mask ||
-        snapshot.handoff_candidate_valid_mask != expected_active_mask ||
         snapshot.v04_native_identity_valid_mask != expected_active_mask ||
         snapshot.v04_native_resident_generation == 0 ||
         snapshot.v04_native_completion_transaction_generation == 0 ||
@@ -10489,16 +10495,21 @@ static bool rtcore_validate_replay_completion_packet(
       const unsigned result = snapshot.result_data_slot[lane];
       const unsigned reason = result & 0xffu;
       const bool terminal =
+          reason == RTCORE_SHADER_CONTINUATION_REASON_MISS ||
           reason ==
-          RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY;
+              RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY;
       const bool continuation =
           reason == RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED ||
           reason ==
               RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED;
+      const bool candidate_required =
+          reason != RTCORE_SHADER_CONTINUATION_REASON_MISS;
       if ((result & 0x80000000u) == 0 ||
           (result & 0x7fffff00u) != 0 ||
           (!terminal && !continuation) ||
           snapshot.lane_completion_reason[lane] != reason ||
+          candidate_required !=
+              ((snapshot.handoff_candidate_valid_mask & lane_mask) != 0) ||
           terminal !=
               ((snapshot.terminal_lane_mask & lane_mask) != 0) ||
           continuation !=
@@ -10535,14 +10546,19 @@ static bool rtcore_validate_replay_completion_packet(
         return false;
       }
       const uint64_t selector =
-          static_cast<uint64_t>(rtcore::abi_v04::extract_field(
-              words, rtcore::abi_v04::kInstanceSbtContribution)) +
-          static_cast<uint64_t>(rtcore::abi_v04::extract_field(
-              words, rtcore::abi_v04::kGeometryIndex)) *
-              rtcore::abi_v04::extract_field(
-                  words, rtcore::abi_v04::kSbtRecordStride) +
-          rtcore::abi_v04::extract_field(
-              words, rtcore::abi_v04::kSbtRecordOffset);
+          reason == RTCORE_SHADER_CONTINUATION_REASON_MISS
+              ? rtcore::abi_v04::extract_field(
+                    words, rtcore::abi_v04::kMissIndex)
+              : static_cast<uint64_t>(rtcore::abi_v04::extract_field(
+                    words,
+                    rtcore::abi_v04::kInstanceSbtContribution)) +
+                    static_cast<uint64_t>(
+                        rtcore::abi_v04::extract_field(
+                            words, rtcore::abi_v04::kGeometryIndex)) *
+                        rtcore::abi_v04::extract_field(
+                            words, rtcore::abi_v04::kSbtRecordStride) +
+                    rtcore::abi_v04::extract_field(
+                        words, rtcore::abi_v04::kSbtRecordOffset);
       if (selector > UINT_MAX) {
         rtcore_set_completion_packet_failure_reason(
             failure_reason, "native_packet_sbt_selector_overflow");
@@ -13835,9 +13851,9 @@ void rt_unit::cycle() {
 	                const unsigned native_target_reason_mask =
 	                    candidate_completion.lane_completion_valid_mask;
 	                const unsigned native_sbt_address_ready_mask =
-	                    native_target_reason_mask &
-	                    candidate_completion.handoff_selector_valid_mask &
-	                    candidate_completion.handoff_candidate_valid_mask;
+	                    rtcore_shader_continuation_sbt_record_selector_ready_mask(
+	                        candidate_completion,
+	                        native_target_reason_mask);
 	                if (native_sbt_address_ready_mask !=
 	                    native_target_reason_mask) {
 	                  fprintf(stderr,

@@ -1,5 +1,6 @@
 #include "rtcore_v04_boundary_publication.h"
 
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -135,6 +136,116 @@ bool make_boundary_values(
   return true;
 }
 
+bool committed_hit_is_valid(
+    const typed_stack::committed_hit_projection_v0 &hit) {
+  if (hit.valid != 1 || hit.attribute_word_count > 4 ||
+      hit.reserved_zero0[0] != 0 || hit.reserved_zero0[1] != 0 ||
+      hit.reserved_zero1 != 0 || !std::isfinite(hit.hit_t)) {
+    return false;
+  }
+  return true;
+}
+
+void make_committed_hit_values(
+    const typed_stack::committed_hit_projection_v0 &hit,
+    abi_v04::shadow::boundary_values *values) {
+  values->candidate_valid = true;
+  values->instance_metadata_reference = hit.instance_metadata_ref;
+  values->instance_sbt_contribution = hit.instance_sbt_contribution;
+  values->geometry_index = hit.geometry_index;
+  values->boundary_ray_tmax_fp32 = fp32_bits(hit.hit_t);
+  values->primitive_index = hit.primitive_index;
+  values->instance_index = hit.instance_index;
+  values->instance_custom_index = hit.instance_custom_index;
+  values->geometry_type = hit.geometry_type;
+  values->hit_kind = hit.hit_kind;
+  values->input_attribute_word_count = hit.attribute_word_count;
+  values->input_attribute_location = hit.attribute_location;
+  values->input_attribute_format = hit.attribute_format;
+  for (unsigned word = 0;
+       word < values->inline_attribute_words.size(); ++word) {
+    values->inline_attribute_words[word] = hit.inline_attributes[word];
+  }
+}
+
+status_kind arm_encoded_boundary(
+    warp_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint8_t route_kind,
+    uint32_t reason, const abi_v04::shadow::boundary_values &values,
+    const std::array<uint32_t, abi_v04::kWordCount> &preimage_words,
+    uint32_t commit_epoch, uint64_t arm_cycle, arm_receipt_v0 *receipt) {
+  if (receipt != NULL) *receipt = arm_receipt_v0();
+  if (state == NULL || receipt == NULL || state->initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  if (owner.owner_hw_sid != state->owner_hw_sid ||
+      owner.resident_warp_id != state->resident_warp_slot ||
+      owner.lane_id >= kLaneCapacity ||
+      (state->active_mask & (uint32_t{1} << owner.lane_id)) == 0) {
+    return kStatusOwnerMismatch;
+  }
+  if (producer_operation_seq == 0 || commit_epoch == 0 ||
+      route_kind == kPublicationRouteInvalid) {
+    return kStatusInvalidSemanticPlan;
+  }
+  lane_publication_v0 &lane = state->lanes[owner.lane_id];
+  if (lane.valid != 0 ||
+      (state->publication_armed_mask &
+       (uint32_t{1} << owner.lane_id)) != 0) {
+    return kStatusLaneBusy;
+  }
+  if (state->next_arm_age == std::numeric_limits<uint64_t>::max()) {
+    return kStatusInvalidConfiguration;
+  }
+
+  const abi_v04::shadow::boundary_publication publication =
+      abi_v04::shadow::build_boundary_publication(
+          preimage_words, reason, values);
+  uint32_t compact_result = 0;
+  if (!publication.valid() ||
+      !abi_v04::pack_compact_result(reason, true, &compact_result)) {
+    return kStatusBoundaryEncodingRejected;
+  }
+  const uint8_t chunk_mask =
+      publication_chunk_mask(publication.written_word_mask);
+  const bool zero_write_terminal =
+      route_kind == kPublicationRouteFinalMiss &&
+      publication.written_word_mask == 0;
+  if (chunk_mask == 0 && !zero_write_terminal) {
+    return kStatusBoundaryEncodingRejected;
+  }
+
+  lane = lane_publication_v0();
+  lane.owner = owner;
+  lane.arm_age = state->next_arm_age++;
+  lane.arm_cycle = arm_cycle;
+  lane.producer_operation_seq = producer_operation_seq;
+  lane.commit_epoch = commit_epoch;
+  lane.reason = reason;
+  lane.compact_result = compact_result;
+  lane.written_word_mask = publication.written_word_mask;
+  lane.route_kind = route_kind;
+  lane.pending_chunk_mask = chunk_mask;
+  lane.valid = 1;
+  lane.words = publication.words;
+  lane.preimage_words = preimage_words;
+  if (zero_write_terminal) {
+    lane.ack_complete = 1;
+    lane.final_ack_cycle = arm_cycle;
+    state->publication_acked_mask |= uint32_t{1} << owner.lane_id;
+  }
+  state->publication_armed_mask |= uint32_t{1} << owner.lane_id;
+
+  receipt->reason = reason;
+  receipt->compact_result = compact_result;
+  receipt->written_word_mask = publication.written_word_mask;
+  receipt->pending_chunk_mask = chunk_mask;
+  receipt->lane_id = owner.lane_id;
+  receipt->valid = 1;
+  return kStatusOk;
+}
+
 }  // namespace
 
 status_kind initialize(warp_state_v0 *state, uint32_t owner_hw_sid,
@@ -162,28 +273,10 @@ status_kind arm_boundary(
     const std::array<uint32_t, abi_v04::kWordCount> &preimage_words,
     uint32_t commit_epoch, uint64_t arm_cycle, arm_receipt_v0 *receipt) {
   if (receipt != NULL) *receipt = arm_receipt_v0();
-  if (state == NULL || receipt == NULL || state->initialized != 1) {
-    return kStatusInvalidArgument;
-  }
   const private_frontier::owner_binding_v0 &owner =
       semantic_plan.owner;
-  if (owner.owner_hw_sid != state->owner_hw_sid ||
-      owner.resident_warp_id != state->resident_warp_slot ||
-      owner.lane_id >= kLaneCapacity ||
-      (state->active_mask & (uint32_t{1} << owner.lane_id)) == 0) {
-    return kStatusOwnerMismatch;
-  }
   if (!plan_shape_valid(semantic_plan) || commit_epoch == 0) {
     return kStatusInvalidSemanticPlan;
-  }
-  lane_publication_v0 &lane = state->lanes[owner.lane_id];
-  if (lane.valid != 0 ||
-      (state->publication_armed_mask &
-       (uint32_t{1} << owner.lane_id)) != 0) {
-    return kStatusLaneBusy;
-  }
-  if (state->next_arm_age == std::numeric_limits<uint64_t>::max()) {
-    return kStatusInvalidConfiguration;
   }
 
   uint32_t reason = abi_v04::kReasonNoneOrInvalid;
@@ -191,41 +284,43 @@ status_kind arm_boundary(
   if (!make_boundary_values(semantic_plan, &reason, &values)) {
     return kStatusInvalidSemanticPlan;
   }
-  const abi_v04::shadow::boundary_publication publication =
-      abi_v04::shadow::build_boundary_publication(
-          preimage_words, reason, values);
-  uint32_t compact_result = 0;
-  if (!publication.valid() ||
-      !abi_v04::pack_compact_result(reason, true, &compact_result)) {
-    return kStatusBoundaryEncodingRejected;
+  return arm_encoded_boundary(
+      state, owner, semantic_plan.operation_seq,
+      semantic_plan.route_kind, reason, values, preimage_words,
+      commit_epoch, arm_cycle, receipt);
+}
+
+status_kind arm_terminal_boundary(
+    warp_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, terminal_kind terminal,
+    const typed_stack::committed_hit_projection_v0 &committed_hit,
+    const std::array<uint32_t, abi_v04::kWordCount> &preimage_words,
+    uint32_t commit_epoch, uint64_t arm_cycle,
+    arm_receipt_v0 *receipt) {
+  if (receipt != NULL) *receipt = arm_receipt_v0();
+  abi_v04::shadow::boundary_values values;
+  uint32_t reason = abi_v04::kReasonNoneOrInvalid;
+  uint8_t route_kind = kPublicationRouteInvalid;
+  if (terminal == kTerminalFinalHit) {
+    if (!committed_hit_is_valid(committed_hit)) {
+      return kStatusInvalidSemanticPlan;
+    }
+    make_committed_hit_values(committed_hit, &values);
+    reason = abi_v04::kReasonClosestHitReady;
+    route_kind = kPublicationRouteFinalHit;
+  } else if (terminal == kTerminalFinalMiss) {
+    if (committed_hit.valid != 0) {
+      return kStatusInvalidSemanticPlan;
+    }
+    reason = abi_v04::kReasonMiss;
+    route_kind = kPublicationRouteFinalMiss;
+  } else {
+    return kStatusInvalidSemanticPlan;
   }
-  const uint8_t chunk_mask =
-      publication_chunk_mask(publication.written_word_mask);
-  if (chunk_mask == 0) return kStatusBoundaryEncodingRejected;
-
-  lane = lane_publication_v0();
-  lane.owner = owner;
-  lane.arm_age = state->next_arm_age++;
-  lane.arm_cycle = arm_cycle;
-  lane.producer_operation_seq = semantic_plan.operation_seq;
-  lane.commit_epoch = commit_epoch;
-  lane.reason = reason;
-  lane.compact_result = compact_result;
-  lane.written_word_mask = publication.written_word_mask;
-  lane.route_kind = semantic_plan.route_kind;
-  lane.pending_chunk_mask = chunk_mask;
-  lane.valid = 1;
-  lane.words = publication.words;
-  lane.preimage_words = preimage_words;
-  state->publication_armed_mask |= uint32_t{1} << owner.lane_id;
-
-  receipt->reason = reason;
-  receipt->compact_result = compact_result;
-  receipt->written_word_mask = publication.written_word_mask;
-  receipt->pending_chunk_mask = chunk_mask;
-  receipt->lane_id = owner.lane_id;
-  receipt->valid = 1;
-  return kStatusOk;
+  return arm_encoded_boundary(
+      state, owner, producer_operation_seq, route_kind, reason, values,
+      preimage_words, commit_epoch, arm_cycle, receipt);
 }
 
 status_kind accept_chunk_ack(
@@ -307,8 +402,8 @@ status_kind publish_lane_completion(warp_state_v0 *state, uint8_t lane_id,
   lane.completion_published = 1;
   state->completed_lane_mask |= lane_mask;
   state->result_valid_mask |= lane_mask;
-  if (lane.route_kind ==
-      primitive_semantic::kRouteFinalHitBoundary) {
+  if (lane.route_kind == kPublicationRouteFinalHit ||
+      lane.route_kind == kPublicationRouteFinalMiss) {
     state->terminal_lane_mask |= lane_mask;
   } else {
     state->continuation_lane_mask |= lane_mask;

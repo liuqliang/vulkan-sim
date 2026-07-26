@@ -35,6 +35,20 @@ enum status_kind : uint8_t {
   kStatusCompletionAlreadyConsumed,
 };
 
+enum publication_route_kind : uint8_t {
+  kPublicationRouteInvalid = 0,
+  kPublicationRouteAnyHit = 2,
+  kPublicationRouteIntersection = 3,
+  kPublicationRouteFinalHit = 4,
+  kPublicationRouteFinalMiss = 5,
+};
+
+enum terminal_kind : uint8_t {
+  kTerminalInvalid = 0,
+  kTerminalFinalHit = 1,
+  kTerminalFinalMiss = 2,
+};
+
 struct lane_publication_v0 {
   private_frontier::owner_binding_v0 owner;
   uint64_t arm_age;
@@ -114,6 +128,14 @@ status_kind initialize(warp_state_v0 *state, uint32_t owner_hw_sid,
 status_kind arm_boundary(
     warp_state_v0 *state,
     const primitive_semantic::semantic_plan_v0 &semantic_plan,
+    const std::array<uint32_t, abi_v04::kWordCount> &preimage_words,
+    uint32_t commit_epoch, uint64_t arm_cycle, arm_receipt_v0 *receipt);
+
+status_kind arm_terminal_boundary(
+    warp_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, terminal_kind terminal,
+    const typed_stack::committed_hit_projection_v0 &committed_hit,
     const std::array<uint32_t, abi_v04::kWordCount> &preimage_words,
     uint32_t commit_epoch, uint64_t arm_cycle, arm_receipt_v0 *receipt);
 

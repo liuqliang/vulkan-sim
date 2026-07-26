@@ -265,6 +265,8 @@ extern "C" bool rtcore_v04_live_instance_enter_transition_gate_active();
 extern "C" bool rtcore_v04_live_primitive_timing_route_gate_active();
 extern "C" bool rtcore_v04_native_boundary_completion_gate_active();
 extern "C" bool rtcore_v04_continuation_lifecycle_gate_active();
+extern "C" bool
+rtcore_v04_live_stack_terminal_publication_gate_active();
 
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE = 0xfffffff0u;
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT = 4u;
