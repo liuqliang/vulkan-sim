@@ -100,6 +100,7 @@ struct rtcore_boundary_candidate_snapshot {
 struct rtcore_replay_warp_completion_entry_snapshot {
   bool enabled;
   bool found;
+  bool v04_native_resident_completion;
   bool all_active_lanes_complete;
   unsigned owner_hw_sid;
   unsigned warp_uid;
@@ -188,6 +189,14 @@ struct rtcore_v04_private_write_transport_snapshot {
   uint8_t reserved_zero[6];
 };
 
+struct rtcore_v04_handoff_publication_transport_snapshot {
+  uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
+  uint8_t publication_chunk;
+  uint8_t valid;
+  uint8_t reserved_zero[2];
+};
+
 struct rtcore_memory_unit_request_snapshot {
   bool valid;
   unsigned address_space;
@@ -212,6 +221,8 @@ struct rtcore_memory_unit_request_snapshot {
   rtcore_v04_target_raw_read_transport_snapshot v04_target_raw_read;
   rtcore_v04_stack_private_read_transport_snapshot v04_stack_private_read;
   rtcore_v04_private_write_transport_snapshot v04_private_write;
+  rtcore_v04_handoff_publication_transport_snapshot
+      v04_handoff_publication;
 };
 
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
@@ -222,6 +233,7 @@ static const unsigned RTCORE_MEMORY_DESTINATION_LEGACY = 0u;
 static const unsigned RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK = 1u;
 static const unsigned RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL = 2u;
 static const unsigned RTCORE_MEMORY_DESTINATION_STACK_QUEUE_FILL = 3u;
+static const unsigned RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK = 4u;
 static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT = 8u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_RAW_READ = 9u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ = 10u;
@@ -229,6 +241,7 @@ static const unsigned RTCORE_MEMORY_ACCESS_STACK_PRIVATE_READ = 11u;
 static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE = 12u;
 static const unsigned RTCORE_MEMORY_ACCESS_STACK_SPILL_RECOVERY_READ = 13u;
 static const unsigned RTCORE_MEMORY_ACCESS_HANDOFF_RAY_POLICY_READ = 14u;
+static const unsigned RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE = 15u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL = 1u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_PRIVATE_SHARED = 2u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_STACK_SPILL = 3u;
@@ -240,14 +253,33 @@ extern "C" bool rtcore_v04_live_stack_pop_next_loop_gate_active();
 extern "C" bool rtcore_v04_live_instance_restore_parent_gate_active();
 extern "C" bool rtcore_v04_live_instance_enter_transition_gate_active();
 extern "C" bool rtcore_v04_live_primitive_timing_route_gate_active();
+extern "C" bool rtcore_v04_native_boundary_completion_gate_active();
 
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE = 0xfffffff0u;
 static const unsigned RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT = 4u;
+static const unsigned RTCORE_V04_NATIVE_PUBLICATION_OP_SEQ_BASE = 0xffffffe0u;
+static const unsigned RTCORE_V04_NATIVE_PUBLICATION_CHUNK_COUNT = 4u;
 
 inline bool rtcore_v04_live_publication_memory_op_seq(unsigned memory_op_seq) {
   return memory_op_seq >= RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE &&
          memory_op_seq < RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE +
                              RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT;
+}
+
+inline bool rtcore_v04_native_publication_memory_op_seq(
+    unsigned memory_op_seq) {
+  return memory_op_seq >= RTCORE_V04_NATIVE_PUBLICATION_OP_SEQ_BASE &&
+         memory_op_seq <
+             RTCORE_V04_NATIVE_PUBLICATION_OP_SEQ_BASE +
+                 RTCORE_V04_NATIVE_PUBLICATION_CHUNK_COUNT;
+}
+
+inline bool rtcore_v04_native_publication_requires_exact_address(
+    const rtcore_memory_unit_request_snapshot &request) {
+  return request.destination ==
+             RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK ||
+         request.access_kind ==
+             RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE;
 }
 
 extern "C" {
@@ -298,6 +330,10 @@ bool rtcore_accept_v04_handoff_ray_policy_read_response(
     unsigned long long response_cycle);
 
 bool rtcore_accept_v04_stack_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle);
+
+bool rtcore_accept_v04_handoff_publication_response(
     const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle);
 
