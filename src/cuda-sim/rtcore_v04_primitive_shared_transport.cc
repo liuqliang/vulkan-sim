@@ -213,16 +213,17 @@ status_kind capture_semantic_plan(
     const private_frontier::shadow_slot_v0 &canonical_slot,
     const primitive_semantic::semantic_plan_v0 &semantic_plan,
     capture_receipt_v0 *receipt) {
-  const bool terminal_boundary =
+  const bool internal_successor =
       semantic_plan.route_kind ==
-          primitive_semantic::kRouteFinalHitBoundary &&
-      semantic_plan.shader_return_valid == 1;
+      primitive_semantic::kRouteStackPopNext;
+  const bool boundary = is_boundary_route(semantic_plan.route_kind);
   if (state == NULL || receipt == NULL || state->initialized != 1 ||
       producer_operation_seq == 0 || commit_epoch == 0 ||
-      (!terminal_boundary &&
+      (internal_successor &&
        (target_operation_seq == 0 ||
         target_operation_seq == producer_operation_seq)) ||
-      (terminal_boundary && target_operation_seq != 0) ||
+      (boundary && target_operation_seq != 0) ||
+      (!internal_successor && !boundary) ||
       semantic_plan.operation_seq != producer_operation_seq ||
       !private_frontier::owners_equal(
           semantic_plan.owner, canonical_slot.owner)) {
@@ -463,12 +464,7 @@ status_kind enqueue_boundary_receipt(
     engine_state_v0 *state, const ready_event_v0 &event) {
   if (state == NULL || state->initialized != 1 || event.valid != 1 ||
       event.producer_operation_seq == 0 || event.commit_epoch == 0 ||
-      (!(event.route_kind == primitive_semantic::kRouteFinalHitBoundary &&
-         event.semantic_plan.shader_return_valid == 1) &&
-       event.target_operation_seq == 0) ||
-      (event.route_kind == primitive_semantic::kRouteFinalHitBoundary &&
-       event.semantic_plan.shader_return_valid == 1 &&
-       event.target_operation_seq != 0) ||
+      event.target_operation_seq != 0 ||
       event.route_kind != event.semantic_plan.route_kind) {
     return kStatusInvalidArgument;
   }

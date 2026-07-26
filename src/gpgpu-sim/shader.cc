@@ -488,7 +488,8 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
         v04_native_resident_completion(false),
         v04_native_resident_generation(0),
         v04_native_completion_transaction_generation(0),
-        v04_native_identity_valid_mask(0) {
+        v04_native_identity_valid_mask(0),
+        pending_shader_terminal_mask(0) {
     for (unsigned index = 0; index < 32; ++index) {
       cohort_lane_masks[index] = 0;
       cohort_shader_ids[index] = UINT_MAX;
@@ -563,6 +564,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   unsigned v04_native_resident_generation;
   unsigned v04_native_completion_transaction_generation;
   unsigned v04_native_identity_valid_mask;
+  unsigned pending_shader_terminal_mask;
   unsigned long long lane_v04_context_ptrs[32];
   unsigned long long lane_v04_handoff_window_bases[32];
   unsigned lane_v04_token_ids[32];
@@ -659,6 +661,92 @@ static void rtcore_mark_v04_native_dispatch_cohort_complete(
     fflush(stderr);
     abort();
   }
+}
+
+static void rtcore_publish_v04_terminated_final_cohort(
+    unsigned owner_hw_sid,
+    rtcore_shader_continuation_dispatcher_pending_entry *entry,
+    unsigned terminal_lane_mask) {
+  if (entry == NULL || !entry->v04_native_resident_completion ||
+      terminal_lane_mask == 0 ||
+      (terminal_lane_mask & entry->pending_shader_terminal_mask) !=
+          terminal_lane_mask) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_NATIVE_CONTINUATION_FAULT "
+            "owner_hw_sid=%u terminal_lane_mask=0x%08x "
+            "fault=terminated_final_cohort_identity_invalid\n",
+            owner_hw_sid, terminal_lane_mask);
+    fflush(stderr);
+    abort();
+  }
+  if (!rtcore_mark_v04_native_shader_terminal_publication(
+          owner_hw_sid, entry->warp_uid, entry->warp_id,
+          entry->active_mask, entry->v04_native_resident_generation,
+          entry->v04_native_completion_transaction_generation,
+          terminal_lane_mask)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_NATIVE_CONTINUATION_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+            "terminal_lane_mask=0x%08x "
+            "fault=shader_terminal_publication_rejected\n",
+            owner_hw_sid, entry->warp_uid, entry->warp_id,
+            terminal_lane_mask);
+    fflush(stderr);
+    abort();
+  }
+  entry->pending_shader_terminal_mask &= ~terminal_lane_mask;
+  printf("GPGPU-Sim RTCORE_V04_TERMINATE_FINAL_SHADER_COMPLETE "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+         "terminal_lane_mask=0x%08x "
+         "final_shader_authority=shadercore_continuation_dispatcher "
+         "terminal_publication_after_final_shader=1\n",
+         owner_hw_sid, entry->warp_uid, entry->warp_id,
+         terminal_lane_mask);
+  fflush(stdout);
+}
+
+static void rtcore_stage_v04_terminated_closest_hit_cohort(
+    unsigned owner_hw_sid,
+    rtcore_shader_continuation_dispatcher_pending_entry *entry,
+    unsigned cohort_index, unsigned terminal_lane_mask) {
+  if (entry == NULL || !entry->v04_native_resident_completion ||
+      cohort_index >= entry->cohort_count || terminal_lane_mask == 0 ||
+      (terminal_lane_mask & ~entry->cohort_lane_masks[cohort_index]) != 0 ||
+      entry->cohort_sbt_record_addrs[cohort_index] == 0 ||
+      entry->cohort_sbt_record_components[cohort_index] != 1) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_NATIVE_CONTINUATION_FAULT "
+            "owner_hw_sid=%u terminal_lane_mask=0x%08x "
+            "fault=terminate_final_shader_staging_invalid\n",
+            owner_hw_sid, terminal_lane_mask);
+    fflush(stderr);
+    abort();
+  }
+
+  entry->pending_shader_terminal_mask |= terminal_lane_mask;
+  entry->cohort_lane_masks[cohort_index] = terminal_lane_mask;
+  entry->cohort_shader_ids[cohort_index] = UINT_MAX;
+  entry->cohort_sbt_aligned_32b_addrs[cohort_index] =
+      entry->cohort_sbt_record_addrs[cohort_index] &
+      ~static_cast<unsigned long long>(
+          RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES - 1);
+  entry->cohort_sbt_record_components[cohort_index] = 0;
+  entry->target_shader_id_ready_mask &= ~terminal_lane_mask;
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    if ((terminal_lane_mask & (1u << lane)) != 0) {
+      entry->lane_reasons[lane] =
+          RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY;
+    }
+  }
+  printf("GPGPU-Sim RTCORE_V04_TERMINATE_FINAL_SHADER_STAGED "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+         "terminal_lane_mask=0x%08x target_reason=%u "
+         "shader_record_component=0 "
+         "final_shader_authority=shadercore_continuation_dispatcher\n",
+         owner_hw_sid, entry->warp_uid, entry->warp_id, cohort_index,
+         terminal_lane_mask,
+         RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY);
+  fflush(stdout);
 }
 
 static unsigned rtcore_shader_continuation_cohort_reason(
@@ -1005,8 +1093,14 @@ rtcore_service_shader_continuation_pseudo_op(
         entry, completed_cohort_index);
     const bool handoff_return_required =
         rtcore_shader_continuation_requires_handoff_return(completed_reason);
+    const bool terminated_final_cohort =
+        completed_reason ==
+            RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY &&
+        (completed_lane_mask & entry.pending_shader_terminal_mask) ==
+            completed_lane_mask;
     assert(entry.current_call_requires_handoff_return ==
            handoff_return_required);
+    unsigned shader_terminal_lane_mask = 0;
     if (entry.current_call_requires_handoff_return) {
       ptx_thread_info **thread_info = shader->get_thread_info();
       const unsigned warp_size = shader->get_warp_size();
@@ -1049,6 +1143,10 @@ rtcore_service_shader_continuation_pseudo_op(
           reported_metadata =
               words[rtcore::abi_v04::kReportedHitKind.word];
           return_valid = observation.valid();
+          if (return_valid &&
+              (observation.traversal_effect & (1u << 2)) != 0) {
+            shader_terminal_lane_mask |= lane_mask;
+          }
         } else {
           unsigned shader_return_words[3] = {};
           const unsigned long long shader_return_base =
@@ -1092,9 +1190,24 @@ rtcore_service_shader_continuation_pseudo_op(
           abort();
         }
       }
+      if (shader_terminal_lane_mask != 0 &&
+          completed_reason !=
+              RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_NATIVE_CONTINUATION_FAULT "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                "terminal_lane_mask=0x%08x "
+                "fault=unsupported_non_anyhit_terminate_fail_closed\n",
+                owner_hw_sid, entry.warp_uid, entry.warp_id,
+                shader_terminal_lane_mask);
+        fflush(stderr);
+        abort();
+      }
     }
-    rtcore_mark_v04_native_dispatch_cohort_complete(
-        owner_hw_sid, entry, completed_lane_mask);
+    const unsigned completed_dispatch_lane_mask =
+        terminated_final_cohort
+            ? completed_lane_mask
+            : completed_lane_mask & ~shader_terminal_lane_mask;
     entry.call_inflight = false;
     entry.current_call_requires_handoff_return = false;
     entry.current_cohort_index = UINT_MAX;
@@ -1105,7 +1218,13 @@ rtcore_service_shader_continuation_pseudo_op(
     entry.metadata_lookup_request_cycle = 0;
     entry.metadata_lookup_response_cycle = 0;
     entry.metadata_lookup_wait_scheduler_cycles = 0;
-    entry.cohort_cursor++;
+    if (shader_terminal_lane_mask != 0) {
+      rtcore_stage_v04_terminated_closest_hit_cohort(
+          owner_hw_sid, &entry, completed_cohort_index,
+          shader_terminal_lane_mask);
+    } else {
+      entry.cohort_cursor++;
+    }
     const bool all_cohorts_complete =
         entry.cohort_cursor >= entry.cohort_count;
     printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_RETURN "
@@ -1124,6 +1243,14 @@ rtcore_service_shader_continuation_pseudo_op(
            all_cohorts_complete ? 1u : 0u, entry.call_launch_cycle,
            current_cycle);
     fflush(stdout);
+    if (terminated_final_cohort) {
+      rtcore_publish_v04_terminated_final_cohort(
+          owner_hw_sid, &entry, completed_lane_mask);
+    }
+    if (completed_dispatch_lane_mask != 0) {
+      rtcore_mark_v04_native_dispatch_cohort_complete(
+          owner_hw_sid, entry, completed_dispatch_lane_mask);
+    }
     entry.body_issue_count = 0;
     if (all_cohorts_complete) {
       g_rtcore_shader_continuation_dispatcher_pending.erase(it);
@@ -1347,6 +1474,15 @@ rtcore_service_shader_continuation_pseudo_op(
              cohort_lane_mask, cohort_reason, default_effect,
              current_cycle);
       fflush(stdout);
+    }
+    const bool terminated_final_no_shader =
+        cohort_reason ==
+            RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY &&
+        (cohort_lane_mask & entry.pending_shader_terminal_mask) ==
+            cohort_lane_mask;
+    if (terminated_final_no_shader) {
+      rtcore_publish_v04_terminated_final_cohort(
+          owner_hw_sid, &entry, cohort_lane_mask);
     }
     rtcore_mark_v04_native_dispatch_cohort_complete(
         owner_hw_sid, entry, cohort_lane_mask);

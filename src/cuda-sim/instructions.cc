@@ -7824,6 +7824,34 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     return false;
   }
 
+  unsigned previous_warp_uid = 0;
+  unsigned previous_active_mask = 0;
+  unsigned resident_generation = 0;
+  unsigned resident_occupancy = 0;
+  const bool resident_live =
+      rtcore_v04_continuation_lifecycle_gate_active() &&
+      rtcore_query_resident_rt_warp_record(
+          owner_hw_sid, warp_id, &previous_warp_uid,
+          &previous_active_mask, &resident_generation,
+          &resident_occupancy);
+  if (resident_live) {
+    const bool retained_resubmit =
+        warp_uid != previous_warp_uid &&
+        (active_mask & ~previous_active_mask) == 0;
+    printf("GPGPU-Sim RTCORE_V04_ROOT_PACKET_PREFUNCTIONAL_ROUTE "
+           "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u "
+           "warp_id=%u previous_active_mask=0x%08x "
+           "next_active_mask=0x%08x resident_generation=%u "
+           "resident_occupancy=%u route=%s\n",
+           owner_hw_sid, previous_warp_uid, warp_uid, warp_id,
+           previous_active_mask, active_mask, resident_generation,
+           resident_occupancy,
+           retained_resubmit ? "retained_state_resubmit"
+                             : "invalid_resident_collision");
+    fflush(stdout);
+    return retained_resubmit;
+  }
+
   root_packet::warp_input_v0 input = {};
   input.valid = true;
   input.owner_hw_sid = owner_hw_sid;

@@ -91,6 +91,9 @@ status_kind consume_completion(
 status_kind mark_dispatch_complete(
     warp_state_v0 *state, uint32_t completed_lane_mask);
 
+status_kind mark_shader_terminal_publication(
+    warp_state_v0 *state, uint32_t terminal_lane_mask);
+
 status_kind stage_resubmit(
     warp_state_v0 *state, uint32_t next_warp_uid,
     uint32_t next_static_inst_uid, uint32_t next_active_mask,

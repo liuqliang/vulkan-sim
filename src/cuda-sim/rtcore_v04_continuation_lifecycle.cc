@@ -206,6 +206,31 @@ status_kind mark_dispatch_complete(
   return kStatusOk;
 }
 
+status_kind mark_shader_terminal_publication(
+    warp_state_v0 *state, uint32_t terminal_lane_mask) {
+  if (state == NULL || state->initialized != 1 ||
+      state->completion_consumed != 1 || state->released != 0 ||
+      terminal_lane_mask == 0 ||
+      (terminal_lane_mask & ~state->continuation_mask) != 0) {
+    return kStatusInvalidArgument;
+  }
+  for (uint32_t lane = 0; lane < 32; ++lane) {
+    const uint32_t bit = lane_bit(lane);
+    if ((terminal_lane_mask & bit) == 0) continue;
+    if (state->lanes[lane].state != kLaneWaitingShader) {
+      return kStatusLaneNotWaitingShader;
+    }
+  }
+  for (uint32_t lane = 0; lane < 32; ++lane) {
+    const uint32_t bit = lane_bit(lane);
+    if ((terminal_lane_mask & bit) == 0) continue;
+    state->lanes[lane].state = kLaneFinalWaitRelease;
+  }
+  state->continuation_mask &= ~terminal_lane_mask;
+  state->terminal_mask |= terminal_lane_mask;
+  return kStatusOk;
+}
+
 status_kind stage_resubmit(
     warp_state_v0 *state, uint32_t next_warp_uid,
     uint32_t next_static_inst_uid, uint32_t next_active_mask,

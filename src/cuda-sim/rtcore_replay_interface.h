@@ -395,6 +395,12 @@ bool rtcore_mark_v04_native_continuation_dispatch_complete(
     unsigned completion_transaction_generation,
     unsigned completed_lane_mask);
 
+bool rtcore_mark_v04_native_shader_terminal_publication(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    unsigned completion_transaction_generation,
+    unsigned terminal_lane_mask);
+
 }
 
 #endif

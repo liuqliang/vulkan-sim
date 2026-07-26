@@ -103,6 +103,14 @@ uint64_t compute_latency(const config_v0 &config,
           config.primitive_batch_interval;
 }
 
+bool result_requires_internal_successor(
+    const typed_primitive::route_result_v0 &result) {
+  return result.result_kind ==
+             typed_primitive::kRouteResultNoCandidate ||
+         result.result_kind ==
+             typed_primitive::kRouteResultCommitOpaque;
+}
+
 int find_idle_unit(const state_v0 &state) {
   for (unsigned index = 0;
        index < state.config.primitive_unit_count; ++index) {
@@ -162,7 +170,10 @@ status_kind capture_matured(
     if (timing_driver::begin_result_commit(
             &staged_timing, request_binding,
             unit.operation_packet.target_operation_seq,
-            &commit_epoch) != timing_driver::kStatusOk ||
+            &commit_epoch) != timing_driver::kStatusOk) {
+      return kStatusTimingControlRejected;
+    }
+    if (result_requires_internal_successor(unit.typed_result) &&
         timing_driver::allocate_commit_successor_operation(
             &staged_timing, request_binding,
             unit.operation_packet.target_operation_seq, commit_epoch,
