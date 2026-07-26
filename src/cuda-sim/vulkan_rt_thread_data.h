@@ -13,6 +13,7 @@
 #include "ptx_ir.h"
 #include "../../libcuda/gpgpu_context.h"
 #include "compiler/shader_enums.h"
+#include "rtcore_v04_shader_input.h"
 #include <fstream>
 #include <cmath>
 #include <stack>
@@ -130,6 +131,44 @@ typedef struct Vulkan_RT_thread_data {
 
         memory_space *mem = thread->get_global_memory();
         mem->write(address, sizeof(float3), &barycentric, thread, pI);
+    }
+
+    bool set_hitAttributeWords(const uint32_t *words, uint32_t word_count,
+                               const ptx_instruction *pI,
+                               ptx_thread_info *thread) {
+        if (words == NULL || word_count == 0 || word_count > 4 ||
+            pI == NULL || thread == NULL) {
+            return false;
+        }
+
+        const uint32_t required_size = word_count * sizeof(uint32_t);
+        variable_decleration_entry *hit_attribute = get_hitAttribute();
+        if (hit_attribute == NULL) {
+            add_variable_decleration_entry(
+                nir_var_ray_hit_attrib, "attribs", required_size);
+            hit_attribute = get_hitAttribute();
+        } else if (hit_attribute->size < required_size) {
+            hit_attribute->address =
+                (uint64_t)VulkanRayTracing::gpgpusim_alloc(required_size);
+            hit_attribute->size = required_size;
+        }
+        if (hit_attribute == NULL || hit_attribute->address == 0 ||
+            hit_attribute->size < required_size) {
+            return false;
+        }
+
+        std::array<uint32_t, 4> attribute_words = {};
+        for (uint32_t word = 0; word < word_count; ++word) {
+            attribute_words[word] = words[word];
+        }
+        std::vector<unsigned char> image(hit_attribute->size, 0);
+        if (!rtcore::abi_v04::shader_input::encode_words_little_endian(
+                attribute_words, word_count, image.data(), image.size())) {
+            return false;
+        }
+        thread->get_global_memory()->write(
+            hit_attribute->address, image.size(), image.data(), thread, pI);
+        return true;
     }
 } Vulkan_RT_thread_data;
 

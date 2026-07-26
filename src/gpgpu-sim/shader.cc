@@ -79,6 +79,9 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
     unsigned boundary_geometry_index, unsigned primitive_index,
     unsigned instance_index, unsigned hit_kind,
     unsigned boundary_ray_tmax_fp32, bool boundary_ray_tmax_valid);
+extern "C" int rtcore_prepare_v04_direct_shader_input_context(
+    const ptx_instruction *pI, ptx_thread_info *thread, unsigned reason,
+    unsigned lane_id, unsigned long long handoff_window_base);
 extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
     const ptx_instruction *source_inst, ptx_thread_info *thread,
     unsigned reason, unsigned lane_slot_index,
@@ -1721,6 +1724,12 @@ rtcore_service_shader_continuation_pseudo_op(
     ptx_thread_info *thread = thread_info[warp_id * warp_size + lane];
     const ptx_instruction *source_inst =
         thread != NULL ? thread->get_inst(entry.static_inst_pc) : NULL;
+    unsigned long long lane_handoff_window_base = 0;
+    if (thread != NULL && source_inst != NULL) {
+      const operand_info &handoff_operand = source_inst->operand_lookup(2);
+      lane_handoff_window_base =
+          thread->get_reg(handoff_operand.get_symbol()).u64;
+    }
     const bool native_authority_ready =
         !rtcore_v04_direct_completion(entry) ||
         rtcore_validate_v04_native_source_authority(
@@ -1728,27 +1737,38 @@ rtcore_service_shader_continuation_pseudo_op(
     const rtcore_boundary_candidate_snapshot &boundary_candidate =
         entry.lane_boundary_candidates[lane];
     const bool compatibility_context_ready =
-        rtcore_v04_direct_completion(entry) ||
-        (thread != NULL && source_inst != NULL &&
-         (!requires_handoff_return || boundary_candidate.valid) &&
-         rtcore_prepare_compatibility_shader_continuation_context(
-             source_inst, thread, entry.lane_reasons[lane],
-             entry.lane_hit_record_selectors[lane],
-             requires_handoff_return ? boundary_candidate.event_seq : 0,
-             requires_handoff_return ? boundary_candidate.shader_counter : 0,
-             requires_handoff_return ? boundary_candidate.hit_data_ref : 0,
-             requires_handoff_return
-                 ? boundary_candidate.hit_group_index
-                 : entry.lane_hit_group_indices[lane],
-             requires_handoff_return ? boundary_candidate.geometry_type
-                                     : entry.lane_geometry_types[lane],
-             requires_handoff_return ? boundary_candidate.geometry_index
-                                     : entry.lane_geometry_indices[lane],
-             entry.lane_primitive_indices[lane],
-             entry.lane_instance_indices[lane], entry.lane_hit_kinds[lane],
-             entry.lane_v04_boundary_ray_tmax_fp32[lane],
-             requires_handoff_return &&
-                entry.lane_v04_boundary_ray_tmax_valid[lane]));
+        rtcore_v04_direct_completion(entry)
+            ? (native_authority_ready && thread != NULL &&
+               source_inst != NULL &&
+               rtcore_prepare_v04_direct_shader_input_context(
+                   source_inst, thread, entry.lane_reasons[lane], lane,
+                   lane_handoff_window_base))
+            : (thread != NULL && source_inst != NULL &&
+               (!requires_handoff_return || boundary_candidate.valid) &&
+               rtcore_prepare_compatibility_shader_continuation_context(
+                   source_inst, thread, entry.lane_reasons[lane],
+                   entry.lane_hit_record_selectors[lane],
+                   requires_handoff_return ? boundary_candidate.event_seq : 0,
+                   requires_handoff_return
+                       ? boundary_candidate.shader_counter
+                       : 0,
+                   requires_handoff_return ? boundary_candidate.hit_data_ref
+                                           : 0,
+                   requires_handoff_return
+                       ? boundary_candidate.hit_group_index
+                       : entry.lane_hit_group_indices[lane],
+                   requires_handoff_return
+                       ? boundary_candidate.geometry_type
+                       : entry.lane_geometry_types[lane],
+                   requires_handoff_return
+                       ? boundary_candidate.geometry_index
+                       : entry.lane_geometry_indices[lane],
+                   entry.lane_primitive_indices[lane],
+                   entry.lane_instance_indices[lane],
+                   entry.lane_hit_kinds[lane],
+                   entry.lane_v04_boundary_ray_tmax_fp32[lane],
+                   requires_handoff_return &&
+                       entry.lane_v04_boundary_ray_tmax_valid[lane]));
     if (thread == NULL || source_inst == NULL ||
         !native_authority_ready ||
         !compatibility_context_ready) {
@@ -1761,12 +1781,9 @@ rtcore_service_shader_continuation_pseudo_op(
               cohort_index, cohort_shader_id);
       abort();
     }
-    const operand_info &handoff_operand = source_inst->operand_lookup(2);
-    const ptx_reg_t handoff_value =
-        thread->get_reg(handoff_operand.get_symbol());
     if (handoff_window_base == 0) {
-      handoff_window_base = handoff_value.u64;
-    } else if (handoff_window_base != handoff_value.u64) {
+      handoff_window_base = lane_handoff_window_base;
+    } else if (handoff_window_base != lane_handoff_window_base) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
               "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
@@ -1778,7 +1795,7 @@ rtcore_service_shader_continuation_pseudo_op(
         rtcore_v04_shader_builtin_consumer_runtime_enabled() &&
         !rtcore_validate_v04_shader_builtin_compatibility_context(
             source_inst, thread, entry.lane_reasons[lane], lane,
-            handoff_value.u64)) {
+            lane_handoff_window_base)) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_V04_SHADER_BUILTIN_COMPATIBILITY_FAULT "
               "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "

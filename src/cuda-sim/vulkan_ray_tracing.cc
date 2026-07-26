@@ -48,6 +48,7 @@
 #include "rtcore_v04_request_owner_binding.h"
 #include "rtcore_v04_root_node_packet.h"
 #include "rtcore_v04_selected_fetch_transition.h"
+#include "rtcore_v04_shader_input.h"
 #include "rtcore_v04_shadow_shader_return.h"
 #include "rtcore_v04_stack_operation_queue.h"
 #include "rtcore_v04_stack_private_shared_bridge.h"
@@ -28775,6 +28776,67 @@ extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
         fflush(stderr);
         return 0;
     }
+    return 1;
+}
+
+extern "C" int rtcore_prepare_v04_direct_shader_input_context(
+    const ptx_instruction *pI, ptx_thread_info *thread, unsigned reason,
+    unsigned lane_id, unsigned long long handoff_window_base) {
+    if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL) {
+        return 0;
+    }
+
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> words = {};
+    uint64_t lane_address = 0;
+    rtcore::abi_v04::shader_input::error address_error =
+        rtcore::abi_v04::shader_input::kErrorNone;
+    if (!rtcore::abi_v04::shader_input::lane_slot_address(
+            handoff_window_base, lane_id, &lane_address, &address_error)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_DIRECT_SHADER_INPUT_CONTEXT_FAULT "
+                "lane_id=%u reason=%u fault=%s\n",
+                lane_id, reason,
+                rtcore::abi_v04::shader_input::error_name(address_error));
+        fflush(stderr);
+        return 0;
+    }
+    thread->get_global_memory()->read_simulator_backing(
+        lane_address, sizeof(words), words.data());
+
+    const rtcore::abi_v04::shader_input::attribute_plan plan =
+        rtcore::abi_v04::shader_input::decode(words, reason);
+    if (!plan.valid()) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_DIRECT_SHADER_INPUT_CONTEXT_FAULT "
+                "lane_id=%u reason=%u hit_kind=%u "
+                "attribute_word_count=%u attribute_location=%u "
+                "attribute_format=%u fault=%s\n",
+                lane_id, reason, plan.hit_kind, plan.word_count,
+                plan.location, plan.format,
+                rtcore::abi_v04::shader_input::error_name(plan.status));
+        fflush(stderr);
+        return 0;
+    }
+
+    bool attribute_materialized = false;
+    if (plan.materializes_attributes()) {
+        attribute_materialized =
+            thread->RT_thread_data->set_hitAttributeWords(
+                plan.words.data(), plan.word_count, pI, thread);
+        if (!attribute_materialized) {
+            return 0;
+        }
+    }
+
+    printf("GPGPU-Sim RTCORE_V04_DIRECT_SHADER_INPUT_CONTEXT_PREPARE "
+           "lane_id=%u reason=%u hit_kind=%u attribute_word_count=%u "
+           "attribute_location=%u attribute_format=%u "
+           "attribute_materialized=%u "
+           "context_source=live_v04_handoff\n",
+           lane_id, reason, plan.hit_kind, plan.word_count,
+           plan.location, plan.format,
+           attribute_materialized ? 1u : 0u);
+    fflush(stdout);
     return 1;
 }
 
