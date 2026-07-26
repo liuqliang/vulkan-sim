@@ -74,6 +74,157 @@ void clear_fragment_addresses(Fragment *fragments, uint8_t count,
   }
 }
 
+void clear_decode_context_transport(
+    typed_blas::as_decode_context_v0 *context) {
+  context->device_base = 0;
+}
+
+void clear_selected_fetch_transport(
+    typed_node::selected_child_fetch_work_item_v0 *selected) {
+  clear_decode_context_transport(&selected->decode_context);
+}
+
+void clear_instance_projection_transport(
+    typed_stack::instance_shader_projection_v0 *instance) {
+  instance->instance_metadata_ref = 0;
+}
+
+void clear_committed_hit_transport(
+    typed_stack::committed_hit_projection_v0 *hit) {
+  hit->instance_metadata_ref = 0;
+}
+
+void clear_frame_transport(
+    typed_stack::traversal_frame_projection_v0 *frame) {
+  clear_decode_context_transport(&frame->current_decode_context);
+  clear_instance_projection_transport(&frame->current_instance);
+}
+
+void clear_raw_instance_transport(
+    typed_instance::raw_instance_payload_v0 *payload) {
+  static const size_t kStartNodeAddressOffset = 8;
+  static const size_t kStartNodeAddressBytes = 6;
+  static const size_t kBvhAddressOffset = 64;
+  static const size_t kBvhAddressBytes = 8;
+  std::memset(
+      payload->raw_bytes + kStartNodeAddressOffset, 0,
+      kStartNodeAddressBytes);
+  std::memset(
+      payload->raw_bytes + kBvhAddressOffset, 0, kBvhAddressBytes);
+}
+
+uint64_t normalized_input_hash(const record_v0 &record) {
+  namespace fd = functional_driver;
+  if (record.unit == kUnitNode) {
+    typed_node::route_input_v0 input =
+        *static_cast<const typed_node::route_input_v0 *>(
+            record.typed_input);
+    clear_decode_context_transport(&input.decode_context);
+    return hash_bytes(&input, sizeof(input));
+  }
+  if (record.unit == kUnitStack) {
+    if (record.semantic_plan_kind == fd::kSemanticPlanStackAppend) {
+      typed_stack::push_input_v0 input =
+          *static_cast<const typed_stack::push_input_v0 *>(
+              record.typed_input);
+      clear_selected_fetch_transport(&input.node_route.selected_fetch);
+      return hash_bytes(&input, sizeof(input));
+    }
+    if (record.semantic_plan_kind == fd::kSemanticPlanStackPop) {
+      typed_stack::pop_input_v0 input =
+          *static_cast<const typed_stack::pop_input_v0 *>(
+              record.typed_input);
+      clear_decode_context_transport(&input.current_decode_context);
+      return hash_bytes(&input, sizeof(input));
+    }
+    typed_stack::empty_input_v0 input =
+        *static_cast<const typed_stack::empty_input_v0 *>(
+            record.typed_input);
+    clear_committed_hit_transport(&input.current_committed_hit);
+    clear_frame_transport(&input.parent_frame);
+    return hash_bytes(&input, sizeof(input));
+  }
+  if (record.unit == kUnitInstance) {
+    if (record.semantic_plan_kind == fd::kSemanticPlanInstanceEnter) {
+      typed_instance::enter_input_v0 input =
+          *static_cast<const typed_instance::enter_input_v0 *>(
+              record.typed_input);
+      clear_raw_instance_transport(&input.raw_instance);
+      input.instance_blas_reference.instance_metadata_reference = 0;
+      clear_decode_context_transport(&input.tlas_decode_context);
+      clear_decode_context_transport(&input.blas_decode_context);
+      return hash_bytes(&input, sizeof(input));
+    }
+    typed_instance::restore_parent_input_v0 input =
+        *static_cast<const typed_instance::restore_parent_input_v0 *>(
+            record.typed_input);
+    clear_frame_transport(&input.parent_frame);
+    return hash_bytes(&input, sizeof(input));
+  }
+  typed_primitive::route_input_v0 input =
+      *static_cast<const typed_primitive::route_input_v0 *>(
+          record.typed_input);
+  input.leaf_fetch_address = 0;
+  clear_decode_context_transport(&input.decode_context);
+  clear_instance_projection_transport(&input.current_instance);
+  clear_committed_hit_transport(&input.current_committed_hit);
+  return hash_bytes(&input, sizeof(input));
+}
+
+uint64_t normalized_result_hash(const record_v0 &record) {
+  namespace fd = functional_driver;
+  if (record.unit == kUnitNode) {
+    typed_node::route_result_v0 result =
+        *static_cast<const typed_node::route_result_v0 *>(
+            record.typed_result);
+    clear_selected_fetch_transport(&result.selected_fetch);
+    return hash_bytes(&result, sizeof(result));
+  }
+  if (record.unit == kUnitStack) {
+    if (record.semantic_plan_kind == fd::kSemanticPlanStackAppend) {
+      typed_stack::push_result_v0 result =
+          *static_cast<const typed_stack::push_result_v0 *>(
+              record.typed_result);
+      clear_selected_fetch_transport(&result.selected_fetch);
+      return hash_bytes(&result, sizeof(result));
+    }
+    if (record.semantic_plan_kind == fd::kSemanticPlanStackPop) {
+      typed_stack::pop_result_v0 result =
+          *static_cast<const typed_stack::pop_result_v0 *>(
+              record.typed_result);
+      clear_selected_fetch_transport(&result.selected_fetch);
+      return hash_bytes(&result, sizeof(result));
+    }
+    typed_stack::empty_result_v0 result =
+        *static_cast<const typed_stack::empty_result_v0 *>(
+            record.typed_result);
+    clear_frame_transport(&result.parent_frame);
+    clear_committed_hit_transport(&result.terminal_hit);
+    return hash_bytes(&result, sizeof(result));
+  }
+  if (record.unit == kUnitInstance) {
+    if (record.semantic_plan_kind == fd::kSemanticPlanInstanceEnter) {
+      typed_instance::enter_result_v0 result =
+          *static_cast<const typed_instance::enter_result_v0 *>(
+              record.typed_result);
+      result.instance_projection.instance_metadata_reference = 0;
+      clear_decode_context_transport(&result.root_fetch.decode_context);
+      return hash_bytes(&result, sizeof(result));
+    }
+    typed_instance::restore_parent_result_v0 result =
+        *static_cast<const typed_instance::restore_parent_result_v0 *>(
+            record.typed_result);
+    clear_frame_transport(&result.restored_parent);
+    return hash_bytes(&result, sizeof(result));
+  }
+  typed_primitive::route_result_v0 result =
+      *static_cast<const typed_primitive::route_result_v0 *>(
+          record.typed_result);
+  result.identity_and_policy.instance_metadata_ref = 0;
+  result.primitive_resume.leaf_fetch_address = 0;
+  return hash_bytes(&result, sizeof(result));
+}
+
 template <typename Input, typename Result, typename Plan>
 bool fixed_record_shape(const record_v0 &record) {
   return record.typed_input_bytes == sizeof(Input) &&
@@ -321,10 +472,12 @@ bool emit_record(const record_v0 &record) {
   }
   if (!enabled()) return true;
 
-  const uint64_t input_hash =
+  const uint64_t raw_input_hash =
       hash_bytes(record.typed_input, record.typed_input_bytes);
-  const uint64_t result_hash =
+  const uint64_t raw_result_hash =
       hash_bytes(record.typed_result, record.typed_result_bytes);
+  const uint64_t input_hash = normalized_input_hash(record);
+  const uint64_t result_hash = normalized_result_hash(record);
   const uint64_t plan_hash = normalized_plan_hash(record);
   std::printf(
       "GPGPU-Sim RTCORE_V04_TYPED_DIAGNOSTIC "
@@ -334,7 +487,8 @@ bool emit_record(const record_v0 &record) {
       "request_generation=%u private_slot_id=%u lane_id=%u "
       "operation_seq=%u operation_kind=%u semantic_plan_kind=%u "
       "route_kind=%u boundary_kind=%u input_bytes=%zu "
-      "input_hash=%016llx result_bytes=%zu result_hash=%016llx "
+      "input_hash=%016llx raw_input_hash=%016llx "
+      "result_bytes=%zu result_hash=%016llx raw_result_hash=%016llx "
       "plan_bytes=%zu plan_hash=%016llx\n",
       driver_name(static_cast<driver_kind>(record.driver)),
       unit_name(static_cast<unit_kind>(record.unit)),
@@ -345,8 +499,10 @@ bool emit_record(const record_v0 &record) {
       record.semantic_plan_kind, record.route_kind,
       record.boundary_kind, record.typed_input_bytes,
       static_cast<unsigned long long>(input_hash),
+      static_cast<unsigned long long>(raw_input_hash),
       record.typed_result_bytes,
       static_cast<unsigned long long>(result_hash),
+      static_cast<unsigned long long>(raw_result_hash),
       record.semantic_plan_bytes,
       static_cast<unsigned long long>(plan_hash));
   std::fflush(stdout);
