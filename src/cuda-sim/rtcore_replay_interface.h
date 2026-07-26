@@ -101,6 +101,7 @@ struct rtcore_replay_warp_completion_entry_snapshot {
   bool enabled;
   bool found;
   bool v04_native_resident_completion;
+  bool v04_functional_only_completion;
   bool all_active_lanes_complete;
   unsigned v04_native_resident_generation;
   unsigned v04_native_completion_transaction_generation;
@@ -369,6 +370,23 @@ bool rtcore_commit_v04_functional_shader_visible_resubmit_admission(
     unsigned *resident_occupancy_before, unsigned *resident_occupancy_after,
     const char **failure_reason);
 
+bool rtcore_validate_v04_functional_only_compatibility_resubmit_lane(
+    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
+    unsigned next_active_mask, unsigned lane_id, unsigned thread_uid,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned token_id, unsigned token_allocator_generation,
+    unsigned window_generation, const char **failure_reason);
+
+bool rtcore_commit_v04_functional_only_compatibility_resubmit(
+    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
+    unsigned new_static_inst_uid, unsigned next_active_mask,
+    unsigned expected_previous_warp_uid,
+    unsigned expected_resident_generation,
+    unsigned long long service_cycle, unsigned *previous_active_mask,
+    unsigned *released_lane_mask, unsigned *reactivated_lane_mask,
+    unsigned *resident_occupancy_before, unsigned *resident_occupancy_after,
+    const char **failure_reason);
+
 bool rtcore_stage_v04_native_continuation_resubmit(
     unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
     unsigned new_static_inst_uid, unsigned next_active_mask,
@@ -400,6 +418,29 @@ bool rtcore_mark_v04_native_shader_terminal_publication(
     unsigned active_mask, unsigned resident_generation,
     unsigned completion_transaction_generation,
     unsigned terminal_lane_mask);
+
+bool rtcore_query_v04_functional_only_completion_entry(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask,
+    rtcore_replay_warp_completion_entry_snapshot *snapshot);
+
+bool rtcore_consume_v04_functional_only_completion_entry(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask);
+
+bool rtcore_validate_v04_functional_only_continuation_lane_authority(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    unsigned completion_transaction_generation, unsigned lane_id,
+    unsigned long long context_ptr,
+    unsigned long long handoff_window_base, unsigned token_id,
+    unsigned token_allocator_generation, unsigned window_generation,
+    unsigned packed_request_key, unsigned request_generation);
+
+bool rtcore_apply_v04_functional_only_terminal_shader_return(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned lane_id,
+    const ptx_instruction *source_inst, ptx_thread_info *thread);
 
 }
 

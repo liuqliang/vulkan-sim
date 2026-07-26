@@ -50,6 +50,20 @@
 #include <fstream>
 #include <cmath>
 
+namespace rtcore {
+namespace v04 {
+namespace fetch_target {
+struct operation_packet_v0;
+}
+namespace typed_blas {
+struct as_decode_context_v0;
+}
+namespace typed_instance {
+struct enter_input_v0;
+}
+}  // namespace v04
+}  // namespace rtcore
+
 #define MAX(a,b) (((a)>(b))?(a):(b))
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MIN_MAX(a,b,c) MAX(MIN((a), (b)), (c))
@@ -495,6 +509,14 @@ public:
     static bool validateBlasBinding(
         const rtcore_blas_binding_snapshot &snapshot,
         uint64_t payloadReference, uint64_t recordSize,
+        const char **failureReason);
+    static bool validateV04TypedPayloadBinding(
+        const rtcore::v04::typed_blas::as_decode_context_v0 &decodeContext,
+        uint64_t payloadAddress, uint64_t payloadBytes,
+        const char **failureReason);
+    static bool buildV04TypedInstanceEnterInput(
+        const rtcore::v04::fetch_target::operation_packet_v0 &packet,
+        rtcore::v04::typed_instance::enter_input_v0 *input,
         const char **failureReason);
     static bool validateBlasLegacyAlias(uint64_t hostRootAddress,
                                         uint64_t deviceBaseAddress);

@@ -373,10 +373,18 @@ root_reference_seed_result_v0 execute_root_reference_seed(
 }
 
 route_result_v0 execute_route(const route_input_v0 &input) {
+  return execute_route(input, NULL);
+}
+
+route_result_v0 execute_route(const route_input_v0 &input,
+                              candidate_result_v0 *candidate_result) {
   route_result_v0 result = {};
   result.status = kStatusInvalidArgument;
 
   const candidate_result_v0 candidates = execute(input.candidate);
+  if (candidate_result != NULL) {
+    *candidate_result = candidates;
+  }
   if (candidates.status != kStatusOk) {
     result.status = candidates.status;
     return result;

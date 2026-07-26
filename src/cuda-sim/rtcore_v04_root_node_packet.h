@@ -1,6 +1,7 @@
 #ifndef RTCORE_V04_ROOT_NODE_PACKET_H
 #define RTCORE_V04_ROOT_NODE_PACKET_H
 
+#include <array>
 #include <cstdint>
 
 #include "rtcore_abi_v04_generated.h"
@@ -22,6 +23,13 @@ struct lane_input_v0 {
   uint32_t thread_uid;
   uint64_t context_ptr;
   uint64_t handoff_window_base;
+  uint32_t sbt_record_offset;
+  uint32_t sbt_record_stride;
+  uint32_t miss_index;
+  uint32_t reserved_zero1;
+  bool v04_trace_input_valid;
+  uint8_t reserved_zero2[7];
+  std::array<uint32_t, abi_v04::kWordCount> v04_trace_input_words;
   fetch_target::target_reference_v0 target_reference;
   private_frontier::root_private_operands_v0 private_operands;
   typed_node::ray_policy_v0 ray_policy;
@@ -86,6 +94,7 @@ inline shared_handoff_window_status_kind validate_shared_handoff_window(
 
 extern "C" bool rtcore_v04_root_node_ready_packet_gate_active();
 extern "C" bool rtcore_v04_functional_node_driver_gate_active();
+extern "C" bool rtcore_v04_functional_only_engine_gate_active();
 extern "C" bool rtcore_v04_live_node_timing_gate_active();
 extern "C" bool rtcore_v04_root_node_input_gate_active();
 extern "C" bool rtcore_v04_functional_node_driver_configuration_valid();
@@ -98,5 +107,9 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     const ptx_instruction *instruction, ptx_thread_info *const *lane_threads,
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask, unsigned long long issue_cycle);
+
+extern "C" bool rtcore_finalize_v04_root_node_packet_after_functional(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask);
 
 #endif

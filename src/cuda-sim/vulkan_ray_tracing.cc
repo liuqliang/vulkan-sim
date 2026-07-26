@@ -84,6 +84,10 @@
 namespace fs = boost::filesystem;
 
 extern "C" bool rtcore_custom_path_mode_enabled();
+extern "C" bool rtcore_v04_functional_only_retire_lane_quiescent(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned lane_id,
+    unsigned thread_uid, unsigned long long context_ptr,
+    unsigned long long handoff_window_base, const char **failure_reason);
 
 static bool rt_progress_logging_enabled() {
     static int enabled = []() {
@@ -2418,6 +2422,16 @@ static bool rtcore_v04_functional_node_driver_enabled()
     return enabled != 0;
 }
 
+static bool rtcore_v04_functional_only_engine_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_FUNCTIONAL_ONLY_ENGINE") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
 static bool rtcore_v04_live_node_timing_enabled()
 {
     static int enabled = []() {
@@ -2564,6 +2578,11 @@ extern "C" bool rtcore_v04_functional_node_driver_gate_active()
     return rtcore_v04_functional_node_driver_enabled();
 }
 
+extern "C" bool rtcore_v04_functional_only_engine_gate_active()
+{
+    return rtcore_v04_functional_only_engine_enabled();
+}
+
 extern "C" bool rtcore_v04_live_node_timing_gate_active()
 {
     return rtcore_v04_live_node_timing_enabled();
@@ -2628,7 +2647,8 @@ rtcore_v04_live_stack_terminal_publication_gate_active()
 extern "C" bool rtcore_v04_root_node_input_gate_active()
 {
     return rtcore_v04_root_node_ready_packet_enabled() ||
-           rtcore_v04_functional_node_driver_enabled();
+           rtcore_v04_functional_node_driver_enabled() ||
+           rtcore_v04_functional_only_engine_enabled();
 }
 
 static bool rtcore_v04_typed_instance_enter_transition_enabled();
@@ -2638,11 +2658,31 @@ static bool rtcore_v04_typed_procedural_boundary_seed_enabled();
 
 extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
 {
-    return rtcore::v04::functional_driver::mode_selection_valid(
-        rtcore_v04_functional_node_driver_enabled(),
-        rtcore_v04_live_timing_driver_control_enabled(),
-        rtcore_v04_root_node_ready_packet_enabled(),
-        rtcore_v04_live_node_timing_enabled()) &&
+    const bool functional_only = rtcore_v04_functional_only_engine_enabled();
+    const bool functional_only_conflict =
+        functional_only &&
+        (rtcore_v04_functional_node_driver_enabled() ||
+         rtcore_v04_live_timing_driver_control_enabled() ||
+         rtcore_v04_root_node_ready_packet_enabled() ||
+         rtcore_v04_live_node_timing_enabled() ||
+         rtcore_v04_live_selected_fetch_transition_enabled() ||
+         rtcore_v04_live_stack_operation_ingress_enabled() ||
+         rtcore_v04_live_stack_push_commit_enabled() ||
+         rtcore_v04_live_stack_spill_recovery_enabled() ||
+         rtcore_v04_live_stack_pop_next_loop_enabled() ||
+         rtcore_v04_live_stack_empty_frontier_enabled() ||
+         rtcore_v04_live_instance_restore_parent_enabled() ||
+         rtcore_v04_live_instance_enter_transition_enabled() ||
+         rtcore_v04_live_primitive_timing_route_enabled() ||
+         rtcore_v04_native_boundary_completion_enabled() ||
+         rtcore_v04_continuation_lifecycle_enabled() ||
+         rtcore_v04_live_stack_terminal_publication_enabled());
+    return !functional_only_conflict &&
+           rtcore::v04::functional_driver::mode_selection_valid(
+               rtcore_v04_functional_node_driver_enabled(),
+               rtcore_v04_live_timing_driver_control_enabled(),
+               rtcore_v04_root_node_ready_packet_enabled(),
+               rtcore_v04_live_node_timing_enabled()) &&
            (!rtcore_v04_live_selected_fetch_transition_enabled() ||
             rtcore_v04_live_node_timing_enabled()) &&
            (!rtcore_v04_live_stack_operation_ingress_enabled() ||
@@ -2686,7 +2726,7 @@ static void rtcore_v04_require_valid_node_driver_configuration()
     fprintf(stderr,
             "GPGPU-Sim RTCORE_V04_NODE_DRIVER_MODE_FAULT "
             "reason=driver_mode_or_live_timing_prerequisite_invalid "
-            "functional=%u timing_control=%u root_packet=%u "
+            "functional=%u functional_only=%u timing_control=%u root_packet=%u "
             "live_node_timing=%u selected_fetch_transition=%u "
             "stack_operation_ingress=%u stack_push_commit=%u "
             "stack_spill_recovery=%u stack_pop_next_loop=%u "
@@ -2695,6 +2735,7 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             "native_boundary=%u continuation_lifecycle=%u "
             "stack_terminal_publication=%u\n",
             rtcore_v04_functional_node_driver_enabled() ? 1u : 0u,
+            rtcore_v04_functional_only_engine_enabled() ? 1u : 0u,
             rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u,
             rtcore_v04_root_node_ready_packet_enabled() ? 1u : 0u,
             rtcore_v04_live_node_timing_enabled() ? 1u : 0u,
@@ -13789,6 +13830,160 @@ extern "C" bool rtcore_commit_shader_visible_resubmit_admission(
     return committed;
 }
 
+extern "C" bool
+rtcore_validate_v04_functional_only_compatibility_resubmit_lane(
+    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
+    unsigned next_active_mask, unsigned lane_id, unsigned thread_uid,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned token_id, unsigned token_allocator_generation,
+    unsigned window_generation, const char **failure_reason)
+{
+    const char *reason = "accepted";
+    const rtcore_resident_rt_warp_record_key key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::const_iterator resident =
+        g_rtcore_resident_rt_warp_records.find(key);
+    const rtcore_resident_rt_warp_record *record =
+        resident != g_rtcore_resident_rt_warp_records.end()
+            ? &resident->second
+            : NULL;
+    const unsigned lane_mask = lane_id < 32 ? 1u << lane_id : 0;
+    if (!rtcore_v04_functional_only_engine_gate_active()) {
+        reason = "FUNCTIONAL_ONLY_ENGINE_DISABLED";
+    } else if (record == NULL || !record->valid) {
+        reason = "MISSING_RESIDENT_RECORD";
+    } else if (new_warp_uid == record->current_warp_uid ||
+               next_active_mask == 0 ||
+               (next_active_mask & ~record->active_mask) != 0) {
+        reason = "FUNCTIONAL_ONLY_RESUBMIT_MASK_OR_UID_INVALID";
+    } else if (lane_mask == 0 ||
+               (next_active_mask & lane_mask) == 0) {
+        reason = "FUNCTIONAL_ONLY_RESUBMIT_LANE_NOT_ACTIVE";
+    } else if (!rtcore_resident_lane_identity_matches(
+                   record->lane_identity[lane_id], thread_uid,
+                   context_ptr, handoff_window_base, token_id,
+                   token_allocator_generation, window_generation)) {
+        reason =
+            "FUNCTIONAL_ONLY_COMPATIBILITY_LANE_IDENTITY_MISMATCH";
+    }
+    if (failure_reason != NULL) *failure_reason = reason;
+    return strcmp(reason, "accepted") == 0;
+}
+
+extern "C" bool
+rtcore_commit_v04_functional_only_compatibility_resubmit(
+    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
+    unsigned new_static_inst_uid, unsigned next_active_mask,
+    unsigned expected_previous_warp_uid,
+    unsigned expected_resident_generation,
+    unsigned long long service_cycle, unsigned *previous_active_mask,
+    unsigned *released_lane_mask, unsigned *reactivated_lane_mask,
+    unsigned *resident_occupancy_before, unsigned *resident_occupancy_after,
+    const char **failure_reason)
+{
+    const char *reason = "accepted";
+    const unsigned occupancy_before =
+        rtcore_resident_rt_warp_record_occupancy();
+    const rtcore_resident_rt_warp_record_key key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator resident =
+        g_rtcore_resident_rt_warp_records.find(key);
+    rtcore_resident_rt_warp_record *record =
+        resident != g_rtcore_resident_rt_warp_records.end()
+            ? &resident->second
+            : NULL;
+    const unsigned old_active_mask =
+        record != NULL ? record->active_mask : 0;
+
+    if (!rtcore_v04_functional_only_engine_gate_active()) {
+        reason = "FUNCTIONAL_ONLY_ENGINE_DISABLED";
+    } else if (record == NULL || !record->valid) {
+        reason = "MISSING_RESIDENT_RECORD";
+    } else if (record->current_warp_uid !=
+                   expected_previous_warp_uid ||
+               record->resident_generation !=
+                   expected_resident_generation ||
+               new_warp_uid == record->current_warp_uid ||
+               next_active_mask == 0 ||
+               (next_active_mask & ~old_active_mask) != 0) {
+        reason = "RESIDENT_GENERATION_OR_SUBMIT_ID_INVALID";
+    } else if ((record->bound_lane_mask & old_active_mask) !=
+               old_active_mask) {
+        reason = "RESIDENT_LANE_BINDING_INCOMPLETE";
+    } else if (rtcore_v04_request_owner_binding_enabled() ||
+               rtcore_v04_private_frontier_live_init_enabled() ||
+               rtcore_v04_live_timing_driver_control_enabled() ||
+               rtcore_v04_continuation_lifecycle_enabled() ||
+               rtcore_v04_native_boundary_completion_enabled()) {
+        reason =
+            "FUNCTIONAL_ONLY_NATIVE_OWNERSHIP_GATE_CONFLICT";
+    }
+
+    for (unsigned lane = 0;
+         lane < 32 && strcmp(reason, "accepted") == 0; ++lane) {
+        const unsigned lane_mask = 1u << lane;
+        if ((old_active_mask & lane_mask) != 0 &&
+            !record->lane_identity[lane].valid) {
+            reason =
+                "FUNCTIONAL_ONLY_COMPATIBILITY_LANE_IDENTITY_MISSING";
+        }
+    }
+
+    unsigned released_mask = 0;
+    unsigned reactivated_mask = 0;
+    if (strcmp(reason, "accepted") == 0) {
+        released_mask = old_active_mask & ~next_active_mask;
+        reactivated_mask = next_active_mask;
+        const rtcore_replay_warp_completion_entry_key old_key = {
+            record->owner_hw_sid, record->current_warp_uid,
+            record->warp_id, record->active_mask};
+        record->current_warp_uid = new_warp_uid;
+        record->current_static_inst_uid = new_static_inst_uid;
+        record->active_mask = next_active_mask;
+        record->admitted_lane_mask = next_active_mask;
+        record->retired_lane_mask = 0;
+        record->resubmit_count++;
+        memset(&record->v04_boundary_completion, 0,
+               sizeof(record->v04_boundary_completion));
+        memset(&record->v04_continuation_lifecycle, 0,
+               sizeof(record->v04_continuation_lifecycle));
+        g_rtcore_continuation_warp_boundary_states.erase(old_key);
+        g_rtcore_resident_warp_continuation_states.erase(old_key);
+        printf("GPGPU-Sim "
+               "RTCORE_V04_FUNCTIONAL_ONLY_COMPATIBILITY_RESUBMIT "
+               "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u "
+               "warp_id=%u resident_generation=%u "
+               "previous_active_mask=0x%08x next_active_mask=0x%08x "
+               "released_lane_mask=0x%08x "
+               "reactivated_lane_mask=0x%08x "
+               "bound_lane_mask=0x%08x compatibility_record_updated=1 "
+               "timing_request_state_read=0 timing_state_mutated=0 "
+               "service_cycle=%llu result=accepted\n",
+               owner_hw_sid, expected_previous_warp_uid, new_warp_uid,
+               warp_id, expected_resident_generation, old_active_mask,
+               next_active_mask, released_mask, reactivated_mask,
+               record->bound_lane_mask, service_cycle);
+        fflush(stdout);
+    }
+
+    const unsigned occupancy_after =
+        rtcore_resident_rt_warp_record_occupancy();
+    if (previous_active_mask) *previous_active_mask = old_active_mask;
+    if (released_lane_mask) *released_lane_mask = released_mask;
+    if (reactivated_lane_mask) *reactivated_lane_mask = reactivated_mask;
+    if (resident_occupancy_before) {
+        *resident_occupancy_before = occupancy_before;
+    }
+    if (resident_occupancy_after) {
+        *resident_occupancy_after = occupancy_after;
+    }
+    if (failure_reason) *failure_reason = reason;
+    return strcmp(reason, "accepted") == 0 &&
+           occupancy_before == occupancy_after;
+}
+
 struct rtcore_v04_atomic_state_snapshot {
     rtcore_v04_atomic_state_snapshot()
         : valid(false), lane_mask(0), live_handoff_digest(0),
@@ -14281,37 +14476,48 @@ static const char *rtcore_validate_resident_rt_warp_lane_retire(
             g_rtcore_replay_lane_requests.find(thread_uid);
         if (request_it == g_rtcore_replay_lane_requests.end() ||
             !request_it->second.valid) {
-            const rtcore_resident_rt_warp_lane_identity &identity =
-                record->lane_identity[lane_id];
-            const rtcore::v04::timing_driver::lane_control_state_v0 *
-                lane_control = NULL;
-            if (rtcore_v04_live_stack_terminal_publication_enabled() &&
-                rtcore_v04_live_timing_driver_control_enabled() &&
-                identity.v04_request_owner_binding_valid) {
-                lane_control =
-                    rtcore::v04::timing_driver::find_live_lane_control(
-                        rtcore_v04_timing_driver_for(owner_hw_sid),
-                        identity.v04_request_owner_binding);
-            }
-            if (lane_control == NULL) {
-                reason = "RETIRE_MISSING_PINNED_REQUEST_STATE";
-            } else if (
-                record->v04_boundary_completion.initialized != 1 ||
-                record->v04_boundary_completion.completion_consumed != 1 ||
-                (record->v04_boundary_completion.completed_lane_mask &
-                 lane_mask) == 0 ||
-                lane_control->live_target_operation_seq != 0 ||
-                lane_control->live_commit_producer_operation_seq != 0 ||
-                lane_control->live_commit_epoch != 0 ||
-                lane_control->pending_recovery_operation_seq != 0 ||
-                lane_control->pending_terminal_kind !=
-                    rtcore::v04::timing_driver::
-                        kTerminalBoundaryInvalid ||
-                lane_control->pending_terminal_producer_operation_seq != 0 ||
-                lane_control->pending_terminal_commit_epoch != 0 ||
-                lane_control->live_memory_transaction_count != 0 ||
-                lane_control->live_commit_memory_transaction_count != 0) {
-                reason = "RETIRE_V04_TIMING_LANE_NOT_QUIESCENT";
+            if (rtcore_v04_functional_only_engine_gate_active()) {
+                const char *functional_failure = "accepted";
+                if (!rtcore_v04_functional_only_retire_lane_quiescent(
+                        owner_hw_sid, warp_id, lane_id, thread_uid,
+                        context_ptr, handoff_window_base,
+                        &functional_failure)) {
+                    reason = functional_failure;
+                }
+            } else {
+                const rtcore_resident_rt_warp_lane_identity &identity =
+                    record->lane_identity[lane_id];
+                const rtcore::v04::timing_driver::lane_control_state_v0 *
+                    lane_control = NULL;
+                if (rtcore_v04_live_stack_terminal_publication_enabled() &&
+                    rtcore_v04_live_timing_driver_control_enabled() &&
+                    identity.v04_request_owner_binding_valid) {
+                    lane_control =
+                        rtcore::v04::timing_driver::find_live_lane_control(
+                            rtcore_v04_timing_driver_for(owner_hw_sid),
+                            identity.v04_request_owner_binding);
+                }
+                if (lane_control == NULL) {
+                    reason = "RETIRE_MISSING_PINNED_REQUEST_STATE";
+                } else if (
+                    record->v04_boundary_completion.initialized != 1 ||
+                    record->v04_boundary_completion.completion_consumed != 1 ||
+                    (record->v04_boundary_completion.completed_lane_mask &
+                     lane_mask) == 0 ||
+                    lane_control->live_target_operation_seq != 0 ||
+                    lane_control->live_commit_producer_operation_seq != 0 ||
+                    lane_control->live_commit_epoch != 0 ||
+                    lane_control->pending_recovery_operation_seq != 0 ||
+                    lane_control->pending_terminal_kind !=
+                        rtcore::v04::timing_driver::
+                            kTerminalBoundaryInvalid ||
+                    lane_control->pending_terminal_producer_operation_seq !=
+                        0 ||
+                    lane_control->pending_terminal_commit_epoch != 0 ||
+                    lane_control->live_memory_transaction_count != 0 ||
+                    lane_control->live_commit_memory_transaction_count != 0) {
+                    reason = "RETIRE_V04_TIMING_LANE_NOT_QUIESCENT";
+                }
             }
         } else {
             request = &request_it->second;
@@ -14586,35 +14792,47 @@ extern "C" bool rtcore_drain_retire_resident_rt_warp_lane(
             g_rtcore_replay_lane_requests.find(identity.thread_uid);
         if (request_it == g_rtcore_replay_lane_requests.end() ||
             !request_it->second.valid) {
-            const rtcore::v04::timing_driver::lane_control_state_v0 *
-                lane_control = NULL;
-            if (rtcore_v04_live_stack_terminal_publication_enabled() &&
-                rtcore_v04_live_timing_driver_control_enabled() &&
-                identity.v04_request_owner_binding_valid) {
-                lane_control =
-                    rtcore::v04::timing_driver::find_live_lane_control(
-                        rtcore_v04_timing_driver_for(owner_hw_sid),
-                        identity.v04_request_owner_binding);
-            }
-            if (lane_control == NULL) {
-                reason = "RETIRE_MISSING_PINNED_REQUEST_STATE";
-            } else if (
-                record->v04_boundary_completion.initialized != 1 ||
-                record->v04_boundary_completion.completion_consumed != 1 ||
-                (record->v04_boundary_completion.completed_lane_mask &
-                 lane_mask) == 0 ||
-                lane_control->live_target_operation_seq != 0 ||
-                lane_control->live_commit_producer_operation_seq != 0 ||
-                lane_control->live_commit_epoch != 0 ||
-                lane_control->pending_recovery_operation_seq != 0 ||
-                lane_control->pending_terminal_kind !=
-                    rtcore::v04::timing_driver::
-                        kTerminalBoundaryInvalid ||
-                lane_control->pending_terminal_producer_operation_seq != 0 ||
-                lane_control->pending_terminal_commit_epoch != 0 ||
-                lane_control->live_memory_transaction_count != 0 ||
-                lane_control->live_commit_memory_transaction_count != 0) {
-                reason = "RETIRE_V04_TIMING_LANE_NOT_QUIESCENT";
+            if (rtcore_v04_functional_only_engine_gate_active()) {
+                const char *functional_failure = "accepted";
+                if (!rtcore_v04_functional_only_retire_lane_quiescent(
+                        owner_hw_sid, warp_id, lane_id,
+                        identity.thread_uid, identity.context_ptr,
+                        identity.handoff_window_base,
+                        &functional_failure)) {
+                    reason = functional_failure;
+                }
+            } else {
+                const rtcore::v04::timing_driver::lane_control_state_v0 *
+                    lane_control = NULL;
+                if (rtcore_v04_live_stack_terminal_publication_enabled() &&
+                    rtcore_v04_live_timing_driver_control_enabled() &&
+                    identity.v04_request_owner_binding_valid) {
+                    lane_control =
+                        rtcore::v04::timing_driver::find_live_lane_control(
+                            rtcore_v04_timing_driver_for(owner_hw_sid),
+                            identity.v04_request_owner_binding);
+                }
+                if (lane_control == NULL) {
+                    reason = "RETIRE_MISSING_PINNED_REQUEST_STATE";
+                } else if (
+                    record->v04_boundary_completion.initialized != 1 ||
+                    record->v04_boundary_completion.completion_consumed != 1 ||
+                    (record->v04_boundary_completion.completed_lane_mask &
+                     lane_mask) == 0 ||
+                    lane_control->live_target_operation_seq != 0 ||
+                    lane_control->live_commit_producer_operation_seq != 0 ||
+                    lane_control->live_commit_epoch != 0 ||
+                    lane_control->pending_recovery_operation_seq != 0 ||
+                    lane_control->pending_terminal_kind !=
+                        rtcore::v04::timing_driver::
+                            kTerminalBoundaryInvalid ||
+                    lane_control->pending_terminal_producer_operation_seq !=
+                        0 ||
+                    lane_control->pending_terminal_commit_epoch != 0 ||
+                    lane_control->live_memory_transaction_count != 0 ||
+                    lane_control->live_commit_memory_transaction_count != 0) {
+                    reason = "RETIRE_V04_TIMING_LANE_NOT_QUIESCENT";
+                }
             }
         } else {
             request = &request_it->second;
@@ -14652,7 +14870,9 @@ extern "C" bool rtcore_drain_retire_resident_rt_warp_lane(
             }
         } else {
             request_state_action =
-                "v04_timing_lane_release_deferred_to_warp_commit";
+                rtcore_v04_functional_only_engine_gate_active()
+                    ? "v04_functional_only_lane_release_deferred_to_warp_commit"
+                    : "v04_timing_lane_release_deferred_to_warp_commit";
         }
 
         record->retired_lane_mask |= lane_mask;
@@ -19599,42 +19819,9 @@ rtcore_prepare_v04_live_instance_enter_input(
         return instance_timing::kResultSinkRejected;
     }
 
-    const rtcore::v04::typed_blas::as_decode_context_v0 &packet_tlas =
-        packet->private_operands.decode_context;
-    rtcore_tlas_binding_snapshot tlas;
     const char *failure = "unvalidated";
-    if (!g_rtcore_tlas_binding_registry.capture_by_object_id(
-            packet_tlas.as_object.object_id, &tlas, &failure) ||
-        !g_rtcore_tlas_binding_registry.validate(
-            tlas, packet->raw_payload_base_address,
-            fetch_target::kInstanceRawPayloadBytes, &failure) ||
-        tlas.generation != packet_tlas.as_object.generation ||
-        tlas.device_base_address != packet_tlas.device_base ||
-        tlas.size_bytes != packet_tlas.device_range_bytes ||
-        packet->target_reference.payload_offset >
-            tlas.size_bytes - fetch_target::kInstanceRawPayloadBytes ||
-        tlas.device_base_address >
-            UINT64_MAX - packet->target_reference.payload_offset ||
-        packet->raw_payload_base_address !=
-            tlas.device_base_address +
-                packet->target_reference.payload_offset) {
-        return instance_timing::kResultSinkRejected;
-    }
-
-    typed_instance::mutable_ray_state_v0 world_ray = {};
-    std::memcpy(&world_ray, &packet->private_operands.mutable_ray,
-                sizeof(world_ray));
-    typed_instance::ray_policy_v0 policy = {};
-    policy.ray_flags = packet->ray_policy.ray_flags;
-    policy.cull_mask = packet->ray_policy.cull_mask;
-    rtcore_blas_binding_snapshot blas;
-    rtcore_v04_instance_blas_reference_snapshot relation;
-    if (!rtcore_v04_build_typed_instance_enter_input(
-            packet->raw_payload, tlas,
-            packet->raw_payload_base_address, world_ray, policy, input,
-            &blas, &relation, &failure) ||
-        std::memcmp(&input->tlas_decode_context, &packet_tlas,
-                    sizeof(packet_tlas)) != 0) {
+    if (!VulkanRayTracing::buildV04TypedInstanceEnterInput(
+            *packet, input, &failure)) {
         return instance_timing::kResultSinkRejected;
     }
     return instance_timing::kResultSinkAccepted;
@@ -22571,12 +22758,24 @@ extern "C" bool rtcore_query_replay_warp_completion_entry(
 {
     rtcore_replay_warp_completion_entry_snapshot local_snapshot = {};
     local_snapshot.enabled =
+        rtcore_v04_functional_only_engine_gate_active() ||
         rtcore_replay_warp_completion_entry_enabled() ||
         rtcore_v04_native_boundary_completion_enabled();
     local_snapshot.owner_hw_sid = owner_hw_sid;
     local_snapshot.warp_uid = warp_uid;
     local_snapshot.warp_id = warp_id;
     local_snapshot.active_mask = active_mask;
+
+    if (rtcore_v04_functional_only_engine_gate_active()) {
+        const bool ready =
+            rtcore_query_v04_functional_only_completion_entry(
+                owner_hw_sid, warp_uid, warp_id, active_mask,
+                &local_snapshot);
+        if (snapshot) {
+            *snapshot = local_snapshot;
+        }
+        return ready;
+    }
 
     if (rtcore_v04_native_boundary_completion_enabled()) {
         const rtcore_resident_rt_warp_record *native_authority =
@@ -22771,6 +22970,10 @@ extern "C" bool rtcore_release_replay_warp_completion_entry(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask)
 {
+    if (rtcore_v04_functional_only_engine_gate_active()) {
+        return rtcore_consume_v04_functional_only_completion_entry(
+            owner_hw_sid, warp_uid, warp_id, active_mask);
+    }
     if (rtcore_v04_native_boundary_completion_enabled()) {
         const rtcore_resident_rt_warp_record_key resident_key = {
             owner_hw_sid, warp_id};
@@ -24454,6 +24657,123 @@ static bool rtcore_v04_build_typed_instance_enter_input(
     *input = prepared;
     *captured_blas = blas_binding;
     *captured_relation = relation;
+    if (failure_reason != NULL) *failure_reason = "none";
+    return true;
+}
+
+bool VulkanRayTracing::validateV04TypedPayloadBinding(
+    const rtcore::v04::typed_blas::as_decode_context_v0 &decode_context,
+    uint64_t payload_address, uint64_t payload_bytes,
+    const char **failure_reason)
+{
+    namespace typed_blas = rtcore::v04::typed_blas;
+    if (decode_context.bvh_format_profile_id !=
+            typed_blas::kGenRtDerivedProfileId ||
+        decode_context.as_object.object_id == 0 ||
+        decode_context.as_object.generation == 0 ||
+        decode_context.device_base == 0 ||
+        decode_context.device_range_bytes == 0 ||
+        payload_address == 0 || payload_bytes == 0) {
+        if (failure_reason != NULL) *failure_reason = "invalid_input";
+        return false;
+    }
+
+    const char *reason = "unvalidated";
+    if (decode_context.as_object.as_type ==
+        rtcore::v04::typed_instance::kAsTypeTlas) {
+        rtcore_tlas_binding_snapshot tlas;
+        if (!g_rtcore_tlas_binding_registry.capture_by_object_id(
+                decode_context.as_object.object_id, &tlas, &reason) ||
+            !g_rtcore_tlas_binding_registry.validate(
+                tlas, payload_address, payload_bytes, &reason) ||
+            tlas.generation != decode_context.as_object.generation ||
+            tlas.device_base_address != decode_context.device_base ||
+            tlas.size_bytes != decode_context.device_range_bytes) {
+            if (failure_reason != NULL) *failure_reason = reason;
+            return false;
+        }
+    } else if (decode_context.as_object.as_type == typed_blas::kAsTypeBlas) {
+        rtcore_blas_binding_snapshot blas;
+        if (!g_rtcore_blas_binding_registry.capture_by_object_id(
+                decode_context.as_object.object_id, &blas, &reason) ||
+            !g_rtcore_blas_binding_registry.validate(
+                blas, payload_address, payload_bytes, &reason) ||
+            blas.generation != decode_context.as_object.generation ||
+            blas.device_base_address != decode_context.device_base ||
+            blas.size_bytes != decode_context.device_range_bytes) {
+            if (failure_reason != NULL) *failure_reason = reason;
+            return false;
+        }
+    } else {
+        if (failure_reason != NULL) *failure_reason = "unsupported_as_type";
+        return false;
+    }
+
+    if (failure_reason != NULL) *failure_reason = "none";
+    return true;
+}
+
+bool VulkanRayTracing::buildV04TypedInstanceEnterInput(
+    const rtcore::v04::fetch_target::operation_packet_v0 &packet,
+    rtcore::v04::typed_instance::enter_input_v0 *input,
+    const char **failure_reason)
+{
+    namespace fetch_target = rtcore::v04::fetch_target;
+    namespace typed_instance = rtcore::v04::typed_instance;
+    namespace typed_node = rtcore::v04::typed_node;
+    if (input == NULL ||
+        packet.operation_kind != fetch_target::kOperationFetchTarget ||
+        packet.target_kind != fetch_target::kTargetInstance ||
+        packet.raw_payload_bytes != fetch_target::kInstanceRawPayloadBytes ||
+        packet.target_reference.payload_kind !=
+            typed_node::kInstancePayloadKind ||
+        packet.target_reference.level != typed_node::kLevelTlas ||
+        packet.private_operands.decode_context.as_object.as_type !=
+            typed_instance::kAsTypeTlas) {
+        if (failure_reason != NULL) *failure_reason = "invalid_input";
+        return false;
+    }
+
+    const rtcore::v04::typed_blas::as_decode_context_v0 &packet_tlas =
+        packet.private_operands.decode_context;
+    const char *reason = "unvalidated";
+    if (!validateV04TypedPayloadBinding(
+            packet_tlas, packet.raw_payload_base_address,
+            fetch_target::kInstanceRawPayloadBytes, &reason) ||
+        packet.target_reference.payload_offset >
+            packet_tlas.device_range_bytes -
+                fetch_target::kInstanceRawPayloadBytes ||
+        packet_tlas.device_base >
+            UINT64_MAX - packet.target_reference.payload_offset ||
+        packet.raw_payload_base_address !=
+            packet_tlas.device_base +
+                packet.target_reference.payload_offset) {
+        if (failure_reason != NULL) *failure_reason = reason;
+        return false;
+    }
+
+    rtcore_tlas_binding_snapshot tlas;
+    if (!g_rtcore_tlas_binding_registry.capture_by_object_id(
+            packet_tlas.as_object.object_id, &tlas, &reason)) {
+        if (failure_reason != NULL) *failure_reason = reason;
+        return false;
+    }
+    typed_instance::mutable_ray_state_v0 world_ray = {};
+    std::memcpy(&world_ray, &packet.private_operands.mutable_ray,
+                sizeof(world_ray));
+    typed_instance::ray_policy_v0 policy = {};
+    policy.ray_flags = packet.ray_policy.ray_flags;
+    policy.cull_mask = packet.ray_policy.cull_mask;
+    rtcore_blas_binding_snapshot blas;
+    rtcore_v04_instance_blas_reference_snapshot relation;
+    if (!rtcore_v04_build_typed_instance_enter_input(
+            packet.raw_payload, tlas, packet.raw_payload_base_address,
+            world_ray, policy, input, &blas, &relation, &reason) ||
+        std::memcmp(&input->tlas_decode_context, &packet_tlas,
+                    sizeof(packet_tlas)) != 0) {
+        if (failure_reason != NULL) *failure_reason = reason;
+        return false;
+    }
     if (failure_reason != NULL) *failure_reason = "none";
     return true;
 }

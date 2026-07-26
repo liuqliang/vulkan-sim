@@ -486,6 +486,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
         static_inst_pc(0),
         enqueue_cycle(0),
         v04_native_resident_completion(false),
+        v04_functional_only_completion(false),
         v04_native_resident_generation(0),
         v04_native_completion_transaction_generation(0),
         v04_native_identity_valid_mask(0),
@@ -561,6 +562,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   rtcore_boundary_candidate_snapshot lane_boundary_candidates[32];
   unsigned long long enqueue_cycle;
   bool v04_native_resident_completion;
+  bool v04_functional_only_completion;
   unsigned v04_native_resident_generation;
   unsigned v04_native_completion_transaction_generation;
   unsigned v04_native_identity_valid_mask;
@@ -574,6 +576,18 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   unsigned lane_v04_request_generations[32];
 };
 
+static bool rtcore_v04_direct_completion(
+    const rtcore_shader_continuation_dispatcher_pending_entry &entry) {
+  return entry.v04_native_resident_completion !=
+         entry.v04_functional_only_completion;
+}
+
+static bool rtcore_v04_direct_completion(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot) {
+  return snapshot.v04_native_resident_completion !=
+         snapshot.v04_functional_only_completion;
+}
+
 static std::map<rtcore_shader_continuation_dispatcher_pending_key,
                 rtcore_shader_continuation_dispatcher_pending_entry>
     g_rtcore_shader_continuation_dispatcher_pending;
@@ -584,7 +598,7 @@ static bool rtcore_validate_v04_native_source_authority(
     const rtcore_shader_continuation_dispatcher_pending_entry &entry,
     unsigned owner_hw_sid, unsigned lane,
     const ptx_instruction *source_inst, ptx_thread_info *thread) {
-  if (!entry.v04_native_resident_completion || lane >= 32 ||
+  if (!rtcore_v04_direct_completion(entry) || lane >= 32 ||
       source_inst == NULL || thread == NULL ||
       (entry.v04_native_identity_valid_mask & (1u << lane)) == 0) {
     return false;
@@ -595,26 +609,40 @@ static bool rtcore_validate_v04_native_source_authority(
       thread->get_reg(context_operand.get_symbol()).u64;
   const unsigned long long handoff_window_base =
       thread->get_reg(handoff_operand.get_symbol()).u64;
-  return context_ptr == entry.lane_v04_context_ptrs[lane] &&
-         handoff_window_base ==
-             entry.lane_v04_handoff_window_bases[lane] &&
-         rtcore_validate_v04_native_continuation_lane_authority(
-             owner_hw_sid, entry.warp_uid, entry.warp_id,
-             entry.active_mask, entry.v04_native_resident_generation,
-             entry.v04_native_completion_transaction_generation, lane,
-             context_ptr, handoff_window_base,
-             entry.lane_v04_token_ids[lane],
-             entry.lane_v04_token_allocator_generations[lane],
-             entry.lane_v04_window_generations[lane],
-             entry.lane_v04_packed_request_keys[lane],
-             entry.lane_v04_request_generations[lane]);
+  if (context_ptr != entry.lane_v04_context_ptrs[lane] ||
+      handoff_window_base !=
+          entry.lane_v04_handoff_window_bases[lane]) {
+    return false;
+  }
+  if (entry.v04_functional_only_completion) {
+    return rtcore_validate_v04_functional_only_continuation_lane_authority(
+        owner_hw_sid, entry.warp_uid, entry.warp_id,
+        entry.active_mask, entry.v04_native_resident_generation,
+        entry.v04_native_completion_transaction_generation, lane,
+        context_ptr, handoff_window_base,
+        entry.lane_v04_token_ids[lane],
+        entry.lane_v04_token_allocator_generations[lane],
+        entry.lane_v04_window_generations[lane],
+        entry.lane_v04_packed_request_keys[lane],
+        entry.lane_v04_request_generations[lane]);
+  }
+  return rtcore_validate_v04_native_continuation_lane_authority(
+      owner_hw_sid, entry.warp_uid, entry.warp_id,
+      entry.active_mask, entry.v04_native_resident_generation,
+      entry.v04_native_completion_transaction_generation, lane,
+      context_ptr, handoff_window_base,
+      entry.lane_v04_token_ids[lane],
+      entry.lane_v04_token_allocator_generations[lane],
+      entry.lane_v04_window_generations[lane],
+      entry.lane_v04_packed_request_keys[lane],
+      entry.lane_v04_request_generations[lane]);
 }
 
 static bool rtcore_validate_v04_native_source_authority(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
     unsigned owner_hw_sid, unsigned lane,
     const ptx_instruction *source_inst, ptx_thread_info *thread) {
-  if (!snapshot.v04_native_resident_completion || lane >= 32 ||
+  if (!rtcore_v04_direct_completion(snapshot) || lane >= 32 ||
       source_inst == NULL || thread == NULL ||
       (snapshot.v04_native_identity_valid_mask & (1u << lane)) == 0) {
     return false;
@@ -625,20 +653,35 @@ static bool rtcore_validate_v04_native_source_authority(
       thread->get_reg(context_operand.get_symbol()).u64;
   const unsigned long long handoff_window_base =
       thread->get_reg(handoff_operand.get_symbol()).u64;
-  return context_ptr == snapshot.v04_native_context_ptr[lane] &&
-         handoff_window_base ==
-             snapshot.v04_native_handoff_window_base[lane] &&
-         rtcore_validate_v04_native_continuation_lane_authority(
-             owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
-             snapshot.active_mask,
-             snapshot.v04_native_resident_generation,
-             snapshot.v04_native_completion_transaction_generation, lane,
-             context_ptr, handoff_window_base,
-             snapshot.v04_native_token_id[lane],
-             snapshot.v04_native_token_allocator_generation[lane],
-             snapshot.v04_native_window_generation[lane],
-             snapshot.v04_native_packed_request_key[lane],
-             snapshot.v04_native_request_generation[lane]);
+  if (context_ptr != snapshot.v04_native_context_ptr[lane] ||
+      handoff_window_base !=
+          snapshot.v04_native_handoff_window_base[lane]) {
+    return false;
+  }
+  if (snapshot.v04_functional_only_completion) {
+    return rtcore_validate_v04_functional_only_continuation_lane_authority(
+        owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
+        snapshot.active_mask,
+        snapshot.v04_native_resident_generation,
+        snapshot.v04_native_completion_transaction_generation, lane,
+        context_ptr, handoff_window_base,
+        snapshot.v04_native_token_id[lane],
+        snapshot.v04_native_token_allocator_generation[lane],
+        snapshot.v04_native_window_generation[lane],
+        snapshot.v04_native_packed_request_key[lane],
+        snapshot.v04_native_request_generation[lane]);
+  }
+  return rtcore_validate_v04_native_continuation_lane_authority(
+      owner_hw_sid, snapshot.warp_uid, snapshot.warp_id,
+      snapshot.active_mask,
+      snapshot.v04_native_resident_generation,
+      snapshot.v04_native_completion_transaction_generation, lane,
+      context_ptr, handoff_window_base,
+      snapshot.v04_native_token_id[lane],
+      snapshot.v04_native_token_allocator_generation[lane],
+      snapshot.v04_native_window_generation[lane],
+      snapshot.v04_native_packed_request_key[lane],
+      snapshot.v04_native_request_generation[lane]);
 }
 
 static void rtcore_mark_v04_native_dispatch_cohort_complete(
@@ -667,7 +710,7 @@ static void rtcore_publish_v04_terminated_final_cohort(
     unsigned owner_hw_sid,
     rtcore_shader_continuation_dispatcher_pending_entry *entry,
     unsigned terminal_lane_mask) {
-  if (entry == NULL || !entry->v04_native_resident_completion ||
+  if (entry == NULL || !rtcore_v04_direct_completion(*entry) ||
       terminal_lane_mask == 0 ||
       (terminal_lane_mask & entry->pending_shader_terminal_mask) !=
           terminal_lane_mask) {
@@ -679,7 +722,8 @@ static void rtcore_publish_v04_terminated_final_cohort(
     fflush(stderr);
     abort();
   }
-  if (!rtcore_mark_v04_native_shader_terminal_publication(
+  if (entry->v04_native_resident_completion &&
+      !rtcore_mark_v04_native_shader_terminal_publication(
           owner_hw_sid, entry->warp_uid, entry->warp_id,
           entry->active_mask, entry->v04_native_resident_generation,
           entry->v04_native_completion_transaction_generation,
@@ -709,7 +753,7 @@ static void rtcore_stage_v04_terminated_closest_hit_cohort(
     unsigned owner_hw_sid,
     rtcore_shader_continuation_dispatcher_pending_entry *entry,
     unsigned cohort_index, unsigned terminal_lane_mask) {
-  if (entry == NULL || !entry->v04_native_resident_completion ||
+  if (entry == NULL || !rtcore_v04_direct_completion(*entry) ||
       cohort_index >= entry->cohort_count || terminal_lane_mask == 0 ||
       (terminal_lane_mask & ~entry->cohort_lane_masks[cohort_index]) != 0 ||
       entry->cohort_sbt_record_addrs[cohort_index] == 0 ||
@@ -817,6 +861,8 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
   entry.static_inst_pc = static_inst_pc;
   entry.v04_native_resident_completion =
       snapshot.v04_native_resident_completion;
+  entry.v04_functional_only_completion =
+      snapshot.v04_functional_only_completion;
   entry.v04_native_resident_generation =
       snapshot.v04_native_resident_generation;
   entry.v04_native_completion_transaction_generation =
@@ -825,7 +871,7 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
       snapshot.v04_native_identity_valid_mask;
   for (unsigned lane = 0; lane < 32; ++lane) {
     entry.lane_reasons[lane] = snapshot.lane_completion_reason[lane];
-    if (snapshot.v04_native_resident_completion) {
+    if (rtcore_v04_direct_completion(snapshot)) {
       const std::array<uint32_t, rtcore::abi_v04::kWordCount> words = [&]() {
         std::array<uint32_t, rtcore::abi_v04::kWordCount> value = {};
         for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
@@ -1111,7 +1157,7 @@ rtcore_service_shader_continuation_pseudo_op(
         assert(thread != NULL);
         const ptx_instruction *source_inst =
             thread->get_inst(entry.static_inst_pc);
-        if (entry.v04_native_resident_completion &&
+        if (rtcore_v04_direct_completion(entry) &&
             !rtcore_validate_v04_native_source_authority(
                 entry, owner_hw_sid, lane, source_inst, thread)) {
           fprintf(stderr,
@@ -1127,7 +1173,8 @@ rtcore_service_shader_continuation_pseudo_op(
         unsigned reported_t = 0;
         unsigned reported_metadata = 0;
         bool return_valid = false;
-        if (entry.v04_native_resident_completion) {
+        bool lane_terminated = false;
+        if (rtcore_v04_direct_completion(entry)) {
           std::array<uint32_t, rtcore::abi_v04::kWordCount> words = {};
           const unsigned long long lane_base =
               entry.handoff_window_base +
@@ -1146,6 +1193,7 @@ rtcore_service_shader_continuation_pseudo_op(
           if (return_valid &&
               (observation.traversal_effect & (1u << 2)) != 0) {
             shader_terminal_lane_mask |= lane_mask;
+            lane_terminated = true;
           }
         } else {
           unsigned shader_return_words[3] = {};
@@ -1178,7 +1226,7 @@ rtcore_service_shader_continuation_pseudo_op(
                completed_cohort_index, entry.handoff_window_base, reason,
                hit_result, reported_t, reported_metadata,
                return_valid ? 1u : 0u,
-               entry.v04_native_resident_completion ? "v04" : "v03",
+               rtcore_v04_direct_completion(entry) ? "v04" : "v03",
                current_cycle);
         fflush(stdout);
         if (!return_valid) {
@@ -1187,6 +1235,18 @@ rtcore_service_shader_continuation_pseudo_op(
                   "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
                   "fault=invalid_shader_return_store_fail_closed\n",
                   owner_hw_sid, entry.warp_uid, entry.warp_id, lane);
+          abort();
+        }
+        if (entry.v04_functional_only_completion && lane_terminated &&
+            !rtcore_apply_v04_functional_only_terminal_shader_return(
+                owner_hw_sid, entry.warp_uid, entry.warp_id,
+                entry.active_mask, lane, source_inst, thread)) {
+          fprintf(stderr,
+                  "GPGPU-Sim RTCORE_V04_FUNCTIONAL_ONLY_FAULT "
+                  "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                  "fault=terminal_shader_return_rejected\n",
+                  owner_hw_sid, entry.warp_uid, entry.warp_id, lane);
+          fflush(stderr);
           abort();
         }
       }
@@ -1428,7 +1488,7 @@ rtcore_service_shader_continuation_pseudo_op(
     const bool terminal_no_shader =
         cohort_reason == RTCORE_SHADER_CONTINUATION_REASON_MISS ||
         cohort_reason == RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY;
-    if (entry.v04_native_resident_completion &&
+    if (rtcore_v04_direct_completion(entry) &&
         rtcore_shader_continuation_requires_handoff_return(
             cohort_reason)) {
       const uint32_t default_effect =
@@ -1541,13 +1601,13 @@ rtcore_service_shader_continuation_pseudo_op(
     const ptx_instruction *source_inst =
         thread != NULL ? thread->get_inst(entry.static_inst_pc) : NULL;
     const bool native_authority_ready =
-        !entry.v04_native_resident_completion ||
+        !rtcore_v04_direct_completion(entry) ||
         rtcore_validate_v04_native_source_authority(
             entry, owner_hw_sid, lane, source_inst, thread);
     const rtcore_boundary_candidate_snapshot &boundary_candidate =
         entry.lane_boundary_candidates[lane];
     const bool compatibility_context_ready =
-        entry.v04_native_resident_completion ||
+        rtcore_v04_direct_completion(entry) ||
         (thread != NULL && source_inst != NULL &&
          (!requires_handoff_return || boundary_candidate.valid) &&
          rtcore_prepare_compatibility_shader_continuation_context(
@@ -1593,7 +1653,7 @@ rtcore_service_shader_continuation_pseudo_op(
               owner_hw_sid, entry.warp_uid, entry.warp_id, lane);
       abort();
     }
-    if (!entry.v04_native_resident_completion &&
+    if (!rtcore_v04_direct_completion(entry) &&
         rtcore_v04_shader_builtin_consumer_runtime_enabled() &&
         !rtcore_validate_v04_shader_builtin_compatibility_context(
             source_inst, thread, entry.lane_reasons[lane], lane,
@@ -6492,17 +6552,18 @@ void shader_core_ctx::fetch() {
 }
 
 void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
-  if (inst.op == RT_CORE_OP && inst.rt_subop == RT_CORE_SUBOP_SUBMIT &&
-      rtcore_v04_root_node_input_gate_active()) {
+  const bool v04_root_node_submit = inst.op == RT_CORE_OP &&
+                                    inst.rt_subop == RT_CORE_SUBOP_SUBMIT &&
+                                    rtcore_v04_root_node_input_gate_active();
+  if (v04_root_node_submit) {
     ptx_thread_info *lane_threads[32] = {};
     const unsigned warp_size = m_config->warp_size;
     assert(warp_size == 32);
     for (unsigned lane = 0; lane < warp_size; ++lane) {
       lane_threads[lane] = m_thread[inst.warp_id() * warp_size + lane];
     }
-    const ptx_instruction *instruction =
-        static_cast<const ptx_instruction *>(
-            get_next_inst(inst.warp_id(), inst.pc));
+    const ptx_instruction *instruction = static_cast<const ptx_instruction *>(
+        get_next_inst(inst.warp_id(), inst.pc));
     if (!rtcore_prepare_v04_root_node_packet_before_functional(
             instruction, lane_threads, m_sid, inst.get_uid(), inst.warp_id(),
             static_cast<unsigned>(inst.get_warp_active_mask().to_ulong()),
@@ -6517,6 +6578,18 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
     }
   }
   execute_warp_inst_t(inst);
+  if (v04_root_node_submit &&
+      !rtcore_finalize_v04_root_node_packet_after_functional(
+          m_sid, inst.get_uid(), inst.warp_id(),
+          static_cast<unsigned>(inst.get_warp_active_mask().to_ulong()))) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_ROOT_PACKET_POST_FUNCTIONAL_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08lx\n",
+            m_sid, inst.get_uid(), inst.warp_id(),
+            inst.get_warp_active_mask().to_ulong());
+    fflush(stderr);
+    abort();
+  }
   if (inst.is_load() || inst.is_store()) {
     inst.generate_mem_accesses();
     // inst.print_m_accessq();
@@ -10592,6 +10665,12 @@ static bool rtcore_validate_replay_completion_packet(
   if (failure_reason != NULL) {
     *failure_reason = NULL;
   }
+  if (snapshot.v04_native_resident_completion &&
+      snapshot.v04_functional_only_completion) {
+    rtcore_set_completion_packet_failure_reason(
+        failure_reason, "multiple_v04_completion_sources");
+    return false;
+  }
   if (snapshot.owner_hw_sid != expected_owner_hw_sid ||
       snapshot.warp_uid != expected_warp_uid ||
       snapshot.warp_id != expected_warp_id ||
@@ -10600,7 +10679,7 @@ static bool rtcore_validate_replay_completion_packet(
                                                 "packet_key_mismatch");
     return false;
   }
-  if (snapshot.v04_native_resident_completion) {
+  if (rtcore_v04_direct_completion(snapshot)) {
     if (snapshot.packet_schema_version !=
             RTCORE_REPLAY_COMPLETION_PACKET_SCHEMA_VERSION ||
         expected_active_mask == 0 ||
@@ -11181,7 +11260,7 @@ static unsigned rtcore_shader_continuation_hit_record_selector_ready_mask(
 static unsigned rtcore_shader_continuation_hit_record_selector_key(
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
     unsigned lane) {
-  if (snapshot.v04_native_resident_completion) {
+  if (rtcore_v04_direct_completion(snapshot)) {
     std::array<uint32_t, rtcore::abi_v04::kWordCount> words = {};
     for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
       words[word] = snapshot.handoff_words[lane][word];
@@ -11217,7 +11296,7 @@ static unsigned rtcore_shader_continuation_sbt_record_selector_key(
     unsigned lane) {
   if (snapshot.lane_completion_reason[lane] ==
       RTCORE_SHADER_CONTINUATION_REASON_MISS) {
-    if (snapshot.v04_native_resident_completion) {
+    if (rtcore_v04_direct_completion(snapshot)) {
       std::array<uint32_t, rtcore::abi_v04::kWordCount> words = {};
       for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
         words[word] = snapshot.handoff_words[lane][word];
@@ -11599,7 +11678,7 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
       missing_instruction_pointer_mask |= lane_mask;
       continue;
     }
-    if (snapshot.v04_native_resident_completion &&
+    if (rtcore_v04_direct_completion(snapshot) &&
         !rtcore_validate_v04_native_source_authority(
             snapshot, owner_hw_sid, lane, pI, thread)) {
       fprintf(stderr,
@@ -12769,7 +12848,8 @@ void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {
           rtcore_release_replay_warp_completion_entry(
               m_sid, inst.get_uid(), inst.warp_id(),
               event->second.issued_active_mask);
-      if (rtcore_v04_native_boundary_completion_gate_active() &&
+      if ((rtcore_v04_native_boundary_completion_gate_active() ||
+           rtcore_v04_functional_only_engine_gate_active()) &&
           !completion_released) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_FAULT "
@@ -13904,6 +13984,7 @@ void rt_unit::cycle() {
         candidate_completion.all_active_lanes_complete &&
         candidate_completion.scoreboard_handoff_delivered;
     const bool activation_enabled =
+        rtcore_v04_functional_only_engine_gate_active() ||
         rtcore_replay_release_gate_activation_enabled() ||
         rtcore_v04_native_boundary_completion_gate_active();
     const bool activation_blocked =
@@ -13935,239 +14016,226 @@ void rt_unit::cycle() {
         candidate_completion.enabled, candidate_completion.found,
         candidate_completion.all_active_lanes_complete,
         candidate_completion.scoreboard_handoff_delivered,
-        candidate_scoreboard_handoff_release_allowed,
-        activation_enabled, activation_blocked,
-        candidate_release_gate_blocked_cycles);
-    // A completed warp has no more memory accesses and all the intersection delays are complete and has no pending writes
-	    if (rtcore_instruction_completion_ready &&
-	        it->second.rt_mem_accesses_empty() &&
-	        it->second.rt_intersection_delay_done() &&
-	        !it->second.has_pending_writes()) {
-	      RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid, it->second.warp_id(), it->first);
-	      if (retire_ack_ready || m_operand_collector->writeback(it->second)) {
-	        if (it->second.rt_subop == RT_CORE_SUBOP_SUBMIT) {
-	          std::map<unsigned, rtcore_synthetic_completion_event>::iterator
-	              release_event =
-	                  m_synthetic_warp_completion_entries.find(it->second.get_uid());
-	          if (release_event != m_synthetic_warp_completion_entries.end()) {
-	            if (candidate_scoreboard_handoff_release_allowed) {
-	              if (!candidate_completion.v04_native_resident_completion) {
-	                const char *v04_shadow_image_failure_reason = NULL;
-	                if (!rtcore_observe_v04_shadow_completion_packet_image(
-	                        candidate_completion,
-	                        release_event->second.issued_active_mask,
-	                        current_cycle,
-	                        &v04_shadow_image_failure_reason)) {
-	                  fprintf(stderr,
-	                          "GPGPU-Sim "
-	                          "RTCORE_V04_SHADOW_COMPLETION_PACKET_INVALID "
-	                          "reason=%s owner_hw_sid=%u warp_uid=%u "
-	                          "warp_id=%u active_mask=0x%08x\n",
-	                          v04_shadow_image_failure_reason != NULL
-	                              ? v04_shadow_image_failure_reason
-	                              : "unknown",
-	                          m_sid, it->second.get_uid(),
-	                          it->second.warp_id(),
-	                          release_event->second.issued_active_mask);
-	                  fflush(stderr);
-	                  abort();
-	                }
-	              }
-	              rtcore_materialize_scoreboard_v_result(
-	                  it->second, candidate_completion, current_cycle);
-	              rtcore_record_resident_warp_wakeup(
-	                  it->second, &release_event->second,
-	                  candidate_completion.packet_schema_version,
-	                  candidate_completion.lane_completion_valid_mask,
-	                  candidate_completion.terminal_lane_mask,
-	                  candidate_completion.continuation_lane_mask,
-	                  current_cycle);
-	              if (candidate_completion.v04_native_resident_completion &&
-	                  rtcore_v04_continuation_lifecycle_gate_active()) {
-	                const unsigned native_target_reason_mask =
-	                    candidate_completion.lane_completion_valid_mask;
-	                const unsigned native_sbt_address_ready_mask =
-	                    rtcore_shader_continuation_sbt_record_selector_ready_mask(
-	                        candidate_completion,
-	                        native_target_reason_mask);
-	                if (native_sbt_address_ready_mask !=
-	                    native_target_reason_mask) {
-	                  fprintf(stderr,
-	                          "GPGPU-Sim "
-	                          "RTCORE_V04_NATIVE_CONTINUATION_FAULT "
-	                          "owner_hw_sid=%u warp_uid=%u warp_id=%u "
-	                          "active_mask=0x%08x target_mask=0x%08x "
-	                          "sbt_ready_mask=0x%08x "
-	                          "fault=native_dispatch_input_incomplete\n",
-	                          m_sid, release_event->second.warp_uid,
-	                          release_event->second.warp_id,
-	                          release_event->second.issued_active_mask,
-	                          native_target_reason_mask,
-	                          native_sbt_address_ready_mask);
-	                  fflush(stderr);
-	                  abort();
-	                }
-	                rtcore_record_shader_continuation_direct_callshader_action(
-	                    m_core, it->second, m_sid,
-	                    release_event->second.warp_uid,
-	                    release_event->second.warp_id,
-	                    release_event->second.issued_active_mask,
-	                    candidate_completion, native_target_reason_mask,
-	                    native_sbt_address_ready_mask, current_cycle);
-	                printf("GPGPU-Sim "
-	                       "RTCORE_V04_NATIVE_CONTINUATION_DISPATCH "
-	                       "owner_hw_sid=%u warp_uid=%u warp_id=%u "
-	                       "active_mask=0x%08x continuation_mask=0x%08x "
-	                       "terminal_mask=0x%08x "
-	                       "input_authority=v04_handoff "
-	                       "legacy_candidate_authority=0 "
-	                       "dispatch_cycle=%llu\n",
-	                       m_sid, release_event->second.warp_uid,
-	                       release_event->second.warp_id,
-	                       release_event->second.issued_active_mask,
-	                       candidate_completion.continuation_lane_mask,
-	                       candidate_completion.terminal_lane_mask,
-	                       current_cycle);
-	                fflush(stdout);
-	              }
-	              if (!candidate_completion.v04_native_resident_completion) {
-		            const unsigned reason_oracle_miss_mask =
-		                rtcore_shader_continuation_reason_mask(
-		                    candidate_completion,
-		                    RTCORE_SHADER_CONTINUATION_REASON_MISS);
-		            const unsigned reason_oracle_closest_hit_mask =
-		                rtcore_shader_continuation_reason_mask(
-		                    candidate_completion,
-		                    RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY);
-		            const unsigned reason_oracle_anyhit_mask =
-		                rtcore_shader_continuation_reason_mask(
-	                    candidate_completion,
-	                    RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED);
-	            const unsigned reason_oracle_intersection_mask =
-	                rtcore_shader_continuation_reason_mask(
-	                    candidate_completion,
-	                    RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED);
-		            const unsigned reason_synthetic_split_mask = 0;
-		            const unsigned target_reason_mask =
-		                reason_oracle_miss_mask |
-		                reason_oracle_closest_hit_mask |
-		                reason_oracle_anyhit_mask |
-		                reason_oracle_intersection_mask |
-		                reason_synthetic_split_mask;
-		            const unsigned hit_target_reason_mask =
-		                reason_oracle_closest_hit_mask |
-		                reason_oracle_anyhit_mask |
-		                reason_oracle_intersection_mask;
-		            const unsigned target_selector_ready_mask =
-		                rtcore_shader_continuation_sbt_record_selector_ready_mask(
-		                    candidate_completion, target_reason_mask);
-	            const unsigned target_selector_missing_dispatch_mask =
-	                target_reason_mask &
-	                ~candidate_completion.handoff_selector_valid_mask;
-		            const unsigned target_selector_missing_hit_mask =
-		                hit_target_reason_mask &
-		                ~candidate_completion.handoff_candidate_valid_mask;
-	            const unsigned target_selector_fallback_reason_mask =
-	                target_reason_mask & ~target_selector_ready_mask;
-	            const unsigned target_selector_cohort_count =
-	                rtcore_shader_continuation_target_selector_cohort_count(
-	                    candidate_completion, target_selector_ready_mask,
-	                    reason_oracle_anyhit_mask,
-	                    reason_oracle_intersection_mask,
-	                    reason_synthetic_split_mask);
-	            const unsigned raw_fact_ray_sbt_inputs_ready_mask =
-	                target_reason_mask &
-	                candidate_completion.handoff_selector_valid_mask;
-		            const unsigned raw_fact_geometry_primitive_ready_mask =
-		                hit_target_reason_mask &
-		                candidate_completion.handoff_candidate_valid_mask;
-		            const unsigned raw_fact_instance_sbt_contribution_ready_mask =
-		                hit_target_reason_mask &
-		                candidate_completion.handoff_selector_valid_mask;
-		            const unsigned raw_fact_hit_record_selector_formula_ready_mask =
-		                rtcore_shader_continuation_hit_record_selector_ready_mask(
-		                    candidate_completion, hit_target_reason_mask);
-	            const unsigned
-	                raw_fact_hit_record_selector_formula_cohort_count =
-	                    rtcore_shader_continuation_hit_record_selector_cohort_count(
-	                        candidate_completion,
-	                        raw_fact_hit_record_selector_formula_ready_mask);
-		            const unsigned sbt_record_selector_ready_mask =
-		                rtcore_shader_continuation_sbt_record_selector_ready_mask(
-		                    candidate_completion, target_reason_mask);
-		            const unsigned sbt_address_ready_mask =
-		                sbt_record_selector_ready_mask;
-		            const unsigned sbt_address_missing_mask =
-		                target_reason_mask & ~sbt_address_ready_mask;
-		            const unsigned sbt_address_cohort_count =
-		                rtcore_shader_continuation_sbt_address_cohort_count(
-		                    candidate_completion, sbt_address_ready_mask,
-		                    target_reason_mask);
-		            rtcore_record_shader_continuation_sbt_address_cohorts(
-		                m_sid, release_event->second.warp_uid,
-		                release_event->second.warp_id,
-		                release_event->second.issued_active_mask,
-		                candidate_completion, sbt_address_ready_mask,
-		                target_reason_mask,
-		                current_cycle);
-		            rtcore_record_shader_continuation_callshader_context_preflight(
-		                m_core, it->second, m_sid, release_event->second.warp_uid,
-		                release_event->second.warp_id,
-		                release_event->second.issued_active_mask,
-		                sbt_address_ready_mask,
-		                current_cycle);
-		            rtcore_record_shader_continuation_direct_callshader_action(
-		                m_core, it->second, m_sid, release_event->second.warp_uid,
-		                release_event->second.warp_id,
-		                release_event->second.issued_active_mask,
-		                candidate_completion, target_reason_mask,
-		                sbt_address_ready_mask,
-		                current_cycle);
-	            rtcore_record_shader_continuation_loop_decision(
-	                it->second, &release_event->second,
-	                candidate_completion.packet_schema_version,
-	                candidate_completion.lane_completion_valid_mask,
-	                candidate_completion.terminal_lane_mask,
-	                candidate_completion.continuation_lane_mask,
-	                candidate_completion.unsupported_reason_mask,
-	                candidate_completion.handoff_software_return_valid_mask,
-	                reason_oracle_anyhit_mask,
-	                reason_oracle_intersection_mask,
-	                reason_synthetic_split_mask,
-	                target_selector_ready_mask,
-	                target_selector_missing_dispatch_mask,
-	                target_selector_missing_hit_mask,
-	                target_selector_fallback_reason_mask,
-	                target_selector_cohort_count,
-	                raw_fact_ray_sbt_inputs_ready_mask,
-	                raw_fact_geometry_primitive_ready_mask,
-	                raw_fact_instance_sbt_contribution_ready_mask,
-	                raw_fact_hit_record_selector_formula_ready_mask,
-	                raw_fact_hit_record_selector_formula_cohort_count,
-		                sbt_address_ready_mask,
-	                sbt_address_missing_mask,
-	                sbt_address_cohort_count,
-	                current_cycle);
-	              }
-	            }
-	            rtcore_synthetic_release_snapshot release_snapshot =
-	                rtcore_make_synthetic_release_snapshot(
-	                    it->second, release_event->second, current_cycle);
-            rtcore_apply_synthetic_release_snapshot(release_snapshot);
+        candidate_scoreboard_handoff_release_allowed, activation_enabled,
+        activation_blocked, candidate_release_gate_blocked_cycles);
+    // A completed warp has no more memory accesses and all the intersection
+    // delays are complete and has no pending writes
+    if (rtcore_instruction_completion_ready &&
+        it->second.rt_mem_accesses_empty() &&
+        it->second.rt_intersection_delay_done() &&
+        !it->second.has_pending_writes()) {
+      RT_DPRINTF("Shader %d: Warp %d (uid: %d) completed!\n", m_sid,
+                 it->second.warp_id(), it->first);
+      if (retire_ack_ready || m_operand_collector->writeback(it->second)) {
+        if (it->second.rt_subop == RT_CORE_SUBOP_SUBMIT) {
+          std::map<unsigned, rtcore_synthetic_completion_event>::iterator
+              release_event = m_synthetic_warp_completion_entries.find(
+                  it->second.get_uid());
+          if (release_event != m_synthetic_warp_completion_entries.end()) {
+            if (candidate_scoreboard_handoff_release_allowed) {
+              if (!rtcore_v04_direct_completion(candidate_completion)) {
+                const char *v04_shadow_image_failure_reason = NULL;
+                if (!rtcore_observe_v04_shadow_completion_packet_image(
+                        candidate_completion,
+                        release_event->second.issued_active_mask, current_cycle,
+                        &v04_shadow_image_failure_reason)) {
+                  fprintf(stderr,
+                          "GPGPU-Sim "
+                          "RTCORE_V04_SHADOW_COMPLETION_PACKET_INVALID "
+                          "reason=%s owner_hw_sid=%u warp_uid=%u "
+                          "warp_id=%u active_mask=0x%08x\n",
+                          v04_shadow_image_failure_reason != NULL
+                              ? v04_shadow_image_failure_reason
+                              : "unknown",
+                          m_sid, it->second.get_uid(), it->second.warp_id(),
+                          release_event->second.issued_active_mask);
+                  fflush(stderr);
+                  abort();
+                }
+              }
+              rtcore_materialize_scoreboard_v_result(
+                  it->second, candidate_completion, current_cycle);
+              rtcore_record_resident_warp_wakeup(
+                  it->second, &release_event->second,
+                  candidate_completion.packet_schema_version,
+                  candidate_completion.lane_completion_valid_mask,
+                  candidate_completion.terminal_lane_mask,
+                  candidate_completion.continuation_lane_mask, current_cycle);
+              if (candidate_completion.v04_functional_only_completion ||
+                  (candidate_completion.v04_native_resident_completion &&
+                   rtcore_v04_continuation_lifecycle_gate_active())) {
+                const unsigned native_target_reason_mask =
+                    candidate_completion.lane_completion_valid_mask;
+                const unsigned native_sbt_address_ready_mask =
+                    rtcore_shader_continuation_sbt_record_selector_ready_mask(
+                        candidate_completion, native_target_reason_mask);
+                if (native_sbt_address_ready_mask !=
+                    native_target_reason_mask) {
+                  fprintf(stderr,
+                          "GPGPU-Sim "
+                          "RTCORE_V04_NATIVE_CONTINUATION_FAULT "
+                          "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                          "active_mask=0x%08x target_mask=0x%08x "
+                          "sbt_ready_mask=0x%08x "
+                          "fault=native_dispatch_input_incomplete\n",
+                          m_sid, release_event->second.warp_uid,
+                          release_event->second.warp_id,
+                          release_event->second.issued_active_mask,
+                          native_target_reason_mask,
+                          native_sbt_address_ready_mask);
+                  fflush(stderr);
+                  abort();
+                }
+                rtcore_record_shader_continuation_direct_callshader_action(
+                    m_core, it->second, m_sid, release_event->second.warp_uid,
+                    release_event->second.warp_id,
+                    release_event->second.issued_active_mask,
+                    candidate_completion, native_target_reason_mask,
+                    native_sbt_address_ready_mask, current_cycle);
+                printf(
+                    "GPGPU-Sim "
+                    "RTCORE_V04_NATIVE_CONTINUATION_DISPATCH "
+                    "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                    "active_mask=0x%08x continuation_mask=0x%08x "
+                    "terminal_mask=0x%08x "
+                    "input_authority=v04_handoff "
+                    "legacy_candidate_authority=0 "
+                    "dispatch_cycle=%llu\n",
+                    m_sid, release_event->second.warp_uid,
+                    release_event->second.warp_id,
+                    release_event->second.issued_active_mask,
+                    candidate_completion.continuation_lane_mask,
+                    candidate_completion.terminal_lane_mask, current_cycle);
+                fflush(stdout);
+              }
+              if (!rtcore_v04_direct_completion(candidate_completion)) {
+                const unsigned reason_oracle_miss_mask =
+                    rtcore_shader_continuation_reason_mask(
+                        candidate_completion,
+                        RTCORE_SHADER_CONTINUATION_REASON_MISS);
+                const unsigned reason_oracle_closest_hit_mask =
+                    rtcore_shader_continuation_reason_mask(
+                        candidate_completion,
+                        RTCORE_SHADER_CONTINUATION_REASON_CLOSEST_HIT_READY);
+                const unsigned reason_oracle_anyhit_mask =
+                    rtcore_shader_continuation_reason_mask(
+                        candidate_completion,
+                        RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED);
+                const unsigned reason_oracle_intersection_mask =
+                    rtcore_shader_continuation_reason_mask(
+                        candidate_completion,
+                        RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED);
+                const unsigned reason_synthetic_split_mask = 0;
+                const unsigned target_reason_mask =
+                    reason_oracle_miss_mask | reason_oracle_closest_hit_mask |
+                    reason_oracle_anyhit_mask |
+                    reason_oracle_intersection_mask |
+                    reason_synthetic_split_mask;
+                const unsigned hit_target_reason_mask =
+                    reason_oracle_closest_hit_mask | reason_oracle_anyhit_mask |
+                    reason_oracle_intersection_mask;
+                const unsigned target_selector_ready_mask =
+                    rtcore_shader_continuation_sbt_record_selector_ready_mask(
+                        candidate_completion, target_reason_mask);
+                const unsigned target_selector_missing_dispatch_mask =
+                    target_reason_mask &
+                    ~candidate_completion.handoff_selector_valid_mask;
+                const unsigned target_selector_missing_hit_mask =
+                    hit_target_reason_mask &
+                    ~candidate_completion.handoff_candidate_valid_mask;
+                const unsigned target_selector_fallback_reason_mask =
+                    target_reason_mask & ~target_selector_ready_mask;
+                const unsigned target_selector_cohort_count =
+                    rtcore_shader_continuation_target_selector_cohort_count(
+                        candidate_completion, target_selector_ready_mask,
+                        reason_oracle_anyhit_mask,
+                        reason_oracle_intersection_mask,
+                        reason_synthetic_split_mask);
+                const unsigned raw_fact_ray_sbt_inputs_ready_mask =
+                    target_reason_mask &
+                    candidate_completion.handoff_selector_valid_mask;
+                const unsigned raw_fact_geometry_primitive_ready_mask =
+                    hit_target_reason_mask &
+                    candidate_completion.handoff_candidate_valid_mask;
+                const unsigned raw_fact_instance_sbt_contribution_ready_mask =
+                    hit_target_reason_mask &
+                    candidate_completion.handoff_selector_valid_mask;
+                const unsigned raw_fact_hit_record_selector_formula_ready_mask =
+                    rtcore_shader_continuation_hit_record_selector_ready_mask(
+                        candidate_completion, hit_target_reason_mask);
+                const unsigned raw_fact_hit_record_selector_formula_cohort_count =
+                    rtcore_shader_continuation_hit_record_selector_cohort_count(
+                        candidate_completion,
+                        raw_fact_hit_record_selector_formula_ready_mask);
+                const unsigned sbt_record_selector_ready_mask =
+                    rtcore_shader_continuation_sbt_record_selector_ready_mask(
+                        candidate_completion, target_reason_mask);
+                const unsigned sbt_address_ready_mask =
+                    sbt_record_selector_ready_mask;
+                const unsigned sbt_address_missing_mask =
+                    target_reason_mask & ~sbt_address_ready_mask;
+                const unsigned sbt_address_cohort_count =
+                    rtcore_shader_continuation_sbt_address_cohort_count(
+                        candidate_completion, sbt_address_ready_mask,
+                        target_reason_mask);
+                rtcore_record_shader_continuation_sbt_address_cohorts(
+                    m_sid, release_event->second.warp_uid,
+                    release_event->second.warp_id,
+                    release_event->second.issued_active_mask,
+                    candidate_completion, sbt_address_ready_mask,
+                    target_reason_mask, current_cycle);
+                rtcore_record_shader_continuation_callshader_context_preflight(
+                    m_core, it->second, m_sid, release_event->second.warp_uid,
+                    release_event->second.warp_id,
+                    release_event->second.issued_active_mask,
+                    sbt_address_ready_mask, current_cycle);
+                rtcore_record_shader_continuation_direct_callshader_action(
+                    m_core, it->second, m_sid, release_event->second.warp_uid,
+                    release_event->second.warp_id,
+                    release_event->second.issued_active_mask,
+                    candidate_completion, target_reason_mask,
+                    sbt_address_ready_mask, current_cycle);
+                rtcore_record_shader_continuation_loop_decision(
+                    it->second, &release_event->second,
+                    candidate_completion.packet_schema_version,
+                    candidate_completion.lane_completion_valid_mask,
+                    candidate_completion.terminal_lane_mask,
+                    candidate_completion.continuation_lane_mask,
+                    candidate_completion.unsupported_reason_mask,
+                    candidate_completion.handoff_software_return_valid_mask,
+                    reason_oracle_anyhit_mask, reason_oracle_intersection_mask,
+                    reason_synthetic_split_mask, target_selector_ready_mask,
+                    target_selector_missing_dispatch_mask,
+                    target_selector_missing_hit_mask,
+                    target_selector_fallback_reason_mask,
+                    target_selector_cohort_count,
+                    raw_fact_ray_sbt_inputs_ready_mask,
+                    raw_fact_geometry_primitive_ready_mask,
+                    raw_fact_instance_sbt_contribution_ready_mask,
+                    raw_fact_hit_record_selector_formula_ready_mask,
+                    raw_fact_hit_record_selector_formula_cohort_count,
+                    sbt_address_ready_mask, sbt_address_missing_mask,
+                    sbt_address_cohort_count, current_cycle);
+              }
+              rtcore_synthetic_release_snapshot release_snapshot =
+                  rtcore_make_synthetic_release_snapshot(
+                      it->second, release_event->second, current_cycle);
+              rtcore_apply_synthetic_release_snapshot(release_snapshot);
+            }
           }
         }
         retire_synthetic_completion(it->second);
         m_scoreboard->releaseRegisters(&it->second);
         m_core->warp_inst_complete(it->second);
         m_core->dec_inst_in_pipeline(it->second.warp_id());
-        
+
         // Track number of warps in RT core
         n_warps--;
         assert(n_warps >= 0 && n_warps <= m_config->m_rt_max_warps);
-        
+
         // Track completed warp uid
         completed_warp_uid = it->first;
-        
+
         // Track warp latency in RT unit
         unsigned long long start_cycle = it->second.get_start_cycle();
         unsigned long long total_cycles = current_cycle - start_cycle;
@@ -14201,13 +14269,17 @@ void rt_unit::cycle() {
         // Complete max 1 warp per cycle (?)
         break;
       }
+    } else {
+      RT_DPRINTF(
+          "Cycle: %d, Warp inst uid: %d not done. rt_mem_accesses_empty: %d, "
+          "rt_intersection_delay_done: %d, no pending_writes: %d\n",
+          GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle,
+          debug_inst.get_uid(), it->second.rt_mem_accesses_empty(),
+          it->second.rt_intersection_delay_done(),
+          !it->second.has_pending_writes());
     }
-    else
-    {
-      RT_DPRINTF("Cycle: %d, Warp inst uid: %d not done. rt_mem_accesses_empty: %d, rt_intersection_delay_done: %d, no pending_writes: %d\n", GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, debug_inst.get_uid(), it->second.rt_mem_accesses_empty(), it->second.rt_intersection_delay_done(), !it->second.has_pending_writes());
     }
-  }
-  
+
   // Remove complete warp
   if (completed_warp_uid >= 0) {
     m_current_warps.erase(completed_warp_uid);

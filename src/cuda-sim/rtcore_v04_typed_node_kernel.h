@@ -193,6 +193,8 @@ root_reference_seed_result_v0 execute_root_reference_seed(
     const root_reference_seed_input_v0 &input);
 
 route_result_v0 execute_route(const route_input_v0 &input);
+route_result_v0 execute_route(const route_input_v0 &input,
+                              candidate_result_v0 *candidate_result);
 
 const char *status_name(status_kind status);
 

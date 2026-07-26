@@ -1,5 +1,6 @@
 #include "rtcore_v04_functional_driver.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "rtcore_v04_typed_diagnostic_collector.h"
@@ -83,8 +84,9 @@ status_kind execute_one_node(
   status_kind status = prepare_node_operator_input(
       packet, &execution->operator_input);
   if (status != kStatusOk) return status;
-  execution->operator_result =
-      typed_node::execute_route(execution->operator_input);
+  typed_node::candidate_result_v0 candidate_result = {};
+  execution->operator_result = typed_node::execute_route(
+      execution->operator_input, &candidate_result);
   execution->operator_invocation_count = 1;
   if (execution->operator_result.status != typed_node::kStatusOk) {
     return kStatusTypedOperatorFailed;
@@ -95,6 +97,32 @@ status_kind execute_one_node(
           packet, execution->operator_result, &execution->semantic_plan);
   if (semantic_status != result_semantic::kStatusOk) {
     return kStatusSemanticApplyFailed;
+  }
+  if (typed_diagnostic::enabled()) {
+    const typed_node::candidate_input_v0 &candidate =
+        execution->operator_input.candidate;
+    std::printf(
+        "GPGPU-Sim RTCORE_V04_TYPED_NODE_SUMMARY "
+        "driver=functional_only operation_seq=%u level=%u "
+        "current_payload_offset=%llu ray_origin=(%.9g,%.9g,%.9g) "
+        "ray_direction=(%.9g,%.9g,%.9g) ray_tmin=%.9g ray_tmax=%.9g "
+        "committed_t=%.9g evaluated_child_mask=0x%02x "
+        "hit_child_mask=0x%02x candidate_count=%u result_kind=%u "
+        "semantic_route_kind=%u\n",
+        packet.target_operation_seq, candidate.level,
+        static_cast<unsigned long long>(
+            execution->operator_input.current_payload_offset),
+        candidate.ray.origin[0], candidate.ray.origin[1],
+        candidate.ray.origin[2], candidate.ray.direction[0],
+        candidate.ray.direction[1], candidate.ray.direction[2],
+        candidate.ray.t_min, candidate.ray.t_max,
+        candidate.committed_t,
+        candidate_result.evaluated_child_mask,
+        candidate_result.hit_child_mask,
+        candidate_result.candidate_count,
+        execution->operator_result.result_kind,
+        execution->semantic_plan.route_kind);
+    std::fflush(stdout);
   }
   typed_diagnostic::record_v0 diagnostic = {};
   diagnostic.owner = packet.owner;
