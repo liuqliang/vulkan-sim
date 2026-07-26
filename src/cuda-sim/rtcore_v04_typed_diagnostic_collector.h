@@ -43,6 +43,7 @@ struct record_v0 {
 };
 
 bool enabled();
+bool recording_required();
 
 bool emit_record(const record_v0 &record);
 

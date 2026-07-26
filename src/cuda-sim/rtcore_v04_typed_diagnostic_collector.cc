@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "rtcore_v04_conservation_recorder.h"
 #include "rtcore_v04_functional_driver.h"
 #include "rtcore_v04_request_owner_binding.h"
 
@@ -283,8 +284,12 @@ bool enabled() {
   return value;
 }
 
+bool recording_required() {
+  return enabled() || conservation::enabled();
+}
+
 bool emit_record(const record_v0 &record) {
-  if (!enabled()) return true;
+  if (!recording_required()) return true;
   if (!valid_driver(record.driver) || !valid_unit(record.unit) ||
       record.operation_seq == 0 ||
       !request_owner::validate_private_frontier_owner_identity(
@@ -298,6 +303,23 @@ bool emit_record(const record_v0 &record) {
       !record_shape_valid(record)) {
     return false;
   }
+
+  conservation::lane_event_v0 conservation_record = {};
+  conservation_record.owner = record.owner;
+  conservation_record.operation_seq = record.operation_seq;
+  conservation_record.event = conservation::kEventTypedOperation;
+  conservation_record.detail_kind = record.unit;
+  if (!conservation::emit_lane_event(conservation_record)) {
+    return false;
+  }
+  if (record.driver == kDriverFunctionalOnly ||
+      record.unit == kUnitNode) {
+    conservation_record.event = conservation::kEventResultCommitZero;
+    if (!conservation::emit_lane_event(conservation_record)) {
+      return false;
+    }
+  }
+  if (!enabled()) return true;
 
   const uint64_t input_hash =
       hash_bytes(record.typed_input, record.typed_input_bytes);

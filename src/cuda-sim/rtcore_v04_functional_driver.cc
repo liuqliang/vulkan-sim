@@ -98,7 +98,7 @@ status_kind execute_one_node(
   if (semantic_status != result_semantic::kStatusOk) {
     return kStatusSemanticApplyFailed;
   }
-  if (typed_diagnostic::enabled()) {
+  if (typed_diagnostic::recording_required()) {
     const typed_node::candidate_input_v0 &candidate =
         execution->operator_input.candidate;
     std::printf(

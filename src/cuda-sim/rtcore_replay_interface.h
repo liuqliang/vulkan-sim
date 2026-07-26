@@ -236,6 +236,10 @@ struct rtcore_memory_unit_request_snapshot {
       v04_handoff_publication;
 };
 
+extern "C" bool rtcore_record_v04_memory_conservation_event(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    bool response, unsigned long long cycle);
+
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_SHARED = 1u;
 static const unsigned RTCORE_MEMORY_OPERATION_READ = 0u;
@@ -427,6 +431,11 @@ bool rtcore_query_v04_functional_only_completion_entry(
 bool rtcore_consume_v04_functional_only_completion_entry(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask);
+bool rtcore_mark_v04_functional_only_dispatch_cohort_complete(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    unsigned completion_transaction_generation,
+    unsigned completed_lane_mask);
 
 bool rtcore_validate_v04_functional_only_continuation_lane_authority(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,

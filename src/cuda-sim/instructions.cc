@@ -57,6 +57,7 @@ class ptx_recognizer;
 #include "rtcore_procedural_hit_ordering.h"
 #include "rtcore_replay_interface.h"
 #include "rtcore_v04_canonical_ray.h"
+#include "rtcore_v04_conservation_recorder.h"
 #include "rtcore_v04_functional_driver.h"
 #include "rtcore_v04_functional_engine.h"
 #include "rtcore_v04_request_owner_binding.h"
@@ -7956,6 +7957,67 @@ static std::map<unsigned, rtcore_v04_functional_only_initial_stage>
 static std::map<unsigned, rtcore_v04_functional_only_resubmit_stage>
     g_rtcore_v04_functional_only_resubmit_stages;
 
+static void rtcore_v04_functional_only_record_lane_or_abort(
+    rtcore::v04::conservation::event_kind event,
+    const request_owner::lane_binding_v0 &binding,
+    unsigned operation_seq, unsigned commit_epoch,
+    unsigned transport_id, unsigned item_id, unsigned item_count,
+    unsigned detail_kind) {
+  rtcore::v04::conservation::lane_event_v0 record = {};
+  record.owner =
+      request_owner::make_private_frontier_owner(binding);
+  record.operation_seq = operation_seq;
+  record.commit_epoch = commit_epoch;
+  record.transport_id = transport_id;
+  record.item_id = static_cast<uint16_t>(item_id);
+  record.item_count = static_cast<uint16_t>(item_count);
+  record.event = event;
+  record.detail_kind = static_cast<uint8_t>(detail_kind);
+  if (!rtcore::v04::conservation::emit_lane_event(record)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_CONSERVATION_FAULT "
+            "driver=functional_only owner_hw_sid=%u "
+            "request_identity=0x%08x generation=%u lane_id=%u "
+            "operation_seq=%u event=%s\n",
+            binding.owner_hw_sid, binding.packed_request_key,
+            binding.request_generation, binding.lane_id,
+            operation_seq,
+            rtcore::v04::conservation::event_name(event));
+    fflush(stderr);
+    abort();
+  }
+}
+
+static void rtcore_v04_functional_only_record_warp_or_abort(
+    rtcore::v04::conservation::event_kind event,
+    const rtcore_v04_functional_only_warp_record &warp,
+    unsigned event_warp_uid, unsigned lane_mask) {
+  rtcore::v04::conservation::warp_event_v0 record = {};
+  record.owner_hw_sid = warp.owner_hw_sid;
+  record.warp_uid = event_warp_uid;
+  record.warp_id = warp.warp_id;
+  record.resident_warp_slot = warp.resident_warp_slot;
+  record.resident_generation = warp.resident_generation;
+  record.completion_transaction_generation =
+      warp.completion_transaction_generation;
+  record.active_mask = warp.active_mask;
+  record.lane_mask = lane_mask;
+  record.event = event;
+  if (!rtcore::v04::conservation::emit_warp_event(record)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_CONSERVATION_FAULT "
+            "driver=functional_only owner_hw_sid=%u warp_uid=%u "
+            "warp_id=%u resident_generation=%u "
+            "completion_generation=%u event=%s\n",
+            warp.owner_hw_sid, event_warp_uid, warp.warp_id,
+            warp.resident_generation,
+            warp.completion_transaction_generation,
+            rtcore::v04::conservation::event_name(event));
+    fflush(stderr);
+    abort();
+  }
+}
+
 static request_owner::allocator_state_v0 &rtcore_v04_functional_only_allocator(
     unsigned owner_hw_sid) {
   request_owner::allocator_state_v0 &allocator =
@@ -13965,8 +14027,12 @@ static bool rtcore_v04_functional_only_commit_resubmit_stage(
       request_owner::kStatusOk) {
     return false;
   }
+  const rtcore_v04_functional_only_warp_record previous = live->second;
   live->second = stage->second.next_record;
   g_rtcore_v04_functional_only_resubmit_stages.erase(stage);
+  rtcore_v04_functional_only_record_warp_or_abort(
+      rtcore::v04::conservation::kEventResubmit, previous,
+      previous_warp_uid, previous.active_mask);
   return true;
 }
 
@@ -17861,6 +17927,30 @@ static bool rtcore_v04_functional_only_try_publish_warp_completion(
   }
   warp->completion_published = true;
   warp->completion_consumed = false;
+  for (unsigned lane = 0; lane < kRtcoreV04FunctionalOnlyLaneCapacity;
+       ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((warp->active_mask & lane_mask) == 0) continue;
+    const rtcore_v04_functional_only_lane_record &lane_record =
+        warp->lane[lane];
+    const unsigned operation_seq =
+        lane_record.engine_output.boundary_operation_seq;
+    rtcore_v04_functional_only_record_lane_or_abort(
+        rtcore::v04::conservation::kEventPublicationArm,
+        lane_record.request_binding, operation_seq, operation_seq,
+        1, 0, 1, lane_record.engine_output.boundary_reason);
+    rtcore_v04_functional_only_record_lane_or_abort(
+        rtcore::v04::conservation::kEventPublicationAck,
+        lane_record.request_binding, operation_seq, operation_seq,
+        1, 0, 1, lane_record.engine_output.boundary_reason);
+    rtcore_v04_functional_only_record_lane_or_abort(
+        rtcore::v04::conservation::kEventLaneCompletion,
+        lane_record.request_binding, operation_seq, operation_seq,
+        0, 0, 0, lane_record.engine_output.boundary_reason);
+  }
+  rtcore_v04_functional_only_record_warp_or_abort(
+      rtcore::v04::conservation::kEventWarpCompletion, *warp,
+      warp->warp_uid, warp->active_mask);
   printf("GPGPU-Sim RTCORE_V04_FUNCTIONAL_ONLY_COMPLETION_PUBLISHED "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
          "resident_generation=%u transaction_generation=%u "
@@ -18215,6 +18305,10 @@ static bool rtcore_v04_functional_only_finalize_initial_lane_completion(
       metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
       metadata.active_mask, resident_warp_slot);
   fflush(stdout);
+  rtcore_v04_functional_only_record_warp_or_abort(
+      rtcore::v04::conservation::kEventWarpAdmit,
+      inserted.first->second, metadata.warp_uid,
+      metadata.active_mask);
   if (!rtcore_v04_functional_only_try_publish_warp_completion(
           &inserted.first->second)) {
     abort();
@@ -18549,6 +18643,34 @@ extern "C" bool rtcore_consume_v04_functional_only_completion_entry(
          warp->second.resident_generation,
          warp->second.completion_transaction_generation);
   fflush(stdout);
+  return true;
+}
+
+extern "C" bool
+rtcore_mark_v04_functional_only_dispatch_cohort_complete(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    unsigned completion_transaction_generation,
+    unsigned completed_lane_mask) {
+  if (!rtcore_v04_functional_only_engine_gate_active() ||
+      completed_lane_mask == 0 ||
+      (completed_lane_mask & ~active_mask) != 0) {
+    return false;
+  }
+  const rtcore_v04_functional_only_warp_key key =
+      std::make_pair(owner_hw_sid, warp_id);
+  std::map<rtcore_v04_functional_only_warp_key,
+           rtcore_v04_functional_only_warp_record>::const_iterator warp =
+      g_rtcore_v04_functional_only_live_warps.find(key);
+  if (warp == g_rtcore_v04_functional_only_live_warps.end() ||
+      !warp->second.valid || warp->second.warp_uid != warp_uid ||
+      warp->second.active_mask != active_mask ||
+      warp->second.resident_generation != resident_generation ||
+      warp->second.completion_transaction_generation !=
+          completion_transaction_generation ||
+      !warp->second.completion_published) {
+    return false;
+  }
   return true;
 }
 
@@ -35711,6 +35833,13 @@ static bool rtcore_v04_functional_only_release_warp(
           &allocator, plan) != request_owner::kStatusOk) {
     return false;
   }
+  const rtcore_v04_functional_only_warp_record released = warp->second;
+  rtcore_v04_functional_only_record_warp_or_abort(
+      rtcore::v04::conservation::kEventTerminalRelease, released,
+      submit_warp_uid, current_active_mask);
+  rtcore_v04_functional_only_record_warp_or_abort(
+      rtcore::v04::conservation::kEventRetire, released,
+      submit_warp_uid, current_active_mask);
   g_rtcore_v04_functional_only_live_warps.erase(warp);
   printf("GPGPU-Sim RTCORE_V04_FUNCTIONAL_ONLY_WARP_RELEASE "
          "owner_hw_sid=%u warp_uid=%u warp_id=%u "
