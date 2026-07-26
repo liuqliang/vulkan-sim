@@ -290,6 +290,14 @@ status_kind classify_selected_fetch(
     const typed_node::selected_child_fetch_work_item_v0 &selected_fetch,
     target_kind *target, uint16_t *raw_payload_bytes);
 
+status_kind lower_selected_fetch(
+    const selected_fetch_reservation_input_v0 &selected_input,
+    reservation_input_v0 *input);
+
+status_kind lower_instance_blas_root(
+    const instance_blas_root_reservation_input_v0 &root_input,
+    reservation_input_v0 *input);
+
 status_kind try_reserve(
     engine_state_v0 *state, const reservation_input_v0 &input,
     uint64_t reservation_cycle, reservation_receipt_v0 *receipt);

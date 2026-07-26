@@ -1333,6 +1333,16 @@ status_kind try_reserve_selected_fetch(
     engine_state_v0 *state,
     const selected_fetch_reservation_input_v0 &selected_input,
     uint64_t reservation_cycle, reservation_receipt_v0 *receipt) {
+  reservation_input_v0 input = {};
+  const status_kind lower_status =
+      lower_selected_fetch(selected_input, &input);
+  if (lower_status != kStatusOk) return lower_status;
+  return try_reserve(state, input, reservation_cycle, receipt);
+}
+
+status_kind lower_selected_fetch(
+    const selected_fetch_reservation_input_v0 &selected_input,
+    reservation_input_v0 *input) {
   const bool producer_tag_valid =
       selected_input.producer_commit_required == 0
           ? selected_input.producer_operation_seq == 0 &&
@@ -1341,7 +1351,7 @@ status_kind try_reserve_selected_fetch(
                 selected_input.producer_commit_epoch != 0 &&
                 selected_input.producer_operation_seq !=
                     selected_input.target_operation_seq;
-  if (state == NULL || receipt == NULL ||
+  if (input == NULL ||
       selected_input.target_operation_seq == 0 ||
       selected_input.producer_commit_required > 1 ||
       !producer_tag_valid ||
@@ -1349,6 +1359,7 @@ status_kind try_reserve_selected_fetch(
                       sizeof(selected_input.reserved_zero))) {
     return kStatusInvalidArgument;
   }
+  *input = reservation_input_v0();
 
   target_kind target = kTargetInvalid;
   uint16_t raw_payload_bytes = 0;
@@ -1357,54 +1368,69 @@ status_kind try_reserve_selected_fetch(
                               &raw_payload_bytes);
   if (classify_status != kStatusOk) return classify_status;
 
-  reservation_input_v0 input = {};
-  input.owner = selected_input.owner;
-  input.target_reference.payload_offset =
+  input->owner = selected_input.owner;
+  input->target_reference.payload_offset =
       selected_input.selected_fetch.child.payload_offset;
-  input.target_reference.near_t_bits =
+  input->target_reference.near_t_bits =
       selected_input.selected_fetch.child.near_t_bits;
-  input.target_reference.payload_byte_count = raw_payload_bytes;
-  input.target_reference.payload_kind =
+  input->target_reference.payload_byte_count = raw_payload_bytes;
+  input->target_reference.payload_kind =
       selected_input.selected_fetch.child.payload_kind;
-  input.target_reference.level =
+  input->target_reference.level =
       selected_input.selected_fetch.decode_context.as_object.as_type == 1
           ? typed_node::kLevelTlas
           : typed_node::kLevelBlas;
-  input.target_reference.source_kind =
+  input->target_reference.source_kind =
       kTargetReferenceSelectedFetchCompatibilityAdapter;
-  input.target_reference.proxy_delegated = 1;
-  input.forwarded_ray_policy = selected_input.forwarded_ray_policy;
-  input.raw_payload_base_address =
+  input->target_reference.proxy_delegated = 1;
+  input->forwarded_ray_policy = selected_input.forwarded_ray_policy;
+  if (selected_input.selected_fetch.decode_context.device_base >
+      std::numeric_limits<uint64_t>::max() -
+          selected_input.selected_fetch.child.payload_offset) {
+    return kStatusInvalidSelectedFetch;
+  }
+  input->raw_payload_base_address =
       selected_input.selected_fetch.decode_context.device_base +
       selected_input.selected_fetch.child.payload_offset;
-  input.target_operation_seq = selected_input.target_operation_seq;
-  input.producer_operation_seq =
+  input->target_operation_seq = selected_input.target_operation_seq;
+  input->producer_operation_seq =
       selected_input.producer_operation_seq;
-  input.producer_commit_epoch =
+  input->producer_commit_epoch =
       selected_input.producer_commit_epoch;
-  input.raw_payload_bytes = raw_payload_bytes;
-  input.target_kind = target;
-  input.producer_commit_required =
+  input->raw_payload_bytes = raw_payload_bytes;
+  input->target_kind = target;
+  input->producer_commit_required =
       selected_input.producer_commit_required;
-  input.required_operand_mask = static_cast<uint8_t>(
+  input->required_operand_mask = static_cast<uint8_t>(
       selected_input.required_operand_mask |
       (target == kTargetPrimitive
            ? kOperandCurrentInstanceValid
            : 0));
-  input.forwarded_operand_mask =
+  input->forwarded_operand_mask =
       selected_input.forwarded_operand_mask;
-  return try_reserve(state, input, reservation_cycle, receipt);
+  return kStatusOk;
 }
 
 status_kind try_reserve_instance_blas_root(
     engine_state_v0 *state,
     const instance_blas_root_reservation_input_v0 &root_input,
     uint64_t reservation_cycle, reservation_receipt_v0 *receipt) {
+  reservation_input_v0 input = {};
+  const status_kind lower_status =
+      lower_instance_blas_root(root_input, &input);
+  if (lower_status != kStatusOk) return lower_status;
+  return try_reserve_internal(state, input, reservation_cycle, receipt,
+                              true);
+}
+
+status_kind lower_instance_blas_root(
+    const instance_blas_root_reservation_input_v0 &root_input,
+    reservation_input_v0 *input) {
   const typed_node::compact_child_work_item_v0 &root =
       root_input.root_fetch.child;
   const typed_blas::as_decode_context_v0 &context =
       root_input.root_fetch.decode_context;
-  if (state == NULL || receipt == NULL ||
+  if (input == NULL ||
       root_input.target_operation_seq == 0 ||
       root_input.producer_operation_seq == 0 ||
       root_input.producer_commit_epoch == 0 ||
@@ -1418,37 +1444,36 @@ status_kind try_reserve_instance_blas_root(
                       sizeof(root_input.reserved_zero))) {
     return kStatusInvalidArgument;
   }
+  *input = reservation_input_v0();
 
-  reservation_input_v0 input = {};
-  input.owner = root_input.owner;
-  input.target_reference.payload_offset = root.payload_offset;
-  input.target_reference.near_t_bits = root.near_t_bits;
-  input.target_reference.payload_byte_count = kNodeRawPayloadBytes;
-  input.target_reference.payload_kind = root.payload_kind;
-  input.target_reference.level = typed_node::kLevelBlas;
-  input.target_reference.source_kind =
+  input->owner = root_input.owner;
+  input->target_reference.payload_offset = root.payload_offset;
+  input->target_reference.near_t_bits = root.near_t_bits;
+  input->target_reference.payload_byte_count = kNodeRawPayloadBytes;
+  input->target_reference.payload_kind = root.payload_kind;
+  input->target_reference.level = typed_node::kLevelBlas;
+  input->target_reference.source_kind =
       kTargetReferenceInstanceBlasRootProducer;
-  input.target_reference.proxy_delegated = 0;
-  input.forwarded_ray_policy = root_input.forwarded_ray_policy;
+  input->target_reference.proxy_delegated = 0;
+  input->forwarded_ray_policy = root_input.forwarded_ray_policy;
   if (context.device_base >
       std::numeric_limits<uint64_t>::max() - root.payload_offset) {
     return kStatusInvalidSelectedFetch;
   }
-  input.raw_payload_base_address =
+  input->raw_payload_base_address =
       context.device_base + root.payload_offset;
-  input.target_operation_seq = root_input.target_operation_seq;
-  input.producer_operation_seq = root_input.producer_operation_seq;
-  input.producer_commit_epoch = root_input.producer_commit_epoch;
-  input.raw_payload_bytes = kNodeRawPayloadBytes;
-  input.target_kind = kTargetNode;
-  input.producer_commit_required = 1;
-  input.required_operand_mask = static_cast<uint8_t>(
+  input->target_operation_seq = root_input.target_operation_seq;
+  input->producer_operation_seq = root_input.producer_operation_seq;
+  input->producer_commit_epoch = root_input.producer_commit_epoch;
+  input->raw_payload_bytes = kNodeRawPayloadBytes;
+  input->target_kind = kTargetNode;
+  input->producer_commit_required = 1;
+  input->required_operand_mask = static_cast<uint8_t>(
       kOperandTargetReferenceValid | kOperandRawPayloadValid |
       kOperandMutableRayValid | kOperandRayPolicyValid |
       kOperandDecodeContextValid | kOperandCommittedHitValid);
-  input.forwarded_operand_mask = kOperandRayPolicyValid;
-  return try_reserve_internal(state, input, reservation_cycle, receipt,
-                              true);
+  input->forwarded_operand_mask = kOperandRayPolicyValid;
+  return kStatusOk;
 }
 
 status_kind try_reserve_recovery(
