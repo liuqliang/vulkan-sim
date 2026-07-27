@@ -17911,10 +17911,6 @@ static bool rtcore_v04_functional_only_make_boundary_values(
           rtcore::abi_v04::kReasonIntersectionRequired) {
     values->boundary_ray_tmax_fp32 =
         output.intersection_boundary.boundary_ray_tmax_bits;
-    values->procedural_any_hit_eligible =
-        (identity.effective_policy_flags &
-         rtcore::v04::typed_primitive::
-             kPolicyProceduralAnyHitEligible) != 0;
     return true;
   }
   return false;

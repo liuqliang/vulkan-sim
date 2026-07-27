@@ -537,8 +537,6 @@ rtcore_make_v04_boundary_values_from_hit(
             ? rtcore::abi_v04::shadow::kBoundaryGeometryTriangle
             : rtcore::abi_v04::shadow::kBoundaryGeometryProcedural;
     values.hit_kind = hit.hit_kind;
-    // The current Simulator subset does not yet expose procedural any-hit.
-    values.procedural_any_hit_eligible = false;
     if (publish_triangle_attributes &&
         values.geometry_type ==
             rtcore::abi_v04::shadow::kBoundaryGeometryTriangle) {
@@ -13009,8 +13007,6 @@ static bool rtcore_v04_boundary_values_equal(
            lhs.instance_custom_index == rhs.instance_custom_index &&
            lhs.geometry_type == rhs.geometry_type &&
            lhs.hit_kind == rhs.hit_kind &&
-           lhs.procedural_any_hit_eligible ==
-               rhs.procedural_any_hit_eligible &&
            lhs.input_attribute_word_count == rhs.input_attribute_word_count &&
            lhs.input_attribute_location == rhs.input_attribute_location &&
            lhs.input_attribute_format == rhs.input_attribute_format &&

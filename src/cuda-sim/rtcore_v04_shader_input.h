@@ -132,10 +132,6 @@ inline attribute_plan decode(
     plan.status = kErrorInvalidHitKind;
     return plan;
   }
-  if (extract_field(words, kProceduralAnyHitEligible) != 0) {
-    plan.status = kErrorInvalidAnyHitCapability;
-    return plan;
-  }
   if (reason == kReasonAnyHitRequired && !triangle) {
     plan.status = kErrorInvalidAnyHitCapability;
     return plan;

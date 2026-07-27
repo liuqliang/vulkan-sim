@@ -130,9 +130,6 @@ bool make_boundary_values(
   *reason = abi_v04::kReasonIntersectionRequired;
   values->boundary_ray_tmax_fp32 =
       plan.intersection_boundary.boundary_ray_tmax_bits;
-  values->procedural_any_hit_eligible =
-      (identity.effective_policy_flags &
-       typed_primitive::kPolicyProceduralAnyHitEligible) != 0;
   return true;
 }
 

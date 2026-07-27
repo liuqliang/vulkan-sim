@@ -17,7 +17,7 @@ static constexpr uint32_t kLayoutValue = 0x00000003u;
 static constexpr uint32_t kLayoutVersion = 0x00000001u;
 static constexpr std::size_t kLaneSlotBytes = 128u;
 static constexpr std::size_t kWordCount = 32u;
-static constexpr const char kSourceInputSha256[] = "bef91023da5e0a801954a15d6cad17e6f9aeabef23b93a436db2d9276e8072b0";
+static constexpr const char kSourceInputSha256[] = "82b0acc43aadab850d71a1816b63628dd621678c5f0abc7f4e1ac693fecf3bdd";
 
 struct field_spec {
   uint8_t word;
@@ -62,7 +62,6 @@ static constexpr field_spec kPrimitiveIndex = {19, 0, 32, 0xffffffffu};
 static constexpr field_spec kInstanceIndex = {20, 0, 32, 0xffffffffu};
 static constexpr field_spec kInstanceCustomIndex = {21, 0, 32, 0xffffffffu};
 static constexpr field_spec kHitKind = {22, 0, 8, 0x000000ffu};
-static constexpr field_spec kProceduralAnyHitEligible = {22, 8, 1, 0x00000100u};
 static constexpr field_spec kInputAttributeWordCount = {23, 0, 8, 0x000000ffu};
 static constexpr field_spec kInputAttributeLocation = {23, 8, 8, 0x0000ff00u};
 static constexpr field_spec kInputAttributeFormat = {23, 16, 8, 0x00ff0000u};
@@ -105,7 +104,6 @@ static constexpr named_field_spec kFields[] = {
     {"instance_index", kInstanceIndex},
     {"instance_custom_index", kInstanceCustomIndex},
     {"hit_kind", kHitKind},
-    {"procedural_any_hit_eligible", kProceduralAnyHitEligible},
     {"input_attribute_word_count", kInputAttributeWordCount},
     {"input_attribute_location", kInputAttributeLocation},
     {"input_attribute_format", kInputAttributeFormat},
@@ -123,7 +121,7 @@ static constexpr named_field_spec kFields[] = {
 };
 static constexpr std::size_t kFieldCount = sizeof(kFields) / sizeof(kFields[0]);
 static constexpr uint32_t kReservedMasks[kWordCount] = {
-    0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0xfffffe00u, 0xff000000u, 0xfffffff8u, 0x00000000u, 0xff000000u, 0xffffffffu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u
+    0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0xffffff00u, 0xff000000u, 0xfffffff8u, 0x00000000u, 0xff000000u, 0xffffffffu, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u
 };
 static constexpr uint32_t kCompactResultReservedMask = 0x7fffff00u;
 static constexpr field_spec kCompactResultRtReturnReason = {0, 0, 8, 0x000000ffu};
@@ -166,7 +164,6 @@ static constexpr fixture_field kCanonicalFixtureFields[] = {
     {kInstanceIndex, 0x13572468u},
     {kInstanceCustomIndex, 0x24681357u},
     {kHitKind, 0x00000000u},
-    {kProceduralAnyHitEligible, 0x00000001u},
     {kInputAttributeWordCount, 0x00000000u},
     {kInputAttributeLocation, 0x00000000u},
     {kInputAttributeFormat, 0x00000000u},
@@ -185,7 +182,7 @@ static constexpr fixture_field kCanonicalFixtureFields[] = {
 static constexpr std::size_t kCanonicalFixtureFieldCount =
     sizeof(kCanonicalFixtureFields) / sizeof(kCanonicalFixtureFields[0]);
 static constexpr uint32_t kCanonicalFixtureWords[kWordCount] = {
-    0x55667788u, 0x11223344u, 0x44332210u, 0x88776655u, 0x3f800000u, 0xc0000000u, 0x40600000u, 0x3e800000u, 0x00000000u, 0x3f800000u, 0xbf800000u, 0x42c80000u, 0x0000a5a5u, 0x12345a7fu, 0x89abcdefu, 0x01234567u, 0x10203040u, 0x50607080u, 0x41400000u, 0x0badc0deu, 0x13572468u, 0x24681357u, 0x00000100u, 0x00000000u, 0x00000006u, 0x40e00000u, 0x0002042au, 0x00000000u, 0xdeadbeefu, 0x01020304u, 0x55667788u, 0xa5a55a5au
+    0x55667788u, 0x11223344u, 0x44332210u, 0x88776655u, 0x3f800000u, 0xc0000000u, 0x40600000u, 0x3e800000u, 0x00000000u, 0x3f800000u, 0xbf800000u, 0x42c80000u, 0x0000a5a5u, 0x12345a7fu, 0x89abcdefu, 0x01234567u, 0x10203040u, 0x50607080u, 0x41400000u, 0x0badc0deu, 0x13572468u, 0x24681357u, 0x00000000u, 0x00000000u, 0x00000006u, 0x40e00000u, 0x0002042au, 0x00000000u, 0xdeadbeefu, 0x01020304u, 0x55667788u, 0xa5a55a5au
 };
 static constexpr uint32_t kCanonicalFixtureCompactResult = 0x80000004u;
 static constexpr uint32_t kCanonicalFixtureBoundary =

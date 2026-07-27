@@ -69,7 +69,6 @@ struct boundary_values {
         instance_custom_index(0),
         geometry_type(kBoundaryGeometryNone),
         hit_kind(0),
-        procedural_any_hit_eligible(false),
         input_attribute_word_count(0),
         input_attribute_location(0),
         input_attribute_format(0) {
@@ -86,7 +85,6 @@ struct boundary_values {
   uint32_t instance_custom_index;
   uint32_t geometry_type;
   uint32_t hit_kind;
-  bool procedural_any_hit_eligible;
   uint32_t input_attribute_word_count;
   uint32_t input_attribute_location;
   uint32_t input_attribute_format;
@@ -198,7 +196,6 @@ inline bool apply_boundary_return_update(
   *next_terminal = current_candidate;
   next_terminal->boundary_ray_tmax_fp32 = update.reported_t_fp32;
   next_terminal->hit_kind = update.reported_hit_kind;
-  next_terminal->procedural_any_hit_eligible = false;
   next_terminal->input_attribute_word_count =
       update.reported_attribute_word_count;
   next_terminal->input_attribute_location =
@@ -372,17 +369,12 @@ inline boundary_publication build_boundary_publication(
     if (values.input_attribute_word_count != 0 ||
         values.input_attribute_location != 0 ||
         values.input_attribute_format != 0 ||
-        !boundary_insert(&publication.words, kProceduralAnyHitEligible,
-                         values.procedural_any_hit_eligible ? 1u : 0u,
+        !boundary_insert(&publication.words, kHitKind, 0u,
                          &publication.written_word_mask)) {
       publication.error = kBoundaryErrorInvalidAttributeContract;
       return publication;
     }
   } else {
-    if (values.procedural_any_hit_eligible) {
-      publication.error = kBoundaryErrorInvalidAttributeContract;
-      return publication;
-    }
     const bool triangle_attributes =
         triangle && values.input_attribute_word_count == 2u &&
         values.input_attribute_location == 0x01u &&
@@ -403,8 +395,6 @@ inline boundary_publication build_boundary_publication(
       return publication;
     }
     if (!boundary_insert(&publication.words, kHitKind, values.hit_kind,
-                         &publication.written_word_mask) ||
-        !boundary_insert(&publication.words, kProceduralAnyHitEligible, 0,
                          &publication.written_word_mask) ||
         !boundary_insert(&publication.words, kInputAttributeWordCount,
                          values.input_attribute_word_count,

@@ -242,10 +242,6 @@ static primitive_identity_policy_facts_v0 make_identity_and_policy(
   facts.instance_policy_flags =
       input.current_instance.instance_policy_flags;
   if (opaque) facts.effective_policy_flags |= kPolicyEffectiveOpaque;
-  if (geometry_type == kGeometryTypeProcedural && !opaque) {
-    facts.effective_policy_flags |=
-        kPolicyProceduralAnyHitEligible;
-  }
   return facts;
 }
 

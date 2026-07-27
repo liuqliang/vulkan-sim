@@ -142,13 +142,6 @@ bool identity_matches_input(
   const bool opaque = expected_effective_opaque(input);
   uint8_t expected_effective =
       opaque ? typed_primitive::kPolicyEffectiveOpaque : 0;
-  if (expected_geometry_type ==
-          typed_primitive::kGeometryTypeProcedural &&
-      !opaque) {
-    expected_effective = static_cast<uint8_t>(
-        expected_effective |
-        typed_primitive::kPolicyProceduralAnyHitEligible);
-  }
   return facts.instance_metadata_ref ==
              input.current_instance.instance_metadata_ref &&
          facts.instance_index ==

@@ -11417,9 +11417,6 @@ static bool rtcore_decode_v04_shadow_boundary_values(
       words, rtcore::abi_v04::kInstanceCustomIndex);
   values->hit_kind = rtcore::abi_v04::extract_field(
       words, rtcore::abi_v04::kHitKind);
-  values->procedural_any_hit_eligible =
-      rtcore::abi_v04::extract_field(
-          words, rtcore::abi_v04::kProceduralAnyHitEligible) != 0;
   values->input_attribute_word_count = rtcore::abi_v04::extract_field(
       words, rtcore::abi_v04::kInputAttributeWordCount);
   values->input_attribute_location = rtcore::abi_v04::extract_field(

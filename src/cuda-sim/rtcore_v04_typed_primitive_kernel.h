@@ -70,7 +70,6 @@ enum route_output_valid_bit : uint8_t {
 
 enum effective_policy_bit : uint8_t {
   kPolicyEffectiveOpaque = 1u << 0,
-  kPolicyProceduralAnyHitEligible = 1u << 1,
 };
 
 enum geometry_type_kind : uint8_t {
