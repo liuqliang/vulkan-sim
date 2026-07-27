@@ -17,7 +17,7 @@ static constexpr uint32_t kLayoutValue = 0x00000003u;
 static constexpr uint32_t kLayoutVersion = 0x00000001u;
 static constexpr std::size_t kLaneSlotBytes = 128u;
 static constexpr std::size_t kWordCount = 32u;
-static constexpr const char kSourceInputSha256[] = "f97b3e69ec31a6c49289cb3bf9c654ddb7d19b2c6d351ed23db9f7a7e9a50635";
+static constexpr const char kSourceInputSha256[] = "bef91023da5e0a801954a15d6cad17e6f9aeabef23b93a436db2d9276e8072b0";
 
 struct field_spec {
   uint8_t word;
