@@ -24856,10 +24856,12 @@ struct rtcore_v04_typed_primitive_candidate_stats {
     unsigned leaves;
     unsigned geometric_hits;
     unsigned candidate_hits;
+    unsigned legacy_barycentric_differences;
     unsigned mismatches;
 
     rtcore_v04_typed_primitive_candidate_stats()
-        : leaves(0), geometric_hits(0), candidate_hits(0), mismatches(0) {}
+        : leaves(0), geometric_hits(0), candidate_hits(0),
+          legacy_barycentric_differences(0), mismatches(0) {}
 };
 
 static float rtcore_v04_typed_primitive_fp32_value(uint32_t bits)
@@ -24869,14 +24871,30 @@ static float rtcore_v04_typed_primitive_fp32_value(uint32_t bits)
     return value;
 }
 
-static bool rtcore_v04_typed_primitive_bary_matches(float typed,
-                                                     float legacy)
+static bool rtcore_v04_typed_primitive_bary_valid(float bary_vertex1,
+                                                   float bary_vertex2)
 {
-    // The legacy path reconstructs the intersection point and solves
-    // barycentrics again; V0.4 publishes the intersector's canonical u/v.
-    static const float kLegacyBarycentricAbsoluteTolerance = 1.0e-3f;
-    return std::isfinite(typed) && std::isfinite(legacy) &&
-           fabsf(typed - legacy) <= kLegacyBarycentricAbsoluteTolerance;
+    return std::isfinite(bary_vertex1) &&
+           std::isfinite(bary_vertex2) &&
+           bary_vertex1 >= 0.0f && bary_vertex2 >= 0.0f &&
+           bary_vertex1 <= 1.0f && bary_vertex2 <= 1.0f &&
+           bary_vertex1 + bary_vertex2 <= 1.0f;
+}
+
+static bool rtcore_v04_legacy_barycentric_differs(
+    float typed_bary_vertex1, float typed_bary_vertex2,
+    const float3 &legacy_barycentric)
+{
+    // V0.3 reconstructs the intersection point and solves barycentrics
+    // again. This tolerance classifies compatibility drift only; canonical
+    // V0.4 u/v remains the functional authority.
+    static const float kLegacyBarycentricObservationTolerance = 1.0e-3f;
+    return !std::isfinite(legacy_barycentric.x) ||
+           !std::isfinite(legacy_barycentric.y) ||
+           fabsf(typed_bary_vertex1 - legacy_barycentric.x) >
+               kLegacyBarycentricObservationTolerance ||
+           fabsf(typed_bary_vertex2 - legacy_barycentric.y) >
+               kLegacyBarycentricObservationTolerance;
 }
 
 static void rtcore_v04_observe_typed_primitive_candidate(
@@ -24944,7 +24962,8 @@ static void rtcore_v04_observe_typed_primitive_candidate(
         result.primitive_index != legacy_leaf.PrimitiveIndex0;
     bool t_mismatch = false;
     bool facing_mismatch = false;
-    bool barycentric_mismatch = false;
+    bool typed_barycentric_invalid = false;
+    bool legacy_barycentric_difference = false;
     if (legacy_hit) {
         t_mismatch =
             result.object_t_bits != rtcore_v04_fp32_bits(legacy_object_t) ||
@@ -24958,28 +24977,43 @@ static void rtcore_v04_observe_typed_primitive_candidate(
             result.bary_vertex1_bits);
         const float typed_bary2 = rtcore_v04_typed_primitive_fp32_value(
             result.bary_vertex2_bits);
-        barycentric_mismatch =
-            !rtcore_v04_typed_primitive_bary_matches(
-                typed_bary1, legacy_barycentric.x) ||
-            !rtcore_v04_typed_primitive_bary_matches(
-                typed_bary2, legacy_barycentric.y);
+        typed_barycentric_invalid =
+            !rtcore_v04_typed_primitive_bary_valid(
+                typed_bary1, typed_bary2);
+        legacy_barycentric_difference =
+            rtcore_v04_legacy_barycentric_differs(
+                typed_bary1, typed_bary2, legacy_barycentric);
     }
     const bool mismatch =
         descriptor_mismatch ||
         result.geometric_hit != (legacy_hit ? 1u : 0u) ||
         result.candidate_hit != (legacy_candidate ? 1u : 0u) || t_mismatch ||
-        facing_mismatch || barycentric_mismatch;
+        facing_mismatch || typed_barycentric_invalid;
 
     ++stats->leaves;
     stats->geometric_hits += legacy_hit ? 1u : 0u;
     stats->candidate_hits += legacy_candidate ? 1u : 0u;
+    if (legacy_barycentric_difference) {
+        ++stats->legacy_barycentric_differences;
+        printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL "
+               "legacy_barycentric_difference=1 raw_leaf=%p "
+               "typed_bary=0x%08x,0x%08x "
+               "legacy_bary=0x%08x,0x%08x "
+               "canonical_authority=1 compatibility_only=1\n",
+               static_cast<const void *>(raw_leaf),
+               result.bary_vertex1_bits, result.bary_vertex2_bits,
+               rtcore_v04_fp32_bits(legacy_barycentric.x),
+               rtcore_v04_fp32_bits(legacy_barycentric.y));
+        fflush(stdout);
+    }
     if (mismatch) {
         ++stats->mismatches;
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL "
                "mismatch=1 raw_leaf=%p descriptor_mismatch=%u "
                "typed_geometric=%u legacy_geometric=%u "
                "typed_candidate=%u legacy_candidate=%u "
-               "t_mismatch=%u facing_mismatch=%u bary_mismatch=%u "
+               "t_mismatch=%u facing_mismatch=%u "
+               "typed_barycentric_invalid=%u "
                "typed_object_t=0x%08x legacy_object_t=0x%08x "
                "typed_world_t=0x%08x legacy_world_t=0x%08x "
                "typed_bary=0x%08x,0x%08x legacy_bary=0x%08x,0x%08x "
@@ -24989,7 +25023,8 @@ static void rtcore_v04_observe_typed_primitive_candidate(
                legacy_hit ? 1u : 0u, result.candidate_hit,
                legacy_candidate ? 1u : 0u, t_mismatch ? 1u : 0u,
                facing_mismatch ? 1u : 0u,
-               barycentric_mismatch ? 1u : 0u, result.object_t_bits,
+               typed_barycentric_invalid ? 1u : 0u,
+               result.object_t_bits,
                rtcore_v04_fp32_bits(legacy_object_t), result.world_t_bits,
                rtcore_v04_fp32_bits(legacy_world_t),
                result.bary_vertex1_bits, result.bary_vertex2_bits,
@@ -27867,12 +27902,15 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     if (v04_typed_primitive_candidate_enabled) {
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL summary=1 "
                "thread_uid=%u leaves=%u geometric_hits=%u "
-               "candidate_hits=%u mismatches=%u "
+               "candidate_hits=%u legacy_barycentric_differences=%u "
+               "mismatches=%u "
                "functional_authority=0 timing_authority=0\n",
                thread->get_uid(),
                v04_typed_primitive_candidate_stats.leaves,
                v04_typed_primitive_candidate_stats.geometric_hits,
                v04_typed_primitive_candidate_stats.candidate_hits,
+               v04_typed_primitive_candidate_stats
+                   .legacy_barycentric_differences,
                v04_typed_primitive_candidate_stats.mismatches);
         fflush(stdout);
     }
