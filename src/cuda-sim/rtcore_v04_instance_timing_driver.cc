@@ -131,13 +131,19 @@ bool restore_packet_valid(
 
 bool enter_packet_valid(
     const fetch_target::operation_packet_v0 &packet) {
+  const bool producer_identity_valid =
+      (packet.producer_operation_seq == 0 &&
+       packet.producer_commit_epoch == 0) ||
+      (packet.producer_operation_seq != 0 &&
+       packet.producer_commit_epoch != 0 &&
+       packet.producer_operation_seq !=
+           packet.target_operation_seq);
   return packet.valid == 1 &&
          packet.target_kind == fetch_target::kTargetInstance &&
          packet.operation_kind == fetch_target::kOperationFetchTarget &&
          packet.reservation_id != 0 && packet.reservation_age != 0 &&
          packet.target_operation_seq != 0 &&
-         packet.producer_operation_seq == 0 &&
-         packet.producer_commit_epoch == 0 &&
+         producer_identity_valid &&
          packet.slot_generation != 0 &&
          packet.raw_payload_base_address != 0 &&
          packet.raw_payload_bytes ==
@@ -153,6 +159,27 @@ bool enter_packet_valid(
          packet.target_reference.proxy_delegated == 1 &&
          bytes_are_zero(packet.reserved_zero,
                         sizeof(packet.reserved_zero));
+}
+
+void record_packet_failure(
+    cycle_result_v0 *result, failure_point_kind failure_point,
+    const fetch_target::operation_packet_v0 &packet,
+    uint8_t operator_invocation_count, uint8_t typed_status,
+    uint8_t typed_result_kind) {
+  if (result == NULL) return;
+  result->failure_point = failure_point;
+  result->failure_packet_valid = packet.valid;
+  result->failure_target_kind = packet.target_kind;
+  result->failure_operation_kind = packet.operation_kind;
+  result->failure_operator_invocation_count =
+      operator_invocation_count;
+  result->failure_typed_status = typed_status;
+  result->failure_typed_result_kind = typed_result_kind;
+  result->failure_operation_seq = packet.target_operation_seq;
+  result->failure_producer_operation_seq =
+      packet.producer_operation_seq;
+  result->failure_producer_commit_epoch =
+      packet.producer_commit_epoch;
 }
 
 status_kind select_oldest_candidate(
@@ -271,6 +298,10 @@ status_kind capture_matured(
     }
     if ((!restore_operation && !enter_operation) ||
         pipeline.operator_invocation_count != 1) {
+      record_packet_failure(
+          result, kFailurePointCaptureKind,
+          pipeline.operation_packet,
+          pipeline.operator_invocation_count, 0, 0);
       return kStatusInvalidOperationPacket;
     }
     if (restore_operation) {
@@ -281,6 +312,12 @@ status_kind capture_matured(
       if (!restore_packet_valid(pipeline.operation_packet) ||
           !typed_instance::validate_restore_parent_result(
               input, pipeline.typed_result)) {
+        record_packet_failure(
+            result, kFailurePointCaptureRestore,
+            pipeline.operation_packet,
+            pipeline.operator_invocation_count,
+            pipeline.typed_result.status,
+            pipeline.typed_result.result_kind);
         return kStatusInvalidOperationPacket;
       }
     } else if (!enter_packet_valid(pipeline.operation_packet) ||
@@ -290,6 +327,12 @@ status_kind capture_matured(
                     typed_instance::kEnterResultCulled &&
                 pipeline.enter_result.result_kind !=
                     typed_instance::kEnterResultBlasRoot)) {
+      record_packet_failure(
+          result, kFailurePointCaptureEnter,
+          pipeline.operation_packet,
+          pipeline.operator_invocation_count,
+          pipeline.enter_result.status,
+          pipeline.enter_result.result_kind);
       return kStatusInvalidOperationPacket;
     }
     request_owner::lane_binding_v0 request_binding = {};
@@ -415,6 +458,8 @@ status_kind issue_operations(
     if ((!restore_operation && !enter_operation) ||
         (restore_operation && !restore_packet_valid(candidate)) ||
         (enter_operation && !enter_packet_valid(candidate))) {
+      record_packet_failure(
+          result, kFailurePointIssuePacket, candidate, 0, 0, 0);
       return kStatusInvalidOperationPacket;
     }
     const int pipeline_index = find_free_pipeline(*state);
@@ -618,6 +663,17 @@ const char *status_name(status_kind status) {
       return "result_sink_rejected";
   }
   return "unknown";
+}
+
+const char *failure_point_name(failure_point_kind failure_point) {
+  switch (failure_point) {
+    case kFailurePointCaptureKind: return "capture_kind";
+    case kFailurePointCaptureRestore: return "capture_restore";
+    case kFailurePointCaptureEnter: return "capture_enter";
+    case kFailurePointIssuePacket: return "issue_packet";
+    case kFailurePointNone: break;
+  }
+  return "none";
 }
 
 }  // namespace instance_timing

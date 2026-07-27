@@ -177,13 +177,19 @@ bool canonical_stack_input_matches(
 
 bool instance_enter_packet_shape_valid(
     const fetch_target::operation_packet_v0 &packet) {
+  const bool producer_identity_valid =
+      (packet.producer_operation_seq == 0 &&
+       packet.producer_commit_epoch == 0) ||
+      (packet.producer_operation_seq != 0 &&
+       packet.producer_commit_epoch != 0 &&
+       packet.producer_operation_seq !=
+           packet.target_operation_seq);
   return packet.valid == 1 &&
          packet.target_kind == fetch_target::kTargetInstance &&
          packet.operation_kind == fetch_target::kOperationFetchTarget &&
          packet.reservation_id != 0 && packet.reservation_age != 0 &&
          packet.target_operation_seq != 0 &&
-         packet.producer_operation_seq == 0 &&
-         packet.producer_commit_epoch == 0 &&
+         producer_identity_valid &&
          packet.slot_generation != 0 &&
          packet.raw_payload_base_address != 0 &&
          packet.raw_payload_bytes ==
@@ -293,6 +299,10 @@ status_kind execute_one_stack(
     execution->operator_invocation_count = 1;
     if (!typed_stack::validate_push_result(
             execution->push_result)) {
+      if (execution->push_result.status ==
+          typed_stack::kStatusFrontierCapacityExceeded) {
+        return kStatusFrontierCapacityExceeded;
+      }
       return kStatusTypedOperatorFailed;
     }
     if (stack_semantic::prepare_stack_pushed_and_selected(

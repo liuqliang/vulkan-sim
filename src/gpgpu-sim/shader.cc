@@ -31,6 +31,7 @@
 static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 
 #include <algorithm>
+#include <array>
 #include <ctype.h>
 #include <deque>
 #include <float.h>
@@ -82,6 +83,9 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
 extern "C" int rtcore_prepare_v04_direct_shader_input_context(
     const ptx_instruction *pI, ptx_thread_info *thread, unsigned reason,
     unsigned lane_id, unsigned long long handoff_window_base);
+extern "C" int rtcore_read_shader_call_payload_debug_snapshot(
+    ptx_thread_info *thread, unsigned long long *payload_address,
+    unsigned *payload_size, uint32_t payload_words[12]);
 extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
     const ptx_instruction *source_inst, ptx_thread_info *thread,
     unsigned reason, unsigned lane_slot_index,
@@ -249,6 +253,67 @@ static unsigned rtcore_shader_continuation_sbt_metadata_cost() {
 static unsigned rtcore_shader_continuation_dispatch_call_cost() {
   return rtcore_shader_continuation_uint_config(
       "VULKAN_SIM_RTCORE_SHADER_CONTINUATION_DISPATCH_CALL_COST", 8);
+}
+
+static bool rtcore_shader_call_payload_debug_enabled() {
+  static const bool enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_SHADER_CALL_PAYLOAD_DEBUG");
+    return value != NULL &&
+           (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 ||
+            strcmp(value, "TRUE") == 0 || strcmp(value, "on") == 0 ||
+            strcmp(value, "ON") == 0);
+  }();
+  return enabled;
+}
+
+static void rtcore_print_shader_call_payload(
+    const char *phase, unsigned owner_hw_sid, unsigned warp_uid,
+    unsigned warp_id, unsigned lane_id, unsigned cohort_index,
+    unsigned long long cycle, ptx_thread_info *thread) {
+  if (!rtcore_shader_call_payload_debug_enabled()) return;
+  if (thread == NULL) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_CALL_PAYLOAD_DEBUG_FAULT "
+            "phase=%s owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+            "cohort_index=%u fault=thread_state_missing\n",
+            phase, owner_hw_sid, warp_uid, warp_id, lane_id, cohort_index);
+    abort();
+  }
+  unsigned long long payload_address = 0;
+  unsigned payload_size = 0;
+  std::array<uint32_t, 12> words = {};
+  if (!rtcore_read_shader_call_payload_debug_snapshot(
+          thread, &payload_address, &payload_size, words.data())) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_CALL_PAYLOAD_DEBUG_FAULT "
+            "phase=%s owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+            "cohort_index=%u payload_address=0x%llx payload_size=%u "
+            "fault=ray_payload_missing\n",
+            phase, owner_hw_sid, warp_uid, warp_id, lane_id, cohort_index,
+            payload_address, payload_size);
+    abort();
+  }
+
+  unsigned long long hash = 1469598103934665603ull;
+  const unsigned char *bytes =
+      reinterpret_cast<const unsigned char *>(words.data());
+  for (unsigned byte = 0; byte < sizeof(words); ++byte) {
+    hash ^= bytes[byte];
+    hash *= 1099511628211ull;
+  }
+  printf("GPGPU-Sim RTCORE_SHADER_CALL_PAYLOAD_DEBUG "
+         "phase=%s owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+         "cohort_index=%u payload_address=0x%llx payload_size=%u "
+         "payload_hash=0x%016llx "
+         "words=%08x,%08x,%08x,%08x,%08x,%08x,"
+         "%08x,%08x,%08x,%08x,%08x,%08x cycle=%llu\n",
+         phase, owner_hw_sid, warp_uid, warp_id, lane_id, cohort_index,
+         payload_address, payload_size,
+         hash, words[0], words[1], words[2], words[3], words[4], words[5],
+         words[6], words[7], words[8], words[9], words[10], words[11],
+         cycle);
+  fflush(stdout);
 }
 
 static bool rtcore_replay_env_enabled_or_model_preset(const char *name,
@@ -1254,10 +1319,17 @@ rtcore_service_shader_continuation_pseudo_op(
     assert(entry.current_call_requires_handoff_return ==
            handoff_return_required);
     assert(completed_conservation_cohort_seq != 0);
+    ptx_thread_info **thread_info = shader->get_thread_info();
+    const unsigned warp_size = shader->get_warp_size();
+    for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
+      if ((completed_lane_mask & (1u << lane)) == 0) continue;
+      rtcore_print_shader_call_payload(
+          "return", owner_hw_sid, entry.warp_uid, entry.warp_id, lane,
+          completed_cohort_index, current_cycle,
+          thread_info[warp_id * warp_size + lane]);
+    }
     unsigned shader_terminal_lane_mask = 0;
     if (entry.current_call_requires_handoff_return) {
-      ptx_thread_info **thread_info = shader->get_thread_info();
-      const unsigned warp_size = shader->get_warp_size();
       for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
         const unsigned lane_mask = 1u << lane;
         if ((completed_lane_mask & lane_mask) == 0) continue;
@@ -1817,6 +1889,13 @@ rtcore_service_shader_continuation_pseudo_op(
             "fault=unsupported_call_frame_reason_fail_closed reason=%u\n",
             owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_reason);
     abort();
+  }
+  for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
+    if ((cohort_lane_mask & (1u << lane)) == 0) continue;
+    rtcore_print_shader_call_payload(
+        "launch", owner_hw_sid, entry.warp_uid, entry.warp_id, lane,
+        cohort_index, current_cycle,
+        thread_info[warp_id * warp_size + lane]);
   }
   const unsigned default_hit_result =
       cohort_reason == RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED
@@ -11272,6 +11351,38 @@ static bool rtcore_validate_replay_completion_packet(
   return true;
 }
 
+static void rtcore_log_v04_completion_boundary(
+    const rtcore_replay_warp_completion_entry_snapshot &snapshot,
+    unsigned long long observation_cycle) {
+  if (!rtcore_v04_direct_completion(snapshot)) return;
+
+  const char *driver =
+      snapshot.v04_functional_only_completion ? "functional_only" : "timing";
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    const unsigned lane_mask = 1u << lane;
+    if ((snapshot.lane_completion_valid_mask & lane_mask) == 0) continue;
+    const bool terminal =
+        (snapshot.terminal_lane_mask & lane_mask) != 0;
+    printf("GPGPU-Sim RTCORE_V04_COMPLETION_BOUNDARY "
+           "driver=%s owner_hw_sid=%u warp_uid=%u warp_id=%u "
+           "lane_id=%u context_ptr=0x%llx "
+           "handoff_window_base=0x%llx reason=%u decision=%s "
+           "resident_generation=%u "
+           "completion_transaction_generation=%u "
+           "observation_cycle=%llu\n",
+           driver, snapshot.owner_hw_sid, snapshot.warp_uid,
+           snapshot.warp_id, lane,
+           snapshot.v04_native_context_ptr[lane],
+           snapshot.v04_native_handoff_window_base[lane],
+           snapshot.lane_completion_reason[lane],
+           terminal ? "terminal" : "continuation",
+           snapshot.v04_native_resident_generation,
+           snapshot.v04_native_completion_transaction_generation,
+           observation_cycle);
+  }
+  fflush(stdout);
+}
+
 static bool rtcore_decode_v04_shadow_boundary_values(
     const std::array<uint32_t, rtcore::abi_v04::kWordCount> &words,
     unsigned reason, rtcore::abi_v04::shadow::boundary_values *values) {
@@ -14379,6 +14490,8 @@ void rt_unit::cycle() {
                   it->second.get_uid());
           if (release_event != m_synthetic_warp_completion_entries.end()) {
             if (candidate_scoreboard_handoff_release_allowed) {
+              rtcore_log_v04_completion_boundary(
+                  candidate_completion, current_cycle);
               if (!rtcore_v04_direct_completion(candidate_completion)) {
                 const char *v04_shadow_image_failure_reason = NULL;
                 if (!rtcore_observe_v04_shadow_completion_packet_image(

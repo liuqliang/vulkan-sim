@@ -1714,6 +1714,39 @@ rtcore_v04_private_shared_backing_for(unsigned owner_hw_sid)
     return state;
 }
 
+static unsigned rtcore_v04_timing_uint_config(
+    const char *name, unsigned default_value, unsigned max_value)
+{
+    const char *value = getenv(name);
+    if (value == NULL || value[0] == '\0') {
+        return default_value;
+    }
+    for (const char *cursor = value; *cursor != '\0'; ++cursor) {
+        if (*cursor < '0' || *cursor > '9') {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_TIMING_CONFIG_FAULT "
+                    "fault=invalid_unsigned_value name=%s value=%s "
+                    "minimum=1 maximum=%u\n",
+                    name, value, max_value);
+            fflush(stderr);
+            abort();
+        }
+    }
+    char *end = NULL;
+    const unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || *end != '\0' || parsed == 0 ||
+        parsed > max_value) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_TIMING_CONFIG_FAULT "
+                "fault=out_of_range name=%s value=%s "
+                "minimum=1 maximum=%u\n",
+                name, value, max_value);
+        fflush(stderr);
+        abort();
+    }
+    return static_cast<unsigned>(parsed);
+}
+
 static rtcore::v04::fetch_target::engine_state_v0 &
 rtcore_v04_live_target_engine_for(unsigned owner_hw_sid)
 {
@@ -1722,12 +1755,31 @@ rtcore_v04_live_target_engine_for(unsigned owner_hw_sid)
         g_rtcore_v04_live_target_engine_by_owner[owner_hw_sid];
     if (!state.initialized) {
         target::config_v0 config = {};
-        config.node_capacity = target::kMaxNodeSlots;
-        config.node_reservation_width = 8;
-        config.primitive_capacity = target::kMaxPrimitiveSlots;
-        config.primitive_reservation_width = 4;
-        config.instance_capacity = target::kMaxInstanceSlots;
-        config.instance_reservation_width = 2;
+        config.node_capacity = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_NODE_QUEUE_CAPACITY",
+                target::kMaxNodeSlots, target::kMaxNodeSlots));
+        config.node_reservation_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_NODE_QUEUE_RESERVATION_WIDTH",
+                8, target::kMaxNodeSlots));
+        config.primitive_capacity = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_PRIMITIVE_QUEUE_CAPACITY",
+                target::kMaxPrimitiveSlots,
+                target::kMaxPrimitiveSlots));
+        config.primitive_reservation_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_PRIMITIVE_QUEUE_RESERVATION_WIDTH",
+                4, target::kMaxPrimitiveSlots));
+        config.instance_capacity = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_INSTANCE_QUEUE_CAPACITY",
+                target::kMaxInstanceSlots, target::kMaxInstanceSlots));
+        config.instance_reservation_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_INSTANCE_QUEUE_RESERVATION_WIDTH",
+                2, target::kMaxInstanceSlots));
         if (target::initialize(&state, config) != target::kStatusOk) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_LIVE_TARGET_ENGINE_FAULT "
@@ -1736,6 +1788,19 @@ rtcore_v04_live_target_engine_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
+               "owner_hw_sid=%u target=queue "
+               "node_capacity=%u node_reservation_width=%u "
+               "primitive_capacity=%u "
+               "primitive_reservation_width=%u "
+               "instance_capacity=%u instance_reservation_width=%u\n",
+               owner_hw_sid, config.node_capacity,
+               config.node_reservation_width,
+               config.primitive_capacity,
+               config.primitive_reservation_width,
+               config.instance_capacity,
+               config.instance_reservation_width);
+        fflush(stdout);
     }
     return state;
 }
@@ -1747,8 +1812,34 @@ rtcore_v04_live_node_timing_for(unsigned owner_hw_sid)
     node_timing::state_v0 &state =
         g_rtcore_v04_live_node_timing_by_owner[owner_hw_sid];
     if (!state.initialized) {
-        const node_timing::config_v0 config =
+        node_timing::config_v0 config =
             node_timing::candidate_profile_config();
+        config.node_unit_count = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_NODE_UNIT_COUNT",
+                config.node_unit_count, node_timing::kMaxNodeUnits));
+        config.node_latency = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_NODE_LATENCY",
+                config.node_latency, 255));
+        config.node_initiation_interval = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_NODE_INITIATION_INTERVAL",
+                config.node_initiation_interval, 255));
+        config.node_issue_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_NODE_ISSUE_WIDTH",
+                config.node_issue_width, node_timing::kMaxNodeUnits));
+        config.result_commit_capacity = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_NODE_RESULT_COMMIT_CAPACITY",
+                config.result_commit_capacity,
+                node_timing::kMaxResultCommitEntries));
+        config.result_commit_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_NODE_RESULT_COMMIT_WIDTH",
+                config.result_commit_width,
+                node_timing::kMaxResultCommitEntries));
         if (node_timing::initialize(&state, config) !=
             node_timing::kStatusOk) {
             fprintf(stderr,
@@ -1758,6 +1849,15 @@ rtcore_v04_live_node_timing_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
+               "owner_hw_sid=%u target=node units=%u latency=%u "
+               "initiation_interval=%u issue_width=%u "
+               "result_commit_capacity=%u result_commit_width=%u\n",
+               owner_hw_sid, config.node_unit_count,
+               config.node_latency, config.node_initiation_interval,
+               config.node_issue_width, config.result_commit_capacity,
+               config.result_commit_width);
+        fflush(stdout);
     }
     return state;
 }
@@ -1769,8 +1869,16 @@ rtcore_v04_live_stack_operation_for(unsigned owner_hw_sid)
     stack_operation::engine_state_v0 &state =
         g_rtcore_v04_live_stack_operation_by_owner[owner_hw_sid];
     if (!state.initialized) {
-        const stack_operation::config_v0 config =
+        stack_operation::config_v0 config =
             stack_operation::candidate_profile_config();
+        config.capacity = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_QUEUE_CAPACITY",
+                config.capacity, stack_operation::kMaxSlots));
+        config.reservation_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_QUEUE_RESERVATION_WIDTH",
+                config.reservation_width, stack_operation::kMaxSlots));
         if (stack_operation::initialize(&state, config) !=
             stack_operation::kStatusOk) {
             fprintf(stderr,
@@ -1780,6 +1888,12 @@ rtcore_v04_live_stack_operation_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
+               "owner_hw_sid=%u target=stack_queue capacity=%u "
+               "reservation_width=%u\n",
+               owner_hw_sid, config.capacity,
+               config.reservation_width);
+        fflush(stdout);
     }
     return state;
 }
@@ -1791,8 +1905,24 @@ rtcore_v04_live_stack_timing_for(unsigned owner_hw_sid)
     stack_timing::state_v0 &state =
         g_rtcore_v04_live_stack_timing_by_owner[owner_hw_sid];
     if (!state.initialized) {
-        const stack_timing::config_v0 config =
+        stack_timing::config_v0 config =
             stack_timing::candidate_profile_config();
+        config.stack_unit_count = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_UNIT_COUNT",
+                config.stack_unit_count, stack_timing::kMaxStackUnits));
+        config.stack_latency = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_LATENCY",
+                config.stack_latency, 255));
+        config.stack_initiation_interval = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_INITIATION_INTERVAL",
+                config.stack_initiation_interval, 255));
+        config.stack_issue_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_ISSUE_WIDTH",
+                config.stack_issue_width, stack_timing::kMaxStackUnits));
         if (stack_timing::initialize(&state, config) !=
             stack_timing::kStatusOk) {
             fprintf(stderr,
@@ -1802,6 +1932,13 @@ rtcore_v04_live_stack_timing_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
+               "owner_hw_sid=%u target=stack units=%u latency=%u "
+               "initiation_interval=%u issue_width=%u\n",
+               owner_hw_sid, config.stack_unit_count,
+               config.stack_latency, config.stack_initiation_interval,
+               config.stack_issue_width);
+        fflush(stdout);
     }
     return state;
 }
@@ -1838,8 +1975,26 @@ rtcore_v04_live_instance_timing_for(unsigned owner_hw_sid)
     instance_timing::state_v0 &state =
         g_rtcore_v04_live_instance_timing_by_owner[owner_hw_sid];
     if (!state.initialized) {
-        const instance_timing::config_v0 config =
+        instance_timing::config_v0 config =
             instance_timing::candidate_profile_config();
+        config.instance_unit_count = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_INSTANCE_UNIT_COUNT",
+                config.instance_unit_count,
+                instance_timing::kMaxInstanceUnits));
+        config.instance_latency = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_INSTANCE_LATENCY",
+                config.instance_latency, 255));
+        config.instance_initiation_interval = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_INSTANCE_INITIATION_INTERVAL",
+                config.instance_initiation_interval, 255));
+        config.instance_issue_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_INSTANCE_ISSUE_WIDTH",
+                config.instance_issue_width,
+                instance_timing::kMaxInstanceUnits));
         if (instance_timing::initialize(&state, config) !=
             instance_timing::kStatusOk) {
             fprintf(stderr,
@@ -1849,6 +2004,14 @@ rtcore_v04_live_instance_timing_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
+               "owner_hw_sid=%u target=instance units=%u latency=%u "
+               "initiation_interval=%u issue_width=%u\n",
+               owner_hw_sid, config.instance_unit_count,
+               config.instance_latency,
+               config.instance_initiation_interval,
+               config.instance_issue_width);
+        fflush(stdout);
     }
     return state;
 }
@@ -1885,8 +2048,30 @@ rtcore_v04_live_primitive_timing_for(unsigned owner_hw_sid)
     primitive_timing::state_v0 &state =
         g_rtcore_v04_live_primitive_timing_by_owner[owner_hw_sid];
     if (!state.initialized) {
-        const primitive_timing::config_v0 config =
+        primitive_timing::config_v0 config =
             primitive_timing::candidate_profile_config();
+        config.primitive_unit_count = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_PRIMITIVE_UNIT_COUNT",
+                config.primitive_unit_count,
+                primitive_timing::kMaxPrimitiveUnits));
+        config.primitive_first_batch_latency = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_PRIMITIVE_FIRST_BATCH_LATENCY",
+                config.primitive_first_batch_latency, 255));
+        config.primitive_batch_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_PRIMITIVE_BATCH_WIDTH",
+                config.primitive_batch_width, 255));
+        config.primitive_batch_interval = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_PRIMITIVE_BATCH_INTERVAL",
+                config.primitive_batch_interval, 255));
+        config.primitive_issue_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_PRIMITIVE_ISSUE_WIDTH",
+                config.primitive_issue_width,
+                primitive_timing::kMaxPrimitiveUnits));
         if (primitive_timing::initialize(&state, config) !=
             primitive_timing::kStatusOk) {
             fprintf(stderr,
@@ -1896,6 +2081,16 @@ rtcore_v04_live_primitive_timing_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
+               "owner_hw_sid=%u target=primitive units=%u "
+               "first_batch_latency=%u batch_width=%u "
+               "batch_interval=%u issue_width=%u\n",
+               owner_hw_sid, config.primitive_unit_count,
+               config.primitive_first_batch_latency,
+               config.primitive_batch_width,
+               config.primitive_batch_interval,
+               config.primitive_issue_width);
+        fflush(stdout);
     }
     return state;
 }
@@ -12237,12 +12432,15 @@ extern "C" bool rtcore_bind_resident_rt_warp_lane_identity(
            "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
            "active_mask=0x%08x bound_lane_mask=0x%08x "
            "admitted_lane_mask=0x%08x resident_generation=%u "
+           "thread_uid=%u context_ptr=0x%llx "
+           "handoff_window_base=0x%llx "
            "resident_record_allocated=%u resident_occupancy=%u "
            "request_owner_binding=%u physical_resident_slot=%u "
            "bind_result=accepted\n",
            owner_hw_sid, warp_uid, warp_id, lane_id, active_mask,
            record.bound_lane_mask, record.admitted_lane_mask,
-           record.resident_generation, allocated ? 1u : 0u,
+           record.resident_generation, thread_uid, context_ptr,
+           handoff_window_base, allocated ? 1u : 0u,
            rtcore_resident_rt_warp_record_occupancy(),
            record.v04_request_owner_binding_valid ? 1u : 0u,
            record.v04_resident_warp_slot);
@@ -14638,6 +14836,14 @@ static const char *rtcore_validate_resident_rt_warp_lane_retire(
     rtcore_resident_rt_warp_record *record =
         strcmp(reason, "accepted") == 0 ? &resident->second : NULL;
     const unsigned lane_mask = lane_id < 32 ? 1u << lane_id : 0;
+    const bool native_mask_shrink_released =
+        record != NULL && lane_mask != 0 &&
+        rtcore_v04_live_timing_driver_control_enabled() &&
+        record->resubmit_count != 0 &&
+        (record->bound_lane_mask & lane_mask) != 0 &&
+        (record->active_mask & lane_mask) == 0 &&
+        !record->lane_identity[lane_id]
+             .v04_request_owner_binding_valid;
     if (record &&
         (lane_mask == 0 || (record->bound_lane_mask & lane_mask) == 0)) {
         reason = "RETIRE_LANE_NOT_BOUND";
@@ -14655,7 +14861,8 @@ static const char *rtcore_validate_resident_rt_warp_lane_retire(
     }
 
     rtcore_replay_lane_request *request = NULL;
-    if (record && strcmp(reason, "accepted") == 0) {
+    if (record && strcmp(reason, "accepted") == 0 &&
+        !native_mask_shrink_released) {
         std::map<unsigned, rtcore_replay_lane_request>::iterator request_it =
             g_rtcore_replay_lane_requests.find(thread_uid);
         if (request_it == g_rtcore_replay_lane_requests.end() ||
@@ -14877,6 +15084,16 @@ extern "C" bool rtcore_begin_retire_resident_rt_warp_transaction(
         for (unsigned lane = 0; lane < 32; ++lane) {
             const unsigned lane_mask = 1u << lane;
             if ((retire_active_mask & lane_mask) == 0) {
+                continue;
+            }
+            const bool native_mask_shrink_released =
+                rtcore_v04_live_timing_driver_control_enabled() &&
+                record->resubmit_count != 0 &&
+                (record->active_mask & lane_mask) == 0 &&
+                !record->lane_identity[lane]
+                     .v04_request_owner_binding_valid;
+            if (native_mask_shrink_released) {
+                already_released_mask |= lane_mask;
                 continue;
             }
             const unsigned thread_uid = record->lane_identity[lane].thread_uid;
@@ -18513,10 +18730,12 @@ static bool rtcore_service_v04_live_node_timing(
         rtcore_v04_live_selected_fetch_transition_enabled()
             ? &route_sink
             : NULL;
+    node_timing::state_v0 &timing_state =
+        rtcore_v04_live_node_timing_for(owner_hw_sid);
     node_timing::cycle_result_v0 result = {};
     const node_timing::status_kind status =
         node_timing::service_cycle(
-            &rtcore_v04_live_node_timing_for(owner_hw_sid),
+            &timing_state,
             &rtcore_v04_live_target_engine_for(owner_hw_sid),
             &rtcore_v04_timing_driver_for(owner_hw_sid),
             service_cycle, true, active_route_sink, &result);
@@ -18580,15 +18799,21 @@ static bool rtcore_service_v04_live_node_timing(
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
                "captured=%u committed=%u stall_mask=0x%02x "
                "pipeline_active=%u result_active=%u node_ready=%u "
-               "node_units=8 node_latency=2 node_ii=1 "
-               "node_issue_width=8 result_capacity=16 "
-               "result_commit_width=16\n",
+               "node_units=%u node_latency=%u node_ii=%u "
+               "node_issue_width=%u result_capacity=%u "
+               "result_commit_width=%u\n",
                owner_hw_sid, service_cycle, result.issued_count,
                result.captured_result_count,
                result.committed_route_count, result.stall_mask,
                result.active_pipeline_entries,
                result.active_result_entries,
-               result.ready_node_entries);
+               result.ready_node_entries,
+               timing_state.config.node_unit_count,
+               timing_state.config.node_latency,
+               timing_state.config.node_initiation_interval,
+               timing_state.config.node_issue_width,
+               timing_state.config.result_commit_capacity,
+               timing_state.config.result_commit_width);
         fflush(stdout);
     }
     return result.issued_count != 0 ||
@@ -19937,10 +20162,12 @@ static bool rtcore_service_v04_live_stack_timing(
     stack_timing::result_sink_v0 sink = {};
     sink.accept = rtcore_accept_v04_live_stack_result;
     sink.context = &sink_context;
+    stack_timing::state_v0 &timing_state =
+        rtcore_v04_live_stack_timing_for(owner_hw_sid);
     stack_timing::cycle_result_v0 result = {};
     const stack_timing::status_kind status =
         stack_timing::service_cycle(
-            &rtcore_v04_live_stack_timing_for(owner_hw_sid),
+            &timing_state,
             &rtcore_v04_live_stack_operation_for(owner_hw_sid),
             &rtcore_v04_timing_driver_for(owner_hw_sid),
             service_cycle, &sink, &result);
@@ -20004,15 +20231,21 @@ static bool rtcore_service_v04_live_stack_timing(
                "captured=%u writes_transferred=%u acks=%u "
                "commit_ready=%u stall_mask=0x%02x "
                "pipeline_active=%u stack_ready=%u "
-               "stack_units=1 stack_latency=2 stack_ii=1 "
-               "stack_issue_width=1 result_capacity=16 "
+               "stack_units=%u stack_latency=%u stack_ii=%u "
+               "stack_issue_width=%u result_capacity=%u "
                "private_write_width=4\n",
                owner_hw_sid, service_cycle, result.issued_count,
                result.captured_result_count, transferred,
                runtime_acks_already_consumed,
                ready_progressed ? 1u : 0u,
                result.stall_mask, result.active_pipeline_entries,
-               result.ready_stack_entries);
+               result.ready_stack_entries,
+               timing_state.config.stack_unit_count,
+               timing_state.config.stack_latency,
+               timing_state.config.stack_initiation_interval,
+               timing_state.config.stack_issue_width,
+               rtcore_v04_live_stack_commit_for(owner_hw_sid)
+                   .config.result_commit_capacity);
         fflush(stdout);
     }
     return result.issued_count != 0 ||
@@ -20629,19 +20862,38 @@ static bool rtcore_service_v04_live_instance_timing(
             ? rtcore_accept_v04_live_instance_enter_result
             : NULL;
     sink.context = &sink_context;
+    instance_timing::state_v0 &timing_state =
+        rtcore_v04_live_instance_timing_for(owner_hw_sid);
     instance_timing::cycle_result_v0 result = {};
     const instance_timing::status_kind status =
         instance_timing::service_cycle(
-            &rtcore_v04_live_instance_timing_for(owner_hw_sid),
+            &timing_state,
             &rtcore_v04_live_target_engine_for(owner_hw_sid),
             &rtcore_v04_timing_driver_for(owner_hw_sid),
             service_cycle, &sink, &result);
     if (status != instance_timing::kStatusOk) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_TIMING_FAULT "
-                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                "owner_hw_sid=%u service_cycle=%llu fault=%s "
+                "failure_point=%s packet_valid=%u target_kind=%u "
+                "operation_kind=%u operator_invocations=%u "
+                "typed_status=%u typed_result_kind=%u "
+                "operation_seq=%u producer_operation_seq=%u "
+                "producer_commit_epoch=%u\n",
                 owner_hw_sid, service_cycle,
-                instance_timing::status_name(status));
+                instance_timing::status_name(status),
+                instance_timing::failure_point_name(
+                    static_cast<instance_timing::failure_point_kind>(
+                        result.failure_point)),
+                result.failure_packet_valid,
+                result.failure_target_kind,
+                result.failure_operation_kind,
+                result.failure_operator_invocation_count,
+                result.failure_typed_status,
+                result.failure_typed_result_kind,
+                result.failure_operation_seq,
+                result.failure_producer_operation_seq,
+                result.failure_producer_commit_epoch);
         fflush(stderr);
         abort();
     }
@@ -20710,9 +20962,9 @@ static bool rtcore_service_v04_live_instance_timing(
                "captured=%u captured_restore=%u captured_enter=%u "
                "acks=%u commit_ready=%u "
                "stall_mask=0x%02x pipeline_active=%u "
-               "instance_ready=%u instance_units=2 "
-               "instance_latency=4 instance_ii=1 "
-               "instance_issue_width=2 result_capacity=16\n",
+               "instance_ready=%u instance_units=%u "
+               "instance_latency=%u instance_ii=%u "
+               "instance_issue_width=%u result_capacity=%u\n",
                owner_hw_sid, service_cycle, result.issued_count,
                result.captured_result_count,
                result.captured_restore_count,
@@ -20720,7 +20972,13 @@ static bool rtcore_service_v04_live_instance_timing(
                runtime_acks_already_consumed,
                ready_progressed ? 1u : 0u, result.stall_mask,
                result.active_pipeline_entries,
-               result.ready_instance_entries);
+               result.ready_instance_entries,
+               timing_state.config.instance_unit_count,
+               timing_state.config.instance_latency,
+               timing_state.config.instance_initiation_interval,
+               timing_state.config.instance_issue_width,
+               rtcore_v04_live_instance_shared_for(owner_hw_sid)
+                   .config.result_commit_capacity);
         fflush(stdout);
     }
     return result.issued_count != 0 ||
@@ -21032,6 +21290,58 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
                 next_warp_uid, record->warp_id,
                 timing_driver::status_name(prepare_timing),
                 private_shared::status_name(prepare_private));
+        if (prepare_timing ==
+            timing_driver::kStatusOperationInFlight) {
+            for (unsigned lane = 0; lane < 32; ++lane) {
+                const unsigned lane_mask = 1u << lane;
+                if ((previous_active_mask & lane_mask) == 0 ||
+                    !record->lane_identity[lane]
+                         .v04_request_owner_binding_valid) {
+                    continue;
+                }
+                const timing_driver::lane_control_state_v0 *control =
+                    timing_driver::find_live_lane_control(
+                        staged_timing,
+                        record->lane_identity[lane]
+                            .v04_request_owner_binding);
+                if (control == NULL) continue;
+                fprintf(
+                    stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_LANE_STATE "
+                    "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u "
+                    "warp_id=%u lane_id=%u retained=%u "
+                    "shader_terminal=%u live_target=%u "
+                    "live_commit_producer=%u live_commit_epoch=%u "
+                    "pending_recovery_operation=%u "
+                    "pending_recovery_producer=%u "
+                    "pending_recovery_target=%u "
+                    "pending_recovery_route=%u "
+                    "pending_recovery_reservation_retained=%u "
+                    "pending_terminal_kind=%u "
+                    "pending_terminal_producer=%u "
+                    "pending_terminal_commit_epoch=%u "
+                    "live_memory_transactions=%u "
+                    "live_commit_memory_transactions=%u\n",
+                    record->owner_hw_sid, previous_warp_uid,
+                    next_warp_uid, record->warp_id, lane,
+                    (next_active_mask & lane_mask) != 0,
+                    (pending.pending_shader_terminal_mask &
+                     lane_mask) != 0,
+                    control->live_target_operation_seq,
+                    control->live_commit_producer_operation_seq,
+                    control->live_commit_epoch,
+                    control->pending_recovery_operation_seq,
+                    control->pending_recovery_producer_operation_seq,
+                    control->pending_recovery_target_kind,
+                    control->pending_recovery_route_kind,
+                    control->pending_recovery_reservation_retained,
+                    control->pending_terminal_kind,
+                    control->pending_terminal_producer_operation_seq,
+                    control->pending_terminal_commit_epoch,
+                    control->live_memory_transaction_count,
+                    control->live_commit_memory_transaction_count);
+            }
+        }
         fflush(stderr);
         abort();
     }
@@ -21577,10 +21887,12 @@ static bool rtcore_service_v04_live_primitive_timing(
     primitive_timing::result_sink_v0 sink = {};
     sink.accept = rtcore_accept_v04_live_primitive_result;
     sink.context = &sink_context;
+    primitive_timing::state_v0 &timing_state =
+        rtcore_v04_live_primitive_timing_for(owner_hw_sid);
     primitive_timing::cycle_result_v0 result = {};
     const primitive_timing::status_kind status =
         primitive_timing::service_cycle(
-            &rtcore_v04_live_primitive_timing_for(owner_hw_sid),
+            &timing_state,
             &rtcore_v04_live_target_engine_for(owner_hw_sid),
             &rtcore_v04_timing_driver_for(owner_hw_sid),
             service_cycle, &sink, &result);
@@ -21639,10 +21951,10 @@ static bool rtcore_service_v04_live_primitive_timing(
                "captured=%u acks=%u commit_ready=%u "
                "stall_mask=0x%02x units_active=%u "
                "units_executing=%u units_output_pending=%u "
-               "primitive_ready=%u primitive_units=4 "
-               "first_batch_latency=4 batch_width=2 "
-               "batch_interval=1 issue_width=4 "
-               "result_capacity=16 boundary_capacity=16\n",
+               "primitive_ready=%u primitive_units=%u "
+               "first_batch_latency=%u batch_width=%u "
+               "batch_interval=%u issue_width=%u "
+               "result_capacity=%u boundary_capacity=%u\n",
                owner_hw_sid, service_cycle, result.issued_count,
                result.captured_result_count,
                runtime_acks_already_consumed,
@@ -21650,7 +21962,16 @@ static bool rtcore_service_v04_live_primitive_timing(
                result.active_unit_count,
                result.executing_unit_count,
                result.output_pending_count,
-               result.ready_primitive_entries);
+               result.ready_primitive_entries,
+               timing_state.config.primitive_unit_count,
+               timing_state.config.primitive_first_batch_latency,
+               timing_state.config.primitive_batch_width,
+               timing_state.config.primitive_batch_interval,
+               timing_state.config.primitive_issue_width,
+               rtcore_v04_live_primitive_shared_for(owner_hw_sid)
+                   .config.result_commit_capacity,
+               rtcore_v04_live_primitive_shared_for(owner_hw_sid)
+                   .config.boundary_capacity);
         fflush(stdout);
     }
     return result.issued_count != 0 ||
@@ -21846,6 +22167,23 @@ rtcore_find_v04_native_boundary_resident(
     return NULL;
 }
 
+static bool rtcore_v04_native_recovery_waits_for_resubmit(
+    const rtcore::v04::request_owner::lane_binding_v0 &owner)
+{
+    const rtcore_resident_rt_warp_record *record =
+        rtcore_find_v04_native_boundary_resident(owner);
+    if (record == NULL) return false;
+    const rtcore::v04::continuation_lifecycle::warp_state_v0
+        &lifecycle = record->v04_continuation_lifecycle;
+    const unsigned lane_mask = 1u << owner.lane_id;
+    return lifecycle.initialized == 1 &&
+           lifecycle.resubmit_pending == 1 &&
+           (lifecycle.pending_next_active_mask & lane_mask) != 0 &&
+           lifecycle.lanes[owner.lane_id].state ==
+               rtcore::v04::continuation_lifecycle::
+                   kLaneWaitingShader;
+}
+
 static uint32_t rtcore_v04_native_publication_chunk_byte_mask(
     uint32_t word_mask, unsigned chunk)
 {
@@ -21938,16 +22276,18 @@ static void rtcore_record_v04_publication_arm_or_abort(
     const rtcore::v04::private_frontier::owner_binding_v0 &owner,
     uint32_t operation_seq, uint32_t commit_epoch,
     uint8_t pending_chunk_mask, uint8_t route_kind,
-    unsigned long long cycle)
+    bool result_commit_bypassed, unsigned long long cycle)
 {
     namespace conservation = rtcore::v04::conservation;
     namespace boundary = rtcore::v04::boundary_publication;
+    if (result_commit_bypassed) {
+        rtcore_record_v04_lane_conservation_or_abort(
+            conservation::kEventResultCommitZero, owner, operation_seq,
+            commit_epoch, 0, 0, 0, route_kind, cycle);
+    }
     if (pending_chunk_mask == 0) {
         rtcore_record_v04_lane_conservation_or_abort(
             conservation::kEventMemoryZero, owner, operation_seq,
-            commit_epoch, 0, 0, 0, route_kind, cycle);
-        rtcore_record_v04_lane_conservation_or_abort(
-            conservation::kEventResultCommitZero, owner, operation_seq,
             commit_epoch, 0, 0, 0, route_kind, cycle);
         rtcore_record_v04_lane_conservation_or_abort(
             conservation::kEventPublicationArm, owner, operation_seq,
@@ -22124,7 +22464,8 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
     rtcore_record_v04_publication_arm_or_abort(
         private_owner, terminal.producer_operation_seq,
         terminal.commit_epoch, arm.pending_chunk_mask,
-        static_cast<uint8_t>(terminal.terminal_kind), service_cycle);
+        static_cast<uint8_t>(terminal.terminal_kind), true,
+        service_cycle);
     printf("GPGPU-Sim RTCORE_V04_LIVE_STACK_TERMINAL_ARMED "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u "
            "resident_warp_slot=%u request_key=0x%08x lane_id=%u "
@@ -22289,7 +22630,7 @@ static bool rtcore_service_v04_native_boundary_publication(
         boundary_receipt.commit_epoch, arm.pending_chunk_mask,
         static_cast<uint8_t>(
             boundary_receipt.semantic_plan.route_kind),
-        service_cycle);
+        false, service_cycle);
     printf("GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_ARMED "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u "
            "resident_warp_slot=%u request_key=0x%08x lane_id=%u "
@@ -22348,6 +22689,15 @@ static bool rtcore_service_v04_live_instance_restore_recovery(
                 kPendingRecoveryRouteInstanceRestoreParent ||
         pending.target_kind !=
             timing_driver::kPendingRecoveryTargetInstance) {
+        cursor = static_cast<uint16_t>(
+            (static_cast<uint32_t>(
+                 pending.request_control_slot) +
+             1) %
+            rtcore::v04::request_owner::kRequestControlCapacity);
+        return false;
+    }
+    if (rtcore_v04_native_recovery_waits_for_resubmit(
+            pending.owner)) {
         cursor = static_cast<uint16_t>(
             (static_cast<uint32_t>(
                  pending.request_control_slot) +
@@ -22512,6 +22862,15 @@ static bool rtcore_service_v04_live_stack_spill_recovery(
                 kPendingRecoveryRouteInstanceRestoreParent &&
         pending.target_kind ==
             timing_driver::kPendingRecoveryTargetInstance) {
+        cursor = static_cast<uint16_t>(
+            (static_cast<uint32_t>(
+                 pending.request_control_slot) +
+             1) %
+            rtcore::v04::request_owner::kRequestControlCapacity);
+        return false;
+    }
+    if (rtcore_v04_native_recovery_waits_for_resubmit(
+            pending.owner)) {
         cursor = static_cast<uint16_t>(
             (static_cast<uint32_t>(
                  pending.request_control_slot) +
@@ -24513,7 +24872,9 @@ static float rtcore_v04_typed_primitive_fp32_value(uint32_t bits)
 static bool rtcore_v04_typed_primitive_bary_matches(float typed,
                                                      float legacy)
 {
-    static const float kLegacyBarycentricAbsoluteTolerance = 2.0e-5f;
+    // The legacy path reconstructs the intersection point and solves
+    // barycentrics again; V0.4 publishes the intersector's canonical u/v.
+    static const float kLegacyBarycentricAbsoluteTolerance = 1.0e-3f;
     return std::isfinite(typed) && std::isfinite(legacy) &&
            fabsf(typed - legacy) <= kLegacyBarycentricAbsoluteTolerance;
 }
@@ -28779,6 +29140,36 @@ extern "C" int rtcore_validate_v04_shader_builtin_compatibility_context(
     return 1;
 }
 
+extern "C" int rtcore_read_shader_call_payload_debug_snapshot(
+    ptx_thread_info *thread, unsigned long long *payload_address,
+    unsigned *payload_size, uint32_t payload_words[12]) {
+    if (payload_address == NULL || payload_size == NULL ||
+        payload_words == NULL) {
+        return 0;
+    }
+    *payload_address = 0;
+    *payload_size = 0;
+    if (thread == NULL || thread->RT_thread_data == NULL) {
+        return 0;
+    }
+
+    variable_decleration_entry *payload =
+        thread->RT_thread_data->get_variable_decleration_entry(
+            nir_var_shader_call_data, "%Ray", 48);
+    if (payload == NULL) {
+        return 0;
+    }
+    *payload_address = payload->address;
+    *payload_size = payload->size;
+    if (payload->address == 0 || payload->size != 48) {
+        return 0;
+    }
+
+    thread->get_global_memory()->read_simulator_backing(
+        payload->address, payload->size, payload_words);
+    return 1;
+}
+
 extern "C" int rtcore_prepare_v04_direct_shader_input_context(
     const ptx_instruction *pI, ptx_thread_info *thread, unsigned reason,
     unsigned lane_id, unsigned long long handoff_window_base) {
@@ -28829,12 +29220,27 @@ extern "C" int rtcore_prepare_v04_direct_shader_input_context(
     }
 
     printf("GPGPU-Sim RTCORE_V04_DIRECT_SHADER_INPUT_CONTEXT_PREPARE "
-           "lane_id=%u reason=%u hit_kind=%u attribute_word_count=%u "
+           "lane_id=%u lane_address=0x%llx reason=%u hit_kind=%u "
+           "world_ray_direction_fp32=(0x%08x,0x%08x,0x%08x) "
+           "boundary_ray_tmax_fp32=0x%08x primitive_index=%u "
+           "instance_custom_index=%u attribute_word_count=%u "
            "attribute_location=%u attribute_format=%u "
+           "inline_attribute_words=(0x%08x,0x%08x,0x%08x,0x%08x) "
            "attribute_materialized=%u "
            "context_source=live_v04_handoff\n",
-           lane_id, reason, plan.hit_kind, plan.word_count,
-           plan.location, plan.format,
+           lane_id, static_cast<unsigned long long>(lane_address), reason,
+           plan.hit_kind,
+           words[rtcore::abi_v04::kWorldRayDirectionXFp32.word],
+           words[rtcore::abi_v04::kWorldRayDirectionYFp32.word],
+           words[rtcore::abi_v04::kWorldRayDirectionZFp32.word],
+           words[rtcore::abi_v04::kBoundaryRayTmaxFp32.word],
+           words[rtcore::abi_v04::kPrimitiveIndex.word],
+           words[rtcore::abi_v04::kInstanceCustomIndex.word],
+           plan.word_count, plan.location, plan.format,
+           words[rtcore::abi_v04::kInlineAttributeWord0.word],
+           words[rtcore::abi_v04::kInlineAttributeWord1.word],
+           words[rtcore::abi_v04::kInlineAttributeWord2.word],
+           words[rtcore::abi_v04::kInlineAttributeWord3.word],
            attribute_materialized ? 1u : 0u);
     fflush(stdout);
     return 1;
@@ -29040,12 +29446,36 @@ extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
         mem->write(&(traversal_data->current_shader_ray_tmax_valid),
                    sizeof(traversal_data->current_shader_ray_tmax_valid),
                    &current_shader_ray_tmax_valid, thread, pI);
+        float3 terminal_ray_world_direction = {};
+        mem->read(&(traversal_data->ray_world_direction),
+                  sizeof(terminal_ray_world_direction),
+                  &terminal_ray_world_direction);
         printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_COMPAT_CONTEXT_PREPARE "
                "lane_id=%u reason=%u hit_record_selector=%u "
                "terminal_kind=%s shader_counter=-1 shader_type=-1 "
+               "world_ray_direction_fp32=(0x%08x,0x%08x,0x%08x) "
+               "boundary_ray_tmax_fp32=0x%08x primitive_index=%u "
+               "instance_custom_index=%u "
+               "inline_attribute_words=(0x%08x,0x%08x) "
                "context_source=%s\n",
                tid, reason, hit_record_selector,
                terminal_miss ? "terminal_miss" : "terminal_closest_hit",
+               rtcore_v04_fp32_bits(terminal_ray_world_direction.x),
+               rtcore_v04_fp32_bits(terminal_ray_world_direction.y),
+               rtcore_v04_fp32_bits(terminal_ray_world_direction.z),
+               terminal_closest_hit
+                   ? rtcore_v04_fp32_bits(closest_hit.world_min_thit)
+                   : 0u,
+               terminal_closest_hit ? closest_hit.primitive_index : 0u,
+               terminal_closest_hit ? closest_hit.instance_index : 0u,
+               terminal_closest_hit
+                   ? rtcore_v04_fp32_bits(
+                         closest_hit.barycentric_coordinates.x)
+                   : 0u,
+               terminal_closest_hit
+                   ? rtcore_v04_fp32_bits(
+                         closest_hit.barycentric_coordinates.y)
+                   : 0u,
                terminal_context_source);
         fflush(stdout);
         return 1;

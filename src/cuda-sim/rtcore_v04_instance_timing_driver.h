@@ -34,6 +34,14 @@ enum stall_bit : uint8_t {
   kStallResultSinkBackpressure = 1u << 2,
 };
 
+enum failure_point_kind : uint8_t {
+  kFailurePointNone = 0,
+  kFailurePointCaptureKind,
+  kFailurePointCaptureRestore,
+  kFailurePointCaptureEnter,
+  kFailurePointIssuePacket,
+};
+
 struct config_v0 {
   uint8_t instance_unit_count;
   uint8_t instance_latency;
@@ -126,7 +134,17 @@ struct cycle_result_v0 {
   uint8_t stall_mask;
   uint8_t active_pipeline_entries;
   uint8_t ready_instance_entries;
-  uint8_t reserved_zero[1];
+  uint8_t failure_point;
+  uint8_t failure_packet_valid;
+  uint8_t failure_target_kind;
+  uint8_t failure_operation_kind;
+  uint8_t failure_operator_invocation_count;
+  uint8_t failure_typed_status;
+  uint8_t failure_typed_result_kind;
+  uint8_t reserved_zero[2];
+  uint32_t failure_operation_seq;
+  uint32_t failure_producer_operation_seq;
+  uint32_t failure_producer_commit_epoch;
 };
 
 struct state_v0 {
@@ -154,6 +172,7 @@ status_kind service_cycle(
 uint8_t active_pipeline_count(const state_v0 &state);
 
 const char *status_name(status_kind status);
+const char *failure_point_name(failure_point_kind failure_point);
 
 }  // namespace instance_timing
 }  // namespace v04

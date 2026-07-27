@@ -458,6 +458,10 @@ bool emit_record(const record_v0 &record) {
   conservation::lane_event_v0 conservation_record = {};
   conservation_record.owner = record.owner;
   conservation_record.operation_seq = record.operation_seq;
+  if (!conservation::ensure_target_ready_before_operation(
+          record.owner, record.operation_seq)) {
+    return false;
+  }
   conservation_record.event = conservation::kEventTypedOperation;
   conservation_record.detail_kind = record.unit;
   if (!conservation::emit_lane_event(conservation_record)) {

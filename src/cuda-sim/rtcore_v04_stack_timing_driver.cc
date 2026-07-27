@@ -374,6 +374,10 @@ status_kind issue_operations(
         typed_stack::kPushRemainderAndForwardSelected) {
       typed_result = typed_stack::execute_push(candidate.input);
       if (!typed_stack::validate_push_result(typed_result)) {
+        if (typed_result.status ==
+            typed_stack::kStatusFrontierCapacityExceeded) {
+          return kStatusFrontierCapacityExceeded;
+        }
         return kStatusOperatorFailed;
       }
     } else if (candidate.empty_input.operation_kind ==
@@ -505,6 +509,8 @@ const char *status_name(status_kind status) {
       return "owner_mismatch";
     case kStatusOperatorFailed:
       return "operator_failed";
+    case kStatusFrontierCapacityExceeded:
+      return "frontier_capacity_exceeded";
     case kStatusTimingControlRejected:
       return "timing_control_rejected";
     case kStatusQueueInvariant:

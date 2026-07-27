@@ -7846,6 +7846,7 @@ static bool rtcore_decode_v03_compact_context_image(
 namespace {
 
 namespace functional_engine = rtcore::v04::functional_engine;
+namespace functional_driver = rtcore::v04::functional_driver;
 namespace private_frontier = rtcore::v04::private_frontier;
 namespace request_owner = rtcore::v04::request_owner;
 namespace root_node_packet = rtcore::v04::root_node_packet;
@@ -8081,6 +8082,17 @@ static functional_engine::provider_v0 rtcore_v04_functional_only_provider(
   return provider;
 }
 
+static bool rtcore_v04_ray_input_debug_enabled() {
+  const char *value = getenv("VULKAN_SIM_RTCORE_V04_RAY_INPUT_DEBUG");
+  return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static uint32_t rtcore_v04_ray_input_debug_bits(float value) {
+  uint32_t bits = 0;
+  memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
 static functional_engine::root_input_v0 rtcore_v04_functional_only_root_input(
     const root_node_packet::lane_input_v0 &lane_input,
     const request_owner::lane_binding_v0 &request_binding) {
@@ -8160,9 +8172,15 @@ static bool rtcore_v04_functional_only_prepare_initial(
       fprintf(stderr,
               "GPGPU-Sim RTCORE_V04_FUNCTIONAL_ONLY_FAULT "
               "phase=initial owner_hw_sid=%u warp_uid=%u warp_id=%u "
-              "lane_id=%u status=%s\n",
+              "lane_id=%u status=%s driver_unit=%s driver_status=%s\n",
               input.owner_hw_sid, input.warp_uid, input.warp_id, lane,
-              functional_engine::status_name(status));
+              functional_engine::status_name(status),
+              functional_engine::driver_unit_name(
+                  static_cast<functional_engine::driver_unit_kind>(
+                      lane_record.engine_state.last_driver_unit)),
+              functional_driver::status_name(
+                  static_cast<functional_driver::status_kind>(
+                      lane_record.engine_state.last_driver_status)));
       fflush(stderr);
       return false;
     }
@@ -8275,10 +8293,17 @@ static bool rtcore_v04_functional_only_prepare_resubmit(
       fprintf(stderr,
               "GPGPU-Sim RTCORE_V04_FUNCTIONAL_ONLY_FAULT "
               "phase=resubmit owner_hw_sid=%u previous_warp_uid=%u "
-              "warp_uid=%u warp_id=%u lane_id=%u status=%s\n",
+              "warp_uid=%u warp_id=%u lane_id=%u status=%s "
+              "driver_unit=%s driver_status=%s\n",
               input.owner_hw_sid, previous_warp_uid, input.warp_uid,
               input.warp_id, lane,
-              functional_engine::status_name(status));
+              functional_engine::status_name(status),
+              functional_engine::driver_unit_name(
+                  static_cast<functional_engine::driver_unit_kind>(
+                      lane_record.engine_state.last_driver_unit)),
+              functional_driver::status_name(
+                  static_cast<functional_driver::status_kind>(
+                      lane_record.engine_state.last_driver_status)));
       fflush(stderr);
       return false;
     }
@@ -8464,6 +8489,38 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     lane_input.ray_policy.ray_flags = context.ray_flags;
     lane_input.ray_policy.cull_mask =
         static_cast<uint8_t>(context.cull_mask);
+    if (functional_only && rtcore_v04_ray_input_debug_enabled()) {
+      printf(
+          "GPGPU-Sim RTCORE_V04_RAY_INPUT_DEBUG "
+          "phase=%s owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+          "thread_uid=%u context_ptr=0x%llx "
+          "origin=(%.9g,%.9g,%.9g) direction=(%.9g,%.9g,%.9g) "
+          "tmin=%.9g tmax=%.9g "
+          "origin_bits=(0x%08x,0x%08x,0x%08x) "
+          "direction_bits=(0x%08x,0x%08x,0x%08x) "
+          "tmin_bits=0x%08x tmax_bits=0x%08x\n",
+          resident_live ? "resubmit" : "initial", owner_hw_sid,
+          warp_uid, warp_id, lane, thread->get_uid(),
+          (unsigned long long)context_value.u64,
+          operands.mutable_ray.origin[0], operands.mutable_ray.origin[1],
+          operands.mutable_ray.origin[2],
+          operands.mutable_ray.direction[0],
+          operands.mutable_ray.direction[1],
+          operands.mutable_ray.direction[2],
+          operands.mutable_ray.t_min, operands.mutable_ray.t_max,
+          rtcore_v04_ray_input_debug_bits(operands.mutable_ray.origin[0]),
+          rtcore_v04_ray_input_debug_bits(operands.mutable_ray.origin[1]),
+          rtcore_v04_ray_input_debug_bits(operands.mutable_ray.origin[2]),
+          rtcore_v04_ray_input_debug_bits(
+              operands.mutable_ray.direction[0]),
+          rtcore_v04_ray_input_debug_bits(
+              operands.mutable_ray.direction[1]),
+          rtcore_v04_ray_input_debug_bits(
+              operands.mutable_ray.direction[2]),
+          rtcore_v04_ray_input_debug_bits(operands.mutable_ray.t_min),
+          rtcore_v04_ray_input_debug_bits(operands.mutable_ray.t_max));
+      fflush(stdout);
+    }
   }
 
   if (functional_only) {
@@ -14032,7 +14089,7 @@ static bool rtcore_v04_functional_only_commit_resubmit_stage(
   g_rtcore_v04_functional_only_resubmit_stages.erase(stage);
   rtcore_v04_functional_only_record_warp_or_abort(
       rtcore::v04::conservation::kEventResubmit, previous,
-      previous_warp_uid, previous.active_mask);
+      previous_warp_uid, active_mask);
   return true;
 }
 

@@ -157,6 +157,8 @@ const char *status_name(status_kind status) {
       return "canonical_input_mismatch";
     case kStatusTypedOperatorFailed:
       return "typed_operator_failed";
+    case kStatusFrontierCapacityExceeded:
+      return "frontier_capacity_exceeded";
     case kStatusSemanticApplyFailed:
       return "semantic_apply_failed";
     case kStatusDiagnosticRejected:

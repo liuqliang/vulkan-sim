@@ -63,6 +63,9 @@ struct warp_event_v0 {
 bool enabled();
 bool emit_lane_event(const lane_event_v0 &record);
 bool emit_warp_event(const warp_event_v0 &record);
+bool ensure_target_ready_before_operation(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq);
 
 const char *event_name(event_kind event);
 

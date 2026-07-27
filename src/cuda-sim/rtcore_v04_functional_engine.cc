@@ -53,6 +53,16 @@ status_kind allocate_operation(state_v0 *state, uint32_t *operation_seq) {
              : kStatusOperationWatchdog;
 }
 
+status_kind record_driver_rejection(
+    state_v0 *state, driver_unit_kind unit,
+    functional_driver::status_kind status) {
+  if (state != NULL) {
+    state->last_driver_unit = unit;
+    state->last_driver_status = status;
+  }
+  return kStatusFunctionalDriverRejected;
+}
+
 status_kind decode_private(
     const state_v0 &state,
     private_frontier::root_private_operands_v0 *operands,
@@ -229,7 +239,28 @@ status_kind build_stack_packet(
   if (action.kind != kActionStackPop) return kStatusInvalidState;
 
   packet->operation_kind = typed_stack::kPopNext;
-  if (metadata.frontier_count != 0) {
+  bool current_level_frontier_empty = false;
+  if (metadata.current_level == 0 &&
+      metadata.level_frame_depth == 0) {
+    current_level_frontier_empty =
+        metadata.frontier_top == 0 &&
+        metadata.frontier_count == 0;
+  } else if (metadata.current_level ==
+                 typed_node::kLevelBlas - 1 &&
+             metadata.level_frame_depth == 1) {
+    private_frontier::traversal_frame_projection_v0 parent = {};
+    if (private_frontier::decode_parent_frame(
+            state->canonical_slot, state->owner, &parent) !=
+        private_frontier::kStatusOk) {
+      return kStatusPrivateStateRejected;
+    }
+    current_level_frontier_empty =
+        metadata.frontier_top ==
+            parent.frontier_marker.frontier_top &&
+        metadata.frontier_count ==
+            parent.frontier_marker.frontier_count;
+  }
+  if (!current_level_frontier_empty) {
     packet->pop_input.profile_id =
         typed_stack::kGenRtDerivedProfileId;
     packet->pop_input.operation_kind = typed_stack::kPopNext;
@@ -440,10 +471,12 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
 
       if (packet.target_kind == fetch_target::kTargetNode) {
         functional_driver::node_execution_v0 execution = {};
-        if (functional_driver::execute_one_node(
-                packet, &execution) != functional_driver::kStatusOk ||
+        const functional_driver::status_kind driver_status =
+            functional_driver::execute_one_node(packet, &execution);
+        if (driver_status != functional_driver::kStatusOk ||
             !execution.valid) {
-          return kStatusFunctionalDriverRejected;
+          return record_driver_rejection(
+              state, kDriverUnitNode, driver_status);
         }
         ++state->node_visits;
         action = next_action_v0();
@@ -474,12 +507,14 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
           return kStatusInstanceProducerRejected;
         }
         functional_driver::instance_enter_execution_v0 execution = {};
-        if (functional_driver::execute_one_instance_enter(
+        const functional_driver::status_kind driver_status =
+            functional_driver::execute_one_instance_enter(
                 packet, input, state->private_region,
-                state->canonical_slot, &execution) !=
-                functional_driver::kStatusOk ||
+                state->canonical_slot, &execution);
+        if (driver_status != functional_driver::kStatusOk ||
             !execution.valid) {
-          return kStatusFunctionalDriverRejected;
+          return record_driver_rejection(
+              state, kDriverUnitInstance, driver_status);
         }
         status = apply_instance_enter(state, execution);
         if (status != kStatusOk) return status;
@@ -503,17 +538,21 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
 
       if (packet.target_kind == fetch_target::kTargetPrimitive) {
         typed_primitive::route_input_v0 input = {};
-        if (functional_driver::prepare_primitive_operator_input(
-                packet, &input) != functional_driver::kStatusOk) {
-          return kStatusFunctionalDriverRejected;
+        functional_driver::status_kind driver_status =
+            functional_driver::prepare_primitive_operator_input(
+                packet, &input);
+        if (driver_status != functional_driver::kStatusOk) {
+          return record_driver_rejection(
+              state, kDriverUnitPrimitive, driver_status);
         }
         functional_driver::primitive_execution_v0 execution = {};
-        if (functional_driver::execute_one_primitive(
-                packet, input, state->private_region,
-                state->canonical_slot, &execution) !=
-                functional_driver::kStatusOk ||
+        driver_status = functional_driver::execute_one_primitive(
+            packet, input, state->private_region,
+            state->canonical_slot, &execution);
+        if (driver_status != functional_driver::kStatusOk ||
             !execution.valid) {
-          return kStatusFunctionalDriverRejected;
+          return record_driver_rejection(
+              state, kDriverUnitPrimitive, driver_status);
         }
         ++state->primitive_tests;
         status = apply_primitive(state, execution.semantic_plan);
@@ -557,11 +596,14 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
       status_kind status = build_stack_packet(state, action, &packet);
       if (status != kStatusOk) return status;
       functional_driver::stack_execution_v0 execution = {};
-      if (functional_driver::execute_one_stack(
+      const functional_driver::status_kind driver_status =
+          functional_driver::execute_one_stack(
               packet, state->private_region, state->canonical_slot,
-              &execution) != functional_driver::kStatusOk ||
+              &execution);
+      if (driver_status != functional_driver::kStatusOk ||
           !execution.valid) {
-        return kStatusFunctionalDriverRejected;
+        return record_driver_rejection(
+            state, kDriverUnitStack, driver_status);
       }
 
       action = next_action_v0();
@@ -630,12 +672,14 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
         restore_packet.parent_frame =
             execution.empty_result.parent_frame;
         functional_driver::instance_restore_execution_v0 restore = {};
-        if (functional_driver::execute_one_instance_restore(
+        const functional_driver::status_kind driver_status =
+            functional_driver::execute_one_instance_restore(
                 restore_packet, state->private_region,
-                state->canonical_slot, &restore) !=
-                functional_driver::kStatusOk ||
+                state->canonical_slot, &restore);
+        if (driver_status != functional_driver::kStatusOk ||
             !restore.valid) {
-          return kStatusFunctionalDriverRejected;
+          return record_driver_rejection(
+              state, kDriverUnitInstance, driver_status);
         }
         if (private_frontier::apply_parent_state_restore(
                 &state->canonical_slot, state->owner,
@@ -810,6 +854,17 @@ const char *boundary_name(boundary_kind boundary) {
     case kBoundaryAnyHit: return "any_hit";
     case kBoundaryIntersection: return "intersection";
     case kBoundaryInvalid: break;
+  }
+  return "invalid";
+}
+
+const char *driver_unit_name(driver_unit_kind unit) {
+  switch (unit) {
+    case kDriverUnitNode: return "node";
+    case kDriverUnitInstance: return "instance";
+    case kDriverUnitPrimitive: return "primitive";
+    case kDriverUnitStack: return "stack";
+    case kDriverUnitInvalid: break;
   }
   return "invalid";
 }

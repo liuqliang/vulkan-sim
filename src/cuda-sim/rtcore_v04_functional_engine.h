@@ -36,6 +36,14 @@ enum boundary_kind : uint8_t {
   kBoundaryIntersection,
 };
 
+enum driver_unit_kind : uint8_t {
+  kDriverUnitInvalid = 0,
+  kDriverUnitNode,
+  kDriverUnitInstance,
+  kDriverUnitPrimitive,
+  kDriverUnitStack,
+};
+
 struct provider_v0 {
   void *context;
   bool (*read_raw_payload)(
@@ -71,6 +79,9 @@ struct state_v0 {
   uint32_t operation_count;
   uint32_t node_visits;
   uint32_t primitive_tests;
+  uint8_t last_driver_unit;
+  uint8_t last_driver_status;
+  uint8_t reserved_zero[2];
 };
 
 struct output_v0 {
@@ -101,6 +112,7 @@ status_kind resume(
 
 const char *status_name(status_kind status);
 const char *boundary_name(boundary_kind boundary);
+const char *driver_unit_name(driver_unit_kind unit);
 
 }  // namespace functional_engine
 }  // namespace v04

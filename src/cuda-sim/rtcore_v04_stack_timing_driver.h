@@ -21,6 +21,7 @@ enum status_kind : uint8_t {
   kStatusInvalidOperationPacket,
   kStatusOwnerMismatch,
   kStatusOperatorFailed,
+  kStatusFrontierCapacityExceeded,
   kStatusTimingControlRejected,
   kStatusQueueInvariant,
   kStatusResultSinkRejected,

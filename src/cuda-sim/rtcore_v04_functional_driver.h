@@ -19,6 +19,7 @@ enum status_kind : uint8_t {
   kStatusInvalidOperationPacket,
   kStatusCanonicalInputMismatch,
   kStatusTypedOperatorFailed,
+  kStatusFrontierCapacityExceeded,
   kStatusSemanticApplyFailed,
   kStatusDiagnosticRejected,
 };

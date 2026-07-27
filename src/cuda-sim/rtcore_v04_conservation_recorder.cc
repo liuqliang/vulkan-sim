@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <set>
 
 #include "rtcore_v04_request_owner_binding.h"
 
@@ -10,6 +12,48 @@ namespace rtcore {
 namespace v04 {
 namespace conservation {
 namespace {
+
+struct lane_operation_key {
+  uint32_t owner_hw_sid;
+  uint32_t resident_warp_slot;
+  uint32_t request_identity;
+  uint32_t request_generation;
+  uint32_t private_slot_id;
+  uint32_t lane_id;
+  uint32_t operation_seq;
+
+  bool operator<(const lane_operation_key &other) const {
+    if (owner_hw_sid != other.owner_hw_sid)
+      return owner_hw_sid < other.owner_hw_sid;
+    if (resident_warp_slot != other.resident_warp_slot)
+      return resident_warp_slot < other.resident_warp_slot;
+    if (request_identity != other.request_identity)
+      return request_identity < other.request_identity;
+    if (request_generation != other.request_generation)
+      return request_generation < other.request_generation;
+    if (private_slot_id != other.private_slot_id)
+      return private_slot_id < other.private_slot_id;
+    if (lane_id != other.lane_id) return lane_id < other.lane_id;
+    return operation_seq < other.operation_seq;
+  }
+};
+
+std::map<lane_operation_key, uint8_t> g_target_reservations;
+std::set<lane_operation_key> g_target_ready;
+
+lane_operation_key make_lane_operation_key(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq) {
+  lane_operation_key key = {};
+  key.owner_hw_sid = owner.owner_hw_sid;
+  key.resident_warp_slot = owner.resident_warp_id;
+  key.request_identity = owner.request_identity;
+  key.request_generation = owner.generation;
+  key.private_slot_id = owner.private_slot_id;
+  key.lane_id = owner.lane_id;
+  key.operation_seq = operation_seq;
+  return key;
+}
 
 bool env_value_is_true(const char *value) {
   return value != NULL &&
@@ -73,6 +117,22 @@ bool emit_lane_event(const lane_event_v0 &record) {
     return false;
   }
 
+  const lane_operation_key key =
+      make_lane_operation_key(record.owner, record.operation_seq);
+  if (record.event == kEventTargetReserved) {
+    if (!g_target_reservations
+             .insert(std::make_pair(key, record.detail_kind))
+             .second) {
+      return false;
+    }
+  } else if (record.event == kEventTargetReady) {
+    if (g_target_reservations.find(key) ==
+            g_target_reservations.end() ||
+        !g_target_ready.insert(key).second) {
+      return false;
+    }
+  }
+
   std::printf(
       "GPGPU-Sim RTCORE_V04_CONSERVATION "
       "schema=1 scope=lane event=%s owner_hw_sid=%u "
@@ -89,6 +149,30 @@ bool emit_lane_event(const lane_event_v0 &record) {
       static_cast<unsigned long long>(record.cycle));
   std::fflush(stdout);
   return true;
+}
+
+bool ensure_target_ready_before_operation(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq) {
+  if (!enabled()) return true;
+  if (!request_owner::validate_private_frontier_owner_identity(owner) ||
+      operation_seq == 0) {
+    return false;
+  }
+  const lane_operation_key key =
+      make_lane_operation_key(owner, operation_seq);
+  const std::map<lane_operation_key, uint8_t>::const_iterator
+      reservation = g_target_reservations.find(key);
+  if (reservation == g_target_reservations.end() ||
+      g_target_ready.find(key) != g_target_ready.end()) {
+    return true;
+  }
+  lane_event_v0 ready = {};
+  ready.owner = owner;
+  ready.operation_seq = operation_seq;
+  ready.event = kEventTargetReady;
+  ready.detail_kind = reservation->second;
+  return emit_lane_event(ready);
 }
 
 bool emit_warp_event(const warp_event_v0 &record) {
