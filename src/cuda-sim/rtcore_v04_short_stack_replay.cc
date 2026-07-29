@@ -91,14 +91,20 @@ static bool write_logical_entries(state_v0 *state,
 
 static bool route_shape_valid(const typed_node::route_result_v0 &route,
                               domain_kind domain) {
-  const uint8_t required_mask =
-      static_cast<uint8_t>(typed_node::kSelectedFetchValid |
-                           typed_node::kFrontierItemsValid);
-  if (route.status != typed_node::kStatusOk ||
-      route.result_kind != typed_node::kRouteResultSelected ||
-      route.frontier_count == 0 ||
+  if (route.status != typed_node::kStatusOk) {
+    return false;
+  }
+  if (route.result_kind == typed_node::kRouteResultMiss) {
+    return route.frontier_count == 0 && route.output_valid_mask == 0;
+  }
+  if (route.result_kind != typed_node::kRouteResultSelected ||
       route.frontier_count > typed_node::kMaxChildren - 1 ||
-      route.output_valid_mask != required_mask ||
+      route.output_valid_mask !=
+          static_cast<uint8_t>(
+              typed_node::kSelectedFetchValid |
+              (route.frontier_count != 0
+                   ? typed_node::kFrontierItemsValid
+                   : 0)) ||
       route.selected_fetch.decode_context.as_object.as_type !=
           (domain == kDomainTlas ? 1 : typed_blas::kAsTypeBlas)) {
     return false;
@@ -106,17 +112,33 @@ static bool route_shape_valid(const typed_node::route_result_v0 &route,
   return true;
 }
 
-static bool append_active_entries(const state_v0 &state,
-                                  entry_v0 *destination,
-                                  uint8_t *count) {
+static uint8_t ordinary_count(const state_v0 &state) {
+  return static_cast<uint8_t>(
+      state.stack_count - (state.cross_as != 0 ? 1 : 0));
+}
+
+static bool append_active_ordinary_entries(
+    const state_v0 &state, entry_v0 *destination, uint8_t *count) {
   if (destination == NULL || count == NULL) return false;
-  for (uint8_t index = 0; index < state.stack_count; ++index) {
+  const uint8_t active_count = ordinary_count(state);
+  for (uint8_t index = 0; index < active_count; ++index) {
     if (!read_logical_entry(state, index, &destination[*count])) {
       return false;
     }
     ++*count;
   }
   return true;
+}
+
+static bool read_protected_return(const state_v0 &state,
+                                  entry_v0 *entry) {
+  if (entry == NULL || state.cross_as == 0 ||
+      state.stack_count == 0) {
+    return false;
+  }
+  return read_logical_entry(
+      state, static_cast<uint8_t>(state.stack_count - 1), entry) &&
+         control_kind(entry->control) == kEntryCrossAsReturn;
 }
 
 }  // namespace
@@ -259,36 +281,53 @@ route_push_result_v0 push_node_route(
     return result;
   }
 
-  const typed_node::compact_child_work_item_v0 &selected_child =
-      input.route.selected_fetch.child;
-  const entry_v0 selected = direct_entry(selected_child, domain);
-  if (!validate_entry(selected)) {
-    result.status = kStatusInvalidRoute;
-    return result;
-  }
-  for (uint8_t index = 0; index < input.route.frontier_count;
-       ++index) {
-    if (!validate_entry(direct_entry(input.route.frontier[index],
-                                     domain))) {
+  const bool selected_valid =
+      input.route.result_kind == typed_node::kRouteResultSelected;
+  typed_node::compact_child_work_item_v0 selected_child = {};
+  if (selected_valid) {
+    selected_child = input.route.selected_fetch.child;
+    if (!validate_entry(direct_entry(selected_child, domain))) {
       result.status = kStatusInvalidRoute;
       return result;
     }
+    for (uint8_t index = 0; index < input.route.frontier_count;
+         ++index) {
+      if (!validate_entry(direct_entry(input.route.frontier[index],
+                                       domain))) {
+        result.status = kStatusInvalidRoute;
+        return result;
+      }
+    }
+  }
+  if (input.parent_resume_valid > 1 ||
+      (input.parent_resume_valid != 0 &&
+       (ordinary_count(input.state) != 0 ||
+        input.state.lost == 0 ||
+        !validate_entry(input.parent_resume) ||
+        control_kind(input.parent_resume.control) !=
+            kEntryParentResume ||
+        control_domain(input.parent_resume.control) != domain))) {
+    result.status = kStatusInvalidEntry;
+    return result;
   }
 
   entry_v0 merged[kLogicalCapacity +
                   typed_node::kMaxChildren] = {};
   uint8_t merged_count = 0;
+  const uint8_t active_count = ordinary_count(input.state);
+  const uint8_t ordinary_capacity = static_cast<uint8_t>(
+      kLogicalCapacity - (input.state.cross_as != 0 ? 1 : 0));
   const bool direct_remainder_fits =
-      static_cast<unsigned>(input.state.stack_count) +
-          input.route.frontier_count <=
-      kLogicalCapacity;
-  if (direct_remainder_fits) {
+      static_cast<unsigned>(active_count) +
+          input.route.frontier_count +
+          input.parent_resume_valid <= ordinary_capacity;
+  if (selected_valid && direct_remainder_fits) {
     for (uint8_t index = 0; index < input.route.frontier_count;
          ++index) {
       merged[merged_count++] =
           direct_entry(input.route.frontier[index], domain);
     }
-  } else {
+  } else if (selected_valid && input.route.frontier_count != 0) {
     entry_v0 replay = {};
     replay.payload_offset = input.current_node_payload_offset;
     replay.near_t_bits = selected_child.near_t_bits;
@@ -304,25 +343,50 @@ route_push_result_v0 push_node_route(
     merged[merged_count++] = replay;
     result.compressed_to_replay = 1;
   }
-  if (!append_active_entries(input.state, merged, &merged_count)) {
+  if (input.parent_resume_valid != 0) {
+    if (merged_count < ordinary_capacity) {
+      merged[merged_count++] = input.parent_resume;
+      result.parent_resume_appended = 1;
+    } else {
+      result.parent_resume_deferred = 1;
+    }
+  }
+  if (!append_active_ordinary_entries(input.state, merged,
+                                      &merged_count)) {
     result.status = kStatusInvalidState;
     return result;
   }
 
-  const bool overflowed = merged_count > kLogicalCapacity;
+  const bool overflowed =
+      merged_count > ordinary_capacity ||
+      result.parent_resume_deferred != 0;
   const uint8_t retained_count =
-      overflowed ? kLogicalCapacity : merged_count;
+      merged_count > ordinary_capacity ? ordinary_capacity
+                                       : merged_count;
+  entry_v0 retained[kLogicalCapacity] = {};
+  for (uint8_t index = 0; index < retained_count; ++index) {
+    retained[index] = merged[index];
+  }
+  uint8_t final_count = retained_count;
+  if (input.state.cross_as != 0) {
+    entry_v0 return_entry = {};
+    if (!read_protected_return(input.state, &return_entry)) {
+      result.status = kStatusInvalidState;
+      return result;
+    }
+    retained[final_count++] = return_entry;
+  }
   result.state = input.state;
   if (!write_logical_entries(
-          &result.state, merged, retained_count,
+          &result.state, retained, final_count,
           input.state.lost != 0 || overflowed)) {
     result.status = kStatusInvalidState;
     return result;
   }
   result.status = kStatusOk;
-  result.selected_valid = 1;
+  result.selected_valid = selected_valid ? 1 : 0;
   result.overflowed_bottom = overflowed ? 1 : 0;
-  result.selected = input.route.selected_fetch;
+  if (selected_valid) result.selected = input.route.selected_fetch;
   return result;
 }
 
@@ -366,55 +430,52 @@ bool parent_bailout_required(const state_v0 &state) {
           kind == kEntryParentResume);
 }
 
-status_kind install_parent_resume(state_v0 *state,
-                                  const entry_v0 &current_internal,
-                                  const parent_edge_v0 &parent) {
-  if (state == NULL || !validate_state(*state) ||
-      !parent_bailout_required(*state) ||
-      !validate_entry(current_internal) ||
-      current_internal.payload_kind !=
+parent_bailout_result_v0 prepare_parent_bailout(
+    const pop_result_v0 &popped, const parent_edge_v0 &parent) {
+  parent_bailout_result_v0 result = {};
+  result.status = kStatusInvalidArgument;
+  if (popped.status != kStatusOk || popped.entry_valid == 0 ||
+      !validate_state(popped.state) || popped.state.lost == 0 ||
+      ordinary_count(popped.state) != 0 ||
+      !validate_entry(popped.entry) ||
+      popped.entry.payload_kind !=
           typed_node::kInternalPayloadKind ||
       !bytes_are_zero(parent.reserved_zero,
                       sizeof(parent.reserved_zero)) ||
       parent.root > 1) {
-    return kStatusInvalidArgument;
+    return result;
   }
-  entry_v0 current_top = {};
-  if (!read_logical_entry(*state, 0, &current_top) ||
-      std::memcmp(&current_top, &current_internal,
-                  sizeof(current_top)) != 0) {
-    return kStatusInvalidEntry;
+  result.state = popped.state;
+  if (parent.root != 0) {
+    result.state.lost = 0;
+    result.root_replay = 1;
+    result.status = kStatusOk;
+    return result;
   }
-  entry_v0 logical[kLogicalCapacity] = {};
-  uint8_t count = 0;
-  if (parent.root == 0) {
-    if (parent.parent_payload_offset == 0 ||
-        (parent.parent_payload_offset & uint64_t{0x3f}) != 0 ||
-        parent.parent_child_slot >= typed_node::kMaxChildren) {
-      return kStatusInvalidParentEdge;
-    }
-    entry_v0 resume = {};
-    resume.payload_offset = parent.parent_payload_offset;
-    resume.near_t_bits = current_internal.near_t_bits;
-    resume.payload_byte_count = 64;
-    resume.payload_kind = typed_node::kInternalPayloadKind;
-    resume.control =
-        make_control(kEntryParentResume,
-                     static_cast<domain_kind>(state->active_domain),
-                     parent.parent_child_slot, true, false);
-    logical[count++] = resume;
+  if (parent.parent_payload_offset == 0 ||
+      (parent.parent_payload_offset & uint64_t{0x3f}) != 0 ||
+      parent.parent_child_slot >= typed_node::kMaxChildren) {
+    result.status = kStatusInvalidParentEdge;
+    return result;
   }
-  for (uint8_t index = 1; index < state->stack_count; ++index) {
-    if (!read_logical_entry(*state, index, &logical[count])) {
-      return kStatusInvalidState;
-    }
-    ++count;
+  result.parent_resume.payload_offset =
+      parent.parent_payload_offset;
+  result.parent_resume.near_t_bits = popped.entry.near_t_bits;
+  result.parent_resume.payload_byte_count = 64;
+  result.parent_resume.payload_kind =
+      typed_node::kInternalPayloadKind;
+  result.parent_resume.control =
+      make_control(kEntryParentResume,
+                   static_cast<domain_kind>(
+                       popped.state.active_domain),
+                   parent.parent_child_slot, true, false);
+  if (!validate_entry(result.parent_resume)) {
+    result.status = kStatusInvalidParentEdge;
+    return result;
   }
-  if (!write_logical_entries(state, logical, count,
-                             parent.root == 0)) {
-    return kStatusInvalidState;
-  }
-  return kStatusOk;
+  result.parent_resume_valid = 1;
+  result.status = kStatusOk;
+  return result;
 }
 
 cross_as_result_v0 enter_blas(const cross_as_input_v0 &input) {

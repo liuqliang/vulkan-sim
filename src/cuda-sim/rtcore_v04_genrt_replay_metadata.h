@@ -62,12 +62,14 @@ class registry_v0 {
   status_kind resolve(const object_identity_v0 &identity,
                       uint64_t payload_offset,
                       parent_record_v0 *record) const;
-  status_kind release(uint64_t object_id, uint32_t generation);
+  status_kind release(uint8_t as_type, uint64_t object_id,
+                      uint32_t generation);
   size_t object_count() const;
-  size_t record_count(uint64_t object_id) const;
+  size_t record_count(uint8_t as_type, uint64_t object_id) const;
 
  private:
-  std::map<uint64_t, object_metadata_v0> objects_;
+  typedef std::map<uint64_t, object_metadata_v0> object_map_v0;
+  std::map<uint8_t, object_map_v0> objects_by_type_;
 };
 
 bool to_parent_edge(const parent_record_v0 &record,

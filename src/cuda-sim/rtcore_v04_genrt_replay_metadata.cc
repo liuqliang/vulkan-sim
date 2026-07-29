@@ -204,7 +204,13 @@ static status_kind build_object(const image_view_v0 &image,
   metadata->identity = image.identity;
   metadata->root_payload_offset = image.root_payload_offset;
   const uint8_t root_kind = image.bytes[image.root_payload_offset + 16];
-  if (root_kind != typed_node::kInternalPayloadKind) {
+  uint64_t root_bytes = 0;
+  const uint8_t root_blocks =
+      root_kind == typed_node::kInstancePayloadKind ? 2 : 1;
+  if (!payload_allowed(image.identity.as_type, root_kind) ||
+      !payload_layout(root_kind, root_blocks, &root_bytes) ||
+      !range_contains(image.byte_count, image.root_payload_offset,
+                      root_bytes)) {
     return kStatusMalformedNode;
   }
   build_state state = {};
@@ -214,7 +220,9 @@ static status_kind build_object(const image_view_v0 &image,
       insert_record(&state, image.root_payload_offset, root_kind,
                     true, 0, 0);
   if (status != kStatusOk) return status;
-  status = visit_internal(&state, image.root_payload_offset);
+  status = root_kind == typed_node::kInternalPayloadKind
+               ? visit_internal(&state, image.root_payload_offset)
+               : kStatusOk;
   if (status != kStatusOk) {
     *metadata = object_metadata_v0();
   }
@@ -230,9 +238,10 @@ static_assert(sizeof(parent_record_v0) == 24,
 
 status_kind registry_v0::publish(const image_view_v0 &image) {
   if (!valid_identity(image.identity)) return kStatusInvalidArgument;
+  object_map_v0 &objects = objects_by_type_[image.identity.as_type];
   std::map<uint64_t, object_metadata_v0>::iterator existing =
-      objects_.find(image.identity.object_id);
-  if (existing != objects_.end()) {
+      objects.find(image.identity.object_id);
+  if (existing != objects.end()) {
     if (existing->second.identity.generation !=
         image.identity.generation) {
       return kStatusGenerationMismatch;
@@ -249,7 +258,7 @@ status_kind registry_v0::publish(const image_view_v0 &image) {
   object_metadata_v0 metadata;
   const status_kind status = build_object(image, &metadata);
   if (status != kStatusOk) return status;
-  objects_[image.identity.object_id] = metadata;
+  objects[image.identity.object_id] = metadata;
   return kStatusOk;
 }
 
@@ -260,9 +269,12 @@ status_kind registry_v0::resolve(
     return kStatusInvalidArgument;
   }
   *record = parent_record_v0();
+  std::map<uint8_t, object_map_v0>::const_iterator type =
+      objects_by_type_.find(identity.as_type);
+  if (type == objects_by_type_.end()) return kStatusObjectNotFound;
   std::map<uint64_t, object_metadata_v0>::const_iterator object =
-      objects_.find(identity.object_id);
-  if (object == objects_.end()) return kStatusObjectNotFound;
+      type->second.find(identity.object_id);
+  if (object == type->second.end()) return kStatusObjectNotFound;
   if (object->second.identity.generation != identity.generation) {
     return kStatusGenerationMismatch;
   }
@@ -282,27 +294,41 @@ status_kind registry_v0::resolve(
   return kStatusOk;
 }
 
-status_kind registry_v0::release(uint64_t object_id,
+status_kind registry_v0::release(uint8_t as_type, uint64_t object_id,
                                  uint32_t generation) {
+  std::map<uint8_t, object_map_v0>::iterator type =
+      objects_by_type_.find(as_type);
+  if (type == objects_by_type_.end()) return kStatusObjectNotFound;
   std::map<uint64_t, object_metadata_v0>::iterator object =
-      objects_.find(object_id);
-  if (object == objects_.end()) return kStatusObjectNotFound;
+      type->second.find(object_id);
+  if (object == type->second.end()) return kStatusObjectNotFound;
   if (generation == 0 ||
       object->second.identity.generation != generation) {
     return kStatusGenerationMismatch;
   }
-  objects_.erase(object);
+  type->second.erase(object);
+  if (type->second.empty()) objects_by_type_.erase(type);
   return kStatusOk;
 }
 
 size_t registry_v0::object_count() const {
-  return objects_.size();
+  size_t count = 0;
+  for (std::map<uint8_t, object_map_v0>::const_iterator type =
+           objects_by_type_.begin();
+       type != objects_by_type_.end(); ++type) {
+    count += type->second.size();
+  }
+  return count;
 }
 
-size_t registry_v0::record_count(uint64_t object_id) const {
+size_t registry_v0::record_count(uint8_t as_type,
+                                 uint64_t object_id) const {
+  std::map<uint8_t, object_map_v0>::const_iterator type =
+      objects_by_type_.find(as_type);
+  if (type == objects_by_type_.end()) return 0;
   std::map<uint64_t, object_metadata_v0>::const_iterator object =
-      objects_.find(object_id);
-  return object == objects_.end() ? 0 : object->second.records.size();
+      type->second.find(object_id);
+  return object == type->second.end() ? 0 : object->second.records.size();
 }
 
 bool to_parent_edge(const parent_record_v0 &record,

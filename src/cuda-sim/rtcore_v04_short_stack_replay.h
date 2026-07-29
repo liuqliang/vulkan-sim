@@ -62,8 +62,10 @@ struct route_push_input_v0 {
   state_v0 state;
   typed_node::route_result_v0 route;
   uint64_t current_node_payload_offset;
+  entry_v0 parent_resume;
   uint8_t active_domain;
-  uint8_t reserved_zero[7];
+  uint8_t parent_resume_valid;
+  uint8_t reserved_zero[6];
 };
 
 struct route_push_result_v0 {
@@ -71,6 +73,9 @@ struct route_push_result_v0 {
   uint8_t selected_valid;
   uint8_t compressed_to_replay;
   uint8_t overflowed_bottom;
+  uint8_t parent_resume_appended;
+  uint8_t parent_resume_deferred;
+  uint8_t reserved_zero[2];
   state_v0 state;
   typed_node::selected_child_fetch_work_item_v0 selected;
 };
@@ -95,6 +100,15 @@ struct cross_as_result_v0 {
   state_v0 state;
 };
 
+struct parent_bailout_result_v0 {
+  uint8_t status;
+  uint8_t parent_resume_valid;
+  uint8_t root_replay;
+  uint8_t reserved_zero[5];
+  state_v0 state;
+  entry_v0 parent_resume;
+};
+
 uint8_t make_control(entry_kind kind, domain_kind domain,
                      uint8_t child_anchor, bool anchor_valid,
                      bool inclusive);
@@ -113,9 +127,8 @@ route_push_result_v0 push_node_route(const route_push_input_v0 &input);
 pop_result_v0 pop_top(const state_v0 &state);
 
 bool parent_bailout_required(const state_v0 &state);
-status_kind install_parent_resume(state_v0 *state,
-                                  const entry_v0 &current_internal,
-                                  const parent_edge_v0 &parent);
+parent_bailout_result_v0 prepare_parent_bailout(
+    const pop_result_v0 &popped, const parent_edge_v0 &parent);
 
 cross_as_result_v0 enter_blas(const cross_as_input_v0 &input);
 status_kind return_to_tlas(state_v0 *state,
