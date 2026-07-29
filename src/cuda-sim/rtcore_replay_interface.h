@@ -249,6 +249,7 @@ static const unsigned RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK = 1u;
 static const unsigned RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL = 2u;
 static const unsigned RTCORE_MEMORY_DESTINATION_STACK_QUEUE_FILL = 3u;
 static const unsigned RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK = 4u;
+static const unsigned RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL = 5u;
 static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT = 8u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_RAW_READ = 9u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ = 10u;
@@ -257,6 +258,7 @@ static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE = 12u;
 static const unsigned RTCORE_MEMORY_ACCESS_STACK_SPILL_RECOVERY_READ = 13u;
 static const unsigned RTCORE_MEMORY_ACCESS_HANDOFF_RAY_POLICY_READ = 14u;
 static const unsigned RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE = 15u;
+static const unsigned RTCORE_MEMORY_ACCESS_SHORT_STACK_STATE_READ = 16u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL = 1u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_PRIVATE_SHARED = 2u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_STACK_SPILL = 3u;
@@ -352,6 +354,10 @@ bool rtcore_accept_v04_handoff_ray_policy_read_response(
     unsigned long long response_cycle);
 
 bool rtcore_accept_v04_stack_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle);
+
+bool rtcore_accept_v04_short_stack_private_shared_read(
     const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle);
 

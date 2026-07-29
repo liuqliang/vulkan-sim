@@ -49,6 +49,7 @@
 #include "rtcore_v04_request_owner_binding.h"
 #include "rtcore_v04_root_node_packet.h"
 #include "rtcore_v04_selected_fetch_transition.h"
+#include "rtcore_v04_short_stack_timing_service.h"
 #include "rtcore_v04_shader_input.h"
 #include "rtcore_v04_shadow_shader_return.h"
 #include "rtcore_v04_stack_operation_queue.h"
@@ -1164,6 +1165,7 @@ struct rtcore_replay_service_tick_result {
     bool scoreboard_handoff_progressed;
     unsigned private_shared_init_acks_consumed;
     unsigned private_shared_runtime_acks_consumed;
+    unsigned private_shared_short_stack_runtime_acks_consumed;
     unsigned private_shared_instance_runtime_acks_consumed;
     unsigned private_shared_primitive_runtime_acks_consumed;
     unsigned private_shared_init_writes_enqueued;
@@ -1552,6 +1554,8 @@ static std::map<unsigned, rtcore::v04::stack_timing::state_v0>
     g_rtcore_v04_live_stack_timing_by_owner;
 static std::map<unsigned, rtcore::v04::stack_commit::engine_state_v0>
     g_rtcore_v04_live_stack_commit_by_owner;
+static std::map<unsigned, rtcore::v04::short_stack_timing::engine_state_v0>
+    g_rtcore_v04_live_short_stack_timing_by_owner;
 static std::map<unsigned, rtcore::v04::instance_timing::state_v0>
     g_rtcore_v04_live_instance_timing_by_owner;
 static std::map<unsigned, rtcore::v04::instance_shared::engine_state_v0>
@@ -1564,6 +1568,8 @@ static std::map<unsigned, uint16_t>
     g_rtcore_v04_stack_spill_recovery_cursor_by_owner;
 static std::map<unsigned, uint16_t>
     g_rtcore_v04_instance_restore_recovery_cursor_by_owner;
+
+static bool rtcore_v04_live_short_stack_timing_enabled();
 
 static void rtcore_record_v04_lane_conservation_or_abort(
     rtcore::v04::conservation::event_kind event,
@@ -1959,6 +1965,66 @@ rtcore_v04_live_stack_timing_for(unsigned owner_hw_sid)
                owner_hw_sid, config.stack_unit_count,
                config.stack_latency, config.stack_initiation_interval,
                config.stack_issue_width);
+        fflush(stdout);
+    }
+    return state;
+}
+
+static rtcore::v04::short_stack_timing::engine_state_v0 &
+rtcore_v04_live_short_stack_timing_for(unsigned owner_hw_sid)
+{
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    short_timing::engine_state_v0 &state =
+        g_rtcore_v04_live_short_stack_timing_by_owner[owner_hw_sid];
+    if (!state.initialized) {
+        short_timing::config_v0 config =
+            short_timing::candidate_profile_config();
+        config.capacity = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_QUEUE_CAPACITY",
+                config.capacity, short_timing::kMaxSlots));
+        config.reservation_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_QUEUE_RESERVATION_WIDTH",
+                config.reservation_width, config.capacity));
+        config.unit_count = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_UNIT_COUNT",
+                config.unit_count, short_timing::kMaxUnits));
+        config.stack_latency = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_LATENCY",
+                config.stack_latency, 255));
+        config.initiation_interval = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_INITIATION_INTERVAL",
+                config.initiation_interval, 255));
+        config.issue_width = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_ISSUE_WIDTH",
+                config.issue_width, config.unit_count));
+        config.parent_lookup_latency = static_cast<uint8_t>(
+            rtcore_v04_timing_uint_config(
+                "VULKAN_SIM_RTCORE_REPLAY_V04_PARENT_LOOKUP_LATENCY",
+                config.parent_lookup_latency, 255));
+        if (short_timing::initialize(&state, config) !=
+            short_timing::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                    "owner_hw_sid=%u fault=initialize_failed\n",
+                    owner_hw_sid);
+            fflush(stderr);
+            abort();
+        }
+        printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
+               "owner_hw_sid=%u target=short_stack capacity=%u "
+               "reservation_width=%u units=%u latency=%u "
+               "initiation_interval=%u issue_width=%u "
+               "parent_lookup_latency=%u logical_slots=6\n",
+               owner_hw_sid, config.capacity,
+               config.reservation_width, config.unit_count,
+               config.stack_latency, config.initiation_interval,
+               config.issue_width, config.parent_lookup_latency);
         fflush(stdout);
     }
     return state;
@@ -3032,6 +3098,7 @@ static bool rtcore_v04_typed_instance_enter_transition_enabled();
 static bool rtcore_v04_typed_instance_enter_prerequisites_enabled();
 static bool rtcore_v04_typed_primitive_candidate_kernel_enabled();
 static bool rtcore_v04_typed_procedural_boundary_seed_enabled();
+static bool rtcore_v04_live_short_stack_timing_enabled();
 
 extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
 {
@@ -3092,7 +3159,11 @@ extern "C" bool rtcore_v04_functional_node_driver_configuration_valid()
              rtcore_custom_submit_continuation_contract_valid())) &&
            (!rtcore_v04_live_stack_terminal_publication_enabled() ||
             (rtcore_v04_continuation_lifecycle_enabled() &&
-             rtcore_v04_live_stack_empty_frontier_enabled()));
+             rtcore_v04_live_stack_empty_frontier_enabled())) &&
+           (!rtcore_v04_live_short_stack_timing_enabled() ||
+            (rtcore_v04_live_selected_fetch_transition_enabled() &&
+             rtcore_v04_private_frontier_live_init_enabled() &&
+             rtcore_v04_live_stack_terminal_publication_enabled()));
 }
 
 static void rtcore_v04_require_valid_node_driver_configuration()
@@ -3110,7 +3181,7 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             "stack_empty_frontier=%u instance_restore_parent=%u "
             "instance_enter_transition=%u primitive_timing_route=%u "
             "native_boundary=%u continuation_lifecycle=%u "
-            "stack_terminal_publication=%u\n",
+            "stack_terminal_publication=%u short_stack_timing=%u\n",
             rtcore_v04_functional_node_driver_enabled() ? 1u : 0u,
             rtcore_v04_functional_only_engine_enabled() ? 1u : 0u,
             rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u,
@@ -3127,7 +3198,8 @@ static void rtcore_v04_require_valid_node_driver_configuration()
             rtcore_v04_live_primitive_timing_route_enabled() ? 1u : 0u,
             rtcore_v04_native_boundary_completion_enabled() ? 1u : 0u,
             rtcore_v04_continuation_lifecycle_enabled() ? 1u : 0u,
-            rtcore_v04_live_stack_terminal_publication_enabled() ? 1u : 0u);
+            rtcore_v04_live_stack_terminal_publication_enabled() ? 1u : 0u,
+            rtcore_v04_live_short_stack_timing_enabled() ? 1u : 0u);
     fflush(stderr);
     abort();
 }
@@ -3206,6 +3278,12 @@ static bool rtcore_v04_genrt_short_stack_replay_enabled()
                RTCORE_CANDIDATE_GATE_ENABLED;
     }();
     return enabled != 0;
+}
+
+static bool rtcore_v04_live_short_stack_timing_enabled()
+{
+    return rtcore_v04_genrt_short_stack_replay_enabled() &&
+           rtcore_v04_live_node_timing_enabled();
 }
 
 static bool rtcore_v04_producer_backed_instance_blas_reference_enabled()
@@ -15811,6 +15889,7 @@ static unsigned rtcore_service_v04_private_shared_ack_dispatch(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     unsigned *init_acknowledged_count,
     unsigned *runtime_acknowledged_count,
+    unsigned *short_stack_runtime_acknowledged_count,
     unsigned *instance_runtime_acknowledged_count,
     unsigned *primitive_runtime_acknowledged_count);
 
@@ -16049,15 +16128,18 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
             owner_hw_sid, service_cycle);
     unsigned private_shared_init_acks_consumed = 0;
     unsigned private_shared_runtime_acks_consumed = 0;
+    unsigned private_shared_short_stack_runtime_acks_consumed = 0;
     unsigned private_shared_instance_runtime_acks_consumed = 0;
     unsigned private_shared_primitive_runtime_acks_consumed = 0;
     if (rtcore_v04_live_stack_push_commit_enabled() ||
+        rtcore_v04_live_short_stack_timing_enabled() ||
         rtcore_v04_live_instance_service_enabled() ||
         rtcore_v04_live_primitive_timing_route_enabled()) {
         rtcore_service_v04_private_shared_ack_dispatch(
             owner_hw_sid, service_cycle,
             &private_shared_init_acks_consumed,
             &private_shared_runtime_acks_consumed,
+            &private_shared_short_stack_runtime_acks_consumed,
             &private_shared_instance_runtime_acks_consumed,
             &private_shared_primitive_runtime_acks_consumed);
     }
@@ -16076,6 +16158,8 @@ rtcore_service_replay_tick_for_owner(unsigned owner_hw_sid,
         private_shared_init_acks_consumed;
     result.private_shared_runtime_acks_consumed =
         private_shared_runtime_acks_consumed;
+    result.private_shared_short_stack_runtime_acks_consumed =
+        private_shared_short_stack_runtime_acks_consumed;
     result.private_shared_instance_runtime_acks_consumed =
         private_shared_instance_runtime_acks_consumed;
     result.private_shared_primitive_runtime_acks_consumed =
@@ -18281,10 +18365,164 @@ extern "C" bool rtcore_accept_v04_stack_private_shared_read(
     return true;
 }
 
+extern "C" bool rtcore_accept_v04_short_stack_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle)
+{
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (request == NULL ||
+        !rtcore_v04_live_short_stack_timing_enabled()) {
+        return false;
+    }
+    std::map<unsigned, short_timing::engine_state_v0>::iterator it =
+        g_rtcore_v04_live_short_stack_timing_by_owner.find(
+            request->owner_hw_sid);
+    if (it == g_rtcore_v04_live_short_stack_timing_by_owner.end()) {
+        return false;
+    }
+
+    short_timing::engine_state_v0 staged_short = it->second;
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(request->owner_hw_sid);
+    const short_timing::status_kind status =
+        short_timing::accept_read_response(
+            &staged_short, &staged_timing,
+            rtcore_v04_private_shared_backing_for(
+                request->owner_hw_sid),
+            *request, response_cycle);
+    if (status != short_timing::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_READ_FAULT "
+                "owner_hw_sid=%u request_identity=0x%08x "
+                "lane_id=%u operation_seq=%u chunk_id=%u "
+                "response_cycle=%llu fault=%s\n",
+                request->owner_hw_sid, request->rt_request_id,
+                request->lane_id,
+                request->v04_stack_private_read.target_operation_seq,
+                request->chunk_id, response_cycle,
+                short_timing::status_name(status));
+        fflush(stderr);
+        return false;
+    }
+    it->second = staged_short;
+    rtcore_v04_timing_driver_for(request->owner_hw_sid) =
+        staged_timing;
+    return true;
+}
+
 struct rtcore_v04_selected_fetch_sink_context {
     unsigned owner_hw_sid;
     unsigned long long service_cycle;
 };
+
+static rtcore::v04::private_frontier::region_binding_v0
+rtcore_v04_private_region_for(unsigned owner_hw_sid);
+
+static rtcore::v04::node_timing::route_sink_result_kind
+rtcore_accept_v04_short_stack_node_route(
+    rtcore::v04::node_timing::committed_route_receipt_v0 *route,
+    rtcore::v04::timing_driver::state_v0 *staged_timing_state,
+    void *opaque_context)
+{
+    namespace node_timing = rtcore::v04::node_timing;
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    rtcore_v04_selected_fetch_sink_context *context =
+        static_cast<rtcore_v04_selected_fetch_sink_context *>(
+            opaque_context);
+    if (route == NULL || staged_timing_state == NULL ||
+        context == NULL || !route->valid ||
+        route->result_identity.owner.owner_hw_sid !=
+            context->owner_hw_sid) {
+        return node_timing::kRouteSinkRejected;
+    }
+
+    short_timing::engine_state_v0 staged_short =
+        rtcore_v04_live_short_stack_timing_for(
+            context->owner_hw_sid);
+    short_timing::reservation_input_v0 input = {};
+    input.owner = route->result_identity.owner;
+    input.private_region =
+        rtcore_v04_private_region_for(context->owner_hw_sid);
+    input.node_route = route->typed_result;
+    input.ray_policy = route->ray_policy;
+    input.current_target = route->current_target_reference;
+    input.current_decode_context = route->current_decode_context;
+    input.pending_parent_resume = route->pending_parent_resume;
+    input.producer_operation_seq =
+        route->result_identity.target_operation_seq;
+    input.pending_parent_resume_valid =
+        route->pending_parent_resume_valid;
+    short_timing::reservation_receipt_v0 reservation = {};
+    short_timing::request_plan_v0 request_plan = {};
+    const short_timing::status_kind status =
+        short_timing::reserve(
+            &staged_short, staged_timing_state,
+            rtcore_v04_private_shared_backing_for(
+                context->owner_hw_sid),
+            input, context->service_cycle, &reservation,
+            &request_plan);
+    if (status == short_timing::kStatusCapacityBackpressure ||
+        status ==
+            short_timing::kStatusReservationBudgetBackpressure) {
+        return node_timing::kRouteSinkBackpressure;
+    }
+    if (status != short_timing::kStatusOk ||
+        !reservation.valid || !request_plan.valid ||
+        request_plan.request_count !=
+            short_timing::kReadChunkCount) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_INGRESS_FAULT "
+                "owner_hw_sid=%u lane_id=%u "
+                "producer_operation_seq=%u fault=%s\n",
+                context->owner_hw_sid,
+                route->result_identity.owner.lane_id,
+                route->result_identity.target_operation_seq,
+                short_timing::status_name(status));
+        fflush(stderr);
+        return node_timing::kRouteSinkRejected;
+    }
+    for (unsigned index = 0;
+         index < request_plan.request_count; ++index) {
+        if (!request_plan.requests[index].valid ||
+            request_plan.requests[index].owner_hw_sid !=
+                context->owner_hw_sid) {
+            return node_timing::kRouteSinkRejected;
+        }
+    }
+
+    rtcore_v04_live_short_stack_timing_for(
+        context->owner_hw_sid) = staged_short;
+    std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+        g_rtcore_memory_unit_request_snapshots_by_owner[
+            context->owner_hw_sid];
+    live_queue.insert(
+        live_queue.end(), request_plan.requests,
+        request_plan.requests + request_plan.request_count);
+    route->next_target_operation_seq = reservation.operation_seq;
+    route->next_target_kind =
+        node_timing::kMaterializedRouteTargetStackOperation;
+    route->next_target_materialized = 1;
+    printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_INGRESS_ACCEPTED "
+           "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+           "request_identity=%u request_generation=%u "
+           "producer_operation_seq=%u short_operation_seq=%u "
+           "reservation_id=%llu slot_generation=%u "
+           "shared_reads=%u service_cycle=%llu\n",
+           route->result_identity.owner.owner_hw_sid,
+           route->result_identity.owner.resident_warp_id,
+           route->result_identity.owner.lane_id,
+           route->result_identity.owner.request_identity,
+           route->result_identity.owner.generation,
+           route->result_identity.target_operation_seq,
+           reservation.operation_seq,
+           static_cast<unsigned long long>(
+               reservation.reservation_id),
+           reservation.slot_generation,
+           request_plan.request_count, context->service_cycle);
+    fflush(stdout);
+    return node_timing::kRouteSinkAccepted;
+}
 
 static rtcore::v04::node_timing::route_sink_result_kind
 rtcore_accept_v04_direct_selected_fetch_route(
@@ -18719,6 +18957,10 @@ rtcore_accept_v04_live_node_route(
     namespace node_timing = rtcore::v04::node_timing;
     namespace result_semantic = rtcore::v04::result_semantic;
     if (route == NULL) return node_timing::kRouteSinkRejected;
+    if (rtcore_v04_live_short_stack_timing_enabled()) {
+        return rtcore_accept_v04_short_stack_node_route(
+            route, staged_timing_state, opaque_context);
+    }
     if (route->semantic_plan.route_kind ==
         result_semantic::kNodeRouteDirectChild) {
         return rtcore_accept_v04_direct_selected_fetch_route(
@@ -18895,6 +19137,404 @@ static bool rtcore_v04_request_owner_from_private_owner(
     snapshot.private_slot_id = private_owner.private_slot_id;
     return rtcore_v04_owner_binding_from_target_request(
         snapshot, request_owner);
+}
+
+struct rtcore_v04_short_stack_parent_resolver_context {
+    unsigned owner_hw_sid;
+    unsigned long long service_cycle;
+};
+
+static bool rtcore_v04_short_stack_parent_resolver(
+    void *opaque_context,
+    const rtcore::v04::typed_blas::as_decode_context_v0 &decode_context,
+    uint32_t build_generation, uint64_t payload_offset,
+    rtcore::v04::short_stack::parent_edge_v0 *parent)
+{
+    rtcore_v04_short_stack_parent_resolver_context *context =
+        static_cast<rtcore_v04_short_stack_parent_resolver_context *>(
+            opaque_context);
+    const char *failure_reason = "unvalidated";
+    const bool resolved =
+        VulkanRayTracing::resolveV04GenRtReplayParent(
+            decode_context, build_generation, payload_offset,
+            parent, &failure_reason);
+    if (!resolved) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_PARENT_LOOKUP_FAULT "
+                "owner_hw_sid=%u payload_offset=0x%llx "
+                "build_generation=%u service_cycle=%llu fault=%s\n",
+                context != NULL ? context->owner_hw_sid : 0u,
+                static_cast<unsigned long long>(payload_offset),
+                build_generation,
+                context != NULL ? context->service_cycle : 0,
+                failure_reason);
+        fflush(stderr);
+    }
+    return resolved;
+}
+
+static bool rtcore_service_v04_live_short_stack_timing(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    bool *memory_progressed)
+{
+    namespace fetch_target = rtcore::v04::fetch_target;
+    namespace live_global = rtcore::v04::live_global_memory;
+    namespace private_frontier = rtcore::v04::private_frontier;
+    namespace selected_transition =
+        rtcore::v04::selected_fetch_transition;
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (memory_progressed != NULL) {
+        *memory_progressed = false;
+    }
+    if (!rtcore_v04_live_short_stack_timing_enabled()) {
+        return false;
+    }
+    if (!rtcore_v04_functional_node_driver_configuration_valid() ||
+        !rtcore_v04_live_global_memory_adapter_configuration_valid()) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu "
+                "fault=prerequisite_invalid\n",
+                owner_hw_sid, service_cycle);
+        fflush(stderr);
+        abort();
+    }
+
+    short_timing::engine_state_v0 staged_short =
+        rtcore_v04_live_short_stack_timing_for(owner_hw_sid);
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(owner_hw_sid);
+    rtcore::v04::private_shared::backing_state_v0 staged_backing =
+        rtcore_v04_private_shared_backing_for(owner_hw_sid);
+    rtcore_v04_short_stack_parent_resolver_context resolver_context = {};
+    resolver_context.owner_hw_sid = owner_hw_sid;
+    resolver_context.service_cycle = service_cycle;
+    short_timing::parent_resolver_v0 resolver = {};
+    resolver.resolve = rtcore_v04_short_stack_parent_resolver;
+    resolver.context = &resolver_context;
+    short_timing::cycle_result_v0 cycle_result = {};
+    const short_timing::status_kind service_status =
+        short_timing::service_cycle(
+            &staged_short, &staged_timing, &staged_backing,
+            resolver, service_cycle, &cycle_result);
+    if (service_status != short_timing::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                owner_hw_sid, service_cycle,
+                short_timing::status_name(service_status));
+        fflush(stderr);
+        abort();
+    }
+
+    bool successor_accepted = false;
+    bool terminal_accepted = false;
+    bool successor_backpressured = false;
+    std::deque<rtcore_memory_unit_request_snapshot> requests;
+    fetch_target::engine_state_v0 staged_target =
+        rtcore_v04_live_target_engine_for(owner_hw_sid);
+    short_timing::ready_result_v0 ready = {};
+    const short_timing::status_kind ready_status =
+        short_timing::peek_ready_result(staged_short, &ready);
+    if (ready_status != short_timing::kStatusOk &&
+        ready_status != short_timing::kStatusNoReadyResult) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                owner_hw_sid, service_cycle,
+                short_timing::status_name(ready_status));
+        fflush(stderr);
+        abort();
+    }
+    if (ready_status == short_timing::kStatusOk) {
+        rtcore::v04::request_owner::lane_binding_v0 owner = {};
+        if (!rtcore_v04_request_owner_from_private_owner(
+                ready.owner, &owner)) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=ready_owner_invalid\n",
+                    owner_hw_sid, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        timing_driver::state_v0 ready_timing = staged_timing;
+        short_timing::engine_state_v0 ready_short = staged_short;
+        if (ready.transition.selected_valid != 0 &&
+            ready.transition.terminal == 0) {
+            if (timing_driver::complete_result_commit(
+                    &ready_timing, owner, ready.operation_seq,
+                    ready.commit_epoch) != timing_driver::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=commit_completion_rejected\n",
+                        owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+            selected_transition::direct_transition_input_v0 input = {};
+            input.owner = ready.owner;
+            input.selected_fetch = ready.transition.selected_fetch;
+            input.ray_policy = ready.ray_policy;
+            input.replay_cursor = ready.transition.replay_cursor;
+            input.pending_parent_resume =
+                ready.transition.pending_parent_resume;
+            input.producer_operation_seq = ready.operation_seq;
+            input.build_generation =
+                ready.transition.next_build_generation;
+            input.reservation_cycle = service_cycle;
+            input.pending_parent_resume_valid =
+                ready.transition.pending_parent_resume_valid;
+            selected_transition::accepted_transition_v0 accepted = {};
+            const selected_transition::status_kind transition_status =
+                selected_transition::try_accept_direct(
+                    &ready_timing, &staged_target,
+                    staged_backing, input, &accepted);
+            if (transition_status ==
+                selected_transition::kStatusTargetBackpressure) {
+                successor_backpressured = true;
+            } else if (transition_status !=
+                           selected_transition::kStatusOk ||
+                       !accepted.valid) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                        "owner_hw_sid=%u lane_id=%u service_cycle=%llu "
+                        "fault=%s\n",
+                        owner_hw_sid, ready.owner.lane_id,
+                        service_cycle,
+                        selected_transition::status_name(
+                            transition_status));
+                fflush(stderr);
+                abort();
+            } else {
+                live_global::request_plan_v0 raw_request_plan = {};
+                if (live_global::prepare_request_plan(
+                        accepted.raw_read_plan, service_cycle,
+                        &raw_request_plan) !=
+                    live_global::kStatusOk) {
+                    fprintf(stderr,
+                            "GPGPU-Sim "
+                            "RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                            "owner_hw_sid=%u service_cycle=%llu "
+                            "fault=raw_request_plan_rejected\n",
+                            owner_hw_sid, service_cycle);
+                    fflush(stderr);
+                    abort();
+                }
+                for (unsigned index = 0;
+                     index < raw_request_plan.request_count; ++index) {
+                    if (!raw_request_plan.requests[index].valid ||
+                        raw_request_plan.requests[index].owner_hw_sid !=
+                            owner_hw_sid) {
+                        abort();
+                    }
+                    requests.push_back(
+                        raw_request_plan.requests[index]);
+                }
+                for (unsigned index = 0;
+                     index <
+                         accepted.private_request_plan.request_count;
+                     ++index) {
+                    if (!accepted.private_request_plan
+                             .requests[index]
+                             .valid ||
+                        accepted.private_request_plan
+                                .requests[index]
+                                .owner_hw_sid != owner_hw_sid) {
+                        abort();
+                    }
+                    requests.push_back(
+                        accepted.private_request_plan
+                            .requests[index]);
+                }
+                if (short_timing::consume_ready_result(
+                        &ready_short, ready) !=
+                    short_timing::kStatusOk) {
+                    abort();
+                }
+                staged_timing = ready_timing;
+                staged_short = ready_short;
+                successor_accepted = true;
+                rtcore_record_v04_lane_conservation_or_abort(
+                    rtcore::v04::conservation::kEventTargetReserved,
+                    ready.owner, accepted.target_operation_seq,
+                    0, 0, 0, 0, accepted.target_kind,
+                    service_cycle);
+                printf("GPGPU-Sim "
+                       "RTCORE_V04_SHORT_STACK_SUCCESSOR_ACCEPTED "
+                       "owner_hw_sid=%u resident_warp_slot=%u "
+                       "lane_id=%u short_operation_seq=%u "
+                       "target_operation_seq=%u target_kind=%u "
+                       "raw_requests=%u private_requests=%u "
+                       "replay_anchor_valid=%u "
+                       "parent_resume_valid=%u service_cycle=%llu\n",
+                       owner_hw_sid, ready.owner.resident_warp_id,
+                       ready.owner.lane_id, ready.operation_seq,
+                       accepted.target_operation_seq,
+                       accepted.target_kind,
+                       raw_request_plan.request_count,
+                       accepted.private_request_plan.request_count,
+                       ready.transition.replay_cursor.anchor_valid,
+                       ready.transition.pending_parent_resume_valid,
+                       service_cycle);
+                fflush(stdout);
+            }
+        } else if (ready.transition.terminal != 0 &&
+                   ready.transition.selected_valid == 0) {
+            const rtcore::v04::private_shared::lane_slot_state_v0 *lane =
+                rtcore::v04::private_shared::find_live_lane(
+                    staged_backing, ready.owner);
+            private_frontier::committed_hit_projection_v0 committed_hit = {};
+            if (lane == NULL ||
+                private_frontier::decode_committed_hit(
+                    lane->canonical_slot, ready.owner,
+                    &committed_hit) != private_frontier::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=terminal_hit_decode_rejected\n",
+                        owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+            const uint8_t terminal_kind =
+                committed_hit.valid != 0
+                    ? timing_driver::kTerminalBoundaryFinalHit
+                    : timing_driver::kTerminalBoundaryFinalMiss;
+            if (timing_driver::complete_result_commit_to_terminal(
+                    &ready_timing, owner, ready.operation_seq,
+                    ready.commit_epoch, terminal_kind) !=
+                    timing_driver::kStatusOk ||
+                short_timing::consume_ready_result(
+                    &ready_short, ready) !=
+                    short_timing::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=terminal_commit_rejected\n",
+                        owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+            staged_timing = ready_timing;
+            staged_short = ready_short;
+            terminal_accepted = true;
+            printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_TERMINAL "
+                   "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+                   "short_operation_seq=%u terminal_kind=%u "
+                   "service_cycle=%llu\n",
+                   owner_hw_sid, ready.owner.resident_warp_id,
+                   ready.owner.lane_id, ready.operation_seq,
+                   terminal_kind, service_cycle);
+            fflush(stdout);
+        } else {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=ambiguous_ready_result\n",
+                    owner_hw_sid, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+    }
+
+    rtcore_v04_live_short_stack_timing_for(owner_hw_sid) =
+        staged_short;
+    rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
+    rtcore_v04_private_shared_backing_for(owner_hw_sid) =
+        staged_backing;
+    if (successor_accepted) {
+        rtcore_v04_live_target_engine_for(owner_hw_sid) =
+            staged_target;
+        std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+            g_rtcore_memory_unit_request_snapshots_by_owner[
+                owner_hw_sid];
+        live_queue.insert(
+            live_queue.end(), requests.begin(), requests.end());
+    }
+    if (memory_progressed != NULL) {
+        *memory_progressed = successor_accepted;
+    }
+    if (cycle_result.issued != 0 ||
+        cycle_result.transition_committed != 0 ||
+        cycle_result.parent_lookup_completed != 0 ||
+        successor_accepted || terminal_accepted ||
+        successor_backpressured) {
+        printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_CYCLE "
+               "owner_hw_sid=%u service_cycle=%llu issued=%u "
+               "transition_committed=%u parent_lookup_completed=%u "
+               "successor_accepted=%u "
+               "successor_backpressured=%u terminal_accepted=%u "
+               "active_operations=%u ready_results=%u\n",
+               owner_hw_sid, service_cycle, cycle_result.issued,
+               cycle_result.transition_committed,
+               cycle_result.parent_lookup_completed,
+               successor_accepted ? 1u : 0u,
+               successor_backpressured ? 1u : 0u,
+               terminal_accepted ? 1u : 0u,
+               cycle_result.active_operations,
+               cycle_result.ready_results);
+        fflush(stdout);
+    }
+    return cycle_result.issued != 0 ||
+           cycle_result.transition_committed != 0 ||
+           cycle_result.parent_lookup_completed != 0 ||
+           successor_accepted || terminal_accepted;
+}
+
+static unsigned rtcore_service_v04_live_short_stack_write_transfer(
+    unsigned owner_hw_sid, unsigned long long service_cycle,
+    unsigned transfer_budget)
+{
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (!rtcore_v04_live_short_stack_timing_enabled() ||
+        transfer_budget == 0) {
+        return 0;
+    }
+    short_timing::engine_state_v0 staged_short =
+        rtcore_v04_live_short_stack_timing_for(owner_hw_sid);
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(owner_hw_sid);
+    private_shared::backing_state_v0 staged_backing =
+        rtcore_v04_private_shared_backing_for(owner_hw_sid);
+    uint8_t writes_enqueued = 0;
+    bool shared_queue_blocked = false;
+    const short_timing::status_kind status =
+        short_timing::service_write_enqueue(
+            &staged_short, &staged_timing, &staged_backing,
+            service_cycle,
+            static_cast<uint8_t>(std::min(
+                transfer_budget,
+                static_cast<unsigned>(
+                    private_shared::kPrivateWriteEnqueueWidth))),
+            &writes_enqueued, &shared_queue_blocked);
+    if (status != short_timing::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_WRITE_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                owner_hw_sid, service_cycle,
+                short_timing::status_name(status));
+        fflush(stderr);
+        abort();
+    }
+    rtcore_v04_live_short_stack_timing_for(owner_hw_sid) =
+        staged_short;
+    rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
+    rtcore_v04_private_shared_backing_for(owner_hw_sid) =
+        staged_backing;
+    if (writes_enqueued != 0 || shared_queue_blocked) {
+        printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_WRITE_TRANSFER "
+               "owner_hw_sid=%u service_cycle=%llu budget=%u "
+               "writes_enqueued=%u shared_queue_blocked=%u\n",
+               owner_hw_sid, service_cycle, transfer_budget,
+               writes_enqueued, shared_queue_blocked ? 1u : 0u);
+        fflush(stdout);
+    }
+    return writes_enqueued;
 }
 
 extern "C" bool rtcore_validate_v04_native_continuation_lane_authority(
@@ -19779,6 +20419,90 @@ static bool rtcore_service_v04_live_stack_ack(
     return true;
 }
 
+static bool rtcore_v04_live_short_stack_owns_front_ack(
+    unsigned owner_hw_sid)
+{
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    if (!rtcore_v04_live_short_stack_timing_enabled()) {
+        return false;
+    }
+    std::map<unsigned, short_timing::engine_state_v0>::const_iterator
+        state_it =
+            g_rtcore_v04_live_short_stack_timing_by_owner.find(
+                owner_hw_sid);
+    std::map<unsigned, private_shared::backing_state_v0>::const_iterator
+        backing_it =
+            g_rtcore_v04_private_shared_backing_by_owner.find(
+                owner_hw_sid);
+    if (state_it ==
+            g_rtcore_v04_live_short_stack_timing_by_owner.end() ||
+        backing_it ==
+            g_rtcore_v04_private_shared_backing_by_owner.end() ||
+        backing_it->second.outstanding.empty()) {
+        return false;
+    }
+    const private_shared::shared_write_v0 &front =
+        backing_it->second.outstanding.front();
+    private_shared::runtime_write_ack_v0 ack = {};
+    ack.valid = true;
+    ack.field_kind = front.field_kind;
+    ack.memory_operation_seq =
+        static_cast<uint16_t>(front.memory_op_seq);
+    ack.owner = front.owner;
+    ack.operation_seq = front.operation_seq;
+    ack.commit_epoch = front.commit_epoch;
+    return short_timing::owns_ack(state_it->second, ack);
+}
+
+static bool rtcore_service_v04_live_short_stack_ack(
+    unsigned owner_hw_sid, unsigned long long service_cycle)
+{
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    private_shared::backing_state_v0 &backing =
+        rtcore_v04_private_shared_backing_for(owner_hw_sid);
+    if (backing.outstanding.empty() ||
+        backing.outstanding.front().ack_cycle > service_cycle) {
+        return false;
+    }
+    const private_shared::shared_write_v0 &front =
+        backing.outstanding.front();
+    private_shared::runtime_write_ack_v0 ack = {};
+    ack.valid = true;
+    ack.field_kind = front.field_kind;
+    ack.memory_operation_seq =
+        static_cast<uint16_t>(front.memory_op_seq);
+    ack.owner = front.owner;
+    ack.operation_seq = front.operation_seq;
+    ack.commit_epoch = front.commit_epoch;
+
+    short_timing::engine_state_v0 staged_short =
+        rtcore_v04_live_short_stack_timing_for(owner_hw_sid);
+    private_shared::backing_state_v0 staged_backing = backing;
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(owner_hw_sid);
+    const short_timing::status_kind status =
+        short_timing::accept_write_ack(
+            &staged_short, &staged_timing, &staged_backing,
+            service_cycle, ack);
+    if (status != short_timing::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_ACK_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                owner_hw_sid, service_cycle,
+                short_timing::status_name(status));
+        fflush(stderr);
+        abort();
+    }
+    rtcore_v04_live_short_stack_timing_for(owner_hw_sid) =
+        staged_short;
+    backing = staged_backing;
+    rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
+    return true;
+}
+
 static bool rtcore_service_v04_live_instance_ack(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
@@ -19951,6 +20675,7 @@ static unsigned rtcore_service_v04_private_shared_ack_dispatch(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     unsigned *init_acknowledged_count,
     unsigned *runtime_acknowledged_count,
+    unsigned *short_stack_runtime_acknowledged_count,
     unsigned *instance_runtime_acknowledged_count,
     unsigned *primitive_runtime_acknowledged_count)
 {
@@ -19960,6 +20685,9 @@ static unsigned rtcore_service_v04_private_shared_ack_dispatch(
     }
     if (runtime_acknowledged_count != NULL) {
         *runtime_acknowledged_count = 0;
+    }
+    if (short_stack_runtime_acknowledged_count != NULL) {
+        *short_stack_runtime_acknowledged_count = 0;
     }
     if (instance_runtime_acknowledged_count != NULL) {
         *instance_runtime_acknowledged_count = 0;
@@ -20001,12 +20729,19 @@ static unsigned rtcore_service_v04_private_shared_ack_dispatch(
                 !primitive_ack &&
                 rtcore_v04_live_instance_owns_front_ack(
                     owner_hw_sid);
+            const bool short_stack_ack =
+                !primitive_ack && !instance_ack &&
+                rtcore_v04_live_short_stack_owns_front_ack(
+                    owner_hw_sid);
             const bool acknowledged =
                 primitive_ack
                     ? rtcore_service_v04_live_primitive_ack(
                           owner_hw_sid, service_cycle)
                     : instance_ack
                     ? rtcore_service_v04_live_instance_ack(
+                          owner_hw_sid, service_cycle)
+                    : short_stack_ack
+                    ? rtcore_service_v04_live_short_stack_ack(
                           owner_hw_sid, service_cycle)
                     : rtcore_service_v04_live_stack_ack(
                           owner_hw_sid, service_cycle);
@@ -20018,7 +20753,11 @@ static unsigned rtcore_service_v04_private_shared_ack_dispatch(
                         owner_hw_sid, service_cycle,
                         primitive_ack
                             ? "primitive"
-                            : instance_ack ? "instance" : "stack");
+                            : instance_ack
+                                  ? "instance"
+                                  : short_stack_ack
+                                        ? "short_stack"
+                                        : "stack");
                 fflush(stderr);
                 abort();
             }
@@ -20028,6 +20767,10 @@ static unsigned rtcore_service_v04_private_shared_ack_dispatch(
             if (instance_ack &&
                 instance_runtime_acknowledged_count != NULL) {
                 ++*instance_runtime_acknowledged_count;
+            }
+            if (short_stack_ack &&
+                short_stack_runtime_acknowledged_count != NULL) {
+                ++*short_stack_runtime_acknowledged_count;
             }
             if (primitive_ack &&
                 primitive_runtime_acknowledged_count != NULL) {
@@ -20647,6 +21390,17 @@ static bool rtcore_service_v04_live_instance_ready(
                 "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
                 owner_hw_sid, service_cycle,
                 instance_shared::status_name(ready_status));
+        fflush(stderr);
+        abort();
+    }
+    if (rtcore_v04_live_short_stack_timing_enabled()) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_INCOMPLETE_ROUTE "
+                "owner_hw_sid=%u lane_id=%u service_cycle=%llu "
+                "producer=instance route_kind=%u "
+                "fault=instance_short_stack_transition_missing\n",
+                owner_hw_sid, owner.lane_id, service_cycle,
+                event.route_kind);
         fflush(stderr);
         abort();
     }
@@ -21690,6 +22444,17 @@ static bool rtcore_service_v04_live_primitive_ready(
         fflush(stderr);
         abort();
     }
+    if (rtcore_v04_live_short_stack_timing_enabled()) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_INCOMPLETE_ROUTE "
+                "owner_hw_sid=%u lane_id=%u service_cycle=%llu "
+                "producer=primitive route_kind=%u "
+                "fault=primitive_short_stack_transition_missing\n",
+                owner_hw_sid, owner.lane_id, service_cycle,
+                event.route_kind);
+        fflush(stderr);
+        abort();
+    }
 
     rtcore_resident_rt_warp_record *native_resubmit_record = NULL;
     rtcore::v04::continuation_lifecycle::warp_state_v0
@@ -22027,20 +22792,30 @@ static bool rtcore_service_v04_live_primitive_timing(
 static unsigned rtcore_service_v04_live_runtime_write_arbitration(
     unsigned owner_hw_sid, unsigned long long service_cycle,
     unsigned transfer_budget, unsigned *stack_transferred,
-    unsigned *instance_transferred, unsigned *primitive_transferred)
+    unsigned *instance_transferred, unsigned *primitive_transferred,
+    unsigned *short_stack_transferred)
 {
     if (stack_transferred != NULL) *stack_transferred = 0;
     if (instance_transferred != NULL) *instance_transferred = 0;
     if (primitive_transferred != NULL) *primitive_transferred = 0;
+    if (short_stack_transferred != NULL) {
+        *short_stack_transferred = 0;
+    }
+    const unsigned producer_count =
+        rtcore_v04_live_short_stack_timing_enabled() ? 4u : 3u;
     unsigned total = 0;
     for (; total < transfer_budget; ++total) {
         unsigned stack_count = 0;
         unsigned instance_count = 0;
         unsigned primitive_count = 0;
+        unsigned short_stack_count = 0;
         const unsigned first =
-            static_cast<unsigned>((service_cycle + total) % 3u);
-        for (unsigned attempt = 0; attempt < 3; ++attempt) {
-            const unsigned producer = (first + attempt) % 3u;
+            static_cast<unsigned>(
+                (service_cycle + total) % producer_count);
+        for (unsigned attempt = 0; attempt < producer_count;
+             ++attempt) {
+            const unsigned producer =
+                (first + attempt) % producer_count;
             if (producer == 0) {
                 stack_count =
                     rtcore_service_v04_live_stack_write_transfer(
@@ -22057,12 +22832,19 @@ static unsigned rtcore_service_v04_live_runtime_write_arbitration(
                 primitive_count =
                     rtcore_service_v04_live_primitive_write_transfer(
                         owner_hw_sid, service_cycle, 1);
+            } else if (producer == 3) {
+                short_stack_count =
+                    rtcore_service_v04_live_short_stack_write_transfer(
+                        owner_hw_sid, service_cycle, 1);
             }
             if (stack_count != 0 || instance_count != 0 ||
-                primitive_count != 0) break;
+                primitive_count != 0 ||
+                short_stack_count != 0) {
+                break;
+            }
         }
         if (stack_count == 0 && instance_count == 0 &&
-            primitive_count == 0) {
+            primitive_count == 0 && short_stack_count == 0) {
             break;
         }
         if (stack_transferred != NULL) {
@@ -22073,6 +22855,9 @@ static unsigned rtcore_service_v04_live_runtime_write_arbitration(
         }
         if (primitive_transferred != NULL) {
             *primitive_transferred += primitive_count;
+        }
+        if (short_stack_transferred != NULL) {
+            *short_stack_transferred += short_stack_count;
         }
     }
     return total;
@@ -23153,6 +23938,11 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     const bool v04_live_node_progressed =
         rtcore_service_v04_live_node_timing(
             owner_hw_sid, service_cycle);
+    bool v04_live_short_stack_memory_progressed = false;
+    const bool v04_live_short_stack_progressed =
+        rtcore_service_v04_live_short_stack_timing(
+            owner_hw_sid, service_cycle,
+            &v04_live_short_stack_memory_progressed);
     bool v04_live_stack_memory_progressed = false;
     const unsigned private_write_width =
         rtcore::v04::private_shared::kPrivateWriteEnqueueWidth;
@@ -23168,13 +23958,18 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     const unsigned primitive_runtime_acks =
         result.tick_result
             .private_shared_primitive_runtime_acks_consumed;
+    const unsigned short_stack_runtime_acks =
+        result.tick_result
+            .private_shared_short_stack_runtime_acks_consumed;
     const unsigned stack_runtime_acks =
         result.tick_result.private_shared_runtime_acks_consumed >=
-                instance_runtime_acks + primitive_runtime_acks
+                instance_runtime_acks + primitive_runtime_acks +
+                    short_stack_runtime_acks
             ? result.tick_result
                       .private_shared_runtime_acks_consumed -
                   instance_runtime_acks -
-                  primitive_runtime_acks
+                  primitive_runtime_acks -
+                  short_stack_runtime_acks
             : 0;
     const bool v04_live_stack_progressed =
         rtcore_service_v04_live_stack_timing(
@@ -23206,26 +24001,31 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
     unsigned stack_writes_transferred = 0;
     unsigned instance_writes_transferred = 0;
     unsigned primitive_writes_transferred = 0;
+    unsigned short_stack_writes_transferred = 0;
     const unsigned runtime_writes_transferred =
         rtcore_service_v04_live_runtime_write_arbitration(
             owner_hw_sid, service_cycle, runtime_write_budget,
             &stack_writes_transferred,
             &instance_writes_transferred,
-            &primitive_writes_transferred);
+            &primitive_writes_transferred,
+            &short_stack_writes_transferred);
     if (runtime_writes_transferred != 0) {
         printf("GPGPU-Sim RTCORE_V04_PRIVATE_RUNTIME_WRITE_ARBITRATION "
                "owner_hw_sid=%u service_cycle=%llu budget=%u "
                "stack_transferred=%u instance_transferred=%u "
-               "primitive_transferred=%u total_transferred=%u "
+               "primitive_transferred=%u "
+               "short_stack_transferred=%u total_transferred=%u "
                "rotating_priority=1\n",
                owner_hw_sid, service_cycle, runtime_write_budget,
                stack_writes_transferred,
                instance_writes_transferred,
                primitive_writes_transferred,
+               short_stack_writes_transferred,
                runtime_writes_transferred);
         fflush(stdout);
     }
     if (v04_live_node_progressed ||
+        v04_live_short_stack_progressed ||
         v04_live_stack_progressed ||
         v04_live_instance_progressed ||
         v04_live_primitive_progressed ||
@@ -23238,6 +24038,7 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
         result.tick_result.ready_progressed = true;
     }
     if (v04_live_stack_memory_progressed ||
+        v04_live_short_stack_memory_progressed ||
         v04_live_instance_restore_recovery_progressed ||
         v04_live_stack_terminal_memory_progressed ||
         v04_native_boundary_publication_progressed ||

@@ -133,6 +133,9 @@ extern "C" bool rtcore_accept_v04_private_shared_request(
 extern "C" bool rtcore_accept_v04_stack_private_shared_read(
     const rtcore_memory_unit_request_snapshot *sideband_snapshot,
     unsigned long long response_cycle);
+extern "C" bool rtcore_accept_v04_short_stack_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *sideband_snapshot,
+    unsigned long long response_cycle);
 extern "C" unsigned rtcore_count_memory_unit_requests_for_sm(
     unsigned owner_hw_sid);
 extern "C" bool rtcore_record_memory_unit_response(
@@ -4265,6 +4268,13 @@ rtcore_consume_memory_unit_request_offer_from_rt_unit(
             RTCORE_MEMORY_DESTINATION_STACK_QUEUE_FILL &&
         result.memory_unit_snapshot.access_kind ==
             RTCORE_MEMORY_ACCESS_STACK_PRIVATE_READ;
+    const bool short_stack_private_read =
+        result.memory_unit_snapshot.operation ==
+            RTCORE_MEMORY_OPERATION_READ &&
+        result.memory_unit_snapshot.destination ==
+            RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL &&
+        result.memory_unit_snapshot.access_kind ==
+            RTCORE_MEMORY_ACCESS_SHORT_STACK_STATE_READ;
     const bool stack_spill_recovery_read =
         result.memory_unit_snapshot.operation ==
             RTCORE_MEMORY_OPERATION_READ &&
@@ -4288,6 +4298,9 @@ rtcore_consume_memory_unit_request_offer_from_rt_unit(
                    &result.memory_unit_snapshot, result.cycle)) ||
                   (stack_private_read &&
                    rtcore_accept_v04_stack_private_shared_read(
+                       &result.memory_unit_snapshot, result.cycle)) ||
+                  (short_stack_private_read &&
+                   rtcore_accept_v04_short_stack_private_shared_read(
                        &result.memory_unit_snapshot, result.cycle)) ||
                   (stack_spill_recovery_read &&
                    rtcore_accept_v04_stack_spill_recovery_shared_read(
