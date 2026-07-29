@@ -34,6 +34,27 @@ struct node_input_v0 {
   uint8_t reserved_zero[6];
 };
 
+struct resume_input_v0 {
+  private_frontier::owner_binding_v0 owner;
+  private_frontier::region_binding_v0 region;
+  private_frontier::shadow_slot_v0 canonical_slot;
+  typed_blas::as_decode_context_v0 active_decode_context;
+  typed_blas::as_decode_context_v0 tlas_decode_context;
+  short_stack::parent_edge_v0 parent_edge;
+  uint8_t parent_edge_valid;
+  uint8_t reserved_zero[7];
+};
+
+struct enter_blas_input_v0 {
+  private_frontier::owner_binding_v0 owner;
+  private_frontier::region_binding_v0 region;
+  private_frontier::shadow_slot_v0 canonical_slot;
+  fetch_target::target_reference_v0 tlas_instance_target;
+  typed_node::selected_child_fetch_work_item_v0 blas_root;
+  uint32_t blas_build_generation;
+  uint8_t reserved_zero[4];
+};
+
 struct result_v0 {
   private_frontier::shadow_slot_v0 updated_slot;
   private_frontier::access_plan_v0 write_plan;
@@ -47,15 +68,20 @@ struct result_v0 {
   uint32_t parent_lookup_build_generation;
   uint8_t selected_valid;
   uint8_t terminal;
+  uint8_t restore_parent_required;
   uint8_t parent_lookup_required;
   uint8_t pending_parent_resume_valid;
   uint8_t compressed_to_replay;
   uint8_t overflowed_bottom;
-  uint8_t reserved_zero[2];
+  uint8_t reserved_zero;
 };
 
 status_kind prepare_node_transition(const node_input_v0 &input,
                                     result_v0 *result);
+status_kind prepare_resume_transition(const resume_input_v0 &input,
+                                      result_v0 *result);
+status_kind prepare_enter_blas_transition(
+    const enter_blas_input_v0 &input, result_v0 *result);
 
 const char *status_name(status_kind status);
 
