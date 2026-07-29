@@ -110,6 +110,10 @@ status_kind execute_node_operator_once(
 status_kind execute_one_node(
     const fetch_target::operation_packet_v0 &packet,
     node_execution_v0 *execution);
+status_kind execute_one_node(
+    const fetch_target::operation_packet_v0 &packet,
+    const typed_node::replay_cursor_v0 &replay_cursor,
+    node_execution_v0 *execution);
 
 status_kind execute_one_stack(
     const stack_operation::operation_packet_v0 &packet,

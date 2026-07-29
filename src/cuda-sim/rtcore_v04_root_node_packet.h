@@ -34,6 +34,8 @@ struct lane_input_v0 {
   private_frontier::root_private_operands_v0 private_operands;
   typed_node::ray_policy_v0 ray_policy;
   uint64_t raw_payload_base_address;
+  uint32_t root_build_generation;
+  uint32_t reserved_zero3;
 };
 
 struct warp_input_v0 {

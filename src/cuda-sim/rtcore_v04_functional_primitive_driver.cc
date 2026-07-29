@@ -2,6 +2,8 @@
 #include "rtcore_v04_request_owner_binding.h"
 #include "rtcore_v04_typed_diagnostic_collector.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace rtcore {
@@ -15,6 +17,92 @@ bool bytes_are_zero(const void *value, size_t byte_count) {
     if (bytes[index] != 0) return false;
   }
   return true;
+}
+
+bool candidate_diagnostics_enabled() {
+  const char *value =
+      std::getenv("VULKAN_SIM_RTCORE_ABI_V04_HIT_CANDIDATE_DIAGNOSTICS");
+  return value != NULL && value[0] != '\0' &&
+         std::strcmp(value, "0") != 0;
+}
+
+uint32_t fp32_bits(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+void emit_candidate_diagnostic(
+    const fetch_target::operation_packet_v0 &packet,
+    const typed_primitive::route_input_v0 &input,
+    const typed_primitive::candidate_result_v0 &candidate,
+    const typed_primitive::route_result_v0 &route) {
+  if (!candidate_diagnostics_enabled() ||
+      packet.target_reference.payload_kind !=
+          typed_node::kQuadPayloadKind) {
+    return;
+  }
+  const typed_stack::committed_hit_projection_v0 &committed =
+      input.current_committed_hit;
+  const char *distance_relation = "no_geometric_hit";
+  if (candidate.geometric_hit != 0) {
+    const float candidate_t = [&candidate]() {
+      float value = 0.0f;
+      std::memcpy(&value, &candidate.world_t_bits, sizeof(value));
+      return value;
+    }();
+    if (committed.valid == 0) {
+      distance_relation = "no_committed_hit";
+    } else if (candidate_t < committed.hit_t) {
+      distance_relation = "less";
+    } else if (candidate_t == committed.hit_t) {
+      distance_relation = "equal";
+    } else {
+      distance_relation = "greater";
+    }
+  }
+  std::printf(
+      "GPGPU-Sim RTCORE_V04_HIT_CANDIDATE_DIAGNOSTIC "
+      "owner_hw_sid=%u resident_warp_slot=%u request_identity=%u "
+      "request_generation=%u private_slot_id=%u lane_id=%u "
+      "operation_seq=%u payload_offset=0x%llx "
+      "geometric_hit=%u candidate_hit=%u candidate_status=%u "
+      "candidate_t_bits=0x%08x candidate_primitive=%u "
+      "candidate_geometry=%u candidate_instance=%u "
+      "candidate_instance_custom=%u candidate_instance_sbt=%u "
+      "candidate_hit_kind=%u committed_valid=%u "
+      "committed_t_bits=0x%08x committed_primitive=%u "
+      "committed_geometry=%u committed_instance=%u "
+      "committed_instance_custom=%u committed_instance_sbt=%u "
+      "committed_hit_kind=%u distance_relation=%s route_kind=%u "
+      "route_identity_valid=%u route_primitive=%u route_geometry=%u "
+      "route_instance=%u\n",
+      packet.owner.owner_hw_sid, packet.owner.resident_warp_id,
+      packet.owner.request_identity, packet.owner.generation,
+      packet.owner.private_slot_id, packet.owner.lane_id,
+      packet.target_operation_seq,
+      static_cast<unsigned long long>(
+          packet.target_reference.payload_offset),
+      candidate.geometric_hit, candidate.candidate_hit,
+      candidate.status, candidate.world_t_bits,
+      candidate.primitive_index, candidate.geometry_index,
+      input.current_instance.instance_index,
+      input.current_instance.instance_custom_index,
+      input.current_instance.instance_sbt_contribution,
+      candidate.hit_kind, committed.valid,
+      fp32_bits(committed.hit_t), committed.primitive_index,
+      committed.geometry_index, committed.instance_index,
+      committed.instance_custom_index,
+      committed.instance_sbt_contribution, committed.hit_kind,
+      distance_relation, route.result_kind,
+      (route.output_valid_mask &
+       typed_primitive::kIdentityAndPolicyValid) != 0
+          ? 1
+          : 0,
+      route.identity_and_policy.primitive_index,
+      route.identity_and_policy.geometry_index,
+      route.identity_and_policy.instance_index);
+  std::fflush(stdout);
 }
 
 bool region_shape_valid(
@@ -196,14 +284,18 @@ status_kind execute_one_primitive(
 
   execution->operation_packet = packet;
   execution->operator_input = input;
-  execution->operator_result =
-      typed_primitive::execute_route(execution->operator_input);
+  typed_primitive::candidate_result_v0 triangle_candidate = {};
+  execution->operator_result = typed_primitive::execute_route(
+      execution->operator_input, &triangle_candidate);
   execution->operator_invocation_count = 1;
   if (execution->operator_result.status !=
           typed_primitive::kStatusOk ||
       execution->operator_result.typed_operator_invocation_count != 1) {
     return kStatusTypedOperatorFailed;
   }
+  emit_candidate_diagnostic(
+      packet, execution->operator_input, triangle_candidate,
+      execution->operator_result);
   if (primitive_semantic::prepare_result(
           packet.owner, packet.target_operation_seq,
           execution->operator_input, execution->operator_result,

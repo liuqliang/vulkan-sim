@@ -61,6 +61,9 @@ struct as_decode_context_v0;
 namespace typed_instance {
 struct enter_input_v0;
 }
+namespace short_stack {
+struct parent_edge_v0;
+}
 }  // namespace v04
 }  // namespace rtcore
 
@@ -514,6 +517,11 @@ public:
         const rtcore::v04::typed_blas::as_decode_context_v0 &decodeContext,
         uint64_t payloadAddress, uint64_t payloadBytes,
         const char **failureReason);
+    static bool resolveV04GenRtReplayParent(
+        const rtcore::v04::typed_blas::as_decode_context_v0 &decodeContext,
+        uint32_t buildGeneration, uint64_t payloadOffset,
+        rtcore::v04::short_stack::parent_edge_v0 *parent,
+        const char **failureReason = NULL);
     static bool buildV04TypedInstanceEnterInput(
         const rtcore::v04::fetch_target::operation_packet_v0 &packet,
         rtcore::v04::typed_instance::enter_input_v0 *input,

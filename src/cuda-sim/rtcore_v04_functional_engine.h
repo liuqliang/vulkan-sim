@@ -6,6 +6,7 @@
 
 #include "rtcore_v04_continuation_lifecycle.h"
 #include "rtcore_v04_functional_driver.h"
+#include "rtcore_v04_short_stack_replay.h"
 
 namespace rtcore {
 namespace v04 {
@@ -26,6 +27,8 @@ enum status_kind : uint8_t {
   kStatusFunctionalDriverRejected,
   kStatusSemanticApplyRejected,
   kStatusShaderReturnRejected,
+  kStatusParentResolveRejected,
+  kStatusShortStackRejected,
 };
 
 enum boundary_kind : uint8_t {
@@ -53,6 +56,11 @@ struct provider_v0 {
   bool (*prepare_instance_enter)(
       void *context, const fetch_target::operation_packet_v0 &packet,
       typed_instance::enter_input_v0 *input);
+  bool (*resolve_parent_edge)(
+      void *context,
+      const typed_blas::as_decode_context_v0 &decode_context,
+      uint32_t build_generation, uint64_t payload_offset,
+      short_stack::parent_edge_v0 *parent);
 };
 
 struct root_input_v0 {
@@ -62,6 +70,9 @@ struct root_input_v0 {
   typed_node::ray_policy_v0 ray_policy;
   private_frontier::root_private_operands_v0 private_operands;
   uint64_t raw_payload_base_address;
+  uint32_t root_build_generation;
+  uint8_t short_stack_replay_enabled;
+  uint8_t reserved_zero[3];
 };
 
 struct state_v0 {
@@ -72,16 +83,23 @@ struct state_v0 {
   private_frontier::owner_binding_v0 owner;
   private_frontier::region_binding_v0 private_region;
   private_frontier::shadow_slot_v0 canonical_slot;
+  short_stack::state_v0 short_stack;
   typed_node::ray_policy_v0 ray_policy;
+  uint32_t tlas_build_generation;
+  uint32_t blas_build_generation;
   uint32_t next_operation_seq;
   uint32_t boundary_operation_seq;
   uint32_t boundary_reason;
   uint32_t operation_count;
   uint32_t node_visits;
   uint32_t primitive_tests;
+  uint32_t same_node_replays;
+  uint32_t parent_bailouts;
+  uint32_t bottom_overflows;
   uint8_t last_driver_unit;
   uint8_t last_driver_status;
-  uint8_t reserved_zero[2];
+  uint8_t short_stack_replay_enabled;
+  uint8_t reserved_zero;
 };
 
 struct output_v0 {
@@ -99,6 +117,9 @@ struct output_v0 {
   uint32_t operation_count;
   uint32_t node_visits;
   uint32_t primitive_tests;
+  uint32_t same_node_replays;
+  uint32_t parent_bailouts;
+  uint32_t bottom_overflows;
 };
 
 status_kind run_new(const root_input_v0 &input,

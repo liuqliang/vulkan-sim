@@ -39,6 +39,7 @@
 #include "rtcore_v04_instance_shared_transport.h"
 #include "rtcore_v04_instance_timing_driver.h"
 #include "rtcore_v04_functional_driver.h"
+#include "rtcore_v04_genrt_replay_metadata.h"
 #include "rtcore_v04_live_global_memory_adapter.h"
 #include "rtcore_v04_node_timing_driver.h"
 #include "rtcore_v04_private_frontier_layout.h"
@@ -227,6 +228,8 @@ static rtcore_tlas_binding_registry<rtcore_blas_binding_snapshot>
     g_rtcore_blas_binding_registry;
 static rtcore_v04_instance_blas_reference_registry
     g_rtcore_instance_blas_reference_registry;
+static rtcore::v04::genrt_replay::registry_v0
+    g_rtcore_genrt_replay_registry;
 
 static void rtcore_fail_tlas_binding(const char *reason,
                                      uint64_t host_root_address,
@@ -262,6 +265,26 @@ static void rtcore_fail_blas_binding(const char *reason,
             (unsigned long long)host_root_address,
             (unsigned long long)device_base_address,
             (unsigned long long)size_bytes);
+    fflush(stderr);
+    abort();
+}
+
+static void rtcore_fail_genrt_replay_metadata(
+    const char *operation,
+    rtcore::v04::genrt_replay::status_kind status,
+    uint8_t as_type, uint64_t object_id, uint32_t generation,
+    uint32_t build_generation, uint64_t payload_offset)
+{
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_GENRT_REPLAY_METADATA_FAULT "
+            "operation=%s status=%s as_type=%u object_id=%llu "
+            "generation=%u build_generation=%u payload_offset=%llu\n",
+            operation,
+            rtcore::v04::genrt_replay::status_name(status),
+            static_cast<unsigned>(as_type),
+            static_cast<unsigned long long>(object_id), generation,
+            build_generation,
+            static_cast<unsigned long long>(payload_offset));
     fflush(stderr);
     abort();
 }
@@ -3170,6 +3193,16 @@ static bool rtcore_v04_producer_backed_blas_root_descriptor_enabled()
     static int enabled = []() {
         return rtcore_candidate_gate_state_for(
                    "VULKAN_SIM_RTCORE_ABI_V04_PRODUCER_BACKED_BLAS_ROOT_DESCRIPTOR") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+    }();
+    return enabled != 0;
+}
+
+static bool rtcore_v04_genrt_short_stack_replay_enabled()
+{
+    static int enabled = []() {
+        return rtcore_candidate_gate_state_for(
+                   "VULKAN_SIM_RTCORE_ABI_V04_GENRT_SHORT_STACK_REPLAY") ==
                RTCORE_CANDIDATE_GATE_ENABLED;
     }();
     return enabled != 0;
@@ -30927,6 +30960,54 @@ void VulkanRayTracing::pass_child_addr(void *address)
     child_addrs_from_driver.push_back(address);
 }
 
+template <typename Snapshot>
+static void rtcore_publish_v04_genrt_replay_metadata(
+    const Snapshot &snapshot, uint8_t as_type)
+{
+    if (!rtcore_v04_genrt_short_stack_replay_enabled()) return;
+    rtcore::v04::genrt_replay::image_view_v0 image = {};
+    image.identity.object_id = snapshot.object_id;
+    image.identity.generation = snapshot.generation;
+    image.identity.build_generation =
+        snapshot.root_build_generation;
+    image.identity.as_type = as_type;
+    image.bytes = reinterpret_cast<const uint8_t *>(
+        snapshot.host_root_address);
+    image.byte_count = snapshot.size_bytes;
+    image.root_payload_offset = snapshot.root_payload_offset;
+    const rtcore::v04::genrt_replay::status_kind status =
+        g_rtcore_genrt_replay_registry.publish(image);
+    if (status != rtcore::v04::genrt_replay::kStatusOk) {
+        rtcore_fail_genrt_replay_metadata(
+            "publish", status, as_type, snapshot.object_id,
+            snapshot.generation, snapshot.root_build_generation,
+            snapshot.root_payload_offset);
+    }
+    printf("GPGPU-Sim RTCORE_V04_GENRT_REPLAY_METADATA_PUBLISHED "
+           "as_type=%u object_id=%llu generation=%u "
+           "build_generation=%u records=%llu\n",
+           static_cast<unsigned>(as_type),
+           static_cast<unsigned long long>(snapshot.object_id),
+           snapshot.generation, snapshot.root_build_generation,
+           static_cast<unsigned long long>(
+               g_rtcore_genrt_replay_registry.record_count(
+                   as_type, snapshot.object_id)));
+    fflush(stdout);
+}
+
+static void rtcore_release_v04_genrt_replay_metadata(
+    uint8_t as_type, uint64_t object_id, uint32_t generation)
+{
+    if (!rtcore_v04_genrt_short_stack_replay_enabled()) return;
+    const rtcore::v04::genrt_replay::status_kind status =
+        g_rtcore_genrt_replay_registry.release(
+            as_type, object_id, generation);
+    if (status != rtcore::v04::genrt_replay::kStatusOk) {
+        rtcore_fail_genrt_replay_metadata(
+            "release", status, as_type, object_id, generation, 0, 0);
+    }
+}
+
 void VulkanRayTracing::allocBLAS(void* objectKey, void* rootAddr,
                                  uint64_t bufferSize, void* gpgpusimAddr) {
     printf("gpgpusim: set BLAS address for 0x%lx at %p to %p\n", bufferSize, rootAddr, gpgpusimAddr);
@@ -31006,6 +31087,8 @@ void VulkanRayTracing::publishBLASRootDescriptor(
            (unsigned long long)snapshot.root_payload_offset,
            (unsigned)snapshot.root_payload_kind);
     fflush(stdout);
+    rtcore_publish_v04_genrt_replay_metadata(
+        snapshot, typed_blas::kAsTypeBlas);
 }
 
 void VulkanRayTracing::publishTLASRootDescriptor(
@@ -31044,6 +31127,7 @@ void VulkanRayTracing::publishTLASRootDescriptor(
            (unsigned long long)snapshot.root_payload_offset,
            (unsigned)snapshot.root_payload_kind);
     fflush(stdout);
+    rtcore_publish_v04_genrt_replay_metadata(snapshot, 1);
 }
 
 void VulkanRayTracing::beginTLASInstanceReferences(void* objectKey) {
@@ -31213,6 +31297,9 @@ void VulkanRayTracing::releaseBLAS(void* objectKey, void* rootAddr,
                                 device_base_address, 0,
                                 driver_object_key);
     }
+    rtcore_release_v04_genrt_replay_metadata(
+        rtcore::v04::typed_blas::kAsTypeBlas, released.object_id,
+        released.generation);
     printf("GPGPU-Sim RTCORE_BLAS_BINDING_RELEASED "
            "object_id=%llu generation=%u driver_object_key=0x%llx "
            "host_root=0x%llx device_base=0x%llx size=%llu live=0\n",
@@ -31267,6 +31354,8 @@ void VulkanRayTracing::releaseTLAS(void* objectKey, void* rootAddr,
         rtcore_fail_tlas_binding(failure_reason, host_root_address,
                                 device_base_address, 0, driver_object_key);
     }
+    rtcore_release_v04_genrt_replay_metadata(
+        1, released.object_id, released.generation);
     if (rtcore_v04_producer_backed_instance_blas_reference_enabled()) {
         const char *reference_failure = "unvalidated";
         if (!g_rtcore_instance_blas_reference_registry.release(
@@ -31317,6 +31406,91 @@ bool VulkanRayTracing::validateBlasBinding(
     const char **failureReason) {
     return g_rtcore_blas_binding_registry.validate(
         snapshot, payloadReference, recordSize, failureReason);
+}
+
+bool VulkanRayTracing::resolveV04GenRtReplayParent(
+    const rtcore::v04::typed_blas::as_decode_context_v0 &decodeContext,
+    uint32_t buildGeneration, uint64_t payloadOffset,
+    rtcore::v04::short_stack::parent_edge_v0 *parent,
+    const char **failureReason) {
+    namespace metadata = rtcore::v04::genrt_replay;
+    if (failureReason != NULL) *failureReason = "unvalidated";
+    if (!rtcore_v04_genrt_short_stack_replay_enabled() ||
+        parent == NULL || decodeContext.as_object.object_id == 0 ||
+        decodeContext.as_object.generation == 0 ||
+        buildGeneration == 0) {
+        if (failureReason != NULL) *failureReason = "invalid_argument";
+        return false;
+    }
+
+    metadata::object_identity_v0 identity = {};
+    identity.object_id = decodeContext.as_object.object_id;
+    identity.generation = decodeContext.as_object.generation;
+    identity.build_generation = buildGeneration;
+    identity.as_type = decodeContext.as_object.as_type;
+    const char *binding_failure = "unvalidated";
+    if (identity.as_type == 1) {
+        rtcore_tlas_binding_snapshot binding;
+        if (!g_rtcore_tlas_binding_registry.capture_by_object_id(
+                identity.object_id, &binding, &binding_failure) ||
+            !g_rtcore_tlas_binding_registry.validate(
+                binding, 0, 0, &binding_failure)) {
+            if (failureReason != NULL) *failureReason = binding_failure;
+            return false;
+        }
+        if (binding.generation != identity.generation ||
+            binding.root_build_generation != buildGeneration ||
+            binding.root_bvh_profile_id !=
+                decodeContext.bvh_format_profile_id ||
+            binding.device_base_address != decodeContext.device_base ||
+            binding.size_bytes != decodeContext.device_range_bytes) {
+            if (failureReason != NULL) {
+                *failureReason = "binding_identity_mismatch";
+            }
+            return false;
+        }
+    } else if (identity.as_type ==
+               rtcore::v04::typed_blas::kAsTypeBlas) {
+        rtcore_blas_binding_snapshot binding;
+        if (!g_rtcore_blas_binding_registry.capture_by_object_id(
+                identity.object_id, &binding, &binding_failure) ||
+            !g_rtcore_blas_binding_registry.validate(
+                binding, 0, 0, &binding_failure)) {
+            if (failureReason != NULL) *failureReason = binding_failure;
+            return false;
+        }
+        if (binding.generation != identity.generation ||
+            binding.root_build_generation != buildGeneration ||
+            binding.root_bvh_profile_id !=
+                decodeContext.bvh_format_profile_id ||
+            binding.device_base_address != decodeContext.device_base ||
+            binding.size_bytes != decodeContext.device_range_bytes) {
+            if (failureReason != NULL) {
+                *failureReason = "binding_identity_mismatch";
+            }
+            return false;
+        }
+    } else {
+        if (failureReason != NULL) *failureReason = "unsupported_as_type";
+        return false;
+    }
+
+    metadata::parent_record_v0 record = {};
+    const metadata::status_kind status =
+        g_rtcore_genrt_replay_registry.resolve(
+            identity, payloadOffset, &record);
+    if (status != metadata::kStatusOk ||
+        !metadata::to_parent_edge(record, parent)) {
+        if (failureReason != NULL) {
+            *failureReason =
+                status != metadata::kStatusOk
+                    ? metadata::status_name(status)
+                    : "invalid_parent_edge";
+        }
+        return false;
+    }
+    if (failureReason != NULL) *failureReason = "none";
+    return true;
 }
 
 bool VulkanRayTracing::validateBlasLegacyAlias(

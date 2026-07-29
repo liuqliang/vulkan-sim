@@ -79,6 +79,14 @@ status_kind execute_node_operator_once(
 status_kind execute_one_node(
     const fetch_target::operation_packet_v0 &packet,
     node_execution_v0 *execution) {
+  typed_node::replay_cursor_v0 replay_cursor = {};
+  return execute_one_node(packet, replay_cursor, execution);
+}
+
+status_kind execute_one_node(
+    const fetch_target::operation_packet_v0 &packet,
+    const typed_node::replay_cursor_v0 &replay_cursor,
+    node_execution_v0 *execution) {
   if (execution == NULL) return kStatusInvalidArgument;
   *execution = node_execution_v0();
   status_kind status = prepare_node_operator_input(
@@ -86,7 +94,7 @@ status_kind execute_one_node(
   if (status != kStatusOk) return status;
   typed_node::candidate_result_v0 candidate_result = {};
   execution->operator_result = typed_node::execute_route(
-      execution->operator_input, &candidate_result);
+      execution->operator_input, replay_cursor, &candidate_result);
   execution->operator_invocation_count = 1;
   if (execution->operator_result.status != typed_node::kStatusOk) {
     return kStatusTypedOperatorFailed;

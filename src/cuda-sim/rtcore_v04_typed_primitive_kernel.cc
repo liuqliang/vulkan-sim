@@ -505,8 +505,16 @@ procedural_result_v0 execute_procedural(const procedural_input_v0 &input) {
 }
 
 route_result_v0 execute_route(const route_input_v0 &input) {
+  return execute_route(input, NULL);
+}
+
+route_result_v0 execute_route(const route_input_v0 &input,
+                              candidate_result_v0 *triangle_candidate) {
   route_result_v0 result = {};
   result.status = kStatusInvalidRouteInput;
+  if (triangle_candidate != NULL) {
+    *triangle_candidate = candidate_result_v0();
+  }
 
   if (input.profile_id != kGenRtDerivedProfileId) {
     result.status = kStatusUnsupportedProfile;
@@ -543,6 +551,9 @@ route_result_v0 execute_route(const route_input_v0 &input) {
     candidate_input.raw_primitive = input.raw_primitive;
 
     const candidate_result_v0 candidate = execute(candidate_input);
+    if (triangle_candidate != NULL) {
+      *triangle_candidate = candidate;
+    }
     result.typed_operator_invocation_count = 1;
     if (candidate.status != kStatusOk) {
       result.status = candidate.status;

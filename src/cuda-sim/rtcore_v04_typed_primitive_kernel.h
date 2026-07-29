@@ -316,6 +316,9 @@ procedural_result_v0 execute_procedural(const procedural_input_v0 &input);
 
 route_result_v0 execute_route(const route_input_v0 &input);
 
+route_result_v0 execute_route(const route_input_v0 &input,
+                              candidate_result_v0 *triangle_candidate);
+
 const char *status_name(status_kind status);
 
 }  // namespace typed_primitive

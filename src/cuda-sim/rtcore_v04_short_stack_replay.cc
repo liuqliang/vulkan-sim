@@ -130,6 +130,17 @@ static bool append_active_ordinary_entries(
   return true;
 }
 
+static bool route_frontier_is_parent_replayable(
+    const typed_node::route_result_v0 &route) {
+  for (uint8_t index = 0; index < route.frontier_count; ++index) {
+    if (route.frontier[index].payload_kind !=
+        typed_node::kInternalPayloadKind) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool read_protected_return(const state_v0 &state,
                                   entry_v0 *entry) {
   if (entry == NULL || state.cross_as == 0 ||
@@ -320,7 +331,8 @@ route_push_result_v0 push_node_route(
   const bool direct_remainder_fits =
       static_cast<unsigned>(active_count) +
           input.route.frontier_count +
-          input.parent_resume_valid <= ordinary_capacity;
+          input.parent_resume_valid <= ordinary_capacity &&
+      route_frontier_is_parent_replayable(input.route);
   if (selected_valid && direct_remainder_fits) {
     for (uint8_t index = 0; index < input.route.frontier_count;
          ++index) {

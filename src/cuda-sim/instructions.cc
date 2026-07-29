@@ -8073,13 +8073,32 @@ static bool rtcore_v04_functional_only_prepare_instance(
                                                            &failure);
 }
 
+static bool rtcore_v04_functional_only_resolve_parent(
+    void *,
+    const rtcore::v04::typed_blas::as_decode_context_v0 &decode_context,
+    uint32_t build_generation, uint64_t payload_offset,
+    rtcore::v04::short_stack::parent_edge_v0 *parent) {
+  const char *failure = "unvalidated";
+  return VulkanRayTracing::resolveV04GenRtReplayParent(
+      decode_context, build_generation, payload_offset, parent,
+      &failure);
+}
+
 static functional_engine::provider_v0 rtcore_v04_functional_only_provider(
     ptx_thread_info *thread) {
   functional_engine::provider_v0 provider = {};
   provider.context = thread;
   provider.read_raw_payload = rtcore_v04_functional_only_read_raw_payload;
   provider.prepare_instance_enter = rtcore_v04_functional_only_prepare_instance;
+  provider.resolve_parent_edge =
+      rtcore_v04_functional_only_resolve_parent;
   return provider;
+}
+
+static bool rtcore_v04_functional_only_short_stack_enabled() {
+  return rtcore_candidate_gate_state_for(
+             "VULKAN_SIM_RTCORE_ABI_V04_GENRT_SHORT_STACK_REPLAY") ==
+         RTCORE_CANDIDATE_GATE_ENABLED;
 }
 
 static bool rtcore_v04_ray_input_debug_enabled() {
@@ -8104,6 +8123,9 @@ static functional_engine::root_input_v0 rtcore_v04_functional_only_root_input(
   root.ray_policy = lane_input.ray_policy;
   root.private_operands = lane_input.private_operands;
   root.raw_payload_base_address = lane_input.raw_payload_base_address;
+  root.root_build_generation = lane_input.root_build_generation;
+  root.short_stack_replay_enabled =
+      rtcore_v04_functional_only_short_stack_enabled() ? 1 : 0;
   return root;
 }
 
@@ -8452,6 +8474,8 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     }
     lane_input.raw_payload_base_address =
         tlas.device_base_address + tlas.root_payload_offset;
+    lane_input.root_build_generation =
+        tlas.root_build_generation;
     lane_input.target_reference.payload_offset =
         tlas.root_payload_offset;
     memcpy(&lane_input.target_reference.near_t_bits, &context.ray_tmin,
@@ -18242,13 +18266,22 @@ rtcore_make_v04_functional_only_provider_response(
       "GPGPU-Sim RTCORE_V04_FUNCTIONAL_ONLY_PROVIDER "
       "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
       "boundary=%s reason=%u operations=%u node_visits=%u "
-      "primitive_tests=%u timing_state_mutated=0\n",
+      "primitive_tests=%u same_node_replays=%u parent_bailouts=%u "
+      "bottom_overflows=%u committed_valid=%u committed_t=%.9g "
+      "committed_primitive=%u committed_geometry=%u "
+      "committed_instance=%u committed_sbt=%u timing_state_mutated=0\n",
       request.warp_metadata.owner_hw_sid, request.warp_metadata.warp_uid,
       request.warp_metadata.warp_id, lane,
       functional_engine::boundary_name(
           static_cast<functional_engine::boundary_kind>(output.boundary_kind)),
       output.boundary_reason, output.operation_count, output.node_visits,
-      output.primitive_tests);
+      output.primitive_tests, output.same_node_replays,
+      output.parent_bailouts, output.bottom_overflows,
+      output.committed_hit.valid, output.committed_hit.hit_t,
+      output.committed_hit.primitive_index,
+      output.committed_hit.geometry_index,
+      output.committed_hit.instance_index,
+      output.committed_hit.instance_sbt_contribution);
   fflush(stdout);
   return response;
 }

@@ -1,5 +1,6 @@
 #include "rtcore_v04_functional_engine.h"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 
@@ -20,10 +21,15 @@ enum next_action_kind : uint8_t {
 struct next_action_v0 {
   uint8_t kind;
   uint8_t instance_blas_root;
-  uint8_t reserved_zero[6];
+  uint8_t short_entry_valid;
+  uint8_t parent_resume_valid;
+  uint8_t reserved_zero[4];
   uint32_t producer_operation_seq;
   typed_node::selected_child_fetch_work_item_v0 selected_fetch;
   typed_node::route_result_v0 node_route;
+  typed_node::replay_cursor_v0 replay_cursor;
+  short_stack::entry_v0 short_entry;
+  short_stack::entry_v0 parent_resume;
 };
 
 uint32_t fp32_bits(float value) {
@@ -77,6 +83,64 @@ status_kind decode_private(
     return kStatusPrivateStateRejected;
   }
   return kStatusOk;
+}
+
+short_stack::entry_v0 short_entry_from_fetch(
+    const typed_node::selected_child_fetch_work_item_v0 &fetch,
+    short_stack::domain_kind domain) {
+  short_stack::entry_v0 entry = {};
+  entry.payload_offset = fetch.child.payload_offset;
+  entry.near_t_bits = fetch.child.near_t_bits;
+  entry.payload_byte_count = fetch.child.payload_byte_count;
+  entry.payload_kind = fetch.child.payload_kind;
+  entry.control = short_stack::make_control(
+      short_stack::kEntryDirectTarget, domain,
+      fetch.child.child_slot, true, false);
+  return entry;
+}
+
+bool selected_fetch_from_short_entry(
+    const short_stack::entry_v0 &entry,
+    const typed_blas::as_decode_context_v0 &decode_context,
+    typed_node::selected_child_fetch_work_item_v0 *fetch) {
+  if (fetch == NULL || !short_stack::validate_entry(entry) ||
+      short_stack::control_kind(entry.control) ==
+          short_stack::kEntryCrossAsReturn) {
+    return false;
+  }
+  *fetch = typed_node::selected_child_fetch_work_item_v0();
+  fetch->child.payload_offset = entry.payload_offset;
+  fetch->child.near_t_bits = entry.near_t_bits;
+  fetch->child.payload_byte_count = entry.payload_byte_count;
+  fetch->child.payload_kind = entry.payload_kind;
+  fetch->child.child_slot =
+      short_stack::control_child_anchor(entry.control);
+  fetch->decode_context = decode_context;
+  return true;
+}
+
+typed_node::replay_cursor_v0 replay_cursor_from_entry(
+    const short_stack::entry_v0 &entry) {
+  typed_node::replay_cursor_v0 cursor = {};
+  const short_stack::entry_kind kind =
+      short_stack::control_kind(entry.control);
+  if (kind == short_stack::kEntrySameNodeReplay ||
+      kind == short_stack::kEntryParentResume) {
+    cursor.child_anchor =
+        short_stack::control_child_anchor(entry.control);
+    cursor.anchor_valid =
+        short_stack::control_anchor_valid(entry.control) ? 1 : 0;
+    cursor.inclusive =
+        short_stack::control_inclusive(entry.control) ? 1 : 0;
+  }
+  return cursor;
+}
+
+uint32_t active_build_generation(const state_v0 &state) {
+  return state.short_stack.active_domain ==
+                 short_stack::kDomainBlas
+             ? state.blas_build_generation
+             : state.tlas_build_generation;
 }
 
 status_kind build_target_packet(
@@ -391,6 +455,61 @@ status_kind apply_primitive(
              : kStatusSemanticApplyRejected;
 }
 
+status_kind advance_short_stack_after_node(
+    state_v0 *state,
+    const functional_driver::node_execution_v0 &execution,
+    const next_action_v0 &current, next_action_v0 *next) {
+  if (state == NULL || next == NULL ||
+      state->short_stack_replay_enabled == 0 ||
+      current.short_entry_valid == 0 ||
+      current.short_entry.payload_kind !=
+          typed_node::kInternalPayloadKind) {
+    return kStatusInvalidState;
+  }
+  uint32_t stack_operation_seq = 0;
+  status_kind status =
+      allocate_operation(state, &stack_operation_seq);
+  if (status != kStatusOk) return status;
+
+  short_stack::route_push_input_v0 input = {};
+  input.state = state->short_stack;
+  input.route = execution.operator_result;
+  input.current_node_payload_offset =
+      current.short_entry.payload_offset;
+  input.active_domain = state->short_stack.active_domain;
+  input.parent_resume = current.parent_resume;
+  input.parent_resume_valid = current.parent_resume_valid;
+  const short_stack::route_push_result_v0 pushed =
+      short_stack::push_node_route(input);
+  if (pushed.status != short_stack::kStatusOk) {
+    return kStatusShortStackRejected;
+  }
+  state->short_stack = pushed.state;
+  state->same_node_replays += pushed.compressed_to_replay;
+  state->bottom_overflows += pushed.overflowed_bottom;
+  if (current.parent_resume_valid != 0) {
+    ++state->parent_bailouts;
+  }
+
+  *next = next_action_v0();
+  next->producer_operation_seq = stack_operation_seq;
+  if (pushed.selected_valid == 0) {
+    next->kind = kActionStackPop;
+    return kStatusOk;
+  }
+  next->kind = kActionTarget;
+  next->selected_fetch = pushed.selected;
+  next->short_entry = short_entry_from_fetch(
+      pushed.selected,
+      static_cast<short_stack::domain_kind>(
+          state->short_stack.active_domain));
+  if (!short_stack::validate_entry(next->short_entry)) {
+    return kStatusShortStackRejected;
+  }
+  next->short_entry_valid = 1;
+  return kStatusOk;
+}
+
 status_kind publish_output(state_v0 *state, boundary_kind boundary,
                            uint32_t operation_seq,
                            output_v0 *output) {
@@ -434,6 +553,9 @@ status_kind publish_output(state_v0 *state, boundary_kind boundary,
   output->operation_count = state->operation_count;
   output->node_visits = state->node_visits;
   output->primitive_tests = state->primitive_tests;
+  output->same_node_replays = state->same_node_replays;
+  output->parent_bailouts = state->parent_bailouts;
+  output->bottom_overflows = state->bottom_overflows;
   private_frontier::root_private_operands_v0 operands = {};
   private_frontier::instance_shader_projection_v0 current_instance = {};
   const status_kind decode_status =
@@ -448,6 +570,198 @@ status_kind publish_output(state_v0 *state, boundary_kind boundary,
     return kStatusPrivateStateRejected;
   }
   return kStatusOk;
+}
+
+status_kind restore_parent_for_short_stack(
+    state_v0 *state, uint32_t *restore_operation_seq) {
+  if (state == NULL || restore_operation_seq == NULL) {
+    return kStatusInvalidArgument;
+  }
+  private_frontier::traversal_frame_projection_v0 parent = {};
+  private_frontier::frontier_metadata_image_v0 metadata = {};
+  if (private_frontier::decode_parent_frame(
+          state->canonical_slot, state->owner, &parent) !=
+          private_frontier::kStatusOk ||
+      private_frontier::decode_metadata(
+          state->canonical_slot, state->owner, &metadata) !=
+          private_frontier::kStatusOk) {
+    return kStatusPrivateStateRejected;
+  }
+  typed_stack::frontier_level_delta_v0 delta = {};
+  delta.action = typed_stack::kFrontierActionPopFrame;
+  delta.new_frontier_top = parent.frontier_marker.frontier_top;
+  delta.new_frontier_count =
+      parent.frontier_marker.frontier_count;
+  delta.new_current_level = parent.traversal_level;
+  delta.new_level_frame_depth =
+      parent.frontier_marker.level_frame_depth;
+  delta.max_level_depth = metadata.max_level_depth;
+  private_frontier::access_plan_v0 ignored = {};
+  if (private_frontier::apply_parent_restore_delta(
+          &state->canonical_slot, state->owner,
+          state->private_region, delta, &ignored) !=
+      private_frontier::kStatusOk) {
+    return kStatusSemanticApplyRejected;
+  }
+
+  status_kind status =
+      allocate_operation(state, restore_operation_seq);
+  if (status != kStatusOk) return status;
+  fetch_target::operation_packet_v0 restore_packet = {};
+  restore_packet.owner = state->owner;
+  restore_packet.reservation_id = *restore_operation_seq;
+  restore_packet.reservation_age = *restore_operation_seq;
+  restore_packet.target_operation_seq = *restore_operation_seq;
+  restore_packet.slot_generation = 1;
+  restore_packet.target_kind = fetch_target::kTargetInstance;
+  restore_packet.operation_kind =
+      fetch_target::kOperationInstanceRestoreParent;
+  restore_packet.valid = 1;
+  restore_packet.parent_frame = parent;
+  functional_driver::instance_restore_execution_v0 restore = {};
+  const functional_driver::status_kind driver_status =
+      functional_driver::execute_one_instance_restore(
+          restore_packet, state->private_region,
+          state->canonical_slot, &restore);
+  if (driver_status != functional_driver::kStatusOk ||
+      !restore.valid) {
+    return record_driver_rejection(
+        state, kDriverUnitInstance, driver_status);
+  }
+  if (private_frontier::apply_parent_state_restore(
+          &state->canonical_slot, state->owner,
+          state->private_region,
+          restore.operator_result.restored_parent,
+          &ignored) != private_frontier::kStatusOk) {
+    return kStatusSemanticApplyRejected;
+  }
+  state->blas_build_generation = 0;
+  return kStatusOk;
+}
+
+status_kind select_next_short_stack_target(
+    state_v0 *state, const provider_v0 &provider,
+    next_action_v0 *action, output_v0 *output) {
+  if (state == NULL || action == NULL || output == NULL ||
+      state->short_stack_replay_enabled == 0 ||
+      provider.resolve_parent_edge == NULL) {
+    return kStatusInvalidState;
+  }
+  while (true) {
+    if (state->short_stack.stack_count == 0) {
+      if (!short_stack::terminal_allowed(
+              state->short_stack, false, false, false)) {
+        return kStatusShortStackRejected;
+      }
+      uint32_t terminal_operation_seq = 0;
+      status_kind status =
+          allocate_operation(state, &terminal_operation_seq);
+      if (status != kStatusOk) return status;
+      private_frontier::root_private_operands_v0 operands = {};
+      private_frontier::instance_shader_projection_v0 instance = {};
+      status = decode_private(*state, &operands, &instance);
+      if (status != kStatusOk) return status;
+      return publish_output(
+          state,
+          operands.committed_hit.valid != 0
+              ? kBoundaryFinalHit
+              : kBoundaryFinalMiss,
+          terminal_operation_seq, output);
+    }
+
+    if (state->short_stack.cross_as != 0 &&
+        state->short_stack.stack_count == 1) {
+      if (state->short_stack.lost != 0) {
+        return kStatusShortStackRejected;
+      }
+      short_stack::entry_v0 return_entry = {};
+      if (!short_stack::read_logical_entry(
+              state->short_stack, 0, &return_entry) ||
+          short_stack::control_kind(return_entry.control) !=
+              short_stack::kEntryCrossAsReturn) {
+        return kStatusShortStackRejected;
+      }
+      private_frontier::traversal_frame_projection_v0 parent_frame = {};
+      if (private_frontier::decode_parent_frame(
+              state->canonical_slot, state->owner,
+              &parent_frame) != private_frontier::kStatusOk) {
+        return kStatusPrivateStateRejected;
+      }
+      short_stack::parent_edge_v0 parent = {};
+      if (!provider.resolve_parent_edge(
+              provider.context, parent_frame.current_decode_context,
+              state->tlas_build_generation,
+              return_entry.payload_offset, &parent) ||
+          short_stack::return_to_tlas(
+              &state->short_stack, parent) !=
+              short_stack::kStatusOk) {
+        return kStatusParentResolveRejected;
+      }
+      uint32_t restore_operation_seq = 0;
+      status_kind status = restore_parent_for_short_stack(
+          state, &restore_operation_seq);
+      if (status != kStatusOk) return status;
+      continue;
+    }
+
+    const bool need_parent =
+        short_stack::parent_bailout_required(state->short_stack);
+    const short_stack::pop_result_v0 popped =
+        short_stack::pop_top(state->short_stack);
+    if (popped.status != short_stack::kStatusOk ||
+        popped.entry_valid == 0 ||
+        short_stack::control_kind(popped.entry.control) ==
+            short_stack::kEntryCrossAsReturn) {
+      return kStatusShortStackRejected;
+    }
+    uint32_t stack_operation_seq = 0;
+    status_kind status =
+        allocate_operation(state, &stack_operation_seq);
+    if (status != kStatusOk) return status;
+
+    short_stack::parent_bailout_result_v0 bailout = {};
+    if (need_parent) {
+      private_frontier::root_private_operands_v0 operands = {};
+      private_frontier::instance_shader_projection_v0 instance = {};
+      status = decode_private(*state, &operands, &instance);
+      if (status != kStatusOk) return status;
+      short_stack::parent_edge_v0 parent = {};
+      if (!provider.resolve_parent_edge(
+              provider.context, operands.decode_context,
+              active_build_generation(*state),
+              popped.entry.payload_offset, &parent)) {
+        return kStatusParentResolveRejected;
+      }
+      bailout = short_stack::prepare_parent_bailout(popped, parent);
+      if (bailout.status != short_stack::kStatusOk) {
+        return kStatusShortStackRejected;
+      }
+      state->short_stack = bailout.state;
+    } else {
+      state->short_stack = popped.state;
+    }
+
+    private_frontier::root_private_operands_v0 operands = {};
+    private_frontier::instance_shader_projection_v0 instance = {};
+    status = decode_private(*state, &operands, &instance);
+    if (status != kStatusOk) return status;
+    *action = next_action_v0();
+    action->kind = kActionTarget;
+    action->producer_operation_seq = stack_operation_seq;
+    action->short_entry = popped.entry;
+    action->short_entry_valid = 1;
+    action->replay_cursor =
+        replay_cursor_from_entry(popped.entry);
+    action->parent_resume = bailout.parent_resume;
+    action->parent_resume_valid =
+        bailout.parent_resume_valid;
+    if (!selected_fetch_from_short_entry(
+            popped.entry, operands.decode_context,
+            &action->selected_fetch)) {
+      return kStatusShortStackRejected;
+    }
+    return kStatusOk;
+  }
 }
 
 status_kind run_loop(state_v0 *state, const provider_v0 &provider,
@@ -472,13 +786,25 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
       if (packet.target_kind == fetch_target::kTargetNode) {
         functional_driver::node_execution_v0 execution = {};
         const functional_driver::status_kind driver_status =
-            functional_driver::execute_one_node(packet, &execution);
+            state->short_stack_replay_enabled != 0
+                ? functional_driver::execute_one_node(
+                      packet, action.replay_cursor, &execution)
+                : functional_driver::execute_one_node(
+                      packet, &execution);
         if (driver_status != functional_driver::kStatusOk ||
             !execution.valid) {
           return record_driver_rejection(
               state, kDriverUnitNode, driver_status);
         }
         ++state->node_visits;
+        if (state->short_stack_replay_enabled != 0) {
+          next_action_v0 next = {};
+          status = advance_short_stack_after_node(
+              state, execution, action, &next);
+          if (status != kStatusOk) return status;
+          action = next;
+          continue;
+        }
         action = next_action_v0();
         action.producer_operation_seq =
             packet.target_operation_seq;
@@ -518,6 +844,57 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
         }
         status = apply_instance_enter(state, execution);
         if (status != kStatusOk) return status;
+        if (state->short_stack_replay_enabled != 0) {
+          const instance_semantic::route_kind route =
+              static_cast<instance_semantic::route_kind>(
+                  execution.semantic_plan.route_kind);
+          if (route ==
+              instance_semantic::kRouteBlasRootNode) {
+            if (action.short_entry_valid == 0 ||
+                action.short_entry.payload_kind !=
+                    typed_node::kInstancePayloadKind ||
+                execution.operator_result.root_fetch
+                        .build_generation == 0) {
+              return kStatusShortStackRejected;
+            }
+            short_stack::cross_as_input_v0 crossing = {};
+            crossing.state = state->short_stack;
+            crossing.tlas_instance = action.short_entry;
+            crossing.blas_root = short_entry_from_fetch(
+                execution.semantic_plan.root_fetch,
+                short_stack::kDomainBlas);
+            const short_stack::cross_as_result_v0 crossed =
+                short_stack::enter_blas(crossing);
+            if (crossed.status != short_stack::kStatusOk) {
+              return kStatusShortStackRejected;
+            }
+            state->short_stack = crossed.state;
+            state->blas_build_generation =
+                execution.operator_result.root_fetch
+                    .build_generation;
+            next_action_v0 next = {};
+            status = select_next_short_stack_target(
+                state, provider, &next, output);
+            if (status != kStatusOk || output->valid != 0) {
+              return status;
+            }
+            next.instance_blas_root = 1;
+            action = next;
+            continue;
+          }
+          if (route !=
+              instance_semantic::kRouteStackPopNext) {
+            return kStatusSemanticApplyRejected;
+          }
+          next_action_v0 next = {};
+          status = select_next_short_stack_target(
+              state, provider, &next, output);
+          if (status != kStatusOk || output->valid != 0) {
+            return status;
+          }
+          action = next;
+          continue;
+        }
         action = next_action_v0();
         action.producer_operation_seq =
             packet.target_operation_seq;
@@ -581,6 +958,16 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
         if (route != primitive_semantic::kRouteStackPopNext) {
           return kStatusSemanticApplyRejected;
         }
+        if (state->short_stack_replay_enabled != 0) {
+          next_action_v0 next = {};
+          status = select_next_short_stack_target(
+              state, provider, &next, output);
+          if (status != kStatusOk || output->valid != 0) {
+            return status;
+          }
+          action = next;
+          continue;
+        }
         action = next_action_v0();
         action.kind = kActionStackPop;
         action.producer_operation_seq =
@@ -590,6 +977,17 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
       return kStatusTargetRejected;
     }
 
+    if (state->short_stack_replay_enabled != 0 &&
+        action.kind == kActionStackPop) {
+      next_action_v0 next = {};
+      status_kind status = select_next_short_stack_target(
+          state, provider, &next, output);
+      if (status != kStatusOk || output->valid != 0) {
+        return status;
+      }
+      action = next;
+      continue;
+    }
     if (action.kind == kActionStackPush ||
         action.kind == kActionStackPop) {
       stack_operation::operation_packet_v0 packet = {};
@@ -724,7 +1122,15 @@ status_kind run_new(const root_input_v0 &input,
       input.root_reference.source_kind !=
           fetch_target::kTargetReferenceRootCompatibilityProxy ||
       input.root_reference.proxy_delegated != 1 ||
-      input.raw_payload_base_address == 0) {
+      input.raw_payload_base_address == 0 ||
+      input.short_stack_replay_enabled > 1 ||
+      (input.short_stack_replay_enabled != 0 &&
+       (input.root_build_generation == 0 ||
+        provider.resolve_parent_edge == NULL)) ||
+      !std::all_of(input.reserved_zero,
+                   input.reserved_zero +
+                       sizeof(input.reserved_zero),
+                   [](uint8_t value) { return value == 0; })) {
     return kStatusInvalidArgument;
   }
 
@@ -734,6 +1140,12 @@ status_kind run_new(const root_input_v0 &input,
   state->owner = input.owner;
   state->private_region = input.private_region;
   state->ray_policy = input.ray_policy;
+  state->short_stack_replay_enabled =
+      input.short_stack_replay_enabled;
+  state->short_stack.active_domain =
+      short_stack::kDomainTlas;
+  state->tlas_build_generation =
+      input.root_build_generation;
   state->next_operation_seq = 1;
   private_frontier::frontier_metadata_image_v0 metadata = {};
   metadata.frontier_capacity =
@@ -762,6 +1174,29 @@ status_kind run_new(const root_input_v0 &input,
   next_action_v0 action = {};
   action.producer_operation_seq =
       root_packet.target_operation_seq;
+  if (state->short_stack_replay_enabled != 0) {
+    action.kind = kActionTarget;
+    action.short_entry.payload_offset =
+        input.root_reference.payload_offset;
+    action.short_entry.near_t_bits =
+        input.root_reference.near_t_bits;
+    action.short_entry.payload_byte_count =
+        input.root_reference.payload_byte_count;
+    action.short_entry.payload_kind =
+        input.root_reference.payload_kind;
+    action.short_entry.control = short_stack::make_control(
+        short_stack::kEntryDirectTarget,
+        short_stack::kDomainTlas, 0, true, false);
+    action.short_entry_valid = 1;
+    if (!short_stack::validate_entry(action.short_entry)) {
+      return kStatusShortStackRejected;
+    }
+    next_action_v0 next = {};
+    status = advance_short_stack_after_node(
+        state, execution, action, &next);
+    if (status != kStatusOk) return status;
+    return run_loop(state, provider, next, output);
+  }
   if (execution.semantic_plan.route_kind ==
       result_semantic::kNodeRouteDirectChild) {
     action.kind = kActionTarget;
@@ -843,6 +1278,10 @@ const char *status_name(status_kind status) {
       return "semantic_apply_rejected";
     case kStatusShaderReturnRejected:
       return "shader_return_rejected";
+    case kStatusParentResolveRejected:
+      return "parent_resolve_rejected";
+    case kStatusShortStackRejected:
+      return "short_stack_rejected";
   }
   return "unknown";
 }
