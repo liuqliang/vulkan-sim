@@ -35,6 +35,7 @@ enum status_kind : uint8_t {
   kStatusInvalidChildLayout,
   kStatusChildReferenceOutOfRange,
   kStatusMalformedRootHeader,
+  kStatusInvalidReplayCursor,
 };
 
 enum route_result_kind : uint8_t {
@@ -130,6 +131,13 @@ struct alignas(16) route_input_v0 {
   uint64_t current_payload_offset;
 };
 
+struct replay_cursor_v0 {
+  uint8_t child_anchor;
+  uint8_t anchor_valid;
+  uint8_t inclusive;
+  uint8_t reserved_zero[5];
+};
+
 struct alignas(16) route_result_v0 {
   uint8_t status;
   uint8_t result_kind;
@@ -167,6 +175,8 @@ static_assert(sizeof(root_reference_seed_result_v0) == 16,
               "typed root reference seed result must remain 16 bytes");
 static_assert(sizeof(route_input_v0) == 192,
               "typed node route input must remain 192 bytes");
+static_assert(sizeof(replay_cursor_v0) == 8,
+              "typed node replay cursor must remain 8 bytes");
 static_assert(alignof(route_input_v0) == 16,
               "typed node route input must remain aligned");
 static_assert(offsetof(route_input_v0, decode_context) == 144,
@@ -195,6 +205,9 @@ root_reference_seed_result_v0 execute_root_reference_seed(
 route_result_v0 execute_route(const route_input_v0 &input);
 route_result_v0 execute_route(const route_input_v0 &input,
                               candidate_result_v0 *candidate_result);
+route_result_v0 execute_route(
+    const route_input_v0 &input, const replay_cursor_v0 &cursor,
+    candidate_result_v0 *candidate_result);
 
 const char *status_name(status_kind status);
 

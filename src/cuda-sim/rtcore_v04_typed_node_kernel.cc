@@ -196,6 +196,53 @@ static float decode_bound(float origin, uint8_t quantized, int exponent) {
   return origin + scaled;
 }
 
+static bool apply_replay_cursor(const replay_cursor_v0 &cursor,
+                                candidate_result_v0 *candidates) {
+  if (candidates == NULL || cursor.anchor_valid > 1 ||
+      cursor.inclusive > 1 ||
+      !bytes_are_zero(cursor.reserved_zero,
+                      sizeof(cursor.reserved_zero)) ||
+      (cursor.anchor_valid == 0 &&
+       (cursor.child_anchor != 0 || cursor.inclusive != 0)) ||
+      (cursor.anchor_valid != 0 &&
+       (cursor.child_anchor >= kMaxChildren ||
+        (candidates->evaluated_child_mask &
+         (1u << cursor.child_anchor)) == 0))) {
+    return false;
+  }
+  if (cursor.anchor_valid == 0) return true;
+
+  float anchor_near = 0.0f;
+  std::memcpy(&anchor_near,
+              &candidates->near_t_bits[cursor.child_anchor],
+              sizeof(anchor_near));
+  uint8_t filtered_slots[kMaxChildren] = {};
+  uint8_t filtered_mask = 0;
+  uint8_t filtered_count = 0;
+  for (uint8_t index = 0; index < candidates->candidate_count;
+       ++index) {
+    const uint8_t slot = candidates->ordered_child_slots[index];
+    float near_t = 0.0f;
+    std::memcpy(&near_t, &candidates->near_t_bits[slot],
+                sizeof(near_t));
+    const bool after =
+        near_t > anchor_near ||
+        (near_t == anchor_near && slot > cursor.child_anchor);
+    const bool at_anchor =
+        near_t == anchor_near && slot == cursor.child_anchor;
+    if (!after && !(cursor.inclusive != 0 && at_anchor)) continue;
+    filtered_slots[filtered_count++] = slot;
+    filtered_mask |= static_cast<uint8_t>(1u << slot);
+  }
+  std::memset(candidates->ordered_child_slots, 0,
+              sizeof(candidates->ordered_child_slots));
+  std::memcpy(candidates->ordered_child_slots, filtered_slots,
+              sizeof(filtered_slots));
+  candidates->candidate_count = filtered_count;
+  candidates->hit_child_mask = filtered_mask;
+  return true;
+}
+
 }  // namespace
 
 bool make_raw_node_payload(const void *raw_node_bytes,
@@ -373,22 +420,34 @@ root_reference_seed_result_v0 execute_root_reference_seed(
 }
 
 route_result_v0 execute_route(const route_input_v0 &input) {
-  return execute_route(input, NULL);
+  return execute_route(input,
+                       static_cast<candidate_result_v0 *>(NULL));
 }
 
 route_result_v0 execute_route(const route_input_v0 &input,
                               candidate_result_v0 *candidate_result) {
+  replay_cursor_v0 cursor = {};
+  return execute_route(input, cursor, candidate_result);
+}
+
+route_result_v0 execute_route(
+    const route_input_v0 &input, const replay_cursor_v0 &cursor,
+    candidate_result_v0 *candidate_result) {
   route_result_v0 result = {};
   result.status = kStatusInvalidArgument;
 
-  const candidate_result_v0 candidates = execute(input.candidate);
-  if (candidate_result != NULL) {
-    *candidate_result = candidates;
-  }
+  candidate_result_v0 candidates = execute(input.candidate);
   if (candidates.status != kStatusOk) {
+    if (candidate_result != NULL) *candidate_result = candidates;
     result.status = candidates.status;
     return result;
   }
+  if (!apply_replay_cursor(cursor, &candidates)) {
+    if (candidate_result != NULL) *candidate_result = candidates;
+    result.status = kStatusInvalidReplayCursor;
+    return result;
+  }
+  if (candidate_result != NULL) *candidate_result = candidates;
   if (!valid_decode_context(input.decode_context, input.candidate.level)) {
     result.status = kStatusInvalidDecodeContext;
     return result;
@@ -487,6 +546,8 @@ const char *status_name(status_kind status) {
       return "child_reference_out_of_range";
     case kStatusMalformedRootHeader:
       return "malformed_root_header";
+    case kStatusInvalidReplayCursor:
+      return "invalid_replay_cursor";
   }
   return "unknown";
 }
