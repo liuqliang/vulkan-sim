@@ -4,6 +4,8 @@
 #include <limits>
 #include <set>
 
+#include "rtcore_v04_short_stack_shared_codec.h"
+
 namespace rtcore {
 namespace v04 {
 namespace private_shared {
@@ -316,6 +318,47 @@ static status_kind validate_release_lanes(const backing_state_v0 &state,
   return kStatusOk;
 }
 
+static bool accesses_equal(
+    const private_frontier::shared_chunk_access_v0 &lhs,
+    const private_frontier::shared_chunk_access_v0 &rhs) {
+  return lhs.aligned_32b_address == rhs.aligned_32b_address &&
+         lhs.byte_mask == rhs.byte_mask &&
+         lhs.slot_byte_offset == rhs.slot_byte_offset &&
+         lhs.byte_count == rhs.byte_count &&
+         lhs.field_kind == rhs.field_kind &&
+         lhs.access_kind == rhs.access_kind;
+}
+
+static status_kind merge_access_plan(
+    private_frontier::access_plan_v0 *destination,
+    const private_frontier::access_plan_v0 &source) {
+  if (destination == NULL ||
+      !private_frontier::owners_equal(destination->owner, source.owner)) {
+    return kStatusPlannerFailure;
+  }
+  for (uint8_t source_index = 0; source_index < source.access_count;
+       ++source_index) {
+    bool present = false;
+    for (uint8_t destination_index = 0;
+         destination_index < destination->access_count;
+         ++destination_index) {
+      if (accesses_equal(destination->accesses[destination_index],
+                         source.accesses[source_index])) {
+        present = true;
+        break;
+      }
+    }
+    if (present) continue;
+    if (destination->access_count >=
+        private_frontier::kMaxAccessChunks) {
+      return kStatusPlannerFailure;
+    }
+    destination->accesses[destination->access_count++] =
+        source.accesses[source_index];
+  }
+  return kStatusOk;
+}
+
 }  // namespace
 
 void initialize(backing_state_v0 *state, uint32_t owner_hw_sid) {
@@ -454,6 +497,48 @@ status_kind prepare_new_warp_with_root_operands(
                                root_operands, plan);
 }
 
+status_kind prepare_new_warp_with_root_operands_and_short_stack(
+    const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
+    uint32_t active_mask,
+    const private_frontier::owner_binding_v0 owners[kLaneCapacity],
+    const private_frontier::root_private_operands_v0
+        root_operands[kLaneCapacity],
+    const uint32_t root_build_generations[kLaneCapacity],
+    new_warp_plan_v0 *plan) {
+  if (root_operands == NULL || root_build_generations == NULL ||
+      plan == NULL) {
+    return kStatusInvalidArgument;
+  }
+  status_kind status = prepare_new_warp_impl(
+      state, warp_uid, warp_id, active_mask, owners, root_operands, plan);
+  if (status != kStatusOk) return status;
+
+  private_frontier::region_binding_v0 region = {};
+  region.profile_id = private_frontier::kLayoutProfileId;
+  region.slot_count = 256;
+  region.private_region_base = private_region_base(state.owner_hw_sid);
+  for (uint32_t lane = 0; lane < kLaneCapacity; ++lane) {
+    if ((active_mask & lane_bit(lane)) == 0) continue;
+    if (root_build_generations[lane] == 0) {
+      return kStatusPlannerFailure;
+    }
+    short_stack_shared::persistent_state_v0 persistent = {};
+    persistent.tlas_build_generation = root_build_generations[lane];
+    persistent.stack.active_domain = short_stack::kDomainTlas;
+    private_frontier::access_plan_v0 short_plan = {};
+    if (short_stack_shared::apply_persistent_state(
+            &plan->staging_slots[lane], owners[lane], region, persistent,
+            &short_plan) != short_stack_shared::kStatusOk ||
+        merge_access_plan(&plan->init_plans[lane], short_plan) !=
+            kStatusOk ||
+        plan->init_plans[lane].access_count != 13) {
+      return kStatusPlannerFailure;
+    }
+  }
+  plan->short_stack_initialized = true;
+  return kStatusOk;
+}
+
 status_kind commit_new_warp(backing_state_v0 *state,
                             const new_warp_plan_v0 &plan) {
   if (state == NULL || !state->initialized || !plan.valid ||
@@ -466,6 +551,7 @@ status_kind commit_new_warp(backing_state_v0 *state,
   private_frontier::owner_binding_v0 owners[kLaneCapacity] = {};
   private_frontier::root_private_operands_v0
       root_operands[kLaneCapacity] = {};
+  uint32_t root_build_generations[kLaneCapacity] = {};
   for (uint32_t lane = 0; lane < kLaneCapacity; ++lane) {
     if ((plan.active_mask & lane_bit(lane)) == 0) continue;
     owners[lane] = plan.staging_slots[lane].owner;
@@ -475,10 +561,33 @@ status_kind commit_new_warp(backing_state_v0 *state,
             &root_operands[lane]) != private_frontier::kStatusOk) {
       return kStatusPlannerFailure;
     }
+    if (plan.short_stack_initialized) {
+      short_stack_shared::persistent_state_v0 persistent = {};
+      if (!plan.root_operands_initialized ||
+          short_stack_shared::decode_persistent_state(
+              plan.staging_slots[lane], owners[lane], &persistent) !=
+              short_stack_shared::kStatusOk ||
+          persistent.tlas_build_generation == 0 ||
+          persistent.blas_build_generation != 0 ||
+          persistent.stack.stack_count != 0 ||
+          persistent.stack.stack_top_ptr != 0 ||
+          persistent.stack.cross_as != 0 ||
+          persistent.stack.lost != 0 ||
+          persistent.stack.active_domain != short_stack::kDomainTlas) {
+        return kStatusPlannerFailure;
+      }
+      root_build_generations[lane] =
+          persistent.tlas_build_generation;
+    }
   }
   new_warp_plan_v0 revalidated = {};
   const status_kind revalidation_status =
-      plan.root_operands_initialized
+      plan.short_stack_initialized
+          ? prepare_new_warp_with_root_operands_and_short_stack(
+                *state, plan.warp_uid, plan.warp_id, plan.active_mask,
+                owners, root_operands, root_build_generations,
+                &revalidated)
+      : plan.root_operands_initialized
           ? prepare_new_warp_with_root_operands(
                 *state, plan.warp_uid, plan.warp_id, plan.active_mask, owners,
                 root_operands, &revalidated)

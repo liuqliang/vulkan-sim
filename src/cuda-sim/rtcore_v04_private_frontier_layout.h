@@ -44,7 +44,7 @@ static const uint32_t kStackSelectedFetchBytes =
     sizeof(typed_node::selected_child_fetch_work_item_v0);
 static const uint32_t kTransitionSpillEnd =
     kTransitionSpillOffset + kTransitionSpillBytes;
-static const uint32_t kMaxAccessChunks = 12;
+static const uint32_t kMaxAccessChunks = 16;
 static const uint32_t kMaxNonemptyPopOperandChunks = 9;
 static const uint32_t kMaxEmptyPopOperandChunks = 5;
 

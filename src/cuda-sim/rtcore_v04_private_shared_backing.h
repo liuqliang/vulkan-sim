@@ -151,8 +151,8 @@ struct backing_state_v0 {
 struct new_warp_plan_v0 {
   bool valid;
   bool root_operands_initialized;
+  bool short_stack_initialized;
   uint8_t resident_warp_slot;
-  uint8_t reserved_zero;
   uint32_t owner_hw_sid;
   uint32_t warp_uid;
   uint32_t warp_id;
@@ -214,6 +214,15 @@ status_kind prepare_new_warp_with_root_operands(
     const private_frontier::owner_binding_v0 owners[kLaneCapacity],
     const private_frontier::root_private_operands_v0
         root_operands[kLaneCapacity],
+    new_warp_plan_v0 *plan);
+
+status_kind prepare_new_warp_with_root_operands_and_short_stack(
+    const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
+    uint32_t active_mask,
+    const private_frontier::owner_binding_v0 owners[kLaneCapacity],
+    const private_frontier::root_private_operands_v0
+        root_operands[kLaneCapacity],
+    const uint32_t root_build_generations[kLaneCapacity],
     new_warp_plan_v0 *plan);
 
 status_kind commit_new_warp(backing_state_v0 *state,

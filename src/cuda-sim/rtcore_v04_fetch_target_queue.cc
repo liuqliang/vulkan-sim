@@ -1373,6 +1373,8 @@ status_kind lower_selected_fetch(
       selected_input.selected_fetch.child.payload_offset;
   input->target_reference.near_t_bits =
       selected_input.selected_fetch.child.near_t_bits;
+  input->target_reference.build_generation =
+      selected_input.build_generation;
   input->target_reference.payload_byte_count = raw_payload_bytes;
   input->target_reference.payload_kind =
       selected_input.selected_fetch.child.payload_kind;
@@ -1449,6 +1451,8 @@ status_kind lower_instance_blas_root(
   input->owner = root_input.owner;
   input->target_reference.payload_offset = root.payload_offset;
   input->target_reference.near_t_bits = root.near_t_bits;
+  input->target_reference.build_generation =
+      root_input.build_generation;
   input->target_reference.payload_byte_count = kNodeRawPayloadBytes;
   input->target_reference.payload_kind = root.payload_kind;
   input->target_reference.level = typed_node::kLevelBlas;

@@ -109,6 +109,7 @@ status_kind try_accept_direct(
   reservation_input.selected_fetch = input.selected_fetch;
   reservation_input.forwarded_ray_policy = input.ray_policy;
   reservation_input.target_operation_seq = target_operation_seq;
+  reservation_input.build_generation = input.build_generation;
   reservation_input.producer_commit_required = 0;
   reservation_input.required_operand_mask = static_cast<uint8_t>(
       fetch_target::kOperandTargetReferenceValid |

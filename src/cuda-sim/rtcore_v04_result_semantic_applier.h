@@ -49,6 +49,10 @@ status_kind prepare_node_result(
     const typed_node::route_result_v0 &result,
     node_commit_plan_v0 *plan);
 
+status_kind materialize_node_result(
+    const node_commit_plan_v0 &plan,
+    typed_node::route_result_v0 *result);
+
 bool validate_node_commit_plan(
     const node_commit_plan_v0 &plan,
     const fetch_target::operation_packet_v0 &packet,

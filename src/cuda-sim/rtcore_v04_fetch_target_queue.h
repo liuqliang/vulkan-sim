@@ -86,12 +86,13 @@ enum target_reference_source_kind : uint8_t {
 struct target_reference_v0 {
   uint64_t payload_offset;
   uint32_t near_t_bits;
+  uint32_t build_generation;
   uint16_t payload_byte_count;
   uint8_t payload_kind;
   uint8_t level;
   uint8_t source_kind;
   uint8_t proxy_delegated;
-  uint8_t reserved_zero[6];
+  uint8_t reserved_zero[2];
 };
 
 struct reservation_input_v0 {
@@ -117,10 +118,11 @@ struct selected_fetch_reservation_input_v0 {
   uint32_t target_operation_seq;
   uint32_t producer_operation_seq;
   uint32_t producer_commit_epoch;
+  uint32_t build_generation;
   uint8_t producer_commit_required;
   uint8_t required_operand_mask;
   uint8_t forwarded_operand_mask;
-  uint8_t reserved_zero[5];
+  uint8_t reserved_zero[1];
 };
 
 struct instance_blas_root_reservation_input_v0 {
@@ -130,6 +132,7 @@ struct instance_blas_root_reservation_input_v0 {
   uint32_t target_operation_seq;
   uint32_t producer_operation_seq;
   uint32_t producer_commit_epoch;
+  uint32_t build_generation;
   uint8_t reserved_zero[4];
 };
 

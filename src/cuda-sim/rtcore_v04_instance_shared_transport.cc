@@ -313,6 +313,7 @@ status_kind capture_enter_result(
   tracker.route_kind = plan.route_kind;
   tracker.root_fetch = plan.root_fetch;
   tracker.ray_policy = plan.ray_policy;
+  tracker.root_build_generation = plan.root_build_generation;
   tracker.valid = 1;
   tracker.ready = plan.write_fragment_count == 0 ? 1 : 0;
   state->trackers[tracker_index] = tracker;
@@ -484,6 +485,8 @@ status_kind pop_ready_event(engine_state_v0 *state,
   event->producer_operation_seq = tracker.operation_seq;
   event->target_operation_seq = tracker.target_operation_seq;
   event->commit_epoch = tracker.commit_epoch;
+  event->root_build_generation =
+      tracker.root_build_generation;
   event->route_kind = tracker.route_kind;
   event->root_fetch = tracker.root_fetch;
   event->ray_policy = tracker.ray_policy;

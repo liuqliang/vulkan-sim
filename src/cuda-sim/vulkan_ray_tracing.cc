@@ -17237,6 +17237,7 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
 
     private_frontier::owner_binding_v0 private_owners[32] = {};
     private_frontier::root_private_operands_v0 private_operands[32] = {};
+    uint32_t root_build_generations[32] = {};
     for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
         const unsigned lane_mask = 1u << lane;
         if ((input->active_mask & lane_mask) == 0) continue;
@@ -17252,16 +17253,24 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
             request_owner::make_private_frontier_owner(
                 timing_plan.owner_plan.lane_bindings[lane]);
         private_operands[lane] = lane_input.private_operands;
+        root_build_generations[lane] =
+            lane_input.root_build_generation;
     }
 
     private_shared::backing_state_v0 staged_backing =
         rtcore_v04_private_shared_backing_for(input->owner_hw_sid);
     private_shared::new_warp_plan_v0 private_plan = {};
     private_shared::status_kind private_status =
-        private_shared::prepare_new_warp_with_root_operands(
-            staged_backing, input->warp_uid, input->warp_id,
-            input->active_mask, private_owners, private_operands,
-            &private_plan);
+        rtcore_v04_genrt_short_stack_replay_enabled()
+            ? private_shared::
+                  prepare_new_warp_with_root_operands_and_short_stack(
+                      staged_backing, input->warp_uid, input->warp_id,
+                      input->active_mask, private_owners, private_operands,
+                      root_build_generations, &private_plan)
+            : private_shared::prepare_new_warp_with_root_operands(
+                  staged_backing, input->warp_uid, input->warp_id,
+                  input->active_mask, private_owners, private_operands,
+                  &private_plan);
     if (private_status != private_shared::kStatusOk) {
         failure = private_shared::status_name(private_status);
         if (failure_reason != NULL) *failure_reason = failure;
@@ -17298,6 +17307,8 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
         reservation_input.owner = private_owners[lane];
         reservation_input.target_reference =
             lane_input.target_reference;
+        reservation_input.target_reference.build_generation =
+            lane_input.root_build_generation;
         reservation_input.forwarded_ray_policy =
             lane_input.ray_policy;
         reservation_input.raw_payload_base_address =
@@ -18307,6 +18318,8 @@ rtcore_accept_v04_direct_selected_fetch_route(
     input.ray_policy = route->ray_policy;
     input.producer_operation_seq =
         route->result_identity.target_operation_seq;
+    input.build_generation =
+        route->current_target_reference.build_generation;
     input.reservation_cycle = context->service_cycle;
     transition::accepted_transition_v0 accepted = {};
     const transition::status_kind status =
@@ -20677,6 +20690,8 @@ static bool rtcore_service_v04_live_instance_ready(
             event.producer_operation_seq;
         reservation_input.producer_commit_epoch =
             event.commit_epoch;
+        reservation_input.build_generation =
+            event.root_build_generation;
         fetch_target::reservation_receipt_v0 reservation = {};
         const fetch_target::status_kind reserve_status =
             fetch_target::try_reserve_instance_blas_root(

@@ -181,6 +181,7 @@ status_kind prepare_enter(
           typed_node::kInternalPayloadKind ||
       result.root_fetch.decode_context.as_object.as_type !=
           typed_blas::kAsTypeBlas ||
+      result.root_fetch.build_generation == 0 ||
       result.root_fetch.encoded_reference == 0) {
     return kStatusInvalidTypedResult;
   }
@@ -240,6 +241,8 @@ status_kind prepare_enter(
     return kStatusInvalidWriteFragment;
   }
   prepared.route_kind = kRouteBlasRootNode;
+  prepared.root_build_generation =
+      result.root_fetch.build_generation;
   prepared.write_fragment_count = fragment_count;
   prepared.required_ack_count = fragment_count;
   prepared.root_fetch.child.payload_offset =

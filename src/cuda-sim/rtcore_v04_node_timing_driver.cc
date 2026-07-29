@@ -263,9 +263,16 @@ status_kind commit_results(
     }
     committed_route_receipt_v0 receipt = {};
     receipt.result_identity = entry.result_identity;
-    receipt.typed_result = entry.typed_result;
+    if (result_semantic::materialize_node_result(
+            entry.semantic_plan, &receipt.typed_result) !=
+        result_semantic::kStatusOk) {
+      return kStatusSemanticApplyFailed;
+    }
     receipt.semantic_plan = entry.semantic_plan;
     receipt.ray_policy = entry.ray_policy;
+    receipt.current_target_reference =
+        entry.current_target_reference;
+    receipt.current_decode_context = entry.current_decode_context;
     receipt.issue_cycle = entry.issue_cycle;
     receipt.result_ready_cycle = entry.result_ready_cycle;
     receipt.capture_cycle = entry.capture_cycle;
@@ -374,9 +381,12 @@ status_kind capture_matured_results(
         state->result_commits[result_index];
     std::memset(&entry, 0, sizeof(entry));
     entry.result_identity = pipeline.result_identity;
-    entry.typed_result = pipeline.typed_result;
     entry.semantic_plan = semantic_plan;
     entry.ray_policy = pipeline.operation_packet.ray_policy;
+    entry.current_target_reference =
+        pipeline.operation_packet.target_reference;
+    entry.current_decode_context =
+        pipeline.operation_packet.private_operands.decode_context;
     entry.issue_age = pipeline.issue_age;
     entry.issue_cycle = pipeline.issue_cycle;
     entry.result_ready_cycle = pipeline.result_ready_cycle;

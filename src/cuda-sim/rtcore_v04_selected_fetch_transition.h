@@ -27,8 +27,9 @@ struct direct_transition_input_v0 {
   typed_node::selected_child_fetch_work_item_v0 selected_fetch;
   typed_node::ray_policy_v0 ray_policy;
   uint32_t producer_operation_seq;
+  uint32_t build_generation;
   uint64_t reservation_cycle;
-  uint8_t reserved_zero[8];
+  uint8_t reserved_zero[4];
 };
 
 struct accepted_transition_v0 {

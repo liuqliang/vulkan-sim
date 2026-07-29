@@ -162,6 +162,7 @@ status_kind build_target_packet(
     input.target_operation_seq = operation_seq;
     input.producer_operation_seq = producer_operation_seq;
     input.producer_commit_epoch = producer_operation_seq;
+    input.build_generation = active_build_generation(*state);
     if (fetch_target::lower_instance_blas_root(input, &lowered) !=
         fetch_target::kStatusOk) {
       return kStatusTargetRejected;
@@ -172,6 +173,7 @@ status_kind build_target_packet(
     input.selected_fetch = selected_fetch;
     input.forwarded_ray_policy = state->ray_policy;
     input.target_operation_seq = operation_seq;
+    input.build_generation = active_build_generation(*state);
     input.required_operand_mask = static_cast<uint8_t>(
         fetch_target::kOperandTargetReferenceValid |
         fetch_target::kOperandRawPayloadValid |

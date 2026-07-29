@@ -8480,6 +8480,8 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
         tlas.root_payload_offset;
     memcpy(&lane_input.target_reference.near_t_bits, &context.ray_tmin,
            sizeof(context.ray_tmin));
+    lane_input.target_reference.build_generation =
+        tlas.root_build_generation;
     lane_input.target_reference.payload_byte_count = 64;
     lane_input.target_reference.payload_kind = tlas.root_payload_kind;
     lane_input.target_reference.level = typed_node::kLevelTlas;

@@ -77,6 +77,7 @@ struct ready_event_v0 {
   uint32_t producer_operation_seq;
   uint32_t target_operation_seq;
   uint32_t commit_epoch;
+  uint32_t root_build_generation;
   uint8_t valid;
   uint8_t route_kind;
   uint8_t reserved_zero[2];
@@ -105,6 +106,7 @@ struct commit_tracker_v0 {
   uint32_t operation_seq;
   uint32_t target_operation_seq;
   uint32_t commit_epoch;
+  uint32_t root_build_generation;
   uint16_t expected_write_count;
   uint16_t accepted_write_mask;
   uint16_t acknowledged_write_mask;

@@ -236,6 +236,51 @@ status_kind prepare_node_result(
   return kStatusOk;
 }
 
+status_kind materialize_node_result(
+    const node_commit_plan_v0 &plan,
+    typed_node::route_result_v0 *result) {
+  if (result == NULL) return kStatusInvalidArgument;
+  *result = typed_node::route_result_v0();
+  if (plan.valid != 1 || plan.producer_operation_seq == 0 ||
+      plan.owner.request_identity == 0 || plan.owner.generation == 0 ||
+      plan.owner.lane_id >= 32 ||
+      plan.frontier_count > typed_node::kMaxChildren - 1) {
+    return kStatusInvalidTypedResult;
+  }
+
+  if (plan.route_kind == kNodeRouteNoChild) {
+    if (plan.frontier_count != 0) {
+      return kStatusInvalidTypedResult;
+    }
+    result->status = typed_node::kStatusOk;
+    result->result_kind = typed_node::kRouteResultMiss;
+    return kStatusOk;
+  }
+
+  if (plan.route_kind != kNodeRouteDirectChild &&
+      plan.route_kind != kNodeRouteMultiChildToStack) {
+    return kStatusInvalidTypedResult;
+  }
+  if ((plan.route_kind == kNodeRouteDirectChild &&
+       plan.frontier_count != 0) ||
+      (plan.route_kind == kNodeRouteMultiChildToStack &&
+       plan.frontier_count == 0)) {
+    return kStatusInvalidTypedResult;
+  }
+  result->status = typed_node::kStatusOk;
+  result->result_kind = typed_node::kRouteResultSelected;
+  result->frontier_count = plan.frontier_count;
+  result->output_valid_mask = static_cast<uint8_t>(
+      typed_node::kSelectedFetchValid |
+      (plan.frontier_count != 0
+           ? typed_node::kFrontierItemsValid
+           : 0));
+  result->selected_fetch = plan.selected_fetch;
+  std::memcpy(result->frontier, plan.frontier,
+              sizeof(result->frontier));
+  return kStatusOk;
+}
+
 bool validate_node_commit_plan(
     const node_commit_plan_v0 &plan,
     const fetch_target::operation_packet_v0 &packet,

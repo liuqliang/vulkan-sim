@@ -55,6 +55,7 @@ struct restore_commit_plan_v0 {
 struct enter_commit_plan_v0 {
   private_frontier::owner_binding_v0 owner;
   uint32_t operation_seq;
+  uint32_t root_build_generation;
   uint8_t valid;
   uint8_t route_kind;
   uint8_t write_fragment_count;
