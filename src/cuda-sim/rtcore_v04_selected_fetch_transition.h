@@ -26,10 +26,13 @@ struct direct_transition_input_v0 {
   private_frontier::owner_binding_v0 owner;
   typed_node::selected_child_fetch_work_item_v0 selected_fetch;
   typed_node::ray_policy_v0 ray_policy;
+  typed_node::replay_cursor_v0 replay_cursor;
+  short_stack::entry_v0 pending_parent_resume;
   uint32_t producer_operation_seq;
   uint32_t build_generation;
   uint64_t reservation_cycle;
-  uint8_t reserved_zero[4];
+  uint8_t pending_parent_resume_valid;
+  uint8_t reserved_zero[3];
 };
 
 struct accepted_transition_v0 {

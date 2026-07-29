@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "rtcore_v04_short_stack_replay.h"
 #include "rtcore_v04_stack_result_commit.h"
 
 namespace rtcore {
@@ -92,8 +93,12 @@ struct target_reference_v0 {
   uint8_t level;
   uint8_t source_kind;
   uint8_t proxy_delegated;
-  uint8_t reserved_zero[2];
+  uint8_t replay_control;
+  uint8_t reserved_zero[1];
 };
+
+static_assert(sizeof(target_reference_v0) == 24,
+              "target reference carrier must remain 24 bytes");
 
 struct reservation_input_v0 {
   private_frontier::owner_binding_v0 owner;
@@ -108,7 +113,9 @@ struct reservation_input_v0 {
   uint8_t producer_commit_required;
   uint8_t required_operand_mask;
   uint8_t forwarded_operand_mask;
-  uint8_t reserved_zero[6];
+  uint8_t pending_parent_resume_valid;
+  uint8_t reserved_zero[5];
+  short_stack::entry_v0 pending_parent_resume;
 };
 
 struct selected_fetch_reservation_input_v0 {
@@ -122,7 +129,10 @@ struct selected_fetch_reservation_input_v0 {
   uint8_t producer_commit_required;
   uint8_t required_operand_mask;
   uint8_t forwarded_operand_mask;
+  uint8_t replay_control;
+  uint8_t pending_parent_resume_valid;
   uint8_t reserved_zero[1];
+  short_stack::entry_v0 pending_parent_resume;
 };
 
 struct instance_blas_root_reservation_input_v0 {
@@ -196,6 +206,9 @@ struct operation_packet_v0 {
   uint8_t operation_kind;
   uint8_t reserved_zero[7];
   target_reference_v0 target_reference;
+  short_stack::entry_v0 pending_parent_resume;
+  uint8_t pending_parent_resume_valid;
+  uint8_t reserved_zero_parent[7];
   typed_node::ray_policy_v0 ray_policy;
   private_frontier::root_private_operands_v0 private_operands;
   private_frontier::instance_shader_projection_v0 current_instance;
@@ -231,6 +244,9 @@ struct slot_metadata_v0 {
   uint8_t received_recovery_descriptor_chunk_mask;
   uint8_t operation_kind;
   target_reference_v0 target_reference;
+  short_stack::entry_v0 pending_parent_resume;
+  uint8_t pending_parent_resume_valid;
+  uint8_t reserved_zero_parent[7];
   typed_node::ray_policy_v0 ray_policy;
   uint8_t mutable_ray_bytes[private_frontier::kMutableRayStateBytes];
   uint8_t decode_context_bytes[private_frontier::kAsDecodeContextBytes];
@@ -286,6 +302,11 @@ struct engine_state_v0 {
   ready_fifo_v0 primitive_ready;
   ready_fifo_v0 instance_ready;
 };
+
+bool encode_replay_cursor(const typed_node::replay_cursor_v0 &cursor,
+                          uint8_t *control);
+bool decode_replay_cursor(uint8_t control,
+                          typed_node::replay_cursor_v0 *cursor);
 
 status_kind initialize(engine_state_v0 *state, const config_v0 &config);
 

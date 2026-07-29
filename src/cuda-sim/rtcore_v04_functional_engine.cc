@@ -147,6 +147,9 @@ status_kind build_target_packet(
     state_v0 *state, const provider_v0 &provider,
     const typed_node::selected_child_fetch_work_item_v0 &selected_fetch,
     bool instance_blas_root, uint32_t producer_operation_seq,
+    const typed_node::replay_cursor_v0 &replay_cursor,
+    const short_stack::entry_v0 &parent_resume,
+    bool parent_resume_valid,
     fetch_target::operation_packet_v0 *packet) {
   if (state == NULL || packet == NULL) return kStatusInvalidArgument;
   uint32_t operation_seq = 0;
@@ -174,6 +177,13 @@ status_kind build_target_packet(
     input.forwarded_ray_policy = state->ray_policy;
     input.target_operation_seq = operation_seq;
     input.build_generation = active_build_generation(*state);
+    if (!fetch_target::encode_replay_cursor(
+            replay_cursor, &input.replay_control)) {
+      return kStatusTargetRejected;
+    }
+    input.pending_parent_resume = parent_resume;
+    input.pending_parent_resume_valid =
+        parent_resume_valid ? 1 : 0;
     input.required_operand_mask = static_cast<uint8_t>(
         fetch_target::kOperandTargetReferenceValid |
         fetch_target::kOperandRawPayloadValid |
@@ -782,7 +792,9 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
       status_kind status = build_target_packet(
           state, provider, action.selected_fetch,
           action.instance_blas_root != 0,
-          action.producer_operation_seq, &packet);
+          action.producer_operation_seq, action.replay_cursor,
+          action.parent_resume, action.parent_resume_valid != 0,
+          &packet);
       if (status != kStatusOk) return status;
 
       if (packet.target_kind == fetch_target::kTargetNode) {

@@ -80,6 +80,7 @@ struct result_commit_entry_v0 {
   typed_node::ray_policy_v0 ray_policy;
   fetch_target::target_reference_v0 current_target_reference;
   typed_blas::as_decode_context_v0 current_decode_context;
+  short_stack::entry_v0 pending_parent_resume;
   uint64_t issue_age;
   uint64_t issue_cycle;
   uint64_t result_ready_cycle;
@@ -88,7 +89,8 @@ struct result_commit_entry_v0 {
   uint32_t current_traversal_bound_bits;
   uint8_t valid;
   uint8_t operator_invocation_count;
-  uint8_t reserved_zero[2];
+  uint8_t pending_parent_resume_valid;
+  uint8_t reserved_zero[1];
 };
 
 struct committed_route_receipt_v0 {
@@ -98,6 +100,7 @@ struct committed_route_receipt_v0 {
   typed_node::ray_policy_v0 ray_policy;
   fetch_target::target_reference_v0 current_target_reference;
   typed_blas::as_decode_context_v0 current_decode_context;
+  short_stack::entry_v0 pending_parent_resume;
   uint64_t issue_cycle;
   uint64_t result_ready_cycle;
   uint64_t capture_cycle;
@@ -109,6 +112,7 @@ struct committed_route_receipt_v0 {
   uint8_t operator_invocation_count;
   uint8_t next_target_kind;
   uint8_t next_target_materialized;
+  uint8_t pending_parent_resume_valid;
 };
 
 enum route_sink_result_kind : uint8_t {
@@ -160,8 +164,8 @@ struct state_v0 {
       result_commits[kMaxResultCommitEntries];
 };
 
-static_assert(sizeof(result_commit_entry_v0) <= 432,
-              "Node Result Commit entry exceeds candidate 432-byte profile");
+static_assert(sizeof(result_commit_entry_v0) <= 448,
+              "Node Result Commit entry exceeds candidate 448-byte profile");
 
 config_v0 candidate_profile_config();
 

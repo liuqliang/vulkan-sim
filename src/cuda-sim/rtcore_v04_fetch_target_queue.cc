@@ -89,6 +89,7 @@ bool selected_fetch_shape_valid(
 bool target_reference_shape_valid(
     const target_reference_v0 &reference, target_kind target,
     uint16_t payload_bytes, uint64_t raw_payload_base_address) {
+  typed_node::replay_cursor_v0 replay_cursor = {};
   const bool payload_kind_valid =
       reference.payload_kind == typed_node::kInternalPayloadKind ||
       reference.payload_kind == typed_node::kProceduralPayloadKind ||
@@ -120,12 +121,35 @@ bool target_reference_shape_valid(
              kTargetReferenceInstanceBlasRootProducer &&
          reference.proxy_delegated <= 1 &&
          instance_blas_root_source_valid &&
+         decode_replay_cursor(reference.replay_control,
+                              &replay_cursor) &&
+         (target == kTargetNode ||
+          replay_cursor.anchor_valid == 0) &&
          bytes_are_zero(reference.reserved_zero,
                         sizeof(reference.reserved_zero)) &&
          (reference.payload_offset & uint64_t{0x3f}) == 0 &&
          (raw_payload_base_address &
           (private_frontier::kSharedAccessChunkBytes - 1)) == 0 &&
          std::isfinite(fp32_value(reference.near_t_bits));
+}
+
+bool pending_parent_resume_valid(const reservation_input_v0 &input) {
+  if (input.pending_parent_resume_valid > 1) return false;
+  if (input.pending_parent_resume_valid == 0) {
+    const short_stack::entry_v0 zero = {};
+    return std::memcmp(&input.pending_parent_resume, &zero,
+                       sizeof(zero)) == 0;
+  }
+  return input.target_kind == kTargetNode &&
+         short_stack::validate_entry(input.pending_parent_resume) &&
+         short_stack::control_kind(
+             input.pending_parent_resume.control) ==
+             short_stack::kEntryParentResume &&
+         short_stack::control_domain(
+             input.pending_parent_resume.control) ==
+             (input.target_reference.level == typed_node::kLevelBlas
+                  ? short_stack::kDomainBlas
+                  : short_stack::kDomainTlas);
 }
 
 bool reservation_identity_valid(const reservation_input_v0 &input) {
@@ -164,6 +188,7 @@ bool reservation_identity_valid(const reservation_input_v0 &input) {
          bytes_are_zero(input.forwarded_ray_policy.reserved_zero,
                         sizeof(input.forwarded_ray_policy.reserved_zero)) &&
          bytes_are_zero(input.reserved_zero, sizeof(input.reserved_zero)) &&
+         pending_parent_resume_valid(input) &&
          target_reference_shape_valid(
              input.target_reference,
              static_cast<target_kind>(input.target_kind),
@@ -316,6 +341,10 @@ status_kind reserve_in_queue(
   metadata.producer_commit_complete =
       input.producer_commit_required == 0;
   metadata.target_reference = input.target_reference;
+  metadata.pending_parent_resume =
+      input.pending_parent_resume;
+  metadata.pending_parent_resume_valid =
+      input.pending_parent_resume_valid;
   if ((input.forwarded_operand_mask & kOperandRayPolicyValid) != 0) {
     metadata.ray_policy = input.forwarded_ray_policy;
   }
@@ -982,6 +1011,10 @@ status_kind build_operation_packet(const Slot &slot, target_kind target,
   input.producer_commit_required =
       slot.metadata.producer_commit_required;
   input.required_operand_mask = slot.metadata.required_operand_mask;
+  input.pending_parent_resume =
+      slot.metadata.pending_parent_resume;
+  input.pending_parent_resume_valid =
+      slot.metadata.pending_parent_resume_valid;
   const uint8_t root_private_mask = static_cast<uint8_t>(
       kOperandMutableRayValid | kOperandDecodeContextValid |
       kOperandCommittedHitValid);
@@ -1175,6 +1208,45 @@ uint8_t count_active(const Slot *slots, uint8_t capacity) {
 
 }  // namespace
 
+bool encode_replay_cursor(const typed_node::replay_cursor_v0 &cursor,
+                          uint8_t *control) {
+  if (control == NULL || cursor.anchor_valid > 1 ||
+      cursor.inclusive > 1 ||
+      !bytes_are_zero(cursor.reserved_zero,
+                      sizeof(cursor.reserved_zero)) ||
+      (cursor.anchor_valid == 0 &&
+       (cursor.child_anchor != 0 || cursor.inclusive != 0)) ||
+      (cursor.anchor_valid != 0 &&
+       cursor.child_anchor >= typed_node::kMaxChildren)) {
+    return false;
+  }
+  *control =
+      cursor.anchor_valid == 0
+          ? 0
+          : static_cast<uint8_t>(
+                cursor.child_anchor | uint8_t{1u << 3} |
+                (cursor.inclusive != 0 ? uint8_t{1u << 4}
+                                       : uint8_t{0}));
+  return true;
+}
+
+bool decode_replay_cursor(uint8_t control,
+                          typed_node::replay_cursor_v0 *cursor) {
+  if (cursor == NULL || (control & uint8_t{0xe0}) != 0) {
+    return false;
+  }
+  *cursor = typed_node::replay_cursor_v0();
+  if (control == 0) return true;
+  cursor->child_anchor =
+      static_cast<uint8_t>(control & uint8_t{0x07});
+  cursor->anchor_valid =
+      static_cast<uint8_t>((control >> 3) & uint8_t{0x01});
+  cursor->inclusive =
+      static_cast<uint8_t>((control >> 4) & uint8_t{0x01});
+  return cursor->anchor_valid != 0 &&
+         cursor->child_anchor < typed_node::kMaxChildren;
+}
+
 bool validate_target_reference_shape(
     const target_reference_v0 &reference, target_kind target,
     uint16_t payload_bytes, uint64_t raw_payload_base_address) {
@@ -1209,6 +1281,10 @@ status_kind build_ready_operation_packet(
   packet->operation_kind = kOperationFetchTarget;
   packet->valid = 1;
   packet->target_reference = input.target_reference;
+  packet->pending_parent_resume =
+      input.pending_parent_resume;
+  packet->pending_parent_resume_valid =
+      input.pending_parent_resume_valid;
   packet->ray_policy = input.forwarded_ray_policy;
   packet->private_operands = private_operands;
   packet->current_instance = current_instance;
@@ -1375,6 +1451,12 @@ status_kind lower_selected_fetch(
       selected_input.selected_fetch.child.near_t_bits;
   input->target_reference.build_generation =
       selected_input.build_generation;
+  input->target_reference.replay_control =
+      selected_input.replay_control;
+  input->pending_parent_resume =
+      selected_input.pending_parent_resume;
+  input->pending_parent_resume_valid =
+      selected_input.pending_parent_resume_valid;
   input->target_reference.payload_byte_count = raw_payload_bytes;
   input->target_reference.payload_kind =
       selected_input.selected_fetch.child.payload_kind;

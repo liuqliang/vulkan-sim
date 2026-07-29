@@ -110,6 +110,15 @@ status_kind try_accept_direct(
   reservation_input.forwarded_ray_policy = input.ray_policy;
   reservation_input.target_operation_seq = target_operation_seq;
   reservation_input.build_generation = input.build_generation;
+  if (!fetch_target::encode_replay_cursor(
+          input.replay_cursor,
+          &reservation_input.replay_control)) {
+    return kStatusInvalidArgument;
+  }
+  reservation_input.pending_parent_resume =
+      input.pending_parent_resume;
+  reservation_input.pending_parent_resume_valid =
+      input.pending_parent_resume_valid;
   reservation_input.producer_commit_required = 0;
   reservation_input.required_operand_mask = static_cast<uint8_t>(
       fetch_target::kOperandTargetReferenceValid |

@@ -69,7 +69,14 @@ status_kind execute_node_operator_once(
   typed_node::route_input_v0 input = {};
   const status_kind status = prepare_node_operator_input(packet, &input);
   if (status != kStatusOk) return status;
-  *result = typed_node::execute_route(input);
+  typed_node::replay_cursor_v0 replay_cursor = {};
+  if (!fetch_target::decode_replay_cursor(
+          packet.target_reference.replay_control, &replay_cursor)) {
+    return kStatusInvalidOperationPacket;
+  }
+  typed_node::candidate_result_v0 candidate_result = {};
+  *result = typed_node::execute_route(
+      input, replay_cursor, &candidate_result);
   *operator_invocation_count = 1;
   return result->status == typed_node::kStatusOk
              ? kStatusOk

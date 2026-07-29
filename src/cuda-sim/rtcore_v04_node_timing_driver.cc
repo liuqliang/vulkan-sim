@@ -273,6 +273,10 @@ status_kind commit_results(
     receipt.current_target_reference =
         entry.current_target_reference;
     receipt.current_decode_context = entry.current_decode_context;
+    receipt.pending_parent_resume =
+        entry.pending_parent_resume;
+    receipt.pending_parent_resume_valid =
+        entry.pending_parent_resume_valid;
     receipt.issue_cycle = entry.issue_cycle;
     receipt.result_ready_cycle = entry.result_ready_cycle;
     receipt.capture_cycle = entry.capture_cycle;
@@ -387,6 +391,10 @@ status_kind capture_matured_results(
         pipeline.operation_packet.target_reference;
     entry.current_decode_context =
         pipeline.operation_packet.private_operands.decode_context;
+    entry.pending_parent_resume =
+        pipeline.operation_packet.pending_parent_resume;
+    entry.pending_parent_resume_valid =
+        pipeline.operation_packet.pending_parent_resume_valid;
     entry.issue_age = pipeline.issue_age;
     entry.issue_cycle = pipeline.issue_cycle;
     entry.result_ready_cycle = pipeline.result_ready_cycle;
