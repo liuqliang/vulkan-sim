@@ -44,6 +44,7 @@
 #include "rtcore_v04_node_timing_driver.h"
 #include "rtcore_v04_private_frontier_layout.h"
 #include "rtcore_v04_private_shared_backing.h"
+#include "rtcore_v04_private_storage_profile.h"
 #include "rtcore_v04_primitive_shared_transport.h"
 #include "rtcore_v04_primitive_timing_driver.h"
 #include "rtcore_v04_request_owner_binding.h"
@@ -17598,10 +17599,12 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
     namespace live_global = rtcore::v04::live_global_memory;
     namespace private_frontier = rtcore::v04::private_frontier;
     namespace private_shared = rtcore::v04::private_shared;
+    namespace private_storage = rtcore::v04::private_storage;
     namespace request_owner = rtcore::v04::request_owner;
     namespace root_packet = rtcore::v04::root_node_packet;
     namespace target_memory = rtcore::v04::target_memory;
     namespace timing_driver = rtcore::v04::timing_driver;
+    namespace typed_node = rtcore::v04::typed_node;
     const char *failure = "accepted";
     if (failure_reason != NULL) *failure_reason = failure;
     if (!rtcore_v04_root_node_ready_packet_enabled() ||
@@ -17684,6 +17687,7 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
 
     private_frontier::owner_binding_v0 private_owners[32] = {};
     private_frontier::root_private_operands_v0 private_operands[32] = {};
+    typed_node::ray_policy_v0 ray_policies[32] = {};
     uint32_t root_build_generations[32] = {};
     for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
         const unsigned lane_mask = 1u << lane;
@@ -17700,37 +17704,50 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
             request_owner::make_private_frontier_owner(
                 timing_plan.owner_plan.lane_bindings[lane]);
         private_operands[lane] = lane_input.private_operands;
+        ray_policies[lane] = lane_input.ray_policy;
         root_build_generations[lane] =
             lane_input.root_build_generation;
     }
 
     private_shared::backing_state_v0 staged_backing =
         rtcore_v04_private_shared_backing_for(input->owner_hw_sid);
-    private_shared::new_warp_plan_v0 private_plan = {};
+    private_storage::admission_candidate_plan_v0 candidate_plan = {};
+    private_shared::status_kind legacy_failure_status =
+        private_shared::kStatusOk;
+    const private_storage::status_kind candidate_status =
+        private_storage::prepare_new_warp_from_selector(
+            staged_backing, input->warp_uid, input->warp_id,
+            input->active_mask, private_owners, private_operands,
+            ray_policies, root_build_generations,
+            getenv(private_storage::kSelectorEnvironmentName),
+            rtcore_v04_genrt_short_stack_replay_enabled(),
+            &legacy_failure_status, &candidate_plan);
+    if (candidate_status != private_storage::kStatusOk) {
+        failure =
+            candidate_status ==
+                    private_storage::kStatusLegacyAdmissionRejected
+                ? private_shared::status_name(legacy_failure_status)
+                : private_storage::status_name(candidate_status);
+        if (failure_reason != NULL) *failure_reason = failure;
+        return false;
+    }
+    if (candidate_plan.profile ==
+            private_storage::kProfileCompressedShared384 &&
+        (!candidate_plan.valid ||
+         !candidate_plan.compressed_candidate_valid ||
+         candidate_plan.active_mask != input->active_mask)) {
+        failure = "compressed_candidate_incomplete";
+        if (failure_reason != NULL) *failure_reason = failure;
+        return false;
+    }
     private_shared::status_kind private_status =
-        rtcore_v04_genrt_short_stack_replay_enabled()
-            ? private_shared::
-                  prepare_new_warp_with_root_operands_and_short_stack(
-                      staged_backing, input->warp_uid, input->warp_id,
-                      input->active_mask, private_owners, private_operands,
-                      root_build_generations, &private_plan)
-            : private_shared::prepare_new_warp_with_root_operands(
-                  staged_backing, input->warp_uid, input->warp_id,
-                  input->active_mask, private_owners, private_operands,
-                  &private_plan);
+        private_shared::commit_new_warp(
+            &staged_backing, candidate_plan.legacy_live_plan);
     if (private_status != private_shared::kStatusOk) {
         failure = private_shared::status_name(private_status);
         if (failure_reason != NULL) *failure_reason = failure;
         return false;
     }
-    private_status =
-        private_shared::commit_new_warp(&staged_backing, private_plan);
-    if (private_status != private_shared::kStatusOk) {
-        failure = private_shared::status_name(private_status);
-        if (failure_reason != NULL) *failure_reason = failure;
-        return false;
-    }
-
     fetch_target::engine_state_v0 staged_target =
         rtcore_v04_live_target_engine_for(input->owner_hw_sid);
     fetch_target::reservation_receipt_v0 reservations[32] = {};
