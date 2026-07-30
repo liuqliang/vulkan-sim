@@ -464,6 +464,10 @@ status_kind prepare_shader_return_semantic_plan(
 
   primitive_semantic::semantic_plan_v0 prepared = {};
   prepared.owner = owner;
+  prepared.ray_policy.ray_flags =
+      abi_v04::extract_field(words, abi_v04::kRayFlags);
+  prepared.ray_policy.cull_mask = static_cast<uint8_t>(
+      abi_v04::extract_field(words, abi_v04::kCullMask));
   prepared.operation_seq = producer_operation_seq;
   const bool terminate_search =
       (observation.traversal_effect & (uint32_t{1} << 2)) != 0;

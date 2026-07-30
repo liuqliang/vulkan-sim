@@ -79,6 +79,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <deque>
 #include <set>
 #define BOOST_FILESYSTEM_VERSION 3
@@ -97,6 +98,15 @@ static bool rt_progress_logging_enabled() {
     static int enabled = []() {
         const char *value = getenv("VULKAN_SIM_PROGRESS_LOG");
         return value && value[0] && strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+static bool rtcore_v04_numeric_projection_evidence_enabled() {
+    static int enabled = []() {
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_V04_NUMERIC_PROJECTION_EVIDENCE");
+        return value && strcmp(value, "1") == 0;
     }();
     return enabled;
 }
@@ -218,19 +228,85 @@ struct DESCRIPTOR_SET_STRUCT* VulkanRayTracing::descriptorSet = NULL;
 void* VulkanRayTracing::launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS] = {NULL};
 void* VulkanRayTracing::launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS] = {NULL};
 std::vector<void*> VulkanRayTracing::child_addrs_from_driver;
-std::map<void*, void*> VulkanRayTracing::blas_addr_map;
 void* VulkanRayTracing::tlas_addr;
 
 namespace {
 
+static std::map<void *, void *> g_rtcore_legacy_blas_addr_map;
 static rtcore_tlas_binding_registry<rtcore_tlas_binding_snapshot>
-    g_rtcore_tlas_binding_registry;
+    g_rtcore_legacy_tlas_binding_registry;
 static rtcore_tlas_binding_registry<rtcore_blas_binding_snapshot>
-    g_rtcore_blas_binding_registry;
+    g_rtcore_legacy_blas_binding_registry;
 static rtcore_v04_instance_blas_reference_registry
-    g_rtcore_instance_blas_reference_registry;
+    g_rtcore_legacy_instance_blas_reference_registry;
 static rtcore::v04::genrt_replay::registry_v0
-    g_rtcore_genrt_replay_registry;
+    g_rtcore_legacy_genrt_replay_registry;
+
+static bool rtcore_v04_process_lifetime_registry_enabled()
+{
+    return rtcore_candidate_gate_state_for(
+               "VULKAN_SIM_RTCORE_ABI_V04_REQUEST_OWNER_BINDING") ==
+               RTCORE_CANDIDATE_GATE_ENABLED ||
+           rtcore_candidate_gate_state_for(
+               "VULKAN_SIM_RTCORE_ABI_V04_FUNCTIONAL_ONLY_ENGINE") ==
+               RTCORE_CANDIDATE_GATE_ENABLED;
+}
+
+template <typename Registry>
+static Registry &rtcore_candidate_registry_storage()
+{
+    // A V0.4 worker may call exit() while host Vulkan teardown still releases
+    // AS objects. Keep only candidate registries alive across that ordering
+    // boundary; the default path retains ordinary static teardown.
+    static Registry *candidate = new Registry();
+    return *candidate;
+}
+
+static std::map<void *, void *> &rtcore_blas_addr_map()
+{
+    return rtcore_v04_process_lifetime_registry_enabled()
+               ? rtcore_candidate_registry_storage<
+                     std::map<void *, void *> >()
+               : g_rtcore_legacy_blas_addr_map;
+}
+
+static rtcore_tlas_binding_registry<rtcore_tlas_binding_snapshot> &
+rtcore_tlas_bindings()
+{
+    return rtcore_v04_process_lifetime_registry_enabled()
+               ? rtcore_candidate_registry_storage<
+                     rtcore_tlas_binding_registry<
+                         rtcore_tlas_binding_snapshot> >()
+               : g_rtcore_legacy_tlas_binding_registry;
+}
+
+static rtcore_tlas_binding_registry<rtcore_blas_binding_snapshot> &
+rtcore_blas_bindings()
+{
+    return rtcore_v04_process_lifetime_registry_enabled()
+               ? rtcore_candidate_registry_storage<
+                     rtcore_tlas_binding_registry<
+                         rtcore_blas_binding_snapshot> >()
+               : g_rtcore_legacy_blas_binding_registry;
+}
+
+static rtcore_v04_instance_blas_reference_registry &
+rtcore_instance_blas_references()
+{
+    return rtcore_v04_process_lifetime_registry_enabled()
+               ? rtcore_candidate_registry_storage<
+                     rtcore_v04_instance_blas_reference_registry>()
+               : g_rtcore_legacy_instance_blas_reference_registry;
+}
+
+static rtcore::v04::genrt_replay::registry_v0 &
+rtcore_genrt_replay_registry()
+{
+    return rtcore_v04_process_lifetime_registry_enabled()
+               ? rtcore_candidate_registry_storage<
+                     rtcore::v04::genrt_replay::registry_v0>()
+               : g_rtcore_legacy_genrt_replay_registry;
+}
 
 static void rtcore_fail_tlas_binding(const char *reason,
                                      uint64_t host_root_address,
@@ -538,6 +614,247 @@ static uint32_t rtcore_v04_fp32_bits(float value)
     uint32_t bits = 0;
     memcpy(&bits, &value, sizeof(bits));
     return bits;
+}
+
+struct rtcore_v04_legacy_distance_producer_evidence {
+    bool valid;
+    uint32_t primitive_index;
+    uint32_t geometry_index;
+    uint32_t instance_index;
+    uint32_t world_origin_bits[3];
+    uint32_t world_direction_bits[3];
+    uint32_t world_to_object_bits[16];
+    uint32_t triangle_vertex_bits[9];
+    uint32_t object_t_bits;
+    uint32_t multiplier_bits;
+    uint32_t world_t_bits;
+    uint32_t world_tmin_bits;
+    uint32_t world_tmax_bits;
+    uint32_t committed_world_t_before_bits;
+
+    rtcore_v04_legacy_distance_producer_evidence()
+        : valid(false), primitive_index(0), geometry_index(0),
+          instance_index(0), world_origin_bits(), world_direction_bits(),
+          world_to_object_bits(), triangle_vertex_bits(), object_t_bits(0),
+          multiplier_bits(0), world_t_bits(0), world_tmin_bits(0),
+          world_tmax_bits(0), committed_world_t_before_bits(0) {}
+};
+
+struct rtcore_v04_pending_legacy_distance_producer_evidence {
+    rtcore_v04_legacy_distance_producer_evidence evidence;
+    uint32_t projected_primitive;
+
+    rtcore_v04_pending_legacy_distance_producer_evidence()
+        : evidence(), projected_primitive(0) {}
+};
+
+typedef std::map<
+    unsigned, rtcore_v04_pending_legacy_distance_producer_evidence>
+    rtcore_v04_pending_legacy_distance_producer_evidence_map;
+
+static rtcore_v04_pending_legacy_distance_producer_evidence_map &
+rtcore_v04_pending_legacy_distance_producer_evidence_records()
+{
+    static rtcore_v04_pending_legacy_distance_producer_evidence_map *records =
+        new rtcore_v04_pending_legacy_distance_producer_evidence_map();
+    return *records;
+}
+
+static std::mutex &
+rtcore_v04_pending_legacy_distance_producer_evidence_mutex()
+{
+    static std::mutex *mutex = new std::mutex();
+    return *mutex;
+}
+
+static void rtcore_v04_clear_pending_legacy_distance_producer_evidence(
+    ptx_thread_info *thread)
+{
+    if (!rtcore_v04_numeric_projection_evidence_enabled() ||
+        thread == NULL) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(
+        rtcore_v04_pending_legacy_distance_producer_evidence_mutex());
+    rtcore_v04_pending_legacy_distance_producer_evidence_records().erase(
+        thread->get_uid());
+}
+
+static void rtcore_v04_stage_legacy_distance_producer_evidence(
+    const rtcore_v04_legacy_distance_producer_evidence &evidence,
+    uint32_t projected_primitive, ptx_thread_info *thread)
+{
+    if (!rtcore_v04_numeric_projection_evidence_enabled() ||
+        !evidence.valid || thread == NULL) {
+        return;
+    }
+    rtcore_v04_pending_legacy_distance_producer_evidence pending;
+    pending.evidence = evidence;
+    pending.projected_primitive = projected_primitive;
+    std::lock_guard<std::mutex> lock(
+        rtcore_v04_pending_legacy_distance_producer_evidence_mutex());
+    rtcore_v04_pending_legacy_distance_producer_evidence_records()[
+        thread->get_uid()] = pending;
+}
+
+static void rtcore_v04_capture_legacy_distance_producer(
+    rtcore_v04_legacy_distance_producer_evidence *evidence,
+    const Ray &world_ray, const float4x4 &world_to_object,
+    const float3 triangle[3], const GEN_RT_BVH_QUAD_LEAF &leaf,
+    const GEN_RT_BVH_INSTANCE_LEAF &instance_leaf, float object_t,
+    float multiplier, float world_t, float world_tmin, float world_tmax,
+    float committed_world_t_before)
+{
+    if (evidence == NULL) return;
+    evidence->valid = true;
+    evidence->primitive_index = leaf.PrimitiveIndex0;
+    evidence->geometry_index = leaf.LeafDescriptor.GeometryIndex;
+    evidence->instance_index = instance_leaf.InstanceIndex;
+    const float origin[] = {world_ray.get_origin().x,
+                            world_ray.get_origin().y,
+                            world_ray.get_origin().z};
+    const float direction[] = {world_ray.get_direction().x,
+                               world_ray.get_direction().y,
+                               world_ray.get_direction().z};
+    for (unsigned component = 0; component < 3; ++component) {
+        evidence->world_origin_bits[component] =
+            rtcore_v04_fp32_bits(origin[component]);
+        evidence->world_direction_bits[component] =
+            rtcore_v04_fp32_bits(direction[component]);
+    }
+    for (unsigned column = 0; column < 4; ++column) {
+        for (unsigned row = 0; row < 4; ++row) {
+            evidence->world_to_object_bits[column * 4 + row] =
+                rtcore_v04_fp32_bits(world_to_object.m[column][row]);
+        }
+    }
+    for (unsigned vertex = 0; vertex < 3; ++vertex) {
+        evidence->triangle_vertex_bits[vertex * 3] =
+            rtcore_v04_fp32_bits(triangle[vertex].x);
+        evidence->triangle_vertex_bits[vertex * 3 + 1] =
+            rtcore_v04_fp32_bits(triangle[vertex].y);
+        evidence->triangle_vertex_bits[vertex * 3 + 2] =
+            rtcore_v04_fp32_bits(triangle[vertex].z);
+    }
+    evidence->object_t_bits = rtcore_v04_fp32_bits(object_t);
+    evidence->multiplier_bits = rtcore_v04_fp32_bits(multiplier);
+    evidence->world_t_bits = rtcore_v04_fp32_bits(world_t);
+    evidence->world_tmin_bits = rtcore_v04_fp32_bits(world_tmin);
+    evidence->world_tmax_bits = rtcore_v04_fp32_bits(world_tmax);
+    evidence->committed_world_t_before_bits =
+        rtcore_v04_fp32_bits(committed_world_t_before);
+}
+
+static void rtcore_v04_publish_legacy_distance_producer_evidence(
+    const rtcore_v04_legacy_distance_producer_evidence &evidence,
+    ptx_thread_info *thread,
+    const rtcore_trace_ray_abi_entry *rtcore_abi_entry,
+    uint32_t projected_primitive)
+{
+    if (!rtcore_v04_numeric_projection_evidence_enabled() ||
+        !evidence.valid || thread == NULL || rtcore_abi_entry == NULL ||
+        rtcore_abi_entry->context_ptr == 0 ||
+        rtcore_abi_entry->lane_id >= 32 ||
+        rtcore_abi_entry->submit_transaction_id == 0) {
+        return;
+    }
+    printf("GPGPU-Sim RTCORE_V04_NUMERIC_PROJECTION_SOURCE schema=3 "
+           "launch=(%u,%u) context_ptr=0x%llx lane_id=%u "
+           "submit_transaction_id=%u producer_primitive=0x%08x "
+           "projected_primitive=0x%08x geometry=0x%08x "
+           "instance=0x%08x "
+           "world_origin_fp32=(0x%08x,0x%08x,0x%08x) "
+           "world_direction_fp32=(0x%08x,0x%08x,0x%08x) "
+           "world_to_object_fp32=("
+           "0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,"
+           "0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,"
+           "0x%08x,0x%08x,0x%08x,0x%08x) "
+           "triangle_fp32=("
+           "0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,"
+           "0x%08x,0x%08x,0x%08x) "
+           "legacy_object_t=0x%08x legacy_multiplier=0x%08x "
+           "legacy_world_t=0x%08x world_tmin=0x%08x "
+           "world_tmax=0x%08x committed_world_t_before=0x%08x\n",
+           rtcore_launch_id_x_for_thread(thread),
+           rtcore_launch_id_y_for_thread(thread),
+           (unsigned long long)rtcore_abi_entry->context_ptr,
+           rtcore_abi_entry->lane_id,
+           rtcore_abi_entry->submit_transaction_id,
+           evidence.primitive_index, projected_primitive,
+           evidence.geometry_index, evidence.instance_index,
+           evidence.world_origin_bits[0], evidence.world_origin_bits[1],
+           evidence.world_origin_bits[2],
+           evidence.world_direction_bits[0],
+           evidence.world_direction_bits[1],
+           evidence.world_direction_bits[2],
+           evidence.world_to_object_bits[0],
+           evidence.world_to_object_bits[1],
+           evidence.world_to_object_bits[2],
+           evidence.world_to_object_bits[3],
+           evidence.world_to_object_bits[4],
+           evidence.world_to_object_bits[5],
+           evidence.world_to_object_bits[6],
+           evidence.world_to_object_bits[7],
+           evidence.world_to_object_bits[8],
+           evidence.world_to_object_bits[9],
+           evidence.world_to_object_bits[10],
+           evidence.world_to_object_bits[11],
+           evidence.world_to_object_bits[12],
+           evidence.world_to_object_bits[13],
+           evidence.world_to_object_bits[14],
+           evidence.world_to_object_bits[15],
+           evidence.triangle_vertex_bits[0],
+           evidence.triangle_vertex_bits[1],
+           evidence.triangle_vertex_bits[2],
+           evidence.triangle_vertex_bits[3],
+           evidence.triangle_vertex_bits[4],
+           evidence.triangle_vertex_bits[5],
+           evidence.triangle_vertex_bits[6],
+           evidence.triangle_vertex_bits[7],
+           evidence.triangle_vertex_bits[8],
+           evidence.object_t_bits, evidence.multiplier_bits,
+           evidence.world_t_bits, evidence.world_tmin_bits,
+           evidence.world_tmax_bits,
+           evidence.committed_world_t_before_bits);
+    fflush(stdout);
+}
+
+void VulkanRayTracing::publishLegacyDistanceProducerEvidenceForTransaction(
+    ptx_thread_info *thread, uint64_t context_ptr, uint32_t lane_id,
+    uint32_t submit_transaction_id)
+{
+    if (!rtcore_v04_numeric_projection_evidence_enabled() ||
+        thread == NULL || context_ptr == 0 || lane_id >= 32 ||
+        submit_transaction_id == 0) {
+        return;
+    }
+    rtcore_v04_pending_legacy_distance_producer_evidence pending;
+    {
+        std::lock_guard<std::mutex> lock(
+            rtcore_v04_pending_legacy_distance_producer_evidence_mutex());
+        rtcore_v04_pending_legacy_distance_producer_evidence_map &records =
+            rtcore_v04_pending_legacy_distance_producer_evidence_records();
+        rtcore_v04_pending_legacy_distance_producer_evidence_map::iterator
+            record = records.find(thread->get_uid());
+        if (record == records.end()) {
+            return;
+        }
+        pending = record->second;
+        records.erase(record);
+    }
+    rtcore_trace_ray_abi_entry transaction = {};
+    transaction.context_ptr = context_ptr;
+    transaction.lane_id = lane_id;
+    transaction.submit_transaction_id = submit_transaction_id;
+    rtcore_v04_publish_legacy_distance_producer_evidence(
+        pending.evidence, thread, &transaction,
+        pending.projected_primitive);
+}
+
+void VulkanRayTracing::discardPendingLegacyDistanceProducerEvidence(
+    ptx_thread_info *thread)
+{
+    rtcore_v04_clear_pending_legacy_distance_producer_evidence(thread);
 }
 
 static rtcore::abi_v04::shadow::boundary_values
@@ -987,6 +1304,9 @@ struct rtcore_resident_rt_warp_record;
 static rtcore_resident_rt_warp_record *
 rtcore_find_v04_native_boundary_resident(
     const rtcore::v04::request_owner::lane_binding_v0 &owner);
+static bool rtcore_v04_immutable_trace_input_for(
+    const rtcore::v04::private_frontier::owner_binding_v0 &owner,
+    rtcore::v04::private_frontier::root_private_operands_v0 *input);
 static uint32_t rtcore_v04_native_publication_chunk_byte_mask(
     uint32_t word_mask, unsigned chunk);
 
@@ -1030,6 +1350,8 @@ struct rtcore_resident_rt_warp_record {
     unsigned v04_root_ready_mask;
     rtcore::v04::fetch_target::reservation_receipt_v0
         v04_root_reservations[32];
+    rtcore::v04::private_frontier::root_private_operands_v0
+        v04_immutable_trace_inputs[32];
     rtcore_resident_rt_warp_lane_identity lane_identity[32];
     rtcore::v04::boundary_publication::warp_state_v0
         v04_boundary_completion;
@@ -1774,6 +2096,15 @@ static unsigned rtcore_v04_timing_uint_config(
     return static_cast<unsigned>(parsed);
 }
 
+static const char *rtcore_v04_short_stack_config_name(
+    const char *short_stack_name, const char *legacy_stack_name)
+{
+    const char *value = getenv(short_stack_name);
+    return value != NULL && value[0] != '\0'
+               ? short_stack_name
+               : legacy_stack_name;
+}
+
 static rtcore::v04::fetch_target::engine_state_v0 &
 rtcore_v04_live_target_engine_for(unsigned owner_hw_sid)
 {
@@ -1981,27 +2312,43 @@ rtcore_v04_live_short_stack_timing_for(unsigned owner_hw_sid)
             short_timing::candidate_profile_config();
         config.capacity = static_cast<uint8_t>(
             rtcore_v04_timing_uint_config(
-                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_QUEUE_CAPACITY",
+                rtcore_v04_short_stack_config_name(
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_CAPACITY",
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_QUEUE_CAPACITY"),
                 config.capacity, short_timing::kMaxSlots));
         config.reservation_width = static_cast<uint8_t>(
             rtcore_v04_timing_uint_config(
-                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_QUEUE_RESERVATION_WIDTH",
-                config.reservation_width, config.capacity));
+                rtcore_v04_short_stack_config_name(
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_"
+                    "SHORT_STACK_RESERVATION_WIDTH",
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_"
+                    "STACK_QUEUE_RESERVATION_WIDTH"),
+                config.reservation_width, short_timing::kMaxSlots));
         config.unit_count = static_cast<uint8_t>(
             rtcore_v04_timing_uint_config(
-                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_UNIT_COUNT",
+                rtcore_v04_short_stack_config_name(
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_UNIT_COUNT",
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_UNIT_COUNT"),
                 config.unit_count, short_timing::kMaxUnits));
         config.stack_latency = static_cast<uint8_t>(
             rtcore_v04_timing_uint_config(
-                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_LATENCY",
+                rtcore_v04_short_stack_config_name(
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_LATENCY",
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_LATENCY"),
                 config.stack_latency, 255));
         config.initiation_interval = static_cast<uint8_t>(
             rtcore_v04_timing_uint_config(
-                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_INITIATION_INTERVAL",
+                rtcore_v04_short_stack_config_name(
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_"
+                    "SHORT_STACK_INITIATION_INTERVAL",
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_"
+                    "STACK_INITIATION_INTERVAL"),
                 config.initiation_interval, 255));
         config.issue_width = static_cast<uint8_t>(
             rtcore_v04_timing_uint_config(
-                "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_ISSUE_WIDTH",
+                rtcore_v04_short_stack_config_name(
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_ISSUE_WIDTH",
+                    "VULKAN_SIM_RTCORE_REPLAY_V04_STACK_ISSUE_WIDTH"),
                 config.issue_width, config.unit_count));
         config.parent_lookup_latency = static_cast<uint8_t>(
             rtcore_v04_timing_uint_config(
@@ -16048,9 +16395,25 @@ static bool rtcore_service_v04_private_frontier_live_init(
         }
         const private_shared::resident_warp_state_v0 &private_warp =
             backing.resident_warps[ready_commit.resident_warp_slot];
-        const unsigned planned_chunks =
-            rtcore_continuation_count_lanes(ready_commit.active_mask) *
-            (record.v04_root_packet_valid ? 9u : 2u);
+        unsigned planned_chunks = 0;
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            if ((ready_commit.active_mask & (1u << lane)) == 0) continue;
+            const private_shared::lane_slot_state_v0 &private_lane =
+                private_warp.lanes[lane];
+            if (!private_lane.live ||
+                private_lane.init_plan.access_count == 0) {
+                fprintf(stderr,
+                        "GPGPU-Sim "
+                        "RTCORE_V04_PRIVATE_FRONTIER_INIT_INVARIANT "
+                        "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                        "fault=committed_init_plan_missing\n",
+                        ready_commit.owner_hw_sid, ready_commit.warp_uid,
+                        ready_commit.warp_id, lane);
+                fflush(stderr);
+                abort();
+            }
+            planned_chunks += private_lane.init_plan.access_count;
+        }
         if (private_warp.enqueued_chunk_count != planned_chunks ||
             private_warp.accepted_chunk_count != planned_chunks ||
             private_warp.acknowledged_chunk_count != planned_chunks) {
@@ -17515,6 +17878,8 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
         record.lane_identity[lane].v04_request_owner_binding =
             timing_plan.owner_plan.lane_bindings[lane];
         record.v04_root_reservations[lane] = reservations[lane];
+        record.v04_immutable_trace_inputs[lane] =
+            private_operands[lane];
     }
     g_rtcore_resident_rt_warp_records[record_key] = record;
     for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
@@ -18411,6 +18776,52 @@ extern "C" bool rtcore_accept_v04_short_stack_private_shared_read(
     return true;
 }
 
+extern "C" bool rtcore_accept_v04_short_stack_return_instance_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    const uint8_t *response_payload,
+    unsigned response_payload_bytes,
+    unsigned long long response_cycle)
+{
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (request == NULL || response_payload == NULL ||
+        response_payload_bytes !=
+            rtcore::v04::private_frontier::kSharedAccessChunkBytes ||
+        !rtcore_v04_live_short_stack_timing_enabled() ||
+        request->access_kind !=
+            RTCORE_MEMORY_ACCESS_SHORT_STACK_RETURN_INSTANCE_READ ||
+        request->address_space != RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL ||
+        request->operation != RTCORE_MEMORY_OPERATION_READ ||
+        request->destination !=
+            RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL) {
+        return false;
+    }
+    std::map<unsigned, short_timing::engine_state_v0>::iterator it =
+        g_rtcore_v04_live_short_stack_timing_by_owner.find(
+            request->owner_hw_sid);
+    if (it ==
+        g_rtcore_v04_live_short_stack_timing_by_owner.end()) {
+        return false;
+    }
+    short_timing::engine_state_v0 staged_short = it->second;
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(request->owner_hw_sid);
+    const short_timing::status_kind status =
+        short_timing::accept_read_response(
+            &staged_short, &staged_timing,
+            rtcore_v04_private_shared_backing_for(
+                request->owner_hw_sid),
+            *request, response_cycle, response_payload,
+            static_cast<uint8_t>(response_payload_bytes));
+    if (status != short_timing::kStatusOk) {
+        return false;
+    }
+    it->second = staged_short;
+    rtcore_v04_timing_driver_for(request->owner_hw_sid) =
+        staged_timing;
+    return true;
+}
+
 struct rtcore_v04_selected_fetch_sink_context {
     unsigned owner_hw_sid;
     unsigned long long service_cycle;
@@ -18448,9 +18859,26 @@ rtcore_accept_v04_short_stack_node_route(
     input.ray_policy = route->ray_policy;
     input.current_target = route->current_target_reference;
     input.current_decode_context = route->current_decode_context;
+    input.active_decode_context = route->current_decode_context;
+    if (!rtcore_v04_immutable_trace_input_for(
+            route->result_identity.owner,
+            &input.immutable_trace_input)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_INGRESS_FAULT "
+                "owner_hw_sid=%u lane_id=%u "
+                "producer_operation_seq=%u "
+                "fault=immutable_trace_input_missing\n",
+                context->owner_hw_sid,
+                route->result_identity.owner.lane_id,
+                route->result_identity.target_operation_seq);
+        fflush(stderr);
+        return node_timing::kRouteSinkRejected;
+    }
     input.pending_parent_resume = route->pending_parent_resume;
     input.producer_operation_seq =
         route->result_identity.target_operation_seq;
+    input.operation_kind =
+        short_timing::kOperationNodeTransition;
     input.pending_parent_resume_valid =
         route->pending_parent_resume_valid;
     short_timing::reservation_receipt_v0 reservation = {};
@@ -19148,6 +19576,7 @@ static bool rtcore_v04_short_stack_parent_resolver(
     void *opaque_context,
     const rtcore::v04::typed_blas::as_decode_context_v0 &decode_context,
     uint32_t build_generation, uint64_t payload_offset,
+    uint8_t payload_kind,
     rtcore::v04::short_stack::parent_edge_v0 *parent)
 {
     rtcore_v04_short_stack_parent_resolver_context *context =
@@ -19157,7 +19586,7 @@ static bool rtcore_v04_short_stack_parent_resolver(
     const bool resolved =
         VulkanRayTracing::resolveV04GenRtReplayParent(
             decode_context, build_generation, payload_offset,
-            parent, &failure_reason);
+            payload_kind, parent, &failure_reason);
     if (!resolved) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_SHORT_STACK_PARENT_LOOKUP_FAULT "
@@ -19180,9 +19609,12 @@ static bool rtcore_service_v04_live_short_stack_timing(
     namespace fetch_target = rtcore::v04::fetch_target;
     namespace live_global = rtcore::v04::live_global_memory;
     namespace private_frontier = rtcore::v04::private_frontier;
+    namespace private_shared = rtcore::v04::private_shared;
     namespace selected_transition =
         rtcore::v04::selected_fetch_transition;
     namespace short_timing = rtcore::v04::short_stack_timing;
+    namespace short_transition =
+        rtcore::v04::short_stack_transition;
     namespace timing_driver = rtcore::v04::timing_driver;
     if (memory_progressed != NULL) {
         *memory_progressed = false;
@@ -19221,9 +19653,14 @@ static bool rtcore_service_v04_live_short_stack_timing(
     if (service_status != short_timing::kStatusOk) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
-                "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                "owner_hw_sid=%u service_cycle=%llu fault=%s "
+                "operation_kind=%u transition_status=%s\n",
                 owner_hw_sid, service_cycle,
-                short_timing::status_name(service_status));
+                short_timing::status_name(service_status),
+                cycle_result.rejected_operation_kind,
+                short_transition::status_name(
+                    static_cast<short_transition::status_kind>(
+                        cycle_result.rejected_transition_status)));
         fflush(stderr);
         abort();
     }
@@ -19231,7 +19668,59 @@ static bool rtcore_service_v04_live_short_stack_timing(
     bool successor_accepted = false;
     bool terminal_accepted = false;
     bool successor_backpressured = false;
+    bool return_reads_issued = false;
     std::deque<rtcore_memory_unit_request_snapshot> requests;
+    short_timing::request_plan_v0 return_reads = {};
+    const short_timing::status_kind return_status =
+        short_timing::take_return_instance_read_plan(
+            &staged_short, &staged_timing, service_cycle,
+            &return_reads);
+    if (return_status != short_timing::kStatusOk &&
+        return_status != short_timing::kStatusNoFollowupRead) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu "
+                "phase=return_instance_plan fault=%s\n",
+                owner_hw_sid, service_cycle,
+                short_timing::status_name(return_status));
+        fflush(stderr);
+        abort();
+    }
+    if (return_status == short_timing::kStatusOk) {
+        if (!return_reads.valid ||
+            return_reads.request_count !=
+                short_timing::kReturnInstanceReadChunkCount) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "phase=return_instance_plan "
+                    "fault=malformed_request_plan\n",
+                    owner_hw_sid, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        for (unsigned index = 0;
+             index < return_reads.request_count; ++index) {
+            if (!return_reads.requests[index].valid ||
+                return_reads.requests[index].owner_hw_sid !=
+                    owner_hw_sid) {
+                abort();
+            }
+            requests.push_back(return_reads.requests[index]);
+        }
+        const rtcore_memory_unit_request_snapshot &first =
+            return_reads.requests[0];
+        return_reads_issued = true;
+        printf("GPGPU-Sim "
+               "RTCORE_V04_SHORT_STACK_RETURN_INSTANCE_READS "
+               "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+               "operation_seq=%u global_reads=%u issue_cycle=%llu\n",
+               first.owner_hw_sid, first.resident_warp_id,
+               first.lane_id,
+               first.v04_stack_private_read.target_operation_seq,
+               return_reads.request_count, service_cycle);
+        fflush(stdout);
+    }
     fetch_target::engine_state_v0 staged_target =
         rtcore_v04_live_target_engine_for(owner_hw_sid);
     short_timing::ready_result_v0 ready = {};
@@ -19448,6 +19937,8 @@ static bool rtcore_service_v04_live_short_stack_timing(
     if (successor_accepted) {
         rtcore_v04_live_target_engine_for(owner_hw_sid) =
             staged_target;
+    }
+    if (!requests.empty()) {
         std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
             g_rtcore_memory_unit_request_snapshots_by_owner[
                 owner_hw_sid];
@@ -19455,22 +19946,29 @@ static bool rtcore_service_v04_live_short_stack_timing(
             live_queue.end(), requests.begin(), requests.end());
     }
     if (memory_progressed != NULL) {
-        *memory_progressed = successor_accepted;
+        *memory_progressed =
+            successor_accepted || return_reads_issued;
     }
     if (cycle_result.issued != 0 ||
         cycle_result.transition_committed != 0 ||
         cycle_result.parent_lookup_completed != 0 ||
+        cycle_result.return_instance_requested != 0 ||
+        return_reads_issued ||
         successor_accepted || terminal_accepted ||
         successor_backpressured) {
         printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_CYCLE "
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
                "transition_committed=%u parent_lookup_completed=%u "
+               "return_instance_requested=%u "
+               "return_reads_issued=%u "
                "successor_accepted=%u "
                "successor_backpressured=%u terminal_accepted=%u "
                "active_operations=%u ready_results=%u\n",
                owner_hw_sid, service_cycle, cycle_result.issued,
                cycle_result.transition_committed,
                cycle_result.parent_lookup_completed,
+               cycle_result.return_instance_requested,
+               return_reads_issued ? 1u : 0u,
                successor_accepted ? 1u : 0u,
                successor_backpressured ? 1u : 0u,
                terminal_accepted ? 1u : 0u,
@@ -19481,6 +19979,8 @@ static bool rtcore_service_v04_live_short_stack_timing(
     return cycle_result.issued != 0 ||
            cycle_result.transition_committed != 0 ||
            cycle_result.parent_lookup_completed != 0 ||
+           cycle_result.return_instance_requested != 0 ||
+           return_reads_issued ||
            successor_accepted || terminal_accepted;
 }
 
@@ -21161,7 +21661,8 @@ rtcore_emit_v04_timing_instance_enter_diagnostic(
             enter.producer_operation_seq,
             rtcore_v04_private_region_for(owner_hw_sid),
             canonical_slot, enter.typed_input, enter.typed_result,
-            &plan) != instance_semantic::kStatusOk) {
+            &plan, rtcore_v04_live_short_stack_timing_enabled()) !=
+        instance_semantic::kStatusOk) {
         return rtcore::v04::instance_timing::kResultSinkRejected;
     }
     typed_diagnostic::record_v0 diagnostic = {};
@@ -21315,8 +21816,11 @@ rtcore_accept_v04_live_instance_enter_result(
             enter->producer_operation_seq, enter->commit_epoch,
             enter->target_operation_seq,
             rtcore_v04_private_region_for(context->owner_hw_sid),
-            lane_slot->canonical_slot, enter->typed_input,
-            enter->typed_result, &receipt);
+            lane_slot->canonical_slot,
+            enter->operation_packet.target_reference,
+            enter->typed_input,
+            enter->typed_result, &receipt,
+            rtcore_v04_live_short_stack_timing_enabled());
     if (capture_status ==
             instance_shared::kStatusResultBackpressure ||
         capture_status ==
@@ -21327,8 +21831,11 @@ rtcore_accept_v04_live_instance_enter_result(
         enter->typed_result.result_kind ==
                 rtcore::v04::typed_instance::kEnterResultCulled
             ? 0
-            : rtcore::v04::instance_semantic::
-                  kEnterVisibleWriteFragmentCount;
+            : rtcore_v04_live_short_stack_timing_enabled()
+                  ? rtcore::v04::instance_semantic::
+                        kEnterShortStackWriteFragmentCount
+                  : rtcore::v04::instance_semantic::
+                        kEnterVisibleWriteFragmentCount;
     if (capture_status != instance_shared::kStatusOk ||
         !receipt.valid ||
         receipt.producer_operation_seq !=
@@ -21393,22 +21900,100 @@ static bool rtcore_service_v04_live_instance_ready(
         fflush(stderr);
         abort();
     }
-    if (rtcore_v04_live_short_stack_timing_enabled()) {
-        fprintf(stderr,
-                "GPGPU-Sim RTCORE_V04_SHORT_STACK_INCOMPLETE_ROUTE "
-                "owner_hw_sid=%u lane_id=%u service_cycle=%llu "
-                "producer=instance route_kind=%u "
-                "fault=instance_short_stack_transition_missing\n",
-                owner_hw_sid, owner.lane_id, service_cycle,
-                event.route_kind);
-        fflush(stderr);
-        abort();
-    }
-
     unsigned raw_read_count = 0;
     unsigned private_read_count = 0;
     const char *route_name = "invalid";
-    if (event.route_kind == instance_semantic::kRouteStackPopNext) {
+    bool short_stack_reserved = false;
+    rtcore::v04::short_stack_timing::engine_state_v0
+        staged_short_stack = {};
+    rtcore::v04::short_stack_timing::request_plan_v0
+        short_stack_requests = {};
+    if (rtcore_v04_live_short_stack_timing_enabled()) {
+        namespace short_timing =
+            rtcore::v04::short_stack_timing;
+        staged_short_stack =
+            rtcore_v04_live_short_stack_timing_for(owner_hw_sid);
+        short_timing::reservation_input_v0 input = {};
+        input.owner = event.owner;
+        input.private_region =
+            rtcore_v04_private_region_for(owner_hw_sid);
+        input.ray_policy = event.ray_policy;
+        input.active_decode_context =
+            event.active_decode_context;
+        if (!rtcore_v04_immutable_trace_input_for(
+                event.owner, &input.immutable_trace_input)) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=immutable_trace_input_missing\n",
+                    owner_hw_sid, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        input.producer_operation_seq =
+            event.producer_operation_seq;
+        input.producer_commit_epoch = event.commit_epoch;
+        input.target_operation_seq = event.target_operation_seq;
+        if (event.route_kind ==
+            instance_semantic::kRouteStackPopNext) {
+            input.operation_kind =
+                short_timing::kOperationResumeTransition;
+            route_name = "short_stack_resume";
+        } else if (event.route_kind ==
+                   instance_semantic::kRouteBlasRootNode) {
+            input.operation_kind =
+                short_timing::kOperationEnterBlasTransition;
+            input.tlas_instance_target =
+                event.source_target_reference;
+            input.blas_root = event.root_fetch;
+            input.blas_build_generation =
+                event.root_build_generation;
+            route_name = "short_stack_blas_enter";
+        } else {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=unknown_short_stack_route route=%u\n",
+                    owner_hw_sid, service_cycle, event.route_kind);
+            fflush(stderr);
+            abort();
+        }
+        short_timing::reservation_receipt_v0 reservation = {};
+        const short_timing::status_kind short_status =
+            short_timing::reserve_existing_target(
+                &staged_short_stack, &staged_timing,
+                rtcore_v04_private_shared_backing_for(owner_hw_sid),
+                input, service_cycle, &reservation,
+                &short_stack_requests);
+        if (short_status ==
+                short_timing::kStatusCapacityBackpressure ||
+            short_status ==
+                short_timing::kStatusReservationBudgetBackpressure) {
+            return false;
+        }
+        if (short_status != short_timing::kStatusOk ||
+            !reservation.valid || !short_stack_requests.valid ||
+            short_stack_requests.request_count !=
+                short_timing::kReadChunkCount ||
+            timing_driver::complete_result_commit(
+                &staged_timing, owner,
+                event.producer_operation_seq,
+                event.commit_epoch) !=
+                timing_driver::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=short_stack_transition_rejected "
+                    "short_status=%s\n",
+                    owner_hw_sid, service_cycle,
+                    short_timing::status_name(short_status));
+            fflush(stderr);
+            abort();
+        }
+        short_stack_reserved = true;
+        private_read_count = short_stack_requests.request_count;
+    } else if (
+        event.route_kind == instance_semantic::kRouteStackPopNext) {
         if (timing_driver::mark_commit_successor_pending_recovery(
                 &staged_timing, owner,
                 event.producer_operation_seq, event.commit_epoch,
@@ -21556,6 +22141,17 @@ static bool rtcore_service_v04_live_instance_ready(
     rtcore_v04_live_instance_shared_for(owner_hw_sid) =
         staged_instance;
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
+    if (short_stack_reserved) {
+        rtcore_v04_live_short_stack_timing_for(owner_hw_sid) =
+            staged_short_stack;
+        std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+            g_rtcore_memory_unit_request_snapshots_by_owner[
+                owner_hw_sid];
+        live_queue.insert(
+            live_queue.end(), short_stack_requests.requests,
+            short_stack_requests.requests +
+                short_stack_requests.request_count);
+    }
     printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_COMMIT_READY "
            "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
            "producer_operation_seq=%u commit_epoch=%u "
@@ -21933,6 +22529,8 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
     namespace boundary = rtcore::v04::boundary_publication;
     namespace lifecycle = rtcore::v04::continuation_lifecycle;
     namespace private_shared = rtcore::v04::private_shared;
+    namespace request_owner = rtcore::v04::request_owner;
+    namespace short_timing = rtcore::v04::short_stack_timing;
     namespace timing_driver = rtcore::v04::timing_driver;
     if (record == NULL || !record->valid ||
         !rtcore_v04_continuation_lifecycle_enabled() ||
@@ -22050,6 +22648,37 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
         rtcore_v04_private_shared_backing_for(record->owner_hw_sid);
     lifecycle::warp_state_v0 staged_lifecycle = pending;
     timing_driver::resubmit_plan_v0 timing_plan = {};
+    timing_driver::continuation_resubmit_expectation_v0
+        timing_expectation = {};
+    timing_expectation.resume_mask = pending.pending_resume_mask;
+    timing_expectation.terminal_boundary_mask =
+        pending.pending_shader_terminal_mask;
+    const short_timing::engine_state_v0 &short_stack_state =
+        rtcore_v04_live_short_stack_timing_for(
+            record->owner_hw_sid);
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        if ((pending.pending_resume_mask & (1u << lane)) == 0) continue;
+        timing_expectation.successor_operation_seq[lane] =
+            pending.lanes[lane].successor_operation_seq;
+        const rtcore_resident_rt_warp_lane_identity &identity =
+            record->lane_identity[lane];
+        if (!identity.v04_request_owner_binding_valid) continue;
+        short_timing::reservation_receipt_v0 reservation = {};
+        uint8_t operation_kind = short_timing::kOperationInvalid;
+        if (short_timing::find_live_reservation(
+                short_stack_state,
+                request_owner::make_private_frontier_owner(
+                    identity.v04_request_owner_binding),
+                timing_expectation.successor_operation_seq[lane],
+                &reservation, &operation_kind)) {
+            timing_expectation.successor_operation_class[lane] =
+                timing_driver::kTargetOperationClassShortStack;
+            timing_expectation.successor_operation_kind[lane] =
+                operation_kind;
+            timing_expectation.successor_reservation_id[lane] =
+                reservation.reservation_id;
+        }
+    }
     private_shared::mask_shrink_plan_v0 private_plan = {};
     const timing_driver::status_kind prepare_timing =
         timing_driver::prepare_continuation_resubmit(
@@ -22057,7 +22686,7 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
             static_cast<uint8_t>(record->v04_resident_warp_slot),
             record->owner_hw_sid, previous_warp_uid, next_warp_uid,
             record->warp_id, next_active_mask,
-            pending.pending_shader_terminal_mask, &timing_plan);
+            timing_expectation, &timing_plan);
     const private_shared::status_kind prepare_private =
         private_shared::prepare_mask_shrink(
             staged_private,
@@ -22444,18 +23073,6 @@ static bool rtcore_service_v04_live_primitive_ready(
         fflush(stderr);
         abort();
     }
-    if (rtcore_v04_live_short_stack_timing_enabled()) {
-        fprintf(stderr,
-                "GPGPU-Sim RTCORE_V04_SHORT_STACK_INCOMPLETE_ROUTE "
-                "owner_hw_sid=%u lane_id=%u service_cycle=%llu "
-                "producer=primitive route_kind=%u "
-                "fault=primitive_short_stack_transition_missing\n",
-                owner_hw_sid, owner.lane_id, service_cycle,
-                event.route_kind);
-        fflush(stderr);
-        abort();
-    }
-
     rtcore_resident_rt_warp_record *native_resubmit_record = NULL;
     rtcore::v04::continuation_lifecycle::warp_state_v0
         staged_lifecycle = {};
@@ -22477,26 +23094,101 @@ static bool rtcore_service_v04_live_primitive_ready(
     }
 
     const char *route_name = "invalid";
+    bool short_stack_reserved = false;
+    rtcore::v04::short_stack_timing::engine_state_v0
+        staged_short_stack = {};
+    rtcore::v04::short_stack_timing::request_plan_v0
+        short_stack_requests = {};
     if (event.route_kind ==
         primitive_semantic::kRouteStackPopNext) {
-        if (timing_driver::mark_commit_successor_pending_recovery(
+        if (rtcore_v04_live_short_stack_timing_enabled()) {
+            namespace short_timing =
+                rtcore::v04::short_stack_timing;
+            staged_short_stack =
+                rtcore_v04_live_short_stack_timing_for(
+                    owner_hw_sid);
+            short_timing::reservation_input_v0 input = {};
+            input.owner = event.owner;
+            input.private_region =
+                rtcore_v04_private_region_for(owner_hw_sid);
+            input.ray_policy = event.semantic_plan.ray_policy;
+            input.active_decode_context =
+                event.active_decode_context;
+            if (!rtcore_v04_immutable_trace_input_for(
+                    event.owner, &input.immutable_trace_input)) {
+                fprintf(
+                    stderr,
+                    "GPGPU-Sim "
+                    "RTCORE_V04_LIVE_PRIMITIVE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=immutable_trace_input_missing\n",
+                    owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+            input.producer_operation_seq =
+                event.producer_operation_seq;
+            input.producer_commit_epoch = event.commit_epoch;
+            input.target_operation_seq =
+                event.target_operation_seq;
+            input.operation_kind =
+                short_timing::kOperationResumeTransition;
+            short_timing::reservation_receipt_v0 reservation = {};
+            const short_timing::status_kind short_status =
+                short_timing::reserve_existing_target(
+                    &staged_short_stack, &staged_timing,
+                    rtcore_v04_private_shared_backing_for(
+                        owner_hw_sid),
+                    input, service_cycle, &reservation,
+                    &short_stack_requests);
+            if (short_status ==
+                    short_timing::kStatusCapacityBackpressure ||
+                short_status ==
+                    short_timing::
+                        kStatusReservationBudgetBackpressure) {
+                return false;
+            }
+            if (short_status != short_timing::kStatusOk ||
+                !reservation.valid ||
+                !short_stack_requests.valid ||
+                short_stack_requests.request_count !=
+                    short_timing::kReadChunkCount ||
+                timing_driver::complete_result_commit(
+                    &staged_timing, owner,
+                    event.producer_operation_seq,
+                    event.commit_epoch) !=
+                    timing_driver::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim "
+                        "RTCORE_V04_LIVE_PRIMITIVE_READY_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=short_stack_resume_rejected "
+                        "short_status=%s\n",
+                        owner_hw_sid, service_cycle,
+                        short_timing::status_name(short_status));
+                fflush(stderr);
+                abort();
+            }
+            short_stack_reserved = true;
+        } else if (
+            timing_driver::mark_commit_successor_pending_recovery(
                 &staged_timing, owner,
                 event.producer_operation_seq, event.commit_epoch,
                 event.target_operation_seq,
                 timing_driver::kPendingRecoveryTargetStack,
                 timing_driver::kPendingRecoveryRouteStackPopNext) !=
-                timing_driver::kStatusOk ||
+                    timing_driver::kStatusOk ||
             timing_driver::complete_result_commit(
                 &staged_timing, owner,
                 event.producer_operation_seq, event.commit_epoch) !=
-                timing_driver::kStatusOk) {
-            fprintf(stderr,
-                    "GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_READY_FAULT "
-                    "owner_hw_sid=%u service_cycle=%llu "
-                    "fault=stack_route_rejected\n",
-                    owner_hw_sid, service_cycle);
-            fflush(stderr);
-            abort();
+                    timing_driver::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_READY_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=stack_route_rejected\n",
+                        owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
         }
         if (native_resubmit_record != NULL) {
             const rtcore::v04::continuation_lifecycle::status_kind
@@ -22521,7 +23213,9 @@ static bool rtcore_service_v04_live_primitive_ready(
             }
             route_name = "shader_return_stack_pop_next";
         } else {
-            route_name = "stack_pop_next";
+            route_name = short_stack_reserved
+                             ? "short_stack_resume"
+                             : "stack_pop_next";
         }
     } else if (
         event.route_kind ==
@@ -22590,6 +23284,17 @@ static bool rtcore_service_v04_live_primitive_ready(
     rtcore_v04_live_primitive_shared_for(owner_hw_sid) =
         staged_primitive;
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
+    if (short_stack_reserved) {
+        rtcore_v04_live_short_stack_timing_for(owner_hw_sid) =
+            staged_short_stack;
+        std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+            g_rtcore_memory_unit_request_snapshots_by_owner[
+                owner_hw_sid];
+        live_queue.insert(
+            live_queue.end(), short_stack_requests.requests,
+            short_stack_requests.requests +
+                short_stack_requests.request_count);
+    }
     if (native_resubmit_record != NULL) {
         native_resubmit_record->v04_continuation_lifecycle =
             staged_lifecycle;
@@ -22994,6 +23699,27 @@ rtcore_find_v04_native_boundary_resident(
         }
     }
     return NULL;
+}
+
+static bool rtcore_v04_immutable_trace_input_for(
+    const rtcore::v04::private_frontier::owner_binding_v0 &private_owner,
+    rtcore::v04::private_frontier::root_private_operands_v0 *input)
+{
+    rtcore::v04::request_owner::lane_binding_v0 owner = {};
+    if (input == NULL ||
+        !rtcore_v04_request_owner_from_private_owner(
+            private_owner, &owner)) {
+        return false;
+    }
+    const rtcore_resident_rt_warp_record *record =
+        rtcore_find_v04_native_boundary_resident(owner);
+    if (record == NULL || owner.lane_id >= 32) {
+        return false;
+    }
+    *input = record->v04_immutable_trace_inputs[owner.lane_id];
+    return input->decode_context.as_object.as_type == 1 &&
+           input->decode_context.as_object.object_id != 0 &&
+           input->decode_context.as_object.generation != 0;
 }
 
 static bool rtcore_v04_native_recovery_waits_for_resubmit(
@@ -25701,11 +26427,13 @@ struct rtcore_v04_typed_primitive_candidate_stats {
     unsigned leaves;
     unsigned geometric_hits;
     unsigned candidate_hits;
+    unsigned legacy_nonfinite_hit_observations;
     unsigned legacy_barycentric_differences;
     unsigned mismatches;
 
     rtcore_v04_typed_primitive_candidate_stats()
         : leaves(0), geometric_hits(0), candidate_hits(0),
+          legacy_nonfinite_hit_observations(0),
           legacy_barycentric_differences(0), mismatches(0) {}
 };
 
@@ -25794,8 +26522,13 @@ static void rtcore_v04_observe_typed_primitive_candidate(
 
     const float legacy_world_t =
         legacy_hit ? legacy_object_t / world_to_object_t_multiplier : 0.0f;
+    const bool legacy_numeric_comparable =
+        !legacy_hit ||
+        (std::isfinite(legacy_object_t) && std::isfinite(legacy_world_t));
+    const bool legacy_geometric_hit =
+        legacy_hit && legacy_numeric_comparable;
     const bool legacy_candidate =
-        legacy_hit && world_t_min <= legacy_world_t &&
+        legacy_geometric_hit && world_t_min <= legacy_world_t &&
         legacy_world_t <= world_t_max &&
         legacy_world_t < committed_world_t;
     const bool descriptor_mismatch =
@@ -25809,7 +26542,7 @@ static void rtcore_v04_observe_typed_primitive_candidate(
     bool facing_mismatch = false;
     bool typed_barycentric_invalid = false;
     bool legacy_barycentric_difference = false;
-    if (legacy_hit) {
+    if (legacy_geometric_hit) {
         t_mismatch =
             result.object_t_bits != rtcore_v04_fp32_bits(legacy_object_t) ||
             result.world_t_bits != rtcore_v04_fp32_bits(legacy_world_t);
@@ -25831,13 +26564,17 @@ static void rtcore_v04_observe_typed_primitive_candidate(
     }
     const bool mismatch =
         descriptor_mismatch ||
-        result.geometric_hit != (legacy_hit ? 1u : 0u) ||
-        result.candidate_hit != (legacy_candidate ? 1u : 0u) || t_mismatch ||
-        facing_mismatch || typed_barycentric_invalid;
+        (legacy_numeric_comparable &&
+         (result.geometric_hit != (legacy_geometric_hit ? 1u : 0u) ||
+          result.candidate_hit != (legacy_candidate ? 1u : 0u) ||
+          t_mismatch || facing_mismatch || typed_barycentric_invalid));
 
     ++stats->leaves;
-    stats->geometric_hits += legacy_hit ? 1u : 0u;
+    stats->geometric_hits += legacy_geometric_hit ? 1u : 0u;
     stats->candidate_hits += legacy_candidate ? 1u : 0u;
+    if (!legacy_numeric_comparable) {
+        ++stats->legacy_nonfinite_hit_observations;
+    }
     if (legacy_barycentric_difference) {
         ++stats->legacy_barycentric_differences;
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL "
@@ -25856,6 +26593,7 @@ static void rtcore_v04_observe_typed_primitive_candidate(
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL "
                "mismatch=1 raw_leaf=%p descriptor_mismatch=%u "
                "typed_geometric=%u legacy_geometric=%u "
+               "legacy_numeric_comparable=%u "
                "typed_candidate=%u legacy_candidate=%u "
                "t_mismatch=%u facing_mismatch=%u "
                "typed_barycentric_invalid=%u "
@@ -25865,7 +26603,8 @@ static void rtcore_v04_observe_typed_primitive_candidate(
                "typed_hit_kind=0x%02x legacy_hit_kind=0x%02x\n",
                static_cast<const void *>(raw_leaf),
                descriptor_mismatch ? 1u : 0u, result.geometric_hit,
-               legacy_hit ? 1u : 0u, result.candidate_hit,
+               legacy_geometric_hit ? 1u : 0u,
+               legacy_numeric_comparable ? 1u : 0u, result.candidate_hit,
                legacy_candidate ? 1u : 0u, t_mismatch ? 1u : 0u,
                facing_mismatch ? 1u : 0u,
                typed_barycentric_invalid ? 1u : 0u,
@@ -26110,14 +26849,14 @@ static bool rtcore_v04_resolve_instance_blas_reference(
     *blas = rtcore_blas_binding_snapshot();
     *reference = rtcore_v04_instance_blas_reference_snapshot();
     const char *reason = "unvalidated";
-    if (!g_rtcore_tlas_binding_registry.validate(
+    if (!rtcore_tlas_bindings().validate(
             tlas, instance_metadata_reference, 128, &reason) ||
-        !g_rtcore_instance_blas_reference_registry.resolve(
+        !rtcore_instance_blas_references().resolve(
             tlas.object_id, tlas.generation,
             instance_metadata_reference, reference, &reason) ||
-        !g_rtcore_blas_binding_registry.capture_by_object_id(
+        !rtcore_blas_bindings().capture_by_object_id(
             reference->blas_object_id, blas, &reason) ||
-        !g_rtcore_blas_binding_registry.validate(
+        !rtcore_blas_bindings().validate(
             *blas, 0, 0, &reason)) {
         if (failure_reason != NULL) *failure_reason = reason;
         return false;
@@ -26262,9 +27001,9 @@ bool VulkanRayTracing::validateV04TypedPayloadBinding(
     if (decode_context.as_object.as_type ==
         rtcore::v04::typed_instance::kAsTypeTlas) {
         rtcore_tlas_binding_snapshot tlas;
-        if (!g_rtcore_tlas_binding_registry.capture_by_object_id(
+        if (!rtcore_tlas_bindings().capture_by_object_id(
                 decode_context.as_object.object_id, &tlas, &reason) ||
-            !g_rtcore_tlas_binding_registry.validate(
+            !rtcore_tlas_bindings().validate(
                 tlas, payload_address, payload_bytes, &reason) ||
             tlas.generation != decode_context.as_object.generation ||
             tlas.device_base_address != decode_context.device_base ||
@@ -26274,9 +27013,9 @@ bool VulkanRayTracing::validateV04TypedPayloadBinding(
         }
     } else if (decode_context.as_object.as_type == typed_blas::kAsTypeBlas) {
         rtcore_blas_binding_snapshot blas;
-        if (!g_rtcore_blas_binding_registry.capture_by_object_id(
+        if (!rtcore_blas_bindings().capture_by_object_id(
                 decode_context.as_object.object_id, &blas, &reason) ||
-            !g_rtcore_blas_binding_registry.validate(
+            !rtcore_blas_bindings().validate(
                 blas, payload_address, payload_bytes, &reason) ||
             blas.generation != decode_context.as_object.generation ||
             blas.device_base_address != decode_context.device_base ||
@@ -26333,7 +27072,7 @@ bool VulkanRayTracing::buildV04TypedInstanceEnterInput(
     }
 
     rtcore_tlas_binding_snapshot tlas;
-    if (!g_rtcore_tlas_binding_registry.capture_by_object_id(
+    if (!rtcore_tlas_bindings().capture_by_object_id(
             packet_tlas.as_object.object_id, &tlas, &reason)) {
         if (failure_reason != NULL) *failure_reason = reason;
         return false;
@@ -27131,6 +27870,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                    const ptx_instruction *pI,
                    ptx_thread_info *thread)
 {
+    rtcore_v04_clear_pending_legacy_distance_producer_evidence(thread);
     const bool v04_shadow_boundary_enabled =
         rtcore_abi_entry != NULL &&
         rtcore_abi_entry->v04_shadow_boundary_enabled;
@@ -27639,9 +28379,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 	ray.make_ray(origin, direction, Tmin, Tmax);
     thread->add_ray_properties(ray);
 
-	// Set thit to max
-    float min_thit = ray.dir_tmax.w;
-    struct GEN_RT_BVH_QUAD_LEAF closest_leaf;
+	    // Set thit to max
+	    float min_thit = ray.dir_tmax.w;
+	    rtcore_v04_legacy_distance_producer_evidence
+	        legacy_distance_producer_evidence;
+	    struct GEN_RT_BVH_QUAD_LEAF closest_leaf;
     struct GEN_RT_BVH_INSTANCE_LEAF closest_instanceLeaf;    
     uint64_t closest_instance_metadata_ref = 0;
     float4x4 closest_worldToObject, closest_objectToWorld;
@@ -27973,9 +28715,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             uint8_t * botLevelRootAddr = (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress);
             const uint64_t v04_route_blas_host_base =
                 reinterpret_cast<uint64_t>(botLevelRootAddr);
-            RT_DPRINTF("Traversing BLAS %p -> %p\n", (void*)botLevelRootAddr, blas_addr_map[(void*)botLevelRootAddr]);
-            assert(blas_addr_map.find((void*)botLevelRootAddr) != blas_addr_map.end());
-            device_offset = (uint64_t)blas_addr_map[(void*)botLevelRootAddr] - (uint64_t)botLevelRootAddr;
+            RT_DPRINTF("Traversing BLAS %p -> %p\n", (void*)botLevelRootAddr, rtcore_blas_addr_map()[(void*)botLevelRootAddr]);
+            assert(rtcore_blas_addr_map().find((void*)botLevelRootAddr) != rtcore_blas_addr_map().end());
+            device_offset = (uint64_t)rtcore_blas_addr_map()[(void*)botLevelRootAddr] - (uint64_t)botLevelRootAddr;
 
             transactions.push_back(MemoryTransactionRecord((uint8_t*)(botLevelRootAddr + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
@@ -28310,9 +29052,15 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                                 traversalFile << "quad node " << (void *)leaf_addr << ", primitiveID " << leaf.PrimitiveIndex0 << " is the closest hit. world_thit " << thit / worldToObject_tMultiplier;
                             }
 
-                            if (opaque_hit_selected) {
-                                min_thit = world_thit;
-                                if (v04_shadow_boundary_enabled) {
+	                            if (opaque_hit_selected) {
+	                                rtcore_v04_capture_legacy_distance_producer(
+	                                    &legacy_distance_producer_evidence,
+	                                    ray, worldToObjectMatrix, p, leaf,
+	                                    instanceLeaf, thit,
+	                                    worldToObject_tMultiplier,
+	                                    world_thit, Tmin, Tmax, min_thit);
+	                                min_thit = world_thit;
+	                                if (v04_shadow_boundary_enabled) {
                                     Hit_data opaque_candidate = {};
                                     opaque_candidate.geometryType =
                                         VK_GEOMETRY_TYPE_TRIANGLES_KHR;
@@ -28610,13 +29358,22 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         //closest_objectRay.at(min_thit_object);
         float3 barycentric = Barycentric(object_intersection_point, p[0], p[1], p[2]);
         traversal_data.closest_hit.barycentric_coordinates = barycentric;
-        rtcore_compact_trace.append_hit_update(
-            closest_leaf.PrimitiveIndex0, traversal_data.n_all_hits,
-            rtcore_trace_hit_update_flags(
-                RTCORE_TRACE_HIT_UPDATE_KIND_CLOSEST_HIT));
-        thread->RT_thread_data->set_hitAttribute(barycentric, pI, thread);
+	        rtcore_compact_trace.append_hit_update(
+	            closest_leaf.PrimitiveIndex0, traversal_data.n_all_hits,
+	            rtcore_trace_hit_update_flags(
+	                RTCORE_TRACE_HIT_UPDATE_KIND_CLOSEST_HIT));
+	        thread->RT_thread_data->set_hitAttribute(barycentric, pI, thread);
+	        rtcore_v04_stage_legacy_distance_producer_evidence(
+	            legacy_distance_producer_evidence,
+	            traversal_data.closest_hit.primitive_index, thread);
+	        if (rtcore_abi_entry != NULL) {
+	            publishLegacyDistanceProducerEvidenceForTransaction(
+	                thread, rtcore_abi_entry->context_ptr,
+	                rtcore_abi_entry->lane_id,
+	                rtcore_abi_entry->submit_transaction_id);
+	        }
 
-        // store_transactions.push_back(MemoryStoreTransactionRecord(&traversal_data, sizeof(traversal_data), StoreTransactionType::Traversal_Results));
+	        // store_transactions.push_back(MemoryStoreTransactionRecord(&traversal_data, sizeof(traversal_data), StoreTransactionType::Traversal_Results));
     }
     else if (hit_procedural)
     {
@@ -28747,13 +29504,16 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     if (v04_typed_primitive_candidate_enabled) {
         printf("GPGPU-Sim PTX: RTCORE_V04_TYPED_PRIMITIVE_KERNEL summary=1 "
                "thread_uid=%u leaves=%u geometric_hits=%u "
-               "candidate_hits=%u legacy_barycentric_differences=%u "
+               "candidate_hits=%u legacy_nonfinite_hit_observations=%u "
+               "legacy_barycentric_differences=%u "
                "mismatches=%u "
                "functional_authority=0 timing_authority=0\n",
                thread->get_uid(),
                v04_typed_primitive_candidate_stats.leaves,
                v04_typed_primitive_candidate_stats.geometric_hits,
                v04_typed_primitive_candidate_stats.candidate_hits,
+               v04_typed_primitive_candidate_stats
+                   .legacy_nonfinite_hit_observations,
                v04_typed_primitive_candidate_stats
                    .legacy_barycentric_differences,
                v04_typed_primitive_candidate_stats.mismatches);
@@ -29438,7 +30198,7 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
             raygen_sbt, miss_sbt, hit_sbt, callable_sbt);
 
     printf("gpgpusim: blas address\n");
-    for (auto mapping : blas_addr_map) {
+    for (auto mapping : rtcore_blas_addr_map()) {
         printf("\t[%p] -> %p\n", mapping.first, mapping.second);
     }
 
@@ -31792,7 +32552,7 @@ static void rtcore_publish_v04_genrt_replay_metadata(
     image.byte_count = snapshot.size_bytes;
     image.root_payload_offset = snapshot.root_payload_offset;
     const rtcore::v04::genrt_replay::status_kind status =
-        g_rtcore_genrt_replay_registry.publish(image);
+        rtcore_genrt_replay_registry().publish(image);
     if (status != rtcore::v04::genrt_replay::kStatusOk) {
         rtcore_fail_genrt_replay_metadata(
             "publish", status, as_type, snapshot.object_id,
@@ -31806,7 +32566,7 @@ static void rtcore_publish_v04_genrt_replay_metadata(
            static_cast<unsigned long long>(snapshot.object_id),
            snapshot.generation, snapshot.root_build_generation,
            static_cast<unsigned long long>(
-               g_rtcore_genrt_replay_registry.record_count(
+               rtcore_genrt_replay_registry().record_count(
                    as_type, snapshot.object_id)));
     fflush(stdout);
 }
@@ -31816,7 +32576,7 @@ static void rtcore_release_v04_genrt_replay_metadata(
 {
     if (!rtcore_v04_genrt_short_stack_replay_enabled()) return;
     const rtcore::v04::genrt_replay::status_kind status =
-        g_rtcore_genrt_replay_registry.release(
+        rtcore_genrt_replay_registry().release(
             as_type, object_id, generation);
     if (status != rtcore::v04::genrt_replay::kStatusOk) {
         rtcore_fail_genrt_replay_metadata(
@@ -31827,7 +32587,7 @@ static void rtcore_release_v04_genrt_replay_metadata(
 void VulkanRayTracing::allocBLAS(void* objectKey, void* rootAddr,
                                  uint64_t bufferSize, void* gpgpusimAddr) {
     printf("gpgpusim: set BLAS address for 0x%lx at %p to %p\n", bufferSize, rootAddr, gpgpusimAddr);
-    blas_addr_map[rootAddr] = gpgpusimAddr;
+    rtcore_blas_addr_map()[rootAddr] = gpgpusimAddr;
     if (rtcore_v04_producer_backed_blas_root_descriptor_enabled() &&
         !rtcore_v04_typed_blas_decode_context_bridge_enabled()) {
         rtcore_fail_blas_binding("root_descriptor_requires_context_bridge",
@@ -31844,7 +32604,7 @@ void VulkanRayTracing::allocBLAS(void* objectKey, void* rootAddr,
     const uint64_t device_base_address = (uint64_t)gpgpusimAddr;
     rtcore_blas_binding_snapshot snapshot;
     const char *failure_reason = "unvalidated";
-    if (!g_rtcore_blas_binding_registry.register_binding(
+    if (!rtcore_blas_bindings().register_binding(
             driver_object_key, host_root_address, device_base_address,
             bufferSize, &snapshot, &failure_reason)) {
         rtcore_fail_blas_binding(failure_reason, host_root_address,
@@ -31882,7 +32642,7 @@ void VulkanRayTracing::publishBLASRootDescriptor(
 
     rtcore_blas_binding_snapshot snapshot;
     const char *failure_reason = "unvalidated";
-    if (!g_rtcore_blas_binding_registry.publish_root_descriptor(
+    if (!rtcore_blas_bindings().publish_root_descriptor(
             (uint64_t)objectKey, typed_blas::kGenRtDerivedProfileId,
             typed_blas::kGenRtPayloadFormatId, rootPayloadOffset,
             static_cast<uint8_t>(rootPayloadKind), &snapshot,
@@ -31922,7 +32682,7 @@ void VulkanRayTracing::publishTLASRootDescriptor(
 
     rtcore_tlas_binding_snapshot snapshot;
     const char *failure_reason = "unvalidated";
-    if (!g_rtcore_tlas_binding_registry.publish_root_descriptor(
+    if (!rtcore_tlas_bindings().publish_root_descriptor(
             (uint64_t)objectKey, typed_blas::kGenRtDerivedProfileId,
             typed_blas::kGenRtPayloadFormatId, rootPayloadOffset,
             static_cast<uint8_t>(rootPayloadKind), &snapshot,
@@ -31957,13 +32717,13 @@ void VulkanRayTracing::beginTLASInstanceReferences(void* objectKey) {
 
     rtcore_tlas_binding_snapshot tlas;
     const char *capture_failure = "unvalidated";
-    if (!g_rtcore_tlas_binding_registry.capture_by_driver_object(
+    if (!rtcore_tlas_bindings().capture_by_driver_object(
             (uint64_t)objectKey, &tlas, &capture_failure)) {
         rtcore_fail_instance_blas_reference(
             capture_failure, 0, 0, 0);
     }
     const char *binding_failure = "unvalidated";
-    if (!g_rtcore_tlas_binding_registry.validate(
+    if (!rtcore_tlas_bindings().validate(
             tlas, 0, 0, &binding_failure)) {
         rtcore_fail_instance_blas_reference(
             binding_failure, tlas.object_id, tlas.generation, 0);
@@ -31971,7 +32731,7 @@ void VulkanRayTracing::beginTLASInstanceReferences(void* objectKey) {
 
     uint32_t build_generation = 0;
     const char *begin_failure = "unvalidated";
-    if (!g_rtcore_instance_blas_reference_registry.begin_build(
+    if (!rtcore_instance_blas_references().begin_build(
             tlas.object_id, tlas.generation, tlas.host_root_address,
             tlas.device_base_address, tlas.size_bytes,
             &build_generation, &begin_failure)) {
@@ -32000,12 +32760,12 @@ void VulkanRayTracing::publishTLASInstanceReference(
     rtcore_tlas_binding_snapshot tlas;
     rtcore_blas_binding_snapshot blas;
     const char *capture_failure = "unvalidated";
-    if (!g_rtcore_tlas_binding_registry.capture_by_driver_object(
+    if (!rtcore_tlas_bindings().capture_by_driver_object(
             (uint64_t)objectKey, &tlas, &capture_failure)) {
         rtcore_fail_instance_blas_reference(
             capture_failure, 0, 0, 0);
     }
-    if (!g_rtcore_blas_binding_registry.capture(
+    if (!rtcore_blas_bindings().capture(
             (uint64_t)blasRootAddress, &blas, &capture_failure)) {
         rtcore_fail_instance_blas_reference(
             capture_failure, tlas.object_id, tlas.generation, 0);
@@ -32036,7 +32796,7 @@ void VulkanRayTracing::publishTLASInstanceReference(
         tlas.device_base_address + instance_offset;
     rtcore_v04_instance_blas_reference_snapshot published;
     const char *publish_failure = "unvalidated";
-    if (!g_rtcore_instance_blas_reference_registry.publish(
+    if (!rtcore_instance_blas_references().publish(
             tlas.object_id, tlas.generation, instance_host_address,
             instance_metadata_reference, blas.object_id,
             blas.generation, blas.host_root_address, &published,
@@ -32066,7 +32826,7 @@ void VulkanRayTracing::endTLASInstanceReferences(void* objectKey) {
     }
     rtcore_tlas_binding_snapshot tlas;
     const char *capture_failure = "unvalidated";
-    if (!g_rtcore_tlas_binding_registry.capture_by_driver_object(
+    if (!rtcore_tlas_bindings().capture_by_driver_object(
             (uint64_t)objectKey, &tlas, &capture_failure)) {
         rtcore_fail_instance_blas_reference(
             capture_failure, 0, 0, 0);
@@ -32074,7 +32834,7 @@ void VulkanRayTracing::endTLASInstanceReferences(void* objectKey) {
     uint32_t build_generation = 0;
     uint64_t reference_count = 0;
     const char *end_failure = "unvalidated";
-    if (!g_rtcore_instance_blas_reference_registry.end_build(
+    if (!rtcore_instance_blas_references().end_build(
             tlas.object_id, tlas.generation, &build_generation,
             &reference_count, &end_failure)) {
         rtcore_fail_instance_blas_reference(
@@ -32094,8 +32854,10 @@ void VulkanRayTracing::releaseBLAS(void* objectKey, void* rootAddr,
         return;
     }
 
-    std::map<void *, void *>::iterator legacy = blas_addr_map.find(rootAddr);
-    if (legacy == blas_addr_map.end() || legacy->second != gpgpusimAddr) {
+    std::map<void *, void *>::iterator legacy =
+        rtcore_blas_addr_map().find(rootAddr);
+    if (legacy == rtcore_blas_addr_map().end() ||
+        legacy->second != gpgpusimAddr) {
         rtcore_fail_blas_binding("legacy_map_release_mismatch",
                                 (uint64_t)rootAddr, (uint64_t)gpgpusimAddr,
                                 0, (uint64_t)objectKey);
@@ -32106,7 +32868,7 @@ void VulkanRayTracing::releaseBLAS(void* objectKey, void* rootAddr,
     const uint64_t device_base_address = (uint64_t)gpgpusimAddr;
     rtcore_blas_binding_snapshot released;
     const char *failure_reason = "unvalidated";
-    if (!g_rtcore_blas_binding_registry.release_binding(
+    if (!rtcore_blas_bindings().release_binding(
             driver_object_key, host_root_address, device_base_address,
             &released, &failure_reason)) {
         rtcore_fail_blas_binding(failure_reason, host_root_address,
@@ -32125,7 +32887,7 @@ void VulkanRayTracing::releaseBLAS(void* objectKey, void* rootAddr,
            (unsigned long long)released.device_base_address,
            (unsigned long long)released.size_bytes);
     fflush(stdout);
-    blas_addr_map.erase(legacy);
+    rtcore_blas_addr_map().erase(legacy);
 }
 
 void VulkanRayTracing::allocTLAS(void* objectKey, void* rootAddr,
@@ -32136,7 +32898,7 @@ void VulkanRayTracing::allocTLAS(void* objectKey, void* rootAddr,
     const uint64_t device_base_address = (uint64_t)gpgpusimAddr;
     rtcore_tlas_binding_snapshot snapshot;
     const char *failure_reason = "unvalidated";
-    if (!g_rtcore_tlas_binding_registry.register_binding(
+    if (!rtcore_tlas_bindings().register_binding(
             driver_object_key, host_root_address, device_base_address,
             bufferSize, &snapshot, &failure_reason)) {
         rtcore_fail_tlas_binding(failure_reason, host_root_address,
@@ -32164,7 +32926,7 @@ void VulkanRayTracing::releaseTLAS(void* objectKey, void* rootAddr,
     const uint64_t device_base_address = (uint64_t)gpgpusimAddr;
     rtcore_tlas_binding_snapshot released;
     const char *failure_reason = "unvalidated";
-    if (!g_rtcore_tlas_binding_registry.release_binding(
+    if (!rtcore_tlas_bindings().release_binding(
             driver_object_key, host_root_address, device_base_address,
             &released, &failure_reason)) {
         rtcore_fail_tlas_binding(failure_reason, host_root_address,
@@ -32174,7 +32936,7 @@ void VulkanRayTracing::releaseTLAS(void* objectKey, void* rootAddr,
         1, released.object_id, released.generation);
     if (rtcore_v04_producer_backed_instance_blas_reference_enabled()) {
         const char *reference_failure = "unvalidated";
-        if (!g_rtcore_instance_blas_reference_registry.release(
+        if (!rtcore_instance_blas_references().release(
                 released.object_id, released.generation,
                 &reference_failure)) {
             rtcore_fail_instance_blas_reference(
@@ -32197,7 +32959,7 @@ void VulkanRayTracing::releaseTLAS(void* objectKey, void* rootAddr,
 bool VulkanRayTracing::captureTlasBinding(
     uint64_t hostRootAddress, rtcore_tlas_binding_snapshot *snapshot,
     const char **failureReason) {
-    return g_rtcore_tlas_binding_registry.capture(
+    return rtcore_tlas_bindings().capture(
         hostRootAddress, snapshot, failureReason);
 }
 
@@ -32205,14 +32967,14 @@ bool VulkanRayTracing::validateTlasBinding(
     const rtcore_tlas_binding_snapshot &snapshot,
     uint64_t instanceMetadataReference, uint64_t recordSize,
     const char **failureReason) {
-    return g_rtcore_tlas_binding_registry.validate(
+    return rtcore_tlas_bindings().validate(
         snapshot, instanceMetadataReference, recordSize, failureReason);
 }
 
 bool VulkanRayTracing::captureBlasBinding(
     uint64_t hostRootAddress, rtcore_blas_binding_snapshot *snapshot,
     const char **failureReason) {
-    return g_rtcore_blas_binding_registry.capture(
+    return rtcore_blas_bindings().capture(
         hostRootAddress, snapshot, failureReason);
 }
 
@@ -32220,13 +32982,14 @@ bool VulkanRayTracing::validateBlasBinding(
     const rtcore_blas_binding_snapshot &snapshot,
     uint64_t payloadReference, uint64_t recordSize,
     const char **failureReason) {
-    return g_rtcore_blas_binding_registry.validate(
+    return rtcore_blas_bindings().validate(
         snapshot, payloadReference, recordSize, failureReason);
 }
 
 bool VulkanRayTracing::resolveV04GenRtReplayParent(
     const rtcore::v04::typed_blas::as_decode_context_v0 &decodeContext,
     uint32_t buildGeneration, uint64_t payloadOffset,
+    uint8_t payloadKind,
     rtcore::v04::short_stack::parent_edge_v0 *parent,
     const char **failureReason) {
     namespace metadata = rtcore::v04::genrt_replay;
@@ -32247,9 +33010,9 @@ bool VulkanRayTracing::resolveV04GenRtReplayParent(
     const char *binding_failure = "unvalidated";
     if (identity.as_type == 1) {
         rtcore_tlas_binding_snapshot binding;
-        if (!g_rtcore_tlas_binding_registry.capture_by_object_id(
+        if (!rtcore_tlas_bindings().capture_by_object_id(
                 identity.object_id, &binding, &binding_failure) ||
-            !g_rtcore_tlas_binding_registry.validate(
+            !rtcore_tlas_bindings().validate(
                 binding, 0, 0, &binding_failure)) {
             if (failureReason != NULL) *failureReason = binding_failure;
             return false;
@@ -32268,9 +33031,9 @@ bool VulkanRayTracing::resolveV04GenRtReplayParent(
     } else if (identity.as_type ==
                rtcore::v04::typed_blas::kAsTypeBlas) {
         rtcore_blas_binding_snapshot binding;
-        if (!g_rtcore_blas_binding_registry.capture_by_object_id(
+        if (!rtcore_blas_bindings().capture_by_object_id(
                 identity.object_id, &binding, &binding_failure) ||
-            !g_rtcore_blas_binding_registry.validate(
+            !rtcore_blas_bindings().validate(
                 binding, 0, 0, &binding_failure)) {
             if (failureReason != NULL) *failureReason = binding_failure;
             return false;
@@ -32293,15 +33056,18 @@ bool VulkanRayTracing::resolveV04GenRtReplayParent(
 
     metadata::parent_record_v0 record = {};
     const metadata::status_kind status =
-        g_rtcore_genrt_replay_registry.resolve(
+        rtcore_genrt_replay_registry().resolve(
             identity, payloadOffset, &record);
     if (status != metadata::kStatusOk ||
+        record.payload_kind != payloadKind ||
         !metadata::to_parent_edge(record, parent)) {
         if (failureReason != NULL) {
             *failureReason =
                 status != metadata::kStatusOk
                     ? metadata::status_name(status)
-                    : "invalid_parent_edge";
+                    : record.payload_kind != payloadKind
+                          ? "payload_kind_mismatch"
+                          : "invalid_parent_edge";
         }
         return false;
     }
@@ -32311,9 +33077,10 @@ bool VulkanRayTracing::resolveV04GenRtReplayParent(
 
 bool VulkanRayTracing::validateBlasLegacyAlias(
     uint64_t hostRootAddress, uint64_t deviceBaseAddress) {
-    std::map<void *, void *>::const_iterator legacy = blas_addr_map.find(
+    std::map<void *, void *>::const_iterator legacy =
+        rtcore_blas_addr_map().find(
         reinterpret_cast<void *>(hostRootAddress));
-    return legacy != blas_addr_map.end() &&
+    return legacy != rtcore_blas_addr_map().end() &&
            reinterpret_cast<uint64_t>(legacy->second) == deviceBaseAddress;
 }
 

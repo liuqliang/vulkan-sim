@@ -131,6 +131,8 @@ static metadata_image_v0 metadata_from_state(const persistent_state_v0 &state) {
   metadata.cross_as = state.stack.cross_as;
   metadata.lost = state.stack.lost;
   metadata.active_domain = state.stack.active_domain;
+  metadata.recovery_target_inflight =
+      state.recovery_target_inflight;
   return metadata;
 }
 
@@ -144,7 +146,8 @@ static void encode_metadata(uint8_t *destination,
   destination[14] = metadata.cross_as;
   destination[15] = metadata.lost;
   destination[16] = metadata.active_domain;
-  std::memcpy(destination + 17, metadata.reserved_zero,
+  destination[17] = metadata.recovery_target_inflight;
+  std::memcpy(destination + 18, metadata.reserved_zero,
               sizeof(metadata.reserved_zero));
 }
 
@@ -158,7 +161,8 @@ static metadata_image_v0 decode_metadata(const uint8_t *source) {
   metadata.cross_as = source[14];
   metadata.lost = source[15];
   metadata.active_domain = source[16];
-  std::memcpy(metadata.reserved_zero, source + 17,
+  metadata.recovery_target_inflight = source[17];
+  std::memcpy(metadata.reserved_zero, source + 18,
               sizeof(metadata.reserved_zero));
   return metadata;
 }
@@ -173,6 +177,7 @@ static bool valid_metadata(const metadata_image_v0 &metadata) {
          metadata.stack_top_ptr < short_stack::kLogicalCapacity &&
          metadata.cross_as <= 1 && metadata.lost <= 1 &&
          metadata.active_domain <= short_stack::kDomainBlas &&
+         metadata.recovery_target_inflight <= 1 &&
          metadata.cross_as == (blas_active ? 1 : 0) &&
          bytes_are_zero(metadata.reserved_zero, sizeof(metadata.reserved_zero));
 }
@@ -281,8 +286,16 @@ static status_kind validate_slot_owner(
 }  // namespace
 
 bool validate_persistent_state(const persistent_state_v0 &state) {
-  if (!short_stack::validate_state(state.stack) ||
-      state.tlas_build_generation == 0) {
+  const bool stable =
+      state.recovery_target_inflight == 0 &&
+      short_stack::validate_state(state.stack);
+  const bool recovery_target_inflight =
+      state.recovery_target_inflight == 1 &&
+      short_stack::validate_drained_recovery_state(state.stack);
+  if ((!stable && !recovery_target_inflight) ||
+      state.tlas_build_generation == 0 ||
+      !bytes_are_zero(state.reserved_zero,
+                      sizeof(state.reserved_zero))) {
     return false;
   }
   return state.stack.active_domain == short_stack::kDomainBlas
@@ -341,6 +354,8 @@ status_kind decode_persistent_state(
   decoded.stack.cross_as = metadata.cross_as;
   decoded.stack.lost = metadata.lost;
   decoded.stack.active_domain = metadata.active_domain;
+  decoded.recovery_target_inflight =
+      metadata.recovery_target_inflight;
   for (uint32_t index = 0; index < kEncodedEntryCount; ++index) {
     decoded.stack.entries[index] =
         decode_entry(slot.bytes + private_frontier::kFrontierEntriesOffset +

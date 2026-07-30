@@ -62,6 +62,27 @@ bool selected_fetch_from_entry(
   return true;
 }
 
+bool bind_recovery_target_inflight(
+    short_stack_shared::persistent_state_v0 *persistent,
+    const short_stack::entry_v0 &selected) {
+  if (persistent == NULL) return false;
+  if (!short_stack::validate_drained_recovery_state(
+          persistent->stack)) {
+    return persistent->recovery_target_inflight == 0;
+  }
+  const short_stack::entry_kind kind =
+      short_stack::control_kind(selected.control);
+  if (!short_stack::validate_entry(selected) ||
+      selected.payload_kind != typed_node::kInternalPayloadKind ||
+      (kind != short_stack::kEntryDirectTarget &&
+       kind != short_stack::kEntrySameNodeReplay &&
+       kind != short_stack::kEntryParentResume)) {
+    return false;
+  }
+  persistent->recovery_target_inflight = 1;
+  return true;
+}
+
 short_stack::entry_v0 direct_entry_from_target(
     const fetch_target::target_reference_v0 &target,
     short_stack::domain_kind domain) {
@@ -105,6 +126,27 @@ status_kind finalize_persistent_state(
   return kStatusOk;
 }
 
+bool append_access_plan(
+    private_frontier::access_plan_v0 *destination,
+    const private_frontier::access_plan_v0 &source) {
+  if (destination == NULL ||
+      destination->access_count + source.access_count >
+          private_frontier::kMaxAccessChunks) {
+    return false;
+  }
+  if (destination->access_count == 0) {
+    destination->owner = source.owner;
+  } else if (!private_frontier::owners_equal(
+                 destination->owner, source.owner)) {
+    return false;
+  }
+  for (unsigned index = 0; index < source.access_count; ++index) {
+    destination->accesses[destination->access_count++] =
+        source.accesses[index];
+  }
+  return true;
+}
+
 }  // namespace
 
 status_kind prepare_node_transition(const node_input_v0 &input,
@@ -142,16 +184,65 @@ status_kind prepare_node_transition(const node_input_v0 &input,
                : typed_node::kLevelTlas)) {
     return kStatusDecodeContextMismatch;
   }
+  if (persistent.recovery_target_inflight != 0 &&
+      input.current_target.payload_kind !=
+          typed_node::kInternalPayloadKind) {
+    return kStatusShortStackRejected;
+  }
+
+  short_stack::entry_v0 pending_parent_resume =
+      input.pending_parent_resume;
+  uint8_t pending_parent_resume_valid =
+      input.pending_parent_resume_valid;
+  bool current_parent_bailout_consumed = false;
+  if (persistent.recovery_target_inflight != 0 &&
+      pending_parent_resume_valid == 0) {
+    if (input.parent_edge_valid == 0) {
+      result->parent_lookup_decode_context =
+          input.current_decode_context;
+      result->parent_lookup_build_generation =
+          build_generation;
+      result->parent_lookup_payload_offset =
+          input.current_target.payload_offset;
+      result->parent_lookup_payload_kind =
+          input.current_target.payload_kind;
+      result->parent_lookup_required = 1;
+      result->persistent_state = persistent;
+      return kStatusParentLookupRequired;
+    }
+    short_stack::pop_result_v0 current = {};
+    current.status = short_stack::kStatusOk;
+    current.state = persistent.stack;
+    current.entry = direct_entry_from_target(
+        input.current_target,
+        static_cast<short_stack::domain_kind>(
+            persistent.stack.active_domain));
+    current.entry_valid = 1;
+    const short_stack::parent_bailout_result_v0 bailout =
+        short_stack::prepare_parent_bailout(
+            current, input.parent_edge);
+    if (bailout.status != short_stack::kStatusOk) {
+      return kStatusShortStackRejected;
+    }
+    persistent.stack = bailout.state;
+    persistent.recovery_target_inflight = 0;
+    pending_parent_resume = bailout.parent_resume;
+    pending_parent_resume_valid =
+        bailout.parent_resume_valid;
+    current_parent_bailout_consumed = true;
+  } else if (persistent.recovery_target_inflight != 0) {
+    persistent.recovery_target_inflight = 0;
+  }
 
   short_stack::route_push_input_v0 push = {};
   push.state = persistent.stack;
   push.route = input.node_route;
   push.current_node_payload_offset =
       input.current_target.payload_offset;
-  push.parent_resume = input.pending_parent_resume;
+  push.parent_resume = pending_parent_resume;
   push.active_domain = persistent.stack.active_domain;
   push.parent_resume_valid =
-      input.pending_parent_resume_valid;
+      pending_parent_resume_valid;
   const short_stack::route_push_result_v0 pushed =
       short_stack::push_node_route(push);
   if (pushed.status != short_stack::kStatusOk) {
@@ -165,6 +256,16 @@ status_kind prepare_node_transition(const node_input_v0 &input,
     result->selected_fetch = pushed.selected;
     result->selected_valid = 1;
     result->next_build_generation = build_generation;
+  } else if (persistent.stack.cross_as != 0 &&
+             persistent.stack.stack_count == 1) {
+    if (persistent.stack.active_domain != short_stack::kDomainBlas ||
+        persistent.stack.lost != 0 ||
+        input.node_route.result_kind !=
+            typed_node::kRouteResultMiss) {
+      return kStatusShortStackRejected;
+    }
+    result->persistent_state = persistent;
+    return kStatusReturnInstanceRequired;
   } else if (persistent.stack.stack_count == 0) {
     if (!short_stack::terminal_allowed(
             persistent.stack, false, false, false)) {
@@ -173,6 +274,7 @@ status_kind prepare_node_transition(const node_input_v0 &input,
     result->terminal = 1;
   } else {
     const bool need_parent =
+        !current_parent_bailout_consumed &&
         short_stack::parent_bailout_required(persistent.stack);
     if (need_parent && input.parent_edge_valid == 0) {
       short_stack::entry_v0 top = {};
@@ -184,6 +286,7 @@ status_kind prepare_node_transition(const node_input_v0 &input,
           input.current_decode_context;
       result->parent_lookup_build_generation = build_generation;
       result->parent_lookup_payload_offset = top.payload_offset;
+      result->parent_lookup_payload_kind = top.payload_kind;
       result->parent_lookup_required = 1;
       result->persistent_state = persistent;
       return kStatusParentLookupRequired;
@@ -208,6 +311,10 @@ status_kind prepare_node_transition(const node_input_v0 &input,
           bailout.parent_resume_valid;
     } else {
       persistent.stack = popped.state;
+    }
+    if (!bind_recovery_target_inflight(
+            &persistent, popped.entry)) {
+      return kStatusShortStackRejected;
     }
     if (!selected_fetch_from_entry(
             popped.entry, input.current_decode_context,
@@ -237,6 +344,9 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
       short_stack_shared::kStatusOk) {
     return kStatusPrivateStateRejected;
   }
+  if (persistent.recovery_target_inflight != 0) {
+    return kStatusShortStackRejected;
+  }
   const uint32_t build_generation =
       active_build_generation(persistent);
   if (input.active_decode_context.as_object.as_type !=
@@ -259,7 +369,8 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
       persistent.stack.stack_count == 1) {
     short_stack::entry_v0 return_entry = {};
     if (persistent.stack.lost != 0 ||
-        input.tlas_decode_context.as_object.as_type != 1 ||
+        input.immutable_trace_input.decode_context.as_object.as_type !=
+            1 ||
         !short_stack::read_logical_entry(
             persistent.stack, 0, &return_entry) ||
         short_stack::control_kind(return_entry.control) !=
@@ -268,11 +379,13 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
     }
     if (input.parent_edge_valid == 0) {
       result->parent_lookup_decode_context =
-          input.tlas_decode_context;
+          input.immutable_trace_input.decode_context;
       result->parent_lookup_build_generation =
           persistent.tlas_build_generation;
       result->parent_lookup_payload_offset =
           return_entry.payload_offset;
+      result->parent_lookup_payload_kind =
+          return_entry.payload_kind;
       result->parent_lookup_required = 1;
       result->persistent_state = persistent;
       return kStatusParentLookupRequired;
@@ -283,12 +396,61 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
       return kStatusShortStackRejected;
     }
     persistent.blas_build_generation = 0;
-    result->restore_parent_required = 1;
     result->next_build_generation =
         persistent.tlas_build_generation;
-    return finalize_persistent_state(
-        input.owner, input.region, input.canonical_slot,
-        persistent, result);
+
+    private_frontier::traversal_frame_projection_v0 root = {};
+    root.ray = input.immutable_trace_input.mutable_ray;
+    root.current_decode_context =
+        input.immutable_trace_input.decode_context;
+    private_frontier::shadow_slot_v0 restored_slot =
+        input.canonical_slot;
+    private_frontier::access_plan_v0 restore_plan = {};
+    if (private_frontier::apply_parent_state_restore(
+            &restored_slot, input.owner, input.region, root,
+            &restore_plan) != private_frontier::kStatusOk) {
+      return kStatusPrivateStateRejected;
+    }
+
+    if (persistent.stack.stack_count == 0) {
+      if (!short_stack::terminal_allowed(
+              persistent.stack, false, false, false)) {
+        return kStatusShortStackRejected;
+      }
+      result->terminal = 1;
+    } else {
+      const short_stack::pop_result_v0 popped =
+          short_stack::pop_top(persistent.stack);
+      if (popped.status != short_stack::kStatusOk ||
+          popped.entry_valid == 0 ||
+          short_stack::control_kind(popped.entry.control) !=
+              short_stack::kEntryParentResume ||
+          !selected_fetch_from_entry(
+              popped.entry,
+              input.immutable_trace_input.decode_context,
+              &result->selected_fetch, &result->replay_cursor)) {
+        return kStatusShortStackRejected;
+      }
+      persistent.stack = popped.state;
+      if (!bind_recovery_target_inflight(
+              &persistent, popped.entry)) {
+        return kStatusShortStackRejected;
+      }
+      result->selected_valid = 1;
+    }
+
+    private_frontier::access_plan_v0 stack_plan = {};
+    result->updated_slot = restored_slot;
+    if (short_stack_shared::apply_persistent_state(
+            &result->updated_slot, input.owner, input.region,
+            persistent, &stack_plan) !=
+            short_stack_shared::kStatusOk ||
+        !append_access_plan(&result->write_plan, restore_plan) ||
+        !append_access_plan(&result->write_plan, stack_plan)) {
+      return kStatusPrivateStateRejected;
+    }
+    result->persistent_state = persistent;
+    return kStatusOk;
   }
 
   const bool need_parent =
@@ -303,6 +465,7 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
         input.active_decode_context;
     result->parent_lookup_build_generation = build_generation;
     result->parent_lookup_payload_offset = top.payload_offset;
+    result->parent_lookup_payload_kind = top.payload_kind;
     result->parent_lookup_required = 1;
     result->persistent_state = persistent;
     return kStatusParentLookupRequired;
@@ -330,6 +493,10 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
   } else {
     persistent.stack = popped.state;
   }
+  if (!bind_recovery_target_inflight(
+          &persistent, popped.entry)) {
+    return kStatusShortStackRejected;
+  }
   if (!selected_fetch_from_entry(
           popped.entry, input.active_decode_context,
           &result->selected_fetch, &result->replay_cursor)) {
@@ -353,8 +520,11 @@ status_kind prepare_enter_blas_transition(
   short_stack_shared::persistent_state_v0 persistent = {};
   if (short_stack_shared::decode_persistent_state(
           input.canonical_slot, input.owner, &persistent) !=
-          short_stack_shared::kStatusOk) {
+      short_stack_shared::kStatusOk) {
     return kStatusPrivateStateRejected;
+  }
+  if (persistent.recovery_target_inflight != 0) {
+    return kStatusShortStackRejected;
   }
   if (persistent.stack.active_domain != short_stack::kDomainTlas ||
       persistent.stack.cross_as != 0 ||
@@ -422,6 +592,8 @@ const char *status_name(status_kind status) {
       return "decode_context_mismatch";
     case kStatusParentLookupRequired:
       return "parent_lookup_required";
+    case kStatusReturnInstanceRequired:
+      return "return_instance_required";
   }
   return "unknown";
 }

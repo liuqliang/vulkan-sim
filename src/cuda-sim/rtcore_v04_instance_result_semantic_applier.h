@@ -12,6 +12,7 @@ namespace v04 {
 namespace instance_semantic {
 
 static const uint8_t kRestoreWriteFragmentCount = 6;
+static const uint8_t kEnterShortStackWriteFragmentCount = 6;
 static const uint8_t kEnterVisibleWriteFragmentCount = 13;
 static const uint8_t kMaxWriteFragmentCount =
     kEnterVisibleWriteFragmentCount;
@@ -89,7 +90,7 @@ status_kind prepare_enter(
     const private_frontier::shadow_slot_v0 &canonical_slot,
     const typed_instance::enter_input_v0 &input,
     const typed_instance::enter_result_v0 &result,
-    enter_commit_plan_v0 *plan);
+    enter_commit_plan_v0 *plan, bool short_stack_mode = false);
 
 const char *status_name(status_kind status);
 

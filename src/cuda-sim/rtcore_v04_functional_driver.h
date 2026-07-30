@@ -126,7 +126,8 @@ status_kind execute_one_instance_enter(
     const typed_instance::enter_input_v0 &input,
     const private_frontier::region_binding_v0 &region,
     const private_frontier::shadow_slot_v0 &canonical_slot,
-    instance_enter_execution_v0 *execution);
+    instance_enter_execution_v0 *execution,
+    bool short_stack_mode = false);
 
 status_kind execute_one_instance_restore(
     const fetch_target::operation_packet_v0 &packet,

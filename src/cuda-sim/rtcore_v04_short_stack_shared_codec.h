@@ -10,7 +10,7 @@ namespace rtcore {
 namespace v04 {
 namespace short_stack_shared {
 
-static const uint32_t kMetadataTag = 0x30525353u;  // "SSR0"
+static const uint32_t kMetadataTag = 0x31525353u;  // "SSR1"
 static const uint32_t kEncodedEntryCount = short_stack::kLogicalCapacity;
 static const uint32_t kEncodedEntriesBytes =
     kEncodedEntryCount * private_frontier::kFrontierEntryBytes;
@@ -37,13 +37,16 @@ struct metadata_image_v0 {
   uint8_t cross_as;
   uint8_t lost;
   uint8_t active_domain;
-  uint8_t reserved_zero[7];
+  uint8_t recovery_target_inflight;
+  uint8_t reserved_zero[6];
 };
 
 struct persistent_state_v0 {
   uint32_t tlas_build_generation;
   uint32_t blas_build_generation;
   short_stack::state_v0 stack;
+  uint8_t recovery_target_inflight;
+  uint8_t reserved_zero[7];
 };
 
 static_assert(sizeof(metadata_image_v0) ==
@@ -54,7 +57,7 @@ static_assert(sizeof(short_stack::entry_v0) ==
               "short-stack entry must reuse the 16-byte entry envelope");
 static_assert(kEncodedEntriesBytes == 96,
               "six short-stack entries must occupy 96 bytes");
-static_assert(sizeof(persistent_state_v0) == 112,
+static_assert(sizeof(persistent_state_v0) == 120,
               "short-stack persistent state layout changed");
 
 bool validate_persistent_state(const persistent_state_v0 &state);

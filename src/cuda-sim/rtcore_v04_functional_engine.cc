@@ -23,7 +23,8 @@ struct next_action_v0 {
   uint8_t instance_blas_root;
   uint8_t short_entry_valid;
   uint8_t parent_resume_valid;
-  uint8_t reserved_zero[4];
+  uint8_t short_stack_transition_reserved;
+  uint8_t reserved_zero[3];
   uint32_t producer_operation_seq;
   typed_node::selected_child_fetch_work_item_v0 selected_fetch;
   typed_node::route_result_v0 node_route;
@@ -409,15 +410,18 @@ status_kind apply_instance_enter(
       instance_semantic::kRouteBlasRootNode) {
     return kStatusSemanticApplyRejected;
   }
-  private_frontier::traversal_frame_projection_v0 parent = {};
   private_frontier::access_plan_v0 ignored = {};
-  if (private_frontier::capture_parent_frame(
-          state->canonical_slot, state->owner, &parent) !=
-          private_frontier::kStatusOk ||
-      private_frontier::apply_parent_frame_push(
-          &state->canonical_slot, state->owner, state->private_region,
-          parent, &ignored) != private_frontier::kStatusOk) {
-    return kStatusSemanticApplyRejected;
+  if (state->short_stack_replay_enabled == 0) {
+    private_frontier::traversal_frame_projection_v0 parent = {};
+    if (private_frontier::capture_parent_frame(
+            state->canonical_slot, state->owner, &parent) !=
+            private_frontier::kStatusOk ||
+        private_frontier::apply_parent_frame_push(
+            &state->canonical_slot, state->owner,
+            state->private_region, parent, &ignored) !=
+            private_frontier::kStatusOk) {
+      return kStatusSemanticApplyRejected;
+    }
   }
   private_frontier::mutable_ray_state_v0 object_ray = {};
   std::memcpy(&object_ray, &execution.operator_result.object_ray,
@@ -505,6 +509,7 @@ status_kind advance_short_stack_after_node(
 
   *next = next_action_v0();
   next->producer_operation_seq = stack_operation_seq;
+  next->short_stack_transition_reserved = 1;
   if (pushed.selected_valid == 0) {
     next->kind = kActionStackPop;
     return kStatusOk;
@@ -584,66 +589,17 @@ status_kind publish_output(state_v0 *state, boundary_kind boundary,
   return kStatusOk;
 }
 
-status_kind restore_parent_for_short_stack(
-    state_v0 *state, uint32_t *restore_operation_seq) {
-  if (state == NULL || restore_operation_seq == NULL) {
-    return kStatusInvalidArgument;
-  }
-  private_frontier::traversal_frame_projection_v0 parent = {};
-  private_frontier::frontier_metadata_image_v0 metadata = {};
-  if (private_frontier::decode_parent_frame(
-          state->canonical_slot, state->owner, &parent) !=
-          private_frontier::kStatusOk ||
-      private_frontier::decode_metadata(
-          state->canonical_slot, state->owner, &metadata) !=
-          private_frontier::kStatusOk) {
-    return kStatusPrivateStateRejected;
-  }
-  typed_stack::frontier_level_delta_v0 delta = {};
-  delta.action = typed_stack::kFrontierActionPopFrame;
-  delta.new_frontier_top = parent.frontier_marker.frontier_top;
-  delta.new_frontier_count =
-      parent.frontier_marker.frontier_count;
-  delta.new_current_level = parent.traversal_level;
-  delta.new_level_frame_depth =
-      parent.frontier_marker.level_frame_depth;
-  delta.max_level_depth = metadata.max_level_depth;
+status_kind restore_parent_for_short_stack(state_v0 *state) {
+  if (state == NULL) return kStatusInvalidArgument;
+  private_frontier::traversal_frame_projection_v0 root = {};
+  root.ray = state->immutable_trace_input.mutable_ray;
+  root.current_decode_context =
+      state->immutable_trace_input.decode_context;
   private_frontier::access_plan_v0 ignored = {};
-  if (private_frontier::apply_parent_restore_delta(
-          &state->canonical_slot, state->owner,
-          state->private_region, delta, &ignored) !=
-      private_frontier::kStatusOk) {
-    return kStatusSemanticApplyRejected;
-  }
-
-  status_kind status =
-      allocate_operation(state, restore_operation_seq);
-  if (status != kStatusOk) return status;
-  fetch_target::operation_packet_v0 restore_packet = {};
-  restore_packet.owner = state->owner;
-  restore_packet.reservation_id = *restore_operation_seq;
-  restore_packet.reservation_age = *restore_operation_seq;
-  restore_packet.target_operation_seq = *restore_operation_seq;
-  restore_packet.slot_generation = 1;
-  restore_packet.target_kind = fetch_target::kTargetInstance;
-  restore_packet.operation_kind =
-      fetch_target::kOperationInstanceRestoreParent;
-  restore_packet.valid = 1;
-  restore_packet.parent_frame = parent;
-  functional_driver::instance_restore_execution_v0 restore = {};
-  const functional_driver::status_kind driver_status =
-      functional_driver::execute_one_instance_restore(
-          restore_packet, state->private_region,
-          state->canonical_slot, &restore);
-  if (driver_status != functional_driver::kStatusOk ||
-      !restore.valid) {
-    return record_driver_rejection(
-        state, kDriverUnitInstance, driver_status);
-  }
   if (private_frontier::apply_parent_state_restore(
           &state->canonical_slot, state->owner,
           state->private_region,
-          restore.operator_result.restored_parent,
+          root,
           &ignored) != private_frontier::kStatusOk) {
     return kStatusSemanticApplyRejected;
   }
@@ -653,10 +609,18 @@ status_kind restore_parent_for_short_stack(
 
 status_kind select_next_short_stack_target(
     state_v0 *state, const provider_v0 &provider,
+    uint32_t transition_operation_seq,
     next_action_v0 *action, output_v0 *output) {
   if (state == NULL || action == NULL || output == NULL ||
       state->short_stack_replay_enabled == 0 ||
       provider.resolve_parent_edge == NULL) {
+    return kStatusInvalidState;
+  }
+  if (transition_operation_seq == 0) {
+    status_kind status =
+        allocate_operation(state, &transition_operation_seq);
+    if (status != kStatusOk) return status;
+  } else if (transition_operation_seq >= state->next_operation_seq) {
     return kStatusInvalidState;
   }
   while (true) {
@@ -665,20 +629,17 @@ status_kind select_next_short_stack_target(
               state->short_stack, false, false, false)) {
         return kStatusShortStackRejected;
       }
-      uint32_t terminal_operation_seq = 0;
-      status_kind status =
-          allocate_operation(state, &terminal_operation_seq);
-      if (status != kStatusOk) return status;
       private_frontier::root_private_operands_v0 operands = {};
       private_frontier::instance_shader_projection_v0 instance = {};
-      status = decode_private(*state, &operands, &instance);
+      status_kind status =
+          decode_private(*state, &operands, &instance);
       if (status != kStatusOk) return status;
       return publish_output(
           state,
           operands.committed_hit.valid != 0
               ? kBoundaryFinalHit
               : kBoundaryFinalMiss,
-          terminal_operation_seq, output);
+          transition_operation_seq, output);
     }
 
     if (state->short_stack.cross_as != 0 &&
@@ -693,25 +654,19 @@ status_kind select_next_short_stack_target(
               short_stack::kEntryCrossAsReturn) {
         return kStatusShortStackRejected;
       }
-      private_frontier::traversal_frame_projection_v0 parent_frame = {};
-      if (private_frontier::decode_parent_frame(
-              state->canonical_slot, state->owner,
-              &parent_frame) != private_frontier::kStatusOk) {
-        return kStatusPrivateStateRejected;
-      }
       short_stack::parent_edge_v0 parent = {};
       if (!provider.resolve_parent_edge(
-              provider.context, parent_frame.current_decode_context,
+              provider.context,
+              state->immutable_trace_input.decode_context,
               state->tlas_build_generation,
-              return_entry.payload_offset, &parent) ||
+              return_entry.payload_offset,
+              return_entry.payload_kind, &parent) ||
           short_stack::return_to_tlas(
               &state->short_stack, parent) !=
               short_stack::kStatusOk) {
         return kStatusParentResolveRejected;
       }
-      uint32_t restore_operation_seq = 0;
-      status_kind status = restore_parent_for_short_stack(
-          state, &restore_operation_seq);
+      status_kind status = restore_parent_for_short_stack(state);
       if (status != kStatusOk) return status;
       continue;
     }
@@ -726,10 +681,7 @@ status_kind select_next_short_stack_target(
             short_stack::kEntryCrossAsReturn) {
       return kStatusShortStackRejected;
     }
-    uint32_t stack_operation_seq = 0;
-    status_kind status =
-        allocate_operation(state, &stack_operation_seq);
-    if (status != kStatusOk) return status;
+    status_kind status = kStatusOk;
 
     short_stack::parent_bailout_result_v0 bailout = {};
     if (need_parent) {
@@ -741,7 +693,8 @@ status_kind select_next_short_stack_target(
       if (!provider.resolve_parent_edge(
               provider.context, operands.decode_context,
               active_build_generation(*state),
-              popped.entry.payload_offset, &parent)) {
+              popped.entry.payload_offset,
+              popped.entry.payload_kind, &parent)) {
         return kStatusParentResolveRejected;
       }
       bailout = short_stack::prepare_parent_bailout(popped, parent);
@@ -759,7 +712,7 @@ status_kind select_next_short_stack_target(
     if (status != kStatusOk) return status;
     *action = next_action_v0();
     action->kind = kActionTarget;
-    action->producer_operation_seq = stack_operation_seq;
+    action->producer_operation_seq = transition_operation_seq;
     action->short_entry = popped.entry;
     action->short_entry_valid = 1;
     action->replay_cursor =
@@ -850,7 +803,8 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
         const functional_driver::status_kind driver_status =
             functional_driver::execute_one_instance_enter(
                 packet, input, state->private_region,
-                state->canonical_slot, &execution);
+                state->canonical_slot, &execution,
+                state->short_stack_replay_enabled != 0);
         if (driver_status != functional_driver::kStatusOk ||
             !execution.valid) {
           return record_driver_rejection(
@@ -888,7 +842,7 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
                     .build_generation;
             next_action_v0 next = {};
             status = select_next_short_stack_target(
-                state, provider, &next, output);
+                state, provider, 0, &next, output);
             if (status != kStatusOk || output->valid != 0) {
               return status;
             }
@@ -902,7 +856,7 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
           }
           next_action_v0 next = {};
           status = select_next_short_stack_target(
-              state, provider, &next, output);
+              state, provider, 0, &next, output);
           if (status != kStatusOk || output->valid != 0) {
             return status;
           }
@@ -975,7 +929,7 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
         if (state->short_stack_replay_enabled != 0) {
           next_action_v0 next = {};
           status = select_next_short_stack_target(
-              state, provider, &next, output);
+              state, provider, 0, &next, output);
           if (status != kStatusOk || output->valid != 0) {
             return status;
           }
@@ -995,7 +949,11 @@ status_kind run_loop(state_v0 *state, const provider_v0 &provider,
         action.kind == kActionStackPop) {
       next_action_v0 next = {};
       status_kind status = select_next_short_stack_target(
-          state, provider, &next, output);
+          state, provider,
+          action.short_stack_transition_reserved != 0
+              ? action.producer_operation_seq
+              : 0,
+          &next, output);
       if (status != kStatusOk || output->valid != 0) {
         return status;
       }
@@ -1153,6 +1111,7 @@ status_kind run_new(const root_input_v0 &input,
   state->valid = 1;
   state->owner = input.owner;
   state->private_region = input.private_region;
+  state->immutable_trace_input = input.private_operands;
   state->ray_policy = input.ray_policy;
   state->short_stack_replay_enabled =
       input.short_stack_replay_enabled;
@@ -1237,6 +1196,7 @@ status_kind resume(
       state->boundary_operation_seq == 0) {
     return kStatusInvalidState;
   }
+  *output = output_v0();
   uint32_t operation_seq = 0;
   status_kind status = allocate_operation(state, &operation_seq);
   if (status != kStatusOk) return status;

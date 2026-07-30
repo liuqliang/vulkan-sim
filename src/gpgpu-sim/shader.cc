@@ -136,6 +136,11 @@ extern "C" bool rtcore_accept_v04_stack_private_shared_read(
 extern "C" bool rtcore_accept_v04_short_stack_private_shared_read(
     const rtcore_memory_unit_request_snapshot *sideband_snapshot,
     unsigned long long response_cycle);
+extern "C" bool rtcore_accept_v04_short_stack_return_instance_read(
+    const rtcore_memory_unit_request_snapshot *sideband_snapshot,
+    const uint8_t *response_payload,
+    unsigned response_payload_bytes,
+    unsigned long long response_cycle);
 extern "C" unsigned rtcore_count_memory_unit_requests_for_sm(
     unsigned owner_hw_sid);
 extern "C" bool rtcore_record_memory_unit_response(
@@ -3479,6 +3484,48 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
     return;
   }
   if (snapshot.destination ==
+          RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL &&
+      snapshot.access_kind ==
+          RTCORE_MEMORY_ACCESS_SHORT_STACK_RETURN_INSTANCE_READ) {
+    uint8_t response_payload[
+        rtcore::v04::private_frontier::kSharedAccessChunkBytes] = {};
+    if (global_memory == NULL ||
+        response_address != snapshot.aligned_32b_addr) {
+      fprintf(
+          stderr,
+          "GPGPU-Sim RTCORE_V04_SHORT_STACK_RETURN_READ_FAULT "
+          "owner_hw_sid=%u request_key=0x%08x generation=%u "
+          "chunk_id=%u chunk_count=%u response_addr=0x%llx "
+          "expected_addr=0x%llx fault=response_context_invalid\n",
+          snapshot.owner_hw_sid, snapshot.rt_request_id,
+          snapshot.request_generation, snapshot.chunk_id,
+          snapshot.chunk_count, response_address,
+          snapshot.aligned_32b_addr);
+      fflush(stderr);
+      abort();
+    }
+    global_memory->read(
+        snapshot.aligned_32b_addr, sizeof(response_payload),
+        response_payload);
+    if (!rtcore_accept_v04_short_stack_return_instance_read(
+            &snapshot, response_payload, sizeof(response_payload),
+            response_cycle)) {
+      fprintf(
+          stderr,
+          "GPGPU-Sim RTCORE_V04_SHORT_STACK_RETURN_READ_FAULT "
+          "owner_hw_sid=%u request_key=0x%08x generation=%u "
+          "chunk_id=%u chunk_count=%u response_addr=0x%llx\n",
+          snapshot.owner_hw_sid, snapshot.rt_request_id,
+          snapshot.request_generation, snapshot.chunk_id,
+          snapshot.chunk_count, response_address);
+      fflush(stderr);
+      abort();
+    }
+    rtcore_record_v04_memory_conservation_or_abort(
+        snapshot, true, response_cycle);
+    return;
+  }
+  if (snapshot.destination ==
       RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL) {
     uint8_t response_payload[
         rtcore::v04::target_memory::kRawReadChunkBytes] = {};
@@ -3941,7 +3988,9 @@ rtcore_maybe_accept_memory_unit_l1d_client(
           RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE ||
       result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE ||
       result.lsu_sideband_access_kind ==
-          RTCORE_MEMORY_ACCESS_TARGET_RAW_READ;
+          RTCORE_MEMORY_ACCESS_TARGET_RAW_READ ||
+      result.lsu_sideband_access_kind ==
+          RTCORE_MEMORY_ACCESS_SHORT_STACK_RETURN_INSTANCE_READ;
   const bool supported_shader_continuation_access =
       result.lsu_sideband_response_target ==
           RTCORE_V02_LSU_RESPONSE_TARGET_SHADER_CONTINUATION &&
@@ -3975,6 +4024,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     }
     if (snapshot.destination ==
             RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL ||
+        snapshot.destination ==
+            RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL ||
         snapshot.destination ==
             RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK) {
       fprintf(stderr,

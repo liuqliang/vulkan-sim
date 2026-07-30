@@ -80,6 +80,7 @@ struct ack_receipt_v0 {
 
 struct ready_event_v0 {
   private_frontier::owner_binding_v0 owner;
+  typed_blas::as_decode_context_v0 active_decode_context;
   uint32_t producer_operation_seq;
   uint32_t target_operation_seq;
   uint32_t commit_epoch;
@@ -108,6 +109,7 @@ struct result_commit_entry_v0 {
 
 struct commit_tracker_v0 {
   private_frontier::owner_binding_v0 owner;
+  typed_blas::as_decode_context_v0 active_decode_context;
   uint64_t issue_age;
   uint32_t operation_seq;
   uint32_t target_operation_seq;

@@ -14,6 +14,7 @@ enum unit_kind : uint8_t {
   kUnitInstance,
   kUnitPrimitive,
   kUnitMemory,
+  kUnitShortStack,
 };
 
 enum stage_kind : uint8_t {
@@ -24,6 +25,7 @@ enum stage_kind : uint8_t {
   kStageInputPrepare,
   kStageFrontend,
   kStageBackend,
+  kStageAdmission,
 };
 
 enum outcome_kind : uint8_t {
@@ -40,6 +42,7 @@ enum action_kind : uint8_t {
   kActionInputPrepareAccept,
   kActionFrontendAccept,
   kActionMemoryAccept,
+  kActionAdmissionAccept,
 };
 
 enum reason_kind : uint8_t {
@@ -52,6 +55,8 @@ enum reason_kind : uint8_t {
   kReasonIssueBudget,
   kReasonFrontendBudget,
   kReasonL1dReservation,
+  kReasonReservationBudget,
+  kReasonQueueCapacity,
   kReasonInvalidOffer,
 };
 

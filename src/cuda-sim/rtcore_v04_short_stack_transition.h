@@ -18,6 +18,7 @@ enum status_kind : uint8_t {
   kStatusGenerationMismatch,
   kStatusDecodeContextMismatch,
   kStatusParentLookupRequired,
+  kStatusReturnInstanceRequired,
 };
 
 struct node_input_v0 {
@@ -38,8 +39,8 @@ struct resume_input_v0 {
   private_frontier::owner_binding_v0 owner;
   private_frontier::region_binding_v0 region;
   private_frontier::shadow_slot_v0 canonical_slot;
+  private_frontier::root_private_operands_v0 immutable_trace_input;
   typed_blas::as_decode_context_v0 active_decode_context;
-  typed_blas::as_decode_context_v0 tlas_decode_context;
   short_stack::parent_edge_v0 parent_edge;
   uint8_t parent_edge_valid;
   uint8_t reserved_zero[7];
@@ -73,7 +74,7 @@ struct result_v0 {
   uint8_t pending_parent_resume_valid;
   uint8_t compressed_to_replay;
   uint8_t overflowed_bottom;
-  uint8_t reserved_zero;
+  uint8_t parent_lookup_payload_kind;
 };
 
 status_kind prepare_node_transition(const node_input_v0 &input,

@@ -8077,11 +8077,30 @@ static bool rtcore_v04_functional_only_resolve_parent(
     void *,
     const rtcore::v04::typed_blas::as_decode_context_v0 &decode_context,
     uint32_t build_generation, uint64_t payload_offset,
+    uint8_t payload_kind,
     rtcore::v04::short_stack::parent_edge_v0 *parent) {
   const char *failure = "unvalidated";
-  return VulkanRayTracing::resolveV04GenRtReplayParent(
-      decode_context, build_generation, payload_offset, parent,
+  const bool resolved =
+      VulkanRayTracing::resolveV04GenRtReplayParent(
+      decode_context, build_generation, payload_offset, payload_kind,
+      parent,
       &failure);
+  if (!resolved) {
+    fprintf(
+        stderr,
+        "GPGPU-Sim RTCORE_V04_FUNCTIONAL_PARENT_LOOKUP_FAULT "
+        "as_type=%u object_id=%llu generation=%u "
+        "build_generation=%u payload_offset=0x%llx "
+        "payload_kind=%u fault=%s\n",
+        static_cast<unsigned>(decode_context.as_object.as_type),
+        static_cast<unsigned long long>(
+            decode_context.as_object.object_id),
+        decode_context.as_object.generation, build_generation,
+        static_cast<unsigned long long>(payload_offset),
+        static_cast<unsigned>(payload_kind), failure);
+    fflush(stderr);
+  }
+  return resolved;
 }
 
 static functional_engine::provider_v0 rtcore_v04_functional_only_provider(
@@ -15002,6 +15021,14 @@ void rtcore_publish_synthetic_handoff_window(
     const ptx_instruction *pI, const rtcore_synthetic_handoff_key &key,
     const rtcore_v03_handoff_lane_slot &slot, ptx_thread_info *thread) {
   assert(thread != NULL);
+  const dim3 owner_tid = thread->get_tid();
+  const dim3 owner_ctaid = thread->get_ctaid();
+  const unsigned launch_x = owner_tid.x + owner_ctaid.x * 32;
+  const unsigned launch_y = owner_ctaid.y;
+  const unsigned launch_width =
+      thread->get_kernel().vulkan_metadata.launch_width;
+  const unsigned long long pixel_index =
+      launch_x + static_cast<unsigned long long>(launch_y) * launch_width;
   const bool inserted =
       g_rtcore_synthetic_handoff_windows.insert(std::make_pair(key, slot))
           .second;
@@ -15033,7 +15060,8 @@ void rtcore_publish_synthetic_handoff_window(
   printf("GPGPU-Sim PTX: RT_SUBMIT handoff-window-published (%s:%u), "
          "context_ptr=0x%llx, handoff_window_base=0x%llx, "
          "lane_slot_index=%u, lane_slot_byte_offset=%u, "
-         "lane_slot_base=0x%llx, owner_hw_tid=%u, owner_hw_wid=%u, "
+         "lane_slot_base=0x%llx, launch=(%u,%u), pixel_index=%llu, "
+         "owner_hw_tid=%u, owner_hw_wid=%u, "
          "owner_hw_sid=%u, thread_mask=0x%08x, "
          "submit_transaction_id=%u, handoff_profile=v03_compressed_sync, "
          "backing_byte_write=%u, compatibility_map_only=%u, "
@@ -15042,7 +15070,8 @@ void rtcore_publish_synthetic_handoff_window(
          "w11=0x%08x,w12=0x%08x}\n",
          pI->source_file(), pI->source_line(), slot.context_ptr,
          key.handoff_window_base, key.lane_slot_index, lane_slot_byte_offset,
-         lane_slot_base, slot.owner_hw_tid, slot.owner_hw_wid,
+         lane_slot_base, launch_x, launch_y, pixel_index,
+         slot.owner_hw_tid, slot.owner_hw_wid,
          slot.owner_hw_sid, slot.thread_mask, slot.submit_transaction_id,
          v04_live_publication_enabled ? 0u : 1u,
          v04_live_publication_enabled ? 1u : 0u,
@@ -15050,6 +15079,9 @@ void rtcore_publish_synthetic_handoff_window(
          slot.words[2], slot.words[3], slot.words[4], slot.words[9],
          slot.words[10], slot.words[11], slot.words[12]);
   fflush(stdout);
+  VulkanRayTracing::publishLegacyDistanceProducerEvidenceForTransaction(
+      thread, slot.context_ptr, key.lane_slot_index,
+      slot.submit_transaction_id);
 }
 
 bool rtcore_synthetic_lane_binding_matches(
@@ -23555,7 +23587,20 @@ rtcore_materialize_existing_traversal_input_from_producer_root_descriptor(
   abi_entry.context_valid_flags = packet_context.valid_flags;
   abi_entry.pipeline_profile_id = packet_context.pipeline_profile_id;
   abi_entry.bvh_format_profile_id = packet_context.bvh_format_profile_id;
+  abi_entry.context_ptr = request.context_ptr;
   abi_entry.handoff_window_base = request.handoff_window_base;
+  abi_entry.lane_id = request.lane_slot_index;
+  const rtcore_synthetic_handoff_key evidence_handoff_key =
+      rtcore_make_synthetic_handoff_key(
+          request.handoff_window_base, request.lane_slot_index,
+          request.thread);
+  std::map<rtcore_synthetic_handoff_key,
+           rtcore_v03_handoff_lane_slot>::const_iterator evidence_window =
+      g_rtcore_synthetic_handoff_windows.find(evidence_handoff_key);
+  abi_entry.submit_transaction_id =
+      evidence_window == g_rtcore_synthetic_handoff_windows.end()
+          ? 0
+          : evidence_window->second.submit_transaction_id;
   abi_entry.v04_shadow_boundary_enabled =
       request.v04_shadow_boundary_enabled;
   abi_entry.v04_tlas_binding_enforcement_enabled =

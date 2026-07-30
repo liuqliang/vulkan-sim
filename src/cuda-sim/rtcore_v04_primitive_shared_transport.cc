@@ -199,10 +199,17 @@ status_kind capture_result(
       primitive_semantic::kStatusOk) {
     return kStatusSemanticPlanRejected;
   }
-  return capture_semantic_plan(
+  const status_kind status = capture_semantic_plan(
       state, producer_operation_seq, commit_epoch,
       target_operation_seq, region, canonical_slot, semantic,
       receipt);
+  if (status != kStatusOk) return status;
+  const int tracker_index = find_tracker(
+      *state, owner, producer_operation_seq, commit_epoch);
+  if (tracker_index < 0) return kStatusSemanticPlanRejected;
+  state->trackers[tracker_index].active_decode_context =
+      input.decode_context;
+  return kStatusOk;
 }
 
 status_kind capture_semantic_plan(
@@ -243,9 +250,13 @@ status_kind capture_semantic_plan(
   }
 
   primitive_semantic::private_commit_plan_v0 commit = {};
+  private_frontier::root_private_operands_v0 active_operands = {};
   if (primitive_semantic::prepare_private_commit(
           semantic_plan, region, canonical_slot, &commit) !=
           primitive_semantic::kStatusOk ||
+      private_frontier::decode_root_private_operands(
+          canonical_slot, semantic_plan.owner,
+          &active_operands) != private_frontier::kStatusOk ||
       commit.valid != 1 ||
       commit.semantic_plan.route_kind == primitive_semantic::kRouteInvalid) {
     return kStatusSemanticPlanRejected;
@@ -278,6 +289,8 @@ status_kind capture_semantic_plan(
   tracker.operation_seq = producer_operation_seq;
   tracker.target_operation_seq = target_operation_seq;
   tracker.commit_epoch = commit_epoch;
+  tracker.active_decode_context =
+      active_operands.decode_context;
   tracker.expected_write_count = commit.write_fragment_count;
   tracker.route_kind = commit.semantic_plan.route_kind;
   tracker.semantic_plan = commit.semantic_plan;
@@ -450,6 +463,8 @@ status_kind pop_ready_event(engine_state_v0 *state,
     return kStatusStaleAck;
   }
   event->owner = tracker.owner;
+  event->active_decode_context =
+      tracker.active_decode_context;
   event->producer_operation_seq = tracker.operation_seq;
   event->target_operation_seq = tracker.target_operation_seq;
   event->commit_epoch = tracker.commit_epoch;

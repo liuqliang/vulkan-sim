@@ -146,6 +146,7 @@ void ptx_warp_info::inc_done_threads() { m_done_threads++; }
 void ptx_warp_info::reset_done_threads() { m_done_threads = 0; }
 
 ptx_thread_info::~ptx_thread_info() {
+  VulkanRayTracing::discardPendingLegacyDistanceProducerEvidence(this);
   m_gpu->gpgpu_ctx->func_sim->g_ptx_thread_info_delete_count++;
   delete RT_thread_data;
 }

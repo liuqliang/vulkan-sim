@@ -150,7 +150,7 @@ status_kind prepare_enter(
     const private_frontier::shadow_slot_v0 &canonical_slot,
     const typed_instance::enter_input_v0 &input,
     const typed_instance::enter_result_v0 &result,
-    enter_commit_plan_v0 *plan) {
+    enter_commit_plan_v0 *plan, bool short_stack_mode) {
   if (plan == NULL) return kStatusInvalidArgument;
   *plan = enter_commit_plan_v0();
   if (operation_seq == 0) return kStatusInvalidOperationIdentity;
@@ -162,6 +162,8 @@ status_kind prepare_enter(
   enter_commit_plan_v0 prepared = {};
   prepared.owner = owner;
   prepared.operation_seq = operation_seq;
+  prepared.ray_policy.ray_flags = input.policy.ray_flags;
+  prepared.ray_policy.cull_mask = input.policy.cull_mask;
   if (result.result_kind == typed_instance::kEnterResultCulled) {
     if (result.mask_visible != 0 || result.output_valid_mask != 0) {
       return kStatusInvalidTypedResult;
@@ -186,24 +188,23 @@ status_kind prepare_enter(
     return kStatusInvalidTypedResult;
   }
 
-  private_frontier::traversal_frame_projection_v0 parent = {};
-  if (private_frontier::capture_parent_frame(
-          canonical_slot, owner, &parent) !=
-          private_frontier::kStatusOk ||
-      std::memcmp(&parent.ray, &input.world_ray,
-                  sizeof(parent.ray)) != 0 ||
-      std::memcmp(&parent.current_decode_context,
-                  &input.tlas_decode_context,
-                  sizeof(parent.current_decode_context)) != 0) {
-    return kStatusLayoutRejected;
-  }
-
   private_frontier::shadow_slot_v0 updated_slot = canonical_slot;
   private_frontier::access_plan_v0 parent_plan = {};
-  if (private_frontier::apply_parent_frame_push(
-          &updated_slot, owner, region, parent, &parent_plan) !=
-      private_frontier::kStatusOk) {
-    return kStatusLayoutRejected;
+  if (!short_stack_mode) {
+    private_frontier::traversal_frame_projection_v0 parent = {};
+    if (private_frontier::capture_parent_frame(
+            canonical_slot, owner, &parent) !=
+            private_frontier::kStatusOk ||
+        std::memcmp(&parent.ray, &input.world_ray,
+                    sizeof(parent.ray)) != 0 ||
+        std::memcmp(&parent.current_decode_context,
+                    &input.tlas_decode_context,
+                    sizeof(parent.current_decode_context)) != 0 ||
+        private_frontier::apply_parent_frame_push(
+            &updated_slot, owner, region, parent, &parent_plan) !=
+            private_frontier::kStatusOk) {
+      return kStatusLayoutRejected;
+    }
   }
   private_frontier::mutable_ray_state_v0 object_ray = {};
   std::memcpy(&object_ray, &result.object_ray, sizeof(object_ray));
@@ -224,7 +225,9 @@ status_kind prepare_enter(
           result.root_fetch.decode_context, current_instance,
           &child_plan) != private_frontier::kStatusOk ||
       parent_plan.access_count + child_plan.access_count !=
-          kEnterVisibleWriteFragmentCount) {
+          (short_stack_mode
+               ? kEnterShortStackWriteFragmentCount
+               : kEnterVisibleWriteFragmentCount)) {
     return kStatusLayoutRejected;
   }
 
@@ -237,7 +240,10 @@ status_kind prepare_enter(
                        prepared.write_fragments,
                        kMaxWriteFragmentCount,
                        &fragment_count) != kStatusOk ||
-      fragment_count != kEnterVisibleWriteFragmentCount) {
+      fragment_count !=
+          (short_stack_mode
+               ? kEnterShortStackWriteFragmentCount
+               : kEnterVisibleWriteFragmentCount)) {
     return kStatusInvalidWriteFragment;
   }
   prepared.route_kind = kRouteBlasRootNode;
@@ -256,8 +262,6 @@ status_kind prepare_enter(
   prepared.root_fetch.child.child_slot = 0;
   prepared.root_fetch.decode_context =
       result.root_fetch.decode_context;
-  prepared.ray_policy.ray_flags = input.policy.ray_flags;
-  prepared.ray_policy.cull_mask = input.policy.cull_mask;
   prepared.valid = 1;
   *plan = prepared;
   return kStatusOk;

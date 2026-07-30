@@ -411,7 +411,8 @@ status_kind execute_one_instance_enter(
     const typed_instance::enter_input_v0 &input,
     const private_frontier::region_binding_v0 &region,
     const private_frontier::shadow_slot_v0 &canonical_slot,
-    instance_enter_execution_v0 *execution) {
+    instance_enter_execution_v0 *execution,
+    bool short_stack_mode) {
   if (execution == NULL) return kStatusInvalidArgument;
   *execution = instance_enter_execution_v0();
   if (!instance_enter_packet_shape_valid(packet)) {
@@ -434,7 +435,7 @@ status_kind execute_one_instance_enter(
           packet.owner, packet.target_operation_seq, region,
           canonical_slot, execution->operator_input,
           execution->operator_result,
-          &execution->semantic_plan) !=
+          &execution->semantic_plan, short_stack_mode) !=
       instance_semantic::kStatusOk) {
     return kStatusSemanticApplyFailed;
   }

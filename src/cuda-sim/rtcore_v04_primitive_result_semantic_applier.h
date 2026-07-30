@@ -44,6 +44,7 @@ struct private_write_fragment_v0 {
 
 struct semantic_plan_v0 {
   private_frontier::owner_binding_v0 owner;
+  typed_node::ray_policy_v0 ray_policy;
   uint32_t operation_seq;
   uint8_t valid;
   uint8_t route_kind;

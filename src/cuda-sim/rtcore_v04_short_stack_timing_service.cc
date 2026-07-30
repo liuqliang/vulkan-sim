@@ -4,6 +4,8 @@
 #include <limits>
 
 #include "rtcore_v04_private_shared_backing_internal.h"
+#include "rtcore_v04_stall_attribution.h"
+#include "rtcore_v04_typed_instance_kernel.h"
 
 namespace rtcore {
 namespace v04 {
@@ -12,10 +14,11 @@ namespace {
 
 static const uint8_t kAllReadChunks =
     static_cast<uint8_t>((1u << kReadChunkCount) - 1u);
-static const uint8_t kAllWriteChunks =
-    static_cast<uint8_t>((1u << kWriteChunkCount) - 1u);
 static const uint8_t kReadPhaseShortStackState = 4;
-static const uint8_t kOperationNodeTransition = 1;
+static const uint8_t kReadPhaseReturnInstance = 5;
+static const uint8_t kAllReturnInstanceReadChunks =
+    static_cast<uint8_t>(
+        (1u << kReturnInstanceReadChunkCount) - 1u);
 static const unsigned kResponseTargetRtcore = 1;
 
 bool bytes_are_zero(const uint8_t *bytes, size_t count) {
@@ -23,6 +26,12 @@ bool bytes_are_zero(const uint8_t *bytes, size_t count) {
     if (bytes[index] != 0) return false;
   }
   return true;
+}
+
+uint16_t all_write_chunks(uint8_t write_count) {
+  return write_count == 0 || write_count > kMaxWriteChunkCount
+             ? 0
+             : static_cast<uint16_t>((uint16_t{1} << write_count) - 1u);
 }
 
 uint64_t private_slot_base(
@@ -75,10 +84,37 @@ bool make_request_owner(
       private_owner);
 }
 
+void emit_attempt(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq, uint64_t service_cycle,
+    uint16_t arbitration_slot,
+    stall_attribution::stage_kind stage,
+    stall_attribution::outcome_kind outcome,
+    stall_attribution::action_kind action,
+    stall_attribution::reason_kind reason) {
+  if (!stall_attribution::enabled()) return;
+  stall_attribution::attempt_record_v0 record = {};
+  record.service_cycle = service_cycle;
+  record.owner_hw_sid = owner.owner_hw_sid;
+  record.request_identity = owner.request_identity;
+  record.request_generation = owner.generation;
+  record.operation_seq = operation_seq;
+  record.chunk_id = 0;
+  record.chunk_count = 1;
+  record.arbitration_slot = arbitration_slot;
+  record.lane_id = owner.lane_id;
+  record.unit = stall_attribution::kUnitShortStack;
+  record.stage = stage;
+  record.outcome = outcome;
+  record.action = action;
+  record.reason = reason;
+  stall_attribution::emit_attempt(record);
+}
+
 bool valid_config(const config_v0 &config) {
   return config.capacity != 0 && config.capacity <= kMaxSlots &&
          config.reservation_width != 0 &&
-         config.reservation_width <= config.capacity &&
+         config.reservation_width <= kMaxSlots &&
          config.unit_count != 0 && config.unit_count <= kMaxUnits &&
          config.stack_latency != 0 &&
          config.initiation_interval != 0 &&
@@ -93,15 +129,31 @@ bool request_matches_entry(
     const operation_entry_v0 &entry) {
   const rtcore_v04_stack_private_read_transport_snapshot &transport =
       request.v04_stack_private_read;
-  return entry.valid != 0 && entry.phase == kPhaseReading &&
+  const bool state_read =
+      transport.read_phase == kReadPhaseShortStackState &&
+      entry.phase == kPhaseReading &&
+      request.access_kind ==
+          RTCORE_MEMORY_ACCESS_SHORT_STACK_STATE_READ &&
+      request.chunk_count == kReadChunkCount &&
+      request.memory_op_seq == request.chunk_id + 1;
+  const bool return_instance_read =
+      transport.read_phase == kReadPhaseReturnInstance &&
+      entry.phase == kPhaseReturnInstanceReading &&
+      request.access_kind ==
+          RTCORE_MEMORY_ACCESS_SHORT_STACK_RETURN_INSTANCE_READ &&
+      request.chunk_count == kReturnInstanceReadChunkCount &&
+      request.memory_op_seq ==
+          kReadChunkCount + request.chunk_id + 1;
+  return entry.valid != 0 && (state_read || return_instance_read) &&
          request.valid &&
-         request.address_space == RTCORE_MEMORY_ADDRESS_SPACE_SHARED &&
+         request.address_space ==
+             (return_instance_read
+                  ? RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL
+                  : RTCORE_MEMORY_ADDRESS_SPACE_SHARED) &&
          request.operation == RTCORE_MEMORY_OPERATION_READ &&
          request.destination ==
              RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL &&
          request.response_target == kResponseTargetRtcore &&
-         request.access_kind ==
-             RTCORE_MEMORY_ACCESS_SHORT_STACK_STATE_READ &&
          !request.is_write &&
          request.owner_hw_sid == entry.input.owner.owner_hw_sid &&
          request.rt_request_id == entry.input.owner.request_identity &&
@@ -110,9 +162,7 @@ bool request_matches_entry(
          request.request_generation == entry.input.owner.generation &&
          request.private_slot_id == entry.input.owner.private_slot_id &&
          request.lane_id == entry.input.owner.lane_id &&
-         request.chunk_count == kReadChunkCount &&
          request.chunk_id < request.chunk_count &&
-         request.memory_op_seq == request.chunk_id + 1 &&
          request.byte_mask != 0 &&
          transport.valid == 1 &&
          transport.reservation_id ==
@@ -127,8 +177,7 @@ bool request_matches_entry(
              entry.reservation.slot_generation &&
          transport.target_slot_index ==
              entry.reservation.slot_index &&
-         transport.operation_kind == kOperationNodeTransition &&
-         transport.read_phase == kReadPhaseShortStackState &&
+         transport.operation_kind == entry.input.operation_kind &&
          bytes_are_zero(transport.reserved_zero,
                         sizeof(transport.reserved_zero));
 }
@@ -163,7 +212,9 @@ status_kind begin_transition_commit(
     operation_entry_v0 *entry,
     timing_driver::state_v0 *timing_state) {
   if (entry == NULL || timing_state == NULL ||
-      entry->transition.write_plan.access_count != kWriteChunkCount) {
+      entry->transition.write_plan.access_count == 0 ||
+      entry->transition.write_plan.access_count >
+          kMaxWriteChunkCount) {
     return kStatusInvalidArgument;
   }
 
@@ -192,7 +243,8 @@ status_kind enqueue_transition_write(
     uint64_t service_cycle) {
   if (entry == NULL || timing_state == NULL || private_backing == NULL ||
       entry->phase != kPhaseWriting ||
-      chunk_index >= kWriteChunkCount ||
+      chunk_index >= kMaxWriteChunkCount ||
+      chunk_index >= entry->transition.write_plan.access_count ||
       (entry->enqueued_write_mask & (1u << chunk_index)) != 0) {
     return kStatusInvalidArgument;
   }
@@ -231,14 +283,18 @@ status_kind enqueue_transition_write(
   write.commit_epoch = entry->commit_epoch;
   write.memory_op_seq = chunk_index + 1;
   write.chunk_id = chunk_index;
-  write.chunk_count = kWriteChunkCount;
+  write.chunk_count =
+      entry->transition.write_plan.access_count;
   write.field_kind = access.field_kind;
   write.aligned_32b_address = access.aligned_32b_address;
   write.byte_mask = access.byte_mask;
-  std::memcpy(
-      write.payload,
-      entry->transition.updated_slot.bytes + chunk_offset,
-      sizeof(write.payload));
+  for (unsigned byte = 0; byte < sizeof(write.payload); ++byte) {
+    if ((write.byte_mask & (uint32_t{1} << byte)) != 0) {
+      write.payload[byte] =
+          entry->transition.updated_slot.bytes[
+              chunk_offset + byte];
+    }
+  }
   write.enqueue_cycle = service_cycle;
   if (timing_driver::begin_memory_transaction(
           &staged_timing, request_binding,
@@ -248,7 +304,7 @@ status_kind enqueue_transition_write(
           &staged_backing, write) != private_shared::kStatusOk) {
     return kStatusSharedWriteRejected;
   }
-  entry->enqueued_write_mask = static_cast<uint8_t>(
+  entry->enqueued_write_mask = static_cast<uint16_t>(
       entry->enqueued_write_mask | (1u << chunk_index));
   *timing_state = staged_timing;
   *private_backing = staged_backing;
@@ -261,7 +317,9 @@ int find_oldest_pending_write(const engine_state_v0 &state) {
   for (unsigned index = 0; index < state.config.capacity; ++index) {
     const operation_entry_v0 &entry = state.slots[index];
     if (entry.valid == 0 || entry.phase != kPhaseWriting ||
-        entry.enqueued_write_mask == kAllWriteChunks) {
+        entry.enqueued_write_mask ==
+            all_write_chunks(
+                entry.transition.write_plan.access_count)) {
       continue;
     }
     if (entry.issue_age < oldest) {
@@ -273,67 +331,53 @@ int find_oldest_pending_write(const engine_state_v0 &state) {
 }
 
 uint8_t first_missing_write_chunk(const operation_entry_v0 &entry) {
-  for (uint8_t index = 0; index < kWriteChunkCount; ++index) {
+  for (uint8_t index = 0;
+       index < entry.transition.write_plan.access_count; ++index) {
     if ((entry.enqueued_write_mask & (1u << index)) == 0) {
       return index;
     }
   }
-  return kWriteChunkCount;
+  return entry.transition.write_plan.access_count;
 }
 
-}  // namespace
-
-config_v0 candidate_profile_config() {
-  config_v0 config = {};
-  config.capacity = 16;
-  config.reservation_width = 4;
-  config.unit_count = 1;
-  config.stack_latency = 2;
-  config.initiation_interval = 1;
-  config.issue_width = 1;
-  config.parent_lookup_latency = 2;
-  return config;
-}
-
-status_kind initialize(engine_state_v0 *state, const config_v0 &config) {
-  if (state == NULL || !valid_config(config)) {
-    return kStatusInvalidConfig;
-  }
-  *state = engine_state_v0();
-  state->initialized = 1;
-  state->config = config;
-  state->next_reservation_id = 1;
-  state->next_age = 1;
-  return kStatusOk;
-}
-
-status_kind reserve(
-    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
-    const private_shared::backing_state_v0 &private_backing,
-    const reservation_input_v0 &input, uint64_t reservation_cycle,
-    reservation_receipt_v0 *reservation, request_plan_v0 *requests) {
-  if (state == NULL || timing_state == NULL || reservation == NULL ||
-      requests == NULL || state->initialized != 1 ||
-      !valid_config(state->config) ||
-      input.producer_operation_seq == 0 ||
+bool valid_operation_input(const reservation_input_v0 &input,
+                           bool existing_target) {
+  if (input.producer_operation_seq == 0 ||
       input.pending_parent_resume_valid > 1 ||
       !bytes_are_zero(input.reserved_zero,
                       sizeof(input.reserved_zero))) {
+    return false;
+  }
+  if (existing_target != (input.target_operation_seq != 0) ||
+      existing_target != (input.producer_commit_epoch != 0)) {
+    return false;
+  }
+  if (input.operation_kind == kOperationNodeTransition) {
+    return !existing_target;
+  }
+  if (input.operation_kind == kOperationResumeTransition) {
+    return existing_target;
+  }
+  if (input.operation_kind == kOperationEnterBlasTransition) {
+    return existing_target && input.blas_build_generation != 0;
+  }
+  return false;
+}
+
+status_kind reserve_impl(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_shared::backing_state_v0 &private_backing,
+    const reservation_input_v0 &input, uint64_t reservation_cycle,
+    bool existing_target, reservation_receipt_v0 *reservation,
+    request_plan_v0 *requests) {
+  if (state == NULL || timing_state == NULL || reservation == NULL ||
+      requests == NULL || state->initialized != 1 ||
+      !valid_config(state->config) ||
+      !valid_operation_input(input, existing_target)) {
     return kStatusInvalidArgument;
   }
   *reservation = reservation_receipt_v0();
   *requests = request_plan_v0();
-  if (state->reservation_cycle != reservation_cycle) {
-    state->reservation_cycle = reservation_cycle;
-    state->reservations_this_cycle = 0;
-  }
-  if (state->reservations_this_cycle >=
-      state->config.reservation_width) {
-    return kStatusReservationBudgetBackpressure;
-  }
-  const int slot_index = find_free_slot(*state);
-  if (slot_index < 0) return kStatusCapacityBackpressure;
-
   request_owner::lane_binding_v0 request_binding = {};
   const private_shared::lane_slot_state_v0 *lane =
       private_shared::find_live_lane(private_backing, input.owner);
@@ -341,6 +385,37 @@ status_kind reserve(
       lane == NULL) {
     return kStatusOwnerMismatch;
   }
+  if (state->reservation_cycle != reservation_cycle) {
+    state->reservation_cycle = reservation_cycle;
+    state->reservations_this_cycle = 0;
+  }
+  const uint32_t attempted_operation_seq =
+      input.target_operation_seq != 0
+          ? input.target_operation_seq
+          : input.producer_operation_seq;
+  if (state->reservations_this_cycle >=
+      state->config.reservation_width) {
+    emit_attempt(
+        input.owner, attempted_operation_seq, reservation_cycle,
+        state->reservations_this_cycle,
+        stall_attribution::kStageAdmission,
+        stall_attribution::kOutcomeStall,
+        stall_attribution::kActionNone,
+        stall_attribution::kReasonReservationBudget);
+    return kStatusReservationBudgetBackpressure;
+  }
+  const int slot_index = find_free_slot(*state);
+  if (slot_index < 0) {
+    emit_attempt(
+        input.owner, attempted_operation_seq, reservation_cycle,
+        state->reservations_this_cycle,
+        stall_attribution::kStageAdmission,
+        stall_attribution::kOutcomeStall,
+        stall_attribution::kActionNone,
+        stall_attribution::kReasonQueueCapacity);
+    return kStatusCapacityBackpressure;
+  }
+
   private_frontier::access_plan_v0 read_plan = {};
   if (short_stack_shared::build_persistent_state_read_plan(
           lane->canonical_slot, input.owner, input.private_region,
@@ -351,10 +426,26 @@ status_kind reserve(
 
   engine_state_v0 staged_state = *state;
   timing_driver::state_v0 staged_timing = *timing_state;
-  uint32_t operation_seq = 0;
-  if (timing_driver::allocate_target_operation(
-          &staged_timing, request_binding, &operation_seq) !=
-      timing_driver::kStatusOk) {
+  uint32_t operation_seq = input.target_operation_seq;
+  if (existing_target) {
+    const timing_driver::lane_control_state_v0 *control =
+        timing_driver::find_live_lane_control(
+            staged_timing, request_binding);
+    if (control == NULL ||
+        control->live_target_operation_seq != operation_seq ||
+        control->live_commit_producer_operation_seq !=
+            input.producer_operation_seq ||
+        control->live_commit_epoch != input.producer_commit_epoch ||
+        control->pending_recovery_operation_seq != 0 ||
+        control->pending_terminal_kind !=
+            timing_driver::kTerminalBoundaryInvalid ||
+        control->live_memory_transaction_count != 0 ||
+        control->live_commit_memory_transaction_count != 0) {
+      return kStatusTimingControlRejected;
+    }
+  } else if (timing_driver::allocate_target_operation(
+                 &staged_timing, request_binding, &operation_seq) !=
+             timing_driver::kStatusOk) {
     return kStatusTimingControlRejected;
   }
 
@@ -381,6 +472,13 @@ status_kind reserve(
   entry.reservation.slot_index = static_cast<uint8_t>(slot_index);
   entry.reservation.read_chunk_count = kReadChunkCount;
   entry.reservation.valid = 1;
+  if (timing_driver::bind_target_operation(
+          &staged_timing, request_binding, operation_seq,
+          timing_driver::kTargetOperationClassShortStack,
+          input.operation_kind, entry.reservation.reservation_id) !=
+      timing_driver::kStatusOk) {
+    return kStatusTimingControlRejected;
+  }
 
   const uint64_t slot_base = private_slot_base(input.owner);
   for (unsigned index = 0; index < kReadChunkCount; ++index) {
@@ -429,7 +527,7 @@ status_kind reserve(
     transport.target_slot_index =
         entry.reservation.slot_index;
     transport.field_kind = access.field_kind;
-    transport.operation_kind = kOperationNodeTransition;
+    transport.operation_kind = input.operation_kind;
     transport.read_phase = kReadPhaseShortStackState;
     transport.valid = 1;
     if (!request_matches_entry(request, entry) ||
@@ -445,14 +543,73 @@ status_kind reserve(
   *reservation = entry.reservation;
   *state = staged_state;
   *timing_state = staged_timing;
+  emit_attempt(
+      input.owner, operation_seq, reservation_cycle,
+      static_cast<uint16_t>(
+          staged_state.reservations_this_cycle - 1),
+      stall_attribution::kStageAdmission,
+      stall_attribution::kOutcomeProgress,
+      stall_attribution::kActionAdmissionAccept,
+      stall_attribution::kReasonNone);
   return kStatusOk;
+}
+
+}  // namespace
+
+config_v0 candidate_profile_config() {
+  config_v0 config = {};
+  config.capacity = 16;
+  config.reservation_width = 4;
+  config.unit_count = 1;
+  config.stack_latency = 2;
+  config.initiation_interval = 1;
+  config.issue_width = 1;
+  config.parent_lookup_latency = 2;
+  return config;
+}
+
+status_kind initialize(engine_state_v0 *state, const config_v0 &config) {
+  if (state == NULL || !valid_config(config)) {
+    return kStatusInvalidConfig;
+  }
+  *state = engine_state_v0();
+  state->initialized = 1;
+  state->config = config;
+  state->next_reservation_id = 1;
+  state->next_age = 1;
+  return kStatusOk;
+}
+
+status_kind reserve(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_shared::backing_state_v0 &private_backing,
+    const reservation_input_v0 &input, uint64_t reservation_cycle,
+    reservation_receipt_v0 *reservation, request_plan_v0 *requests) {
+  reservation_input_v0 normalized = input;
+  if (normalized.operation_kind == kOperationInvalid) {
+    normalized.operation_kind = kOperationNodeTransition;
+  }
+  return reserve_impl(
+      state, timing_state, private_backing, normalized,
+      reservation_cycle, false, reservation, requests);
+}
+
+status_kind reserve_existing_target(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_shared::backing_state_v0 &private_backing,
+    const reservation_input_v0 &input, uint64_t reservation_cycle,
+    reservation_receipt_v0 *reservation, request_plan_v0 *requests) {
+  return reserve_impl(
+      state, timing_state, private_backing, input,
+      reservation_cycle, true, reservation, requests);
 }
 
 status_kind accept_read_response(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
     const private_shared::backing_state_v0 &private_backing,
     const rtcore_memory_unit_request_snapshot &request,
-    uint64_t response_cycle) {
+    uint64_t response_cycle, const uint8_t *return_instance_payload,
+    uint8_t return_instance_payload_bytes) {
   if (state == NULL || timing_state == NULL ||
       state->initialized != 1 ||
       request.v04_stack_private_read.target_slot_index >=
@@ -465,38 +622,56 @@ status_kind accept_read_response(
   if (!request_matches_entry(request, current)) {
     return kStatusMalformedTransport;
   }
+  const bool return_instance_read =
+      request.v04_stack_private_read.read_phase ==
+      kReadPhaseReturnInstance;
+  if (return_instance_read !=
+          (return_instance_payload != NULL) ||
+      (return_instance_read &&
+       return_instance_payload_bytes !=
+           private_frontier::kSharedAccessChunkBytes) ||
+      (!return_instance_read &&
+       return_instance_payload_bytes != 0)) {
+    return kStatusMalformedTransport;
+  }
   const uint8_t chunk_bit =
       static_cast<uint8_t>(1u << request.chunk_id);
-  if ((current.received_read_mask & chunk_bit) != 0) {
+  const uint8_t current_mask =
+      return_instance_read
+          ? current.received_return_instance_mask
+          : current.received_read_mask;
+  if ((current_mask & chunk_bit) != 0) {
     return kStatusDuplicateResponse;
   }
 
   engine_state_v0 staged_state = *state;
   timing_driver::state_v0 staged_timing = *timing_state;
   operation_entry_v0 &entry = staged_state.slots[slot_index];
-  private_frontier::shared_chunk_access_v0 access = {};
-  access.aligned_32b_address = request.aligned_32b_addr;
-  access.byte_mask = request.byte_mask;
-  access.field_kind =
-      request.v04_stack_private_read.field_kind;
-  access.access_kind = private_frontier::kAccessRead;
-  uint8_t payload[private_frontier::kSharedAccessChunkBytes] = {};
-  if (private_shared::read_canonical_chunk(
-          private_backing, entry.input.owner, access, payload) !=
-      private_shared::kStatusOk) {
-    return kStatusSharedPlanRejected;
-  }
-  const uint32_t chunk_offset =
-      request.v04_stack_private_read.slot_chunk_offset;
-  if (chunk_offset >
-      private_frontier::kPrivateDataSlotBytes -
-          private_frontier::kSharedAccessChunkBytes) {
-    return kStatusMalformedTransport;
-  }
-  for (unsigned byte = 0;
-       byte < private_frontier::kSharedAccessChunkBytes; ++byte) {
-    if ((request.byte_mask & (uint32_t{1} << byte)) != 0) {
-      entry.read_slot.bytes[chunk_offset + byte] = payload[byte];
+  if (!return_instance_read) {
+    private_frontier::shared_chunk_access_v0 access = {};
+    access.aligned_32b_address = request.aligned_32b_addr;
+    access.byte_mask = request.byte_mask;
+    access.field_kind =
+        request.v04_stack_private_read.field_kind;
+    access.access_kind = private_frontier::kAccessRead;
+    uint8_t payload[private_frontier::kSharedAccessChunkBytes] = {};
+    if (private_shared::read_canonical_chunk(
+            private_backing, entry.input.owner, access, payload) !=
+        private_shared::kStatusOk) {
+      return kStatusSharedPlanRejected;
+    }
+    const uint32_t chunk_offset =
+        request.v04_stack_private_read.slot_chunk_offset;
+    if (chunk_offset >
+        private_frontier::kPrivateDataSlotBytes -
+            private_frontier::kSharedAccessChunkBytes) {
+      return kStatusMalformedTransport;
+    }
+    for (unsigned byte = 0;
+         byte < private_frontier::kSharedAccessChunkBytes; ++byte) {
+      if ((request.byte_mask & (uint32_t{1} << byte)) != 0) {
+        entry.read_slot.bytes[chunk_offset + byte] = payload[byte];
+      }
     }
   }
   request_owner::lane_binding_v0 request_binding = {};
@@ -507,12 +682,168 @@ status_kind accept_read_response(
           timing_driver::kStatusOk) {
     return kStatusTimingControlRejected;
   }
-  entry.received_read_mask =
-      static_cast<uint8_t>(entry.received_read_mask | chunk_bit);
-  if (entry.received_read_mask == kAllReadChunks) {
-    entry.phase = kPhaseReadyToIssue;
-    entry.result_ready_cycle = response_cycle;
+  if (return_instance_read) {
+    std::memcpy(
+        entry.return_instance_payload +
+            request.chunk_id *
+                private_frontier::kSharedAccessChunkBytes,
+        return_instance_payload,
+        private_frontier::kSharedAccessChunkBytes);
+    entry.received_return_instance_mask = static_cast<uint8_t>(
+        entry.received_return_instance_mask | chunk_bit);
+    if (entry.received_return_instance_mask ==
+        kAllReturnInstanceReadChunks) {
+      typed_instance::raw_instance_payload_v0 raw_instance = {};
+      typed_instance::boundary_input_v0 decode_input = {};
+      decode_input.profile_id =
+          typed_instance::kGenRtDerivedProfileId;
+      if (!typed_instance::make_raw_instance_payload(
+              entry.return_instance_payload, &raw_instance)) {
+        return kStatusReturnInstanceRejected;
+      }
+      decode_input.raw_instance = raw_instance;
+      if (typed_instance::execute(decode_input).status !=
+          typed_instance::kStatusOk) {
+        return kStatusReturnInstanceRejected;
+      }
+      entry.phase = kPhaseReadyToIssue;
+      entry.result_ready_cycle = response_cycle;
+    }
+  } else {
+    entry.received_read_mask =
+        static_cast<uint8_t>(entry.received_read_mask | chunk_bit);
+    if (entry.received_read_mask == kAllReadChunks) {
+      short_stack_shared::persistent_state_v0 persistent = {};
+      short_stack::entry_v0 return_entry = {};
+      if (short_stack_shared::decode_persistent_state(
+              entry.read_slot, entry.input.owner, &persistent) !=
+          short_stack_shared::kStatusOk) {
+        return kStatusSharedPlanRejected;
+      }
+      const bool return_instance_required =
+          entry.input.operation_kind ==
+                  kOperationResumeTransition &&
+              persistent.stack.cross_as != 0 &&
+              persistent.stack.stack_count == 1 &&
+              short_stack::read_logical_entry(
+                  persistent.stack, 0, &return_entry) &&
+              short_stack::control_kind(return_entry.control) ==
+                  short_stack::kEntryCrossAsReturn;
+      entry.phase = return_instance_required
+                        ? kPhaseReturnInstancePlanReady
+                        : kPhaseReadyToIssue;
+      entry.result_ready_cycle = response_cycle;
+    }
   }
+  *state = staged_state;
+  *timing_state = staged_timing;
+  return kStatusOk;
+}
+
+status_kind take_return_instance_read_plan(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    uint64_t issue_cycle, request_plan_v0 *requests) {
+  if (state == NULL || timing_state == NULL || requests == NULL ||
+      state->initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  *requests = request_plan_v0();
+  const int slot_index = find_oldest_phase(
+      *state, kPhaseReturnInstancePlanReady, 0, false);
+  if (slot_index < 0) return kStatusNoFollowupRead;
+
+  engine_state_v0 staged_state = *state;
+  timing_driver::state_v0 staged_timing = *timing_state;
+  operation_entry_v0 &entry = staged_state.slots[slot_index];
+  short_stack_shared::persistent_state_v0 persistent = {};
+  short_stack::entry_v0 return_entry = {};
+  const typed_blas::as_decode_context_v0 &tlas =
+      entry.input.immutable_trace_input.decode_context;
+  if (short_stack_shared::decode_persistent_state(
+          entry.read_slot, entry.input.owner, &persistent) !=
+          short_stack_shared::kStatusOk ||
+      persistent.stack.cross_as == 0 ||
+      persistent.stack.stack_count != 1 ||
+      !short_stack::read_logical_entry(
+          persistent.stack, 0, &return_entry) ||
+      short_stack::control_kind(return_entry.control) !=
+          short_stack::kEntryCrossAsReturn ||
+      return_entry.payload_byte_count !=
+          fetch_target::kInstanceRawPayloadBytes ||
+      tlas.as_object.as_type != 1 ||
+      tlas.device_range_bytes <
+          fetch_target::kInstanceRawPayloadBytes ||
+      return_entry.payload_offset >
+          tlas.device_range_bytes -
+              fetch_target::kInstanceRawPayloadBytes) {
+    return kStatusSharedPlanRejected;
+  }
+  request_owner::lane_binding_v0 request_binding = {};
+  if (!make_request_owner(entry.input.owner, &request_binding)) {
+    return kStatusOwnerMismatch;
+  }
+  const uint64_t instance_base =
+      tlas.device_base + return_entry.payload_offset;
+  entry.phase = kPhaseReturnInstanceReading;
+  for (unsigned index = 0; index < kReturnInstanceReadChunkCount;
+       ++index) {
+    rtcore_memory_unit_request_snapshot &request =
+        requests->requests[index];
+    request.valid = true;
+    request.address_space = RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL;
+    request.operation = RTCORE_MEMORY_OPERATION_READ;
+    request.destination =
+        RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL;
+    request.response_target = kResponseTargetRtcore;
+    request.owner_hw_sid = entry.input.owner.owner_hw_sid;
+    request.rt_request_id = entry.input.owner.request_identity;
+    request.lane_id = entry.input.owner.lane_id;
+    request.resident_warp_id =
+        entry.input.owner.resident_warp_id;
+    request.request_generation = entry.input.owner.generation;
+    request.private_slot_id =
+        entry.input.owner.private_slot_id;
+    request.memory_op_seq = kReadChunkCount + index + 1;
+    request.chunk_id = index;
+    request.chunk_count = kReturnInstanceReadChunkCount;
+    request.access_kind =
+        RTCORE_MEMORY_ACCESS_SHORT_STACK_RETURN_INSTANCE_READ;
+    request.aligned_32b_addr =
+        instance_base +
+        index * private_frontier::kSharedAccessChunkBytes;
+    request.byte_mask = UINT32_MAX;
+    request.is_write = false;
+    request.issue_cycle = issue_cycle;
+    rtcore_v04_stack_private_read_transport_snapshot &transport =
+        request.v04_stack_private_read;
+    transport.reservation_id =
+        entry.reservation.reservation_id;
+    transport.reservation_age =
+        entry.reservation.reservation_age;
+    transport.target_operation_seq =
+        entry.reservation.operation_seq;
+    transport.producer_operation_seq =
+        entry.reservation.producer_operation_seq;
+    transport.target_slot_generation =
+        entry.reservation.slot_generation;
+    transport.slot_chunk_offset = static_cast<uint16_t>(
+        index * private_frontier::kSharedAccessChunkBytes);
+    transport.target_slot_index =
+        entry.reservation.slot_index;
+    transport.field_kind = private_frontier::kFieldInvalid;
+    transport.operation_kind = entry.input.operation_kind;
+    transport.read_phase = kReadPhaseReturnInstance;
+    transport.valid = 1;
+    if (!request_matches_entry(request, entry) ||
+        timing_driver::begin_memory_transaction(
+            &staged_timing, request_binding,
+            entry.reservation.operation_seq) !=
+            timing_driver::kStatusOk) {
+      return kStatusTimingControlRejected;
+    }
+  }
+  requests->request_count = kReturnInstanceReadChunkCount;
+  requests->valid = 1;
   *state = staged_state;
   *timing_state = staged_timing;
   return kStatusOk;
@@ -540,6 +871,7 @@ status_kind service_cycle(
             entry.transition.parent_lookup_decode_context,
             entry.transition.parent_lookup_build_generation,
             entry.transition.parent_lookup_payload_offset,
+            entry.transition.parent_lookup_payload_kind,
             &parent)) {
       return kStatusParentResolveRejected;
     }
@@ -563,7 +895,17 @@ status_kind service_cycle(
         break;
       }
     }
-    if (unit_index < 0) break;
+    if (unit_index < 0) {
+      const operation_entry_v0 &entry = state->slots[ready_index];
+      emit_attempt(
+          entry.input.owner, entry.reservation.operation_seq,
+          service_cycle, static_cast<uint16_t>(issued),
+          stall_attribution::kStageIssue,
+          stall_attribution::kOutcomeStall,
+          stall_attribution::kActionNone,
+          stall_attribution::kReasonUnitBusy);
+      break;
+    }
     operation_entry_v0 &entry = state->slots[ready_index];
     entry.phase = kPhaseExecuting;
     entry.issue_cycle = service_cycle;
@@ -574,38 +916,90 @@ status_kind service_cycle(
     issued_unit_mask = static_cast<uint8_t>(
         issued_unit_mask | (1u << unit_index));
     ++result->issued;
+    emit_attempt(
+        entry.input.owner, entry.reservation.operation_seq,
+        service_cycle, static_cast<uint16_t>(issued),
+        stall_attribution::kStageIssue,
+        stall_attribution::kOutcomeProgress,
+        stall_attribution::kActionIssue,
+        stall_attribution::kReasonNone);
   }
 
   const int execute_index = find_oldest_phase(
       *state, kPhaseExecuting, service_cycle, true);
   if (execute_index >= 0) {
     operation_entry_v0 &entry = state->slots[execute_index];
-    short_stack_transition::node_input_v0 transition_input = {};
-    transition_input.owner = entry.input.owner;
-    transition_input.region = entry.input.private_region;
-    transition_input.canonical_slot = entry.read_slot;
-    transition_input.node_route = entry.input.node_route;
-    transition_input.current_target = entry.input.current_target;
-    transition_input.current_decode_context =
-        entry.input.current_decode_context;
-    transition_input.pending_parent_resume =
-        entry.input.pending_parent_resume;
-    transition_input.pending_parent_resume_valid =
-        entry.input.pending_parent_resume_valid;
-    transition_input.parent_edge = entry.parent_edge;
-    transition_input.parent_edge_valid = entry.parent_edge_valid;
     short_stack_transition::result_v0 transition = {};
-    const short_stack_transition::status_kind transition_status =
-        short_stack_transition::prepare_node_transition(
-            transition_input, &transition);
+    short_stack_transition::status_kind transition_status =
+        short_stack_transition::kStatusInvalidArgument;
+    if (entry.input.operation_kind == kOperationNodeTransition) {
+      short_stack_transition::node_input_v0 transition_input = {};
+      transition_input.owner = entry.input.owner;
+      transition_input.region = entry.input.private_region;
+      transition_input.canonical_slot = entry.read_slot;
+      transition_input.node_route = entry.input.node_route;
+      transition_input.current_target = entry.input.current_target;
+      transition_input.current_decode_context =
+          entry.input.current_decode_context;
+      transition_input.pending_parent_resume =
+          entry.input.pending_parent_resume;
+      transition_input.pending_parent_resume_valid =
+          entry.input.pending_parent_resume_valid;
+      transition_input.parent_edge = entry.parent_edge;
+      transition_input.parent_edge_valid = entry.parent_edge_valid;
+      transition_status =
+          short_stack_transition::prepare_node_transition(
+              transition_input, &transition);
+    } else if (entry.input.operation_kind ==
+               kOperationResumeTransition) {
+      short_stack_transition::resume_input_v0 transition_input = {};
+      transition_input.owner = entry.input.owner;
+      transition_input.region = entry.input.private_region;
+      transition_input.canonical_slot = entry.read_slot;
+      transition_input.immutable_trace_input =
+          entry.input.immutable_trace_input;
+      transition_input.active_decode_context =
+          entry.input.active_decode_context;
+      transition_input.parent_edge = entry.parent_edge;
+      transition_input.parent_edge_valid = entry.parent_edge_valid;
+      transition_status =
+          short_stack_transition::prepare_resume_transition(
+              transition_input, &transition);
+    } else if (entry.input.operation_kind ==
+               kOperationEnterBlasTransition) {
+      short_stack_transition::enter_blas_input_v0 transition_input = {};
+      transition_input.owner = entry.input.owner;
+      transition_input.region = entry.input.private_region;
+      transition_input.canonical_slot = entry.read_slot;
+      transition_input.tlas_instance_target =
+          entry.input.tlas_instance_target;
+      transition_input.blas_root = entry.input.blas_root;
+      transition_input.blas_build_generation =
+          entry.input.blas_build_generation;
+      transition_status =
+          short_stack_transition::prepare_enter_blas_transition(
+              transition_input, &transition);
+    }
     if (transition_status ==
         short_stack_transition::kStatusParentLookupRequired) {
       entry.transition = transition;
       entry.phase = kPhaseParentLookup;
       entry.parent_lookup_ready_cycle =
           service_cycle + state->config.parent_lookup_latency;
+    } else if (
+        transition_status ==
+        short_stack_transition::kStatusReturnInstanceRequired) {
+      entry.transition = transition;
+      entry.input.operation_kind = kOperationResumeTransition;
+      entry.phase = kPhaseReturnInstancePlanReady;
+      entry.result_ready_cycle = service_cycle;
+      ++result->return_instance_requested;
     } else if (transition_status !=
                short_stack_transition::kStatusOk) {
+      result->rejected_operation_kind =
+          entry.input.operation_kind;
+      result->rejected_transition_status =
+          static_cast<uint8_t>(transition_status);
       return kStatusTransitionRejected;
     } else {
       entry.transition = transition;
@@ -613,6 +1007,13 @@ status_kind service_cycle(
           begin_transition_commit(&entry, timing_state);
       if (commit_status != kStatusOk) return commit_status;
       ++result->transition_committed;
+      emit_attempt(
+          entry.input.owner, entry.reservation.operation_seq,
+          service_cycle, 0,
+          stall_attribution::kStageCapture,
+          stall_attribution::kOutcomeProgress,
+          stall_attribution::kActionCapture,
+          stall_attribution::kReasonNone);
     }
   }
 
@@ -659,7 +1060,7 @@ bool owns_ack(const engine_state_v0 &state,
               const private_shared::runtime_write_ack_v0 &ack) {
   if (state.initialized != 1 || !ack.valid ||
       ack.memory_operation_seq == 0 ||
-      ack.memory_operation_seq > kWriteChunkCount) {
+      ack.memory_operation_seq > kMaxWriteChunkCount) {
     return false;
   }
   for (unsigned index = 0; index < state.config.capacity; ++index) {
@@ -670,6 +1071,8 @@ bool owns_ack(const engine_state_v0 &state,
         private_frontier::owners_equal(entry.input.owner, ack.owner) &&
         (entry.enqueued_write_mask &
          (1u << (ack.memory_operation_seq - 1))) != 0 &&
+        ack.memory_operation_seq <=
+            entry.transition.write_plan.access_count &&
         (entry.acknowledged_write_mask &
          (1u << (ack.memory_operation_seq - 1))) == 0) {
       return true;
@@ -715,10 +1118,11 @@ status_kind accept_write_ack(
           private_shared::kStatusOk) {
     return kStatusAckRejected;
   }
-  entry.acknowledged_write_mask = static_cast<uint8_t>(
+  entry.acknowledged_write_mask = static_cast<uint16_t>(
       entry.acknowledged_write_mask |
       (1u << (ack.memory_operation_seq - 1)));
-  if (entry.acknowledged_write_mask == kAllWriteChunks) {
+  if (entry.acknowledged_write_mask ==
+      all_write_chunks(entry.transition.write_plan.access_count)) {
     entry.phase = kPhaseResultReady;
   }
   *state = staged_state;
@@ -773,6 +1177,36 @@ status_kind consume_ready_result(engine_state_v0 *state,
   return kStatusOk;
 }
 
+bool find_live_reservation(
+    const engine_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq, reservation_receipt_v0 *reservation,
+    uint8_t *operation_kind) {
+  if (!state.initialized || operation_seq == 0 ||
+      reservation == NULL || operation_kind == NULL) {
+    return false;
+  }
+  *reservation = reservation_receipt_v0();
+  *operation_kind = kOperationInvalid;
+  bool found = false;
+  for (uint8_t index = 0; index < state.config.capacity; ++index) {
+    const operation_entry_v0 &entry = state.slots[index];
+    if (!entry.valid || !entry.reservation.valid ||
+        entry.reservation.operation_seq != operation_seq ||
+        !private_frontier::owners_equal(entry.input.owner, owner)) {
+      continue;
+    }
+    if (found || entry.input.operation_kind == kOperationInvalid ||
+        entry.reservation.reservation_id == 0) {
+      return false;
+    }
+    *reservation = entry.reservation;
+    *operation_kind = entry.input.operation_kind;
+    found = true;
+  }
+  return found;
+}
+
 uint8_t active_operation_count(const engine_state_v0 &state) {
   uint8_t count = 0;
   if (state.initialized != 1) return 0;
@@ -804,6 +1238,8 @@ const char *status_name(status_kind status) {
       return "malformed_transport";
     case kStatusDuplicateResponse:
       return "duplicate_response";
+    case kStatusReturnInstanceRejected:
+      return "return_instance_rejected";
     case kStatusTransitionRejected:
       return "transition_rejected";
     case kStatusParentResolveRejected:
@@ -816,6 +1252,8 @@ const char *status_name(status_kind status) {
       return "no_ack_owned";
     case kStatusAckRejected:
       return "ack_rejected";
+    case kStatusNoFollowupRead:
+      return "no_followup_read";
     case kStatusNoReadyResult:
       return "no_ready_result";
   }

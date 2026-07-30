@@ -231,6 +231,7 @@ status_kind prepare_result(
 
   semantic_plan_v0 prepared = {};
   prepared.owner = owner;
+  prepared.ray_policy = input.ray_policy;
   prepared.operation_seq = operation_seq;
   const typed_primitive::primitive_identity_policy_facts_v0
       empty_identity = {};

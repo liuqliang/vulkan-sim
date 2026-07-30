@@ -259,6 +259,8 @@ static const unsigned RTCORE_MEMORY_ACCESS_STACK_SPILL_RECOVERY_READ = 13u;
 static const unsigned RTCORE_MEMORY_ACCESS_HANDOFF_RAY_POLICY_READ = 14u;
 static const unsigned RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE = 15u;
 static const unsigned RTCORE_MEMORY_ACCESS_SHORT_STACK_STATE_READ = 16u;
+static const unsigned RTCORE_MEMORY_ACCESS_SHORT_STACK_RETURN_INSTANCE_READ =
+    17u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL = 1u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_PRIVATE_SHARED = 2u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_STACK_SPILL = 3u;
@@ -359,6 +361,12 @@ bool rtcore_accept_v04_stack_private_shared_read(
 
 bool rtcore_accept_v04_short_stack_private_shared_read(
     const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle);
+
+bool rtcore_accept_v04_short_stack_return_instance_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    const uint8_t *response_payload,
+    unsigned response_payload_bytes,
     unsigned long long response_cycle);
 
 bool rtcore_accept_v04_handoff_publication_response(

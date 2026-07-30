@@ -20,11 +20,11 @@ bool canonical_true(const char *value) {
 }
 
 bool valid_unit(uint8_t unit) {
-  return unit > kUnitInvalid && unit <= kUnitMemory;
+  return unit > kUnitInvalid && unit <= kUnitShortStack;
 }
 
 bool valid_stage(uint8_t stage) {
-  return stage > kStageInvalid && stage <= kStageBackend;
+  return stage > kStageInvalid && stage <= kStageAdmission;
 }
 
 bool progress_action_matches_stage(uint8_t action, uint8_t stage) {
@@ -41,6 +41,8 @@ bool progress_action_matches_stage(uint8_t action, uint8_t stage) {
       return stage == kStageFrontend;
     case kActionMemoryAccept:
       return stage == kStageBackend;
+    case kActionAdmissionAccept:
+      return stage == kStageAdmission;
     case kActionNone:
       break;
   }
@@ -63,6 +65,9 @@ bool stall_reason_matches_stage(uint8_t reason, uint8_t stage) {
       return stage == kStageFrontend;
     case kReasonL1dReservation:
       return stage == kStageBackend;
+    case kReasonReservationBudget:
+    case kReasonQueueCapacity:
+      return stage == kStageAdmission;
     case kReasonNone:
     case kReasonInvalidOffer:
       break;
@@ -135,6 +140,8 @@ const char *unit_name(unit_kind unit) {
       return "primitive";
     case kUnitMemory:
       return "memory";
+    case kUnitShortStack:
+      return "short_stack";
     case kUnitInvalid:
       break;
   }
@@ -155,6 +162,8 @@ const char *stage_name(stage_kind stage) {
       return "frontend";
     case kStageBackend:
       return "backend";
+    case kStageAdmission:
+      return "admission";
     case kStageInvalid:
       break;
   }
@@ -189,6 +198,8 @@ const char *action_name(action_kind action) {
       return "frontend_accept";
     case kActionMemoryAccept:
       return "memory_accept";
+    case kActionAdmissionAccept:
+      return "admission_accept";
   }
   return "invalid";
 }
@@ -213,6 +224,10 @@ const char *reason_name(reason_kind reason) {
       return "frontend_budget";
     case kReasonL1dReservation:
       return "l1d_reservation";
+    case kReasonReservationBudget:
+      return "reservation_budget";
+    case kReasonQueueCapacity:
+      return "queue_capacity";
     case kReasonInvalidOffer:
       return "invalid_offer";
   }

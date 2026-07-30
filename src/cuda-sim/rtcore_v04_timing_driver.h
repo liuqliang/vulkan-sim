@@ -54,6 +54,11 @@ enum terminal_boundary_kind : uint8_t {
   kTerminalBoundaryFinalMiss = 2,
 };
 
+enum target_operation_class : uint8_t {
+  kTargetOperationClassInvalid = 0,
+  kTargetOperationClassShortStack = 1,
+};
+
 struct result_commit_control_state_v0 {
   uint32_t next_commit_epoch;
 };
@@ -64,6 +69,10 @@ struct lane_control_state_v0 {
   request_owner::lane_binding_v0 owner;
   uint32_t next_target_operation_seq;
   uint32_t live_target_operation_seq;
+  uint64_t live_target_reservation_id;
+  uint8_t live_target_operation_class;
+  uint8_t live_target_operation_kind;
+  uint8_t reserved_zero1[2];
   uint32_t live_commit_producer_operation_seq;
   uint32_t live_commit_epoch;
   uint32_t pending_recovery_operation_seq;
@@ -72,7 +81,7 @@ struct lane_control_state_v0 {
   uint8_t pending_recovery_route_kind;
   uint8_t pending_recovery_reservation_retained;
   uint8_t pending_terminal_kind;
-  uint16_t reserved_zero1;
+  uint16_t reserved_zero2;
   uint32_t pending_terminal_producer_operation_seq;
   uint32_t pending_terminal_commit_epoch;
   uint16_t live_memory_transaction_count;
@@ -123,6 +132,15 @@ struct resubmit_plan_v0 {
   request_owner::mask_shrink_plan_v0 owner_plan;
 };
 
+struct continuation_resubmit_expectation_v0 {
+  uint32_t resume_mask;
+  uint32_t terminal_boundary_mask;
+  uint32_t successor_operation_seq[request_owner::kLaneCapacity];
+  uint64_t successor_reservation_id[request_owner::kLaneCapacity];
+  uint8_t successor_operation_class[request_owner::kLaneCapacity];
+  uint8_t successor_operation_kind[request_owner::kLaneCapacity];
+};
+
 struct retire_plan_v0 {
   bool valid;
   uint8_t reserved_zero[7];
@@ -151,7 +169,7 @@ status_kind prepare_continuation_resubmit(
     const state_v0 &state, uint8_t resident_warp_slot,
     uint32_t owner_hw_sid, uint32_t previous_warp_uid,
     uint32_t next_warp_uid, uint32_t warp_id, uint32_t next_active_mask,
-    uint32_t terminal_boundary_mask,
+    const continuation_resubmit_expectation_v0 &expectation,
     resubmit_plan_v0 *plan);
 status_kind commit_resubmit(state_v0 *state,
                             const resubmit_plan_v0 &plan);
@@ -165,6 +183,10 @@ status_kind commit_retire(state_v0 *state, const retire_plan_v0 &plan);
 status_kind allocate_target_operation(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t *target_operation_seq);
+status_kind bind_target_operation(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t target_operation_seq, uint8_t operation_class,
+    uint8_t operation_kind, uint64_t reservation_id);
 status_kind begin_result_commit(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t *commit_epoch);

@@ -119,6 +119,7 @@ bool control_anchor_valid(uint8_t control);
 bool control_inclusive(uint8_t control);
 
 bool validate_state(const state_v0 &state);
+bool validate_drained_recovery_state(const state_v0 &state);
 bool validate_entry(const entry_v0 &entry);
 bool read_logical_entry(const state_v0 &state, uint8_t logical_index,
                         entry_v0 *entry);

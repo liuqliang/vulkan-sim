@@ -226,7 +226,10 @@ struct rtcore_trace_ray_abi_entry {
     uint32_t context_valid_flags;
     uint32_t pipeline_profile_id;
     uint32_t bvh_format_profile_id;
+    uint64_t context_ptr;
     uint64_t handoff_window_base;
+    uint32_t lane_id;
+    uint32_t submit_transaction_id;
     bool v04_shadow_boundary_enabled;
     bool v04_tlas_binding_enforcement_enabled;
     rtcore_tlas_binding_snapshot v04_tlas_binding;
@@ -347,7 +350,6 @@ private:
     static void* launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
     static void* launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
     static std::vector<void*> child_addrs_from_driver;
-    static std::map<void*, void*> VulkanRayTracing::blas_addr_map;
     static void* tlas_addr;
     static bool dumped;
     static bool _init_;
@@ -355,6 +357,13 @@ public:
     static bool traceRayFromRtcoreAbi(
                        const rtcore_trace_ray_abi_entry& entry,
                        const ptx_instruction *pI,
+                       ptx_thread_info *thread);
+    static void publishLegacyDistanceProducerEvidenceForTransaction(
+                       ptx_thread_info *thread,
+                       uint64_t context_ptr,
+                       uint32_t lane_id,
+                       uint32_t submit_transaction_id);
+    static void discardPendingLegacyDistanceProducerEvidence(
                        ptx_thread_info *thread);
     // static RayDebugGPUData rayDebugGPUData[2000][2000];
     static warp_intersection_table*** intersection_table;
@@ -520,6 +529,7 @@ public:
     static bool resolveV04GenRtReplayParent(
         const rtcore::v04::typed_blas::as_decode_context_v0 &decodeContext,
         uint32_t buildGeneration, uint64_t payloadOffset,
+        uint8_t payloadKind,
         rtcore::v04::short_stack::parent_edge_v0 *parent,
         const char **failureReason = NULL);
     static bool buildV04TypedInstanceEnterInput(

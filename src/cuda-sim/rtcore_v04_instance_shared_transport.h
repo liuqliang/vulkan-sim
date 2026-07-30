@@ -3,6 +3,7 @@
 
 #include <cstdint>
 
+#include "rtcore_v04_fetch_target_queue.h"
 #include "rtcore_v04_instance_result_semantic_applier.h"
 #include "rtcore_v04_private_shared_backing.h"
 
@@ -74,6 +75,8 @@ struct ack_receipt_v0 {
 
 struct ready_event_v0 {
   private_frontier::owner_binding_v0 owner;
+  fetch_target::target_reference_v0 source_target_reference;
+  typed_blas::as_decode_context_v0 active_decode_context;
   uint32_t producer_operation_seq;
   uint32_t target_operation_seq;
   uint32_t commit_epoch;
@@ -102,6 +105,8 @@ struct result_commit_entry_v0 {
 
 struct commit_tracker_v0 {
   private_frontier::owner_binding_v0 owner;
+  fetch_target::target_reference_v0 source_target_reference;
+  typed_blas::as_decode_context_v0 active_decode_context;
   uint64_t issue_age;
   uint32_t operation_seq;
   uint32_t target_operation_seq;
@@ -147,9 +152,10 @@ status_kind capture_enter_result(
     uint32_t target_operation_seq,
     const private_frontier::region_binding_v0 &region,
     const private_frontier::shadow_slot_v0 &canonical_slot,
+    const fetch_target::target_reference_v0 &source_target_reference,
     const typed_instance::enter_input_v0 &input,
     const typed_instance::enter_result_v0 &result,
-    capture_receipt_v0 *receipt);
+    capture_receipt_v0 *receipt, bool short_stack_mode = false);
 
 status_kind peek_write_offer(const engine_state_v0 &state,
                              write_offer_v0 *offer);

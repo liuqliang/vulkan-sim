@@ -60,6 +60,7 @@ struct provider_v0 {
       void *context,
       const typed_blas::as_decode_context_v0 &decode_context,
       uint32_t build_generation, uint64_t payload_offset,
+      uint8_t payload_kind,
       short_stack::parent_edge_v0 *parent);
 };
 
@@ -83,6 +84,7 @@ struct state_v0 {
   private_frontier::owner_binding_v0 owner;
   private_frontier::region_binding_v0 private_region;
   private_frontier::shadow_slot_v0 canonical_slot;
+  private_frontier::root_private_operands_v0 immutable_trace_input;
   short_stack::state_v0 short_stack;
   typed_node::ray_policy_v0 ray_policy;
   uint32_t tlas_build_generation;

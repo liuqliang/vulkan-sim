@@ -18,6 +18,8 @@ static const uint8_t kReadChunkCount =
     short_stack_shared::kStateAccessChunkCount;
 static const uint8_t kWriteChunkCount =
     short_stack_shared::kStateAccessChunkCount;
+static const uint8_t kMaxWriteChunkCount = 12;
+static const uint8_t kReturnInstanceReadChunkCount = 4;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -30,23 +32,34 @@ enum status_kind : uint8_t {
   kStatusSharedPlanRejected,
   kStatusMalformedTransport,
   kStatusDuplicateResponse,
+  kStatusReturnInstanceRejected,
   kStatusTransitionRejected,
   kStatusParentResolveRejected,
   kStatusSharedQueueBackpressure,
   kStatusSharedWriteRejected,
   kStatusNoAckOwned,
   kStatusAckRejected,
+  kStatusNoFollowupRead,
   kStatusNoReadyResult,
 };
 
 enum phase_kind : uint8_t {
   kPhaseInvalid = 0,
   kPhaseReading,
+  kPhaseReturnInstancePlanReady,
+  kPhaseReturnInstanceReading,
   kPhaseReadyToIssue,
   kPhaseExecuting,
   kPhaseParentLookup,
   kPhaseWriting,
   kPhaseResultReady,
+};
+
+enum operation_kind : uint8_t {
+  kOperationInvalid = 0,
+  kOperationNodeTransition = 1,
+  kOperationResumeTransition = 2,
+  kOperationEnterBlasTransition = 3,
 };
 
 struct config_v0 {
@@ -65,12 +78,20 @@ struct reservation_input_v0 {
   private_frontier::region_binding_v0 private_region;
   typed_node::route_result_v0 node_route;
   typed_node::ray_policy_v0 ray_policy;
+  private_frontier::root_private_operands_v0 immutable_trace_input;
   fetch_target::target_reference_v0 current_target;
   typed_blas::as_decode_context_v0 current_decode_context;
+  typed_blas::as_decode_context_v0 active_decode_context;
+  fetch_target::target_reference_v0 tlas_instance_target;
+  typed_node::selected_child_fetch_work_item_v0 blas_root;
   short_stack::entry_v0 pending_parent_resume;
   uint32_t producer_operation_seq;
+  uint32_t producer_commit_epoch;
+  uint32_t target_operation_seq;
+  uint32_t blas_build_generation;
+  uint8_t operation_kind;
   uint8_t pending_parent_resume_valid;
-  uint8_t reserved_zero[3];
+  uint8_t reserved_zero[2];
 };
 
 struct reservation_receipt_v0 {
@@ -100,18 +121,21 @@ struct operation_entry_v0 {
   private_frontier::access_plan_v0 read_plan;
   short_stack_transition::result_v0 transition;
   short_stack::parent_edge_v0 parent_edge;
+  uint8_t return_instance_payload[
+      fetch_target::kInstanceRawPayloadBytes];
   uint64_t issue_age;
   uint64_t issue_cycle;
   uint64_t result_ready_cycle;
   uint64_t parent_lookup_ready_cycle;
   uint32_t commit_epoch;
   uint8_t received_read_mask;
-  uint8_t enqueued_write_mask;
-  uint8_t acknowledged_write_mask;
+  uint8_t received_return_instance_mask;
+  uint16_t enqueued_write_mask;
+  uint16_t acknowledged_write_mask;
   uint8_t phase;
   uint8_t parent_edge_valid;
   uint8_t valid;
-  uint8_t reserved_zero[2];
+  uint8_t reserved_zero;
 };
 
 struct unit_state_v0 {
@@ -135,9 +159,11 @@ struct cycle_result_v0 {
   uint8_t issued;
   uint8_t transition_committed;
   uint8_t parent_lookup_completed;
+  uint8_t return_instance_requested;
   uint8_t active_operations;
   uint8_t ready_results;
-  uint8_t reserved_zero[3];
+  uint8_t rejected_operation_kind;
+  uint8_t rejected_transition_status;
 };
 
 struct ready_result_v0 {
@@ -158,6 +184,7 @@ typedef bool (*parent_resolver_fn)(
     void *context,
     const typed_blas::as_decode_context_v0 &decode_context,
     uint32_t build_generation, uint64_t payload_offset,
+    uint8_t payload_kind,
     short_stack::parent_edge_v0 *parent);
 
 struct parent_resolver_v0 {
@@ -174,11 +201,23 @@ status_kind reserve(
     const reservation_input_v0 &input, uint64_t reservation_cycle,
     reservation_receipt_v0 *reservation, request_plan_v0 *requests);
 
+status_kind reserve_existing_target(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_shared::backing_state_v0 &private_backing,
+    const reservation_input_v0 &input, uint64_t reservation_cycle,
+    reservation_receipt_v0 *reservation, request_plan_v0 *requests);
+
 status_kind accept_read_response(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
     const private_shared::backing_state_v0 &private_backing,
     const rtcore_memory_unit_request_snapshot &request,
-    uint64_t response_cycle);
+    uint64_t response_cycle,
+    const uint8_t *return_instance_payload = NULL,
+    uint8_t return_instance_payload_bytes = 0);
+
+status_kind take_return_instance_read_plan(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    uint64_t issue_cycle, request_plan_v0 *requests);
 
 status_kind service_cycle(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
@@ -205,6 +244,12 @@ status_kind peek_ready_result(const engine_state_v0 &state,
                               ready_result_v0 *result);
 status_kind consume_ready_result(engine_state_v0 *state,
                                  const ready_result_v0 &result);
+
+bool find_live_reservation(
+    const engine_state_v0 &state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq, reservation_receipt_v0 *reservation,
+    uint8_t *operation_kind);
 
 uint8_t active_operation_count(const engine_state_v0 &state);
 const char *status_name(status_kind status);

@@ -50,6 +50,10 @@ lane_control_state_v0 *find_lane_control(
 
 bool lane_is_quiescent(const lane_control_state_v0 &lane) {
   return lane.live && lane.live_target_operation_seq == 0 &&
+         lane.live_target_reservation_id == 0 &&
+         lane.live_target_operation_class ==
+             kTargetOperationClassInvalid &&
+         lane.live_target_operation_kind == 0 &&
          lane.live_commit_producer_operation_seq == 0 &&
          lane.live_commit_epoch == 0 &&
          lane.pending_recovery_operation_seq == 0 &&
@@ -216,10 +220,13 @@ status_kind prepare_continuation_resubmit(
     const state_v0 &state, uint8_t resident_warp_slot,
     uint32_t owner_hw_sid, uint32_t previous_warp_uid,
     uint32_t next_warp_uid, uint32_t warp_id, uint32_t next_active_mask,
-    uint32_t terminal_boundary_mask,
+    const continuation_resubmit_expectation_v0 &expectation,
     resubmit_plan_v0 *plan) {
   if (!state.initialized || plan == NULL ||
-      (terminal_boundary_mask & ~next_active_mask) != 0) {
+      (expectation.resume_mask &
+       expectation.terminal_boundary_mask) != 0 ||
+      (expectation.resume_mask |
+       expectation.terminal_boundary_mask) != next_active_mask) {
     return kStatusInvalidArgument;
   }
   std::memset(plan, 0, sizeof(*plan));
@@ -240,11 +247,28 @@ status_kind prepare_continuation_resubmit(
       if (!lane_is_quiescent(*control)) return kStatusOperationInFlight;
       continue;
     }
+    const bool resume_lane =
+        (expectation.resume_mask & lane_bit(lane)) != 0;
+    const uint32_t expected_successor =
+        expectation.successor_operation_seq[lane];
+    const uint64_t expected_reservation =
+        expectation.successor_reservation_id[lane];
+    const uint8_t expected_operation_class =
+        expectation.successor_operation_class[lane];
+    const uint8_t expected_operation_kind =
+        expectation.successor_operation_kind[lane];
     const bool terminal_boundary_ready =
-        (terminal_boundary_mask & lane_bit(lane)) != 0 &&
-        lane_is_quiescent(*control);
+        (expectation.terminal_boundary_mask & lane_bit(lane)) != 0 &&
+        expected_successor == 0 && expected_reservation == 0 &&
+        expected_operation_class == kTargetOperationClassInvalid &&
+        expected_operation_kind == 0 && lane_is_quiescent(*control);
     const bool stack_pop_ready =
+        resume_lane && expected_successor != 0 &&
+        expected_reservation == 0 &&
+        expected_operation_class == kTargetOperationClassInvalid &&
+        expected_operation_kind == 0 &&
         control->live_target_operation_seq != 0 &&
+        control->live_target_operation_seq == expected_successor &&
         control->pending_recovery_operation_seq ==
             control->live_target_operation_seq &&
         control->pending_recovery_producer_operation_seq != 0 &&
@@ -258,8 +282,34 @@ status_kind prepare_continuation_resubmit(
         control->pending_terminal_kind == kTerminalBoundaryInvalid &&
         control->live_memory_transaction_count == 0 &&
         control->live_commit_memory_transaction_count == 0;
-    if (!terminal_boundary_ready && !stack_pop_ready)
+    const bool started_short_stack_successor =
+        resume_lane && expected_successor != 0 &&
+        expected_reservation != 0 &&
+        expected_operation_class == kTargetOperationClassShortStack &&
+        expected_operation_kind != 0 &&
+        control->live_target_operation_seq == expected_successor &&
+        control->live_target_reservation_id == expected_reservation &&
+        control->live_target_operation_class ==
+            expected_operation_class &&
+        control->live_target_operation_kind ==
+            expected_operation_kind &&
+        control->live_commit_producer_operation_seq == 0 &&
+        control->live_commit_epoch == 0 &&
+        control->pending_recovery_operation_seq == 0 &&
+        control->pending_recovery_producer_operation_seq == 0 &&
+        control->pending_recovery_target_kind ==
+            kPendingRecoveryTargetInvalid &&
+        control->pending_recovery_route_kind ==
+            kPendingRecoveryRouteInvalid &&
+        control->pending_recovery_reservation_retained == 0 &&
+        control->pending_terminal_kind == kTerminalBoundaryInvalid &&
+        control->pending_terminal_producer_operation_seq == 0 &&
+        control->pending_terminal_commit_epoch == 0 &&
+        control->live_commit_memory_transaction_count == 0;
+    if (!terminal_boundary_ready && !stack_pop_ready &&
+        !started_short_stack_successor) {
       return kStatusOperationInFlight;
+    }
   }
   plan->valid = true;
   plan->expected_mutation_epoch = state.mutation_epoch;
@@ -378,6 +428,35 @@ status_kind allocate_target_operation(
   return kStatusOk;
 }
 
+status_kind bind_target_operation(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t target_operation_seq, uint8_t operation_class,
+    uint8_t operation_kind, uint64_t reservation_id) {
+  if (state == NULL || target_operation_seq == 0 ||
+      operation_class != kTargetOperationClassShortStack ||
+      operation_kind == 0 || reservation_id == 0 ||
+      !state->initialized) {
+    return kStatusInvalidArgument;
+  }
+  lane_control_state_v0 *control = find_lane_control(state, owner);
+  if (control == NULL || !validate_owner_binding(*state, owner)) {
+    return kStatusOwnerMismatch;
+  }
+  if (control->live_target_operation_seq != target_operation_seq ||
+      control->live_target_reservation_id != 0 ||
+      control->live_target_operation_class !=
+          kTargetOperationClassInvalid ||
+      control->live_target_operation_kind != 0 ||
+      control->live_memory_transaction_count != 0) {
+    return kStatusOperationInFlight;
+  }
+  control->live_target_reservation_id = reservation_id;
+  control->live_target_operation_class = operation_class;
+  control->live_target_operation_kind = operation_kind;
+  ++state->mutation_epoch;
+  return kStatusOk;
+}
+
 status_kind begin_result_commit(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t *commit_epoch) {
@@ -408,6 +487,10 @@ status_kind begin_result_commit(
   *commit_epoch = state->result_commit_control.next_commit_epoch;
   ++state->result_commit_control.next_commit_epoch;
   control->live_target_operation_seq = 0;
+  control->live_target_reservation_id = 0;
+  control->live_target_operation_class =
+      kTargetOperationClassInvalid;
+  control->live_target_operation_kind = 0;
   control->live_commit_producer_operation_seq = producer_operation_seq;
   control->live_commit_epoch = *commit_epoch;
   ++state->mutation_epoch;

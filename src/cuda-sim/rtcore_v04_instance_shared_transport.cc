@@ -252,9 +252,10 @@ status_kind capture_enter_result(
     uint32_t target_operation_seq,
     const private_frontier::region_binding_v0 &region,
     const private_frontier::shadow_slot_v0 &canonical_slot,
+    const fetch_target::target_reference_v0 &source_target_reference,
     const typed_instance::enter_input_v0 &input,
     const typed_instance::enter_result_v0 &result,
-    capture_receipt_v0 *receipt) {
+    capture_receipt_v0 *receipt, bool short_stack_mode) {
   if (state == NULL || receipt == NULL || state->initialized != 1 ||
       producer_operation_seq == 0 || commit_epoch == 0 ||
       target_operation_seq == 0 ||
@@ -272,11 +273,16 @@ status_kind capture_enter_result(
   instance_semantic::enter_commit_plan_v0 plan = {};
   if (instance_semantic::prepare_enter(
           owner, producer_operation_seq, region, canonical_slot,
-          input, result, &plan) != instance_semantic::kStatusOk ||
+          input, result, &plan, short_stack_mode) !=
+          instance_semantic::kStatusOk ||
       plan.valid != 1 ||
       (plan.route_kind == instance_semantic::kRouteBlasRootNode &&
        plan.write_fragment_count !=
-           instance_semantic::kEnterVisibleWriteFragmentCount) ||
+           (short_stack_mode
+                ? instance_semantic::
+                      kEnterShortStackWriteFragmentCount
+                : instance_semantic::
+                      kEnterVisibleWriteFragmentCount)) ||
       (plan.route_kind == instance_semantic::kRouteStackPopNext &&
        plan.write_fragment_count != 0)) {
     return kStatusSemanticPlanRejected;
@@ -309,6 +315,9 @@ status_kind capture_enter_result(
   tracker.operation_seq = producer_operation_seq;
   tracker.target_operation_seq = target_operation_seq;
   tracker.commit_epoch = commit_epoch;
+  tracker.source_target_reference = source_target_reference;
+  tracker.active_decode_context =
+      input.tlas_decode_context;
   tracker.expected_write_count = plan.write_fragment_count;
   tracker.route_kind = plan.route_kind;
   tracker.root_fetch = plan.root_fetch;
@@ -482,6 +491,10 @@ status_kind pop_ready_event(engine_state_v0 *state,
     return kStatusStaleAck;
   }
   event->owner = tracker.owner;
+  event->source_target_reference =
+      tracker.source_target_reference;
+  event->active_decode_context =
+      tracker.active_decode_context;
   event->producer_operation_seq = tracker.operation_seq;
   event->target_operation_seq = tracker.target_operation_seq;
   event->commit_epoch = tracker.commit_epoch;

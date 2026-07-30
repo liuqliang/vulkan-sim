@@ -256,9 +256,41 @@ bool validate_state(const state_v0 &state) {
     }
   }
   if (state.cross_as != 0) {
-    return state.stack_count >= 1 && return_count == 1;
+    if (state.stack_count < 1 || return_count != 1) {
+      return false;
+    }
+  } else if (return_count != 0) {
+    return false;
   }
-  return return_count == 0;
+  if (state.lost != 0) {
+    const uint8_t active_count = ordinary_count(state);
+    entry_v0 recovery_anchor = {};
+    if (active_count == 0 ||
+        !read_logical_entry(
+            state, static_cast<uint8_t>(active_count - 1),
+            &recovery_anchor)) {
+      return false;
+    }
+    const entry_kind recovery_kind =
+        control_kind(recovery_anchor.control);
+    if (recovery_anchor.payload_kind !=
+            typed_node::kInternalPayloadKind ||
+        (recovery_kind != kEntryDirectTarget &&
+         recovery_kind != kEntrySameNodeReplay &&
+         recovery_kind != kEntryParentResume)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool validate_drained_recovery_state(const state_v0 &state) {
+  if (state.lost == 0 || ordinary_count(state) != 0) {
+    return false;
+  }
+  state_v0 recovered = state;
+  recovered.lost = 0;
+  return validate_state(recovered);
 }
 
 bool read_logical_entry(const state_v0 &state, uint8_t logical_index,
@@ -275,7 +307,11 @@ route_push_result_v0 push_node_route(
     const route_push_input_v0 &input) {
   route_push_result_v0 result = {};
   result.status = kStatusInvalidArgument;
-  if (!validate_state(input.state) ||
+  const bool input_state_valid =
+      validate_state(input.state) ||
+      (input.parent_resume_valid != 0 &&
+       validate_drained_recovery_state(input.state));
+  if (!input_state_valid ||
       input.active_domain > kDomainBlas ||
       input.active_domain != input.state.active_domain ||
       input.current_node_payload_offset == 0 ||
@@ -391,7 +427,8 @@ route_push_result_v0 push_node_route(
   result.state = input.state;
   if (!write_logical_entries(
           &result.state, retained, final_count,
-          input.state.lost != 0 || overflowed)) {
+          input.state.lost != 0 || overflowed) ||
+      !validate_state(result.state)) {
     result.status = kStatusInvalidState;
     return result;
   }
@@ -447,7 +484,7 @@ parent_bailout_result_v0 prepare_parent_bailout(
   parent_bailout_result_v0 result = {};
   result.status = kStatusInvalidArgument;
   if (popped.status != kStatusOk || popped.entry_valid == 0 ||
-      !validate_state(popped.state) || popped.state.lost == 0 ||
+      !validate_drained_recovery_state(popped.state) ||
       ordinary_count(popped.state) != 0 ||
       !validate_entry(popped.entry) ||
       popped.entry.payload_kind !=
