@@ -42,6 +42,7 @@ class ptx_recognizer;
 #include <string.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -60,6 +61,8 @@ class ptx_recognizer;
 #include "rtcore_v04_conservation_recorder.h"
 #include "rtcore_v04_functional_driver.h"
 #include "rtcore_v04_functional_engine.h"
+#include "rtcore_v04_pre_submit_publication_bridge.h"
+#include "rtcore_v04_private_storage_profile.h"
 #include "rtcore_v04_request_owner_binding.h"
 #include "rtcore_v04_root_node_packet.h"
 #include "rtcore_v04_shadow_boundary.h"
@@ -122,6 +125,11 @@ static bool rtcore_validate_v04_shadow_trace_input(
     unsigned lane_slot_index,
     const struct rtcore_v03_compact_context_decoded &context,
     std::array<uint32_t, rtcore::abi_v04::kWordCount> *words);
+static bool rtcore_v04_register_global384_provisional_publication(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index, bool v04_publication_contract,
+    unsigned handoff_lane_bytes);
 
 const char *g_opcode_string[NUM_OPCODES] = {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) STR,
@@ -9747,6 +9755,13 @@ void rt_publish_trace_context_impl(const ptx_instruction *pI, ptx_thread_info *t
            (size_t)v04_shadow_handoff_bytes);
     fflush(stdout);
   }
+  if (!rtcore_v04_register_global384_provisional_publication(
+          pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
+          thread->get_hw_tid() % 32, prepare_v04_shadow_handoff,
+          v04_shadow_handoff_bytes)) {
+    inst_not_implemented(pI);
+    return;
+  }
 }
 
 void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -12148,6 +12163,10 @@ static bool rtcore_launch_allocation_lifetime_publication_guards_pass(
          record.valid && record.live && record.active_lane_mask != 0 &&
          record.full_window_retired && record.deferred_free_boundary &&
          record.owner_generation_source_record.allocator_generation_source_valid &&
+         record.owner_generation_source_record
+             .allocator_generation_authoritative &&
+         record.owner_generation_source_record
+             .allocator_generation_minting_enabled &&
          strcmp(record.owner_generation_source_record
                     .owner_generation_source_reject_reason,
                 RTCORE_LAUNCH_ALLOCATION_OWNER_GENERATION_SOURCE_REJECT_NONE) ==
@@ -15917,6 +15936,166 @@ bool rtcore_current_warp_metadata_is_valid(
          lane_active ? 1 : 0, accepted ? 1 : 0);
   fflush(stdout);
   return accepted;
+}
+
+static rtcore::v04::pre_submit_publication::bridge_v0
+    g_rtcore_v04_pre_submit_publication_bridge;
+
+static bool rtcore_v04_checked_allocation_base(
+    unsigned long long pool_base, unsigned long long allocation_index,
+    unsigned allocation_bytes, unsigned long long *allocation_base) {
+  if (allocation_base == NULL || allocation_bytes == 0 ||
+      allocation_index >
+          (std::numeric_limits<unsigned long long>::max() - pool_base) /
+              allocation_bytes) {
+    return false;
+  }
+  *allocation_base = pool_base + allocation_index * allocation_bytes;
+  return true;
+}
+
+static bool rtcore_v04_register_global384_provisional_publication(
+    const ptx_instruction *pI, ptx_thread_info *thread,
+    unsigned long long context_ptr, unsigned long long handoff_window_base,
+    unsigned lane_slot_index, bool v04_publication_contract,
+    unsigned handoff_lane_bytes) {
+  rtcore::v04::private_storage::profile_kind profile =
+      rtcore::v04::private_storage::kProfileLegacyShared832;
+  const rtcore::v04::private_storage::status_kind profile_status =
+      rtcore::v04::private_storage::parse_profile(
+          getenv(rtcore::v04::private_storage::kSelectorEnvironmentName),
+          &profile);
+  if (profile_status != rtcore::v04::private_storage::kStatusOk) {
+    printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
+           "reason=GLOBAL384_INVALID_PRIVATE_STORAGE_PROFILE, "
+           "profile_status=%s\n",
+           pI->source_file(), pI->source_line(),
+           rtcore::v04::private_storage::status_name(profile_status));
+    fflush(stdout);
+    return false;
+  }
+  if (profile != rtcore::v04::private_storage::kProfileGlobal384) {
+    return true;
+  }
+  if (!v04_publication_contract ||
+      handoff_lane_bytes != rtcore::abi_v04::kLaneSlotBytes) {
+    printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
+           "reason=GLOBAL384_REQUIRES_V04_PUBLICATION_CONTRACT, "
+           "observed_lane_bytes=%u, expected_lane_bytes=%zu\n",
+           pI->source_file(), pI->source_line(), handoff_lane_bytes,
+           static_cast<size_t>(rtcore::abi_v04::kLaneSlotBytes));
+    fflush(stdout);
+    return false;
+  }
+
+  ptx_thread_info::rtcore_current_warp_metadata metadata;
+  thread->get_rtcore_current_warp_metadata(&metadata);
+  if (!rtcore_current_warp_metadata_is_valid(
+          "RT_PUBLISH_TRACE_CONTEXT", pI, thread, &metadata,
+          lane_slot_index)) {
+    return false;
+  }
+
+  const rtcore_runtime_context_window_allocation_record allocation =
+      rtcore_make_runtime_context_window_allocation_record(
+          context_ptr, handoff_window_base, lane_slot_index);
+  if (!allocation.enabled || !allocation.valid ||
+      allocation.context_window_index >
+          std::numeric_limits<uint32_t>::max()) {
+    printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
+           "reason=GLOBAL384_RUNTIME_ALLOCATION_INVALID, "
+           "allocation_enabled=%u, allocation_valid=%u, "
+           "context_window_index=%llu\n",
+           pI->source_file(), pI->source_line(),
+           allocation.enabled ? 1u : 0u, allocation.valid ? 1u : 0u,
+           allocation.context_window_index);
+    fflush(stdout);
+    return false;
+  }
+
+  unsigned long long context_allocation_base = 0;
+  if (!rtcore_v04_checked_allocation_base(
+          allocation.context_base, allocation.context_window_index,
+          allocation.context_allocation_bytes, &context_allocation_base)) {
+    printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
+           "reason=GLOBAL384_CONTEXT_ALLOCATION_BASE_OVERFLOW\n",
+           pI->source_file(), pI->source_line());
+    fflush(stdout);
+    return false;
+  }
+
+  static const uint64_t kRuntimeAllocationDomainId = UINT64_C(1);
+  std::array<uint32_t,
+             rtcore::abi_v04::kLaneSlotBytes /
+                 rtcore::v04::address_range_registry::kAddressChunkBytes>
+      handoff_masks = {};
+  const uint32_t owned_words =
+      rtcore::abi_v04::shadow::trace_input_owned_word_mask();
+  for (size_t word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+    if ((owned_words & (uint32_t{1} << word)) == 0) continue;
+    const size_t byte_offset = word * sizeof(uint32_t);
+    const size_t chunk =
+        byte_offset /
+        rtcore::v04::address_range_registry::kAddressChunkBytes;
+    const size_t byte_in_chunk =
+        byte_offset %
+        rtcore::v04::address_range_registry::kAddressChunkBytes;
+    handoff_masks[chunk] |= uint32_t{0xf} << byte_in_chunk;
+  }
+
+  rtcore::v04::pre_submit_publication::lane_publication_request_v0 request = {};
+  request.slot.allocation_domain_id = kRuntimeAllocationDomainId;
+  request.slot.allocation_slot_id =
+      static_cast<uint32_t>(allocation.context_window_index);
+  request.owner.owner_hw_sid = metadata.owner_hw_sid;
+  request.owner.dynamic_warp_id = metadata.dynamic_warp_id;
+  request.owner.warp_id = metadata.warp_id;
+  request.allocation_ranges.context_base = context_allocation_base;
+  request.allocation_ranges.context_byte_count =
+      allocation.context_allocation_bytes;
+  request.allocation_ranges.handoff_base = allocation.handoff_window_base;
+  request.allocation_ranges.handoff_byte_count =
+      allocation.handoff_allocation_bytes;
+  request.publication_warp_uid = metadata.warp_uid;
+  request.active_mask = metadata.active_mask;
+  request.capacity_lane_slots = allocation.capacity_lane_slots;
+  request.context_lane_stride_bytes =
+      allocation.context_lane_stride_bytes;
+  request.handoff_lane_stride_bytes =
+      allocation.handoff_lane_slot_stride_bytes;
+  request.handoff_allowed_publication_masks = handoff_masks.data();
+  request.handoff_allowed_publication_mask_count = handoff_masks.size();
+  request.lane_id = static_cast<uint8_t>(lane_slot_index);
+
+  rtcore::v04::pre_submit_publication::lane_publication_result_v0 result = {};
+  const rtcore::v04::pre_submit_publication::status_kind bridge_status =
+      g_rtcore_v04_pre_submit_publication_bridge.observe_initial_publication(
+          request, &result);
+  printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT "
+         "global384-provisional-publication (%s:%u), "
+         "bridge_status=%s, authority_status=%s, registry_status=%s, "
+         "allocation_domain_id=%llu, allocation_slot_id=%u, "
+         "launch_allocation_generation=%u, window_generation=%u, "
+         "dynamic_warp_id=%u, publication_warp_uid=%u, warp_id=%u, "
+         "active_mask=0x%08x, published_lane_mask=0x%08x, "
+         "lane_slot_index=%u, publication_complete=%u, "
+         "provisional_group_registered=%u, memory_transaction=0\n",
+         pI->source_file(), pI->source_line(),
+         rtcore::v04::pre_submit_publication::status_name(bridge_status),
+         rtcore::v04::allocation_identity::status_name(
+             result.authority_status),
+         rtcore::v04::address_range_registry::status_name(
+             result.registry_status),
+         static_cast<unsigned long long>(request.slot.allocation_domain_id),
+         request.slot.allocation_slot_id,
+         result.identity.launch_allocation_generation,
+         result.identity.window_generation, metadata.dynamic_warp_id,
+         metadata.warp_uid, metadata.warp_id, metadata.active_mask,
+         result.published_lane_mask, lane_slot_index,
+         result.publication_complete, result.provisional_group_registered);
+  fflush(stdout);
+  return bridge_status ==
+         rtcore::v04::pre_submit_publication::kStatusOk;
 }
 
 enum rtcore_traversal_source_provider {
