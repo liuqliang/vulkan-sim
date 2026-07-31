@@ -34,6 +34,43 @@ uint16_t all_write_chunks(uint8_t write_count) {
              : static_cast<uint16_t>((uint16_t{1} << write_count) - 1u);
 }
 
+bool make_stack_sparse_deltas(
+    const short_stack_shared::persistent_state_v0 &persistent,
+    private_state_384::operand_plan::chunk_delta_v1 deltas[4],
+    uint8_t *delta_count) {
+  if (deltas == NULL || delta_count == NULL ||
+      !short_stack_shared::validate_persistent_state(persistent)) {
+    return false;
+  }
+  private_state_384::stack_sparse_projection_v1 projection = {};
+  if (private_state_384::encode_stack_sparse_projection(
+          persistent.stack, &projection) !=
+      private_state_384::kStatusOk) {
+    return false;
+  }
+  std::memset(
+      deltas, 0,
+      sizeof(private_state_384::operand_plan::chunk_delta_v1) * 4);
+  deltas[0].chunk_index = 4;
+  deltas[0].byte_mask = 0x0f000000u;
+  std::memcpy(
+      deltas[0].payload + 24, projection.metadata,
+      sizeof(projection.metadata));
+  for (uint8_t index = 0; index < 3; ++index) {
+    deltas[index + 1].chunk_index =
+        static_cast<uint8_t>(5 + index);
+    deltas[index + 1].byte_mask =
+        private_state_384::backing::kFullChunkByteMask;
+    std::memcpy(
+        deltas[index + 1].payload,
+        projection.entries +
+            index * private_state_384::kChunkBytes,
+        private_state_384::kChunkBytes);
+  }
+  *delta_count = 4;
+  return true;
+}
+
 uint64_t private_slot_base(
     const private_frontier::owner_binding_v0 &owner) {
   return UINT64_C(0xff00000000000000) +
@@ -230,6 +267,33 @@ status_kind begin_transition_commit(
       timing_driver::kStatusOk) {
     return kStatusTimingControlRejected;
   }
+  if (entry->input.private_storage_profile ==
+      private_storage::kProfileCompressedShared384) {
+    private_state_384::operand_plan::chunk_delta_v1 deltas[4] = {};
+    uint8_t delta_count = 0;
+    private_state_384::live_bridge::write_commit_input_v1 input = {};
+    input.owner = entry->input.owner;
+    input.operation_sequence =
+        entry->reservation.operation_seq;
+    input.commit_epoch = commit_epoch;
+    input.bvh_format_profile_id =
+        private_state_384::kGenRtBvhFormatProfileId;
+    input.expected_write_ack_count =
+        entry->transition.write_plan.access_count;
+    input.storage_profile =
+        private_storage::kProfileCompressedShared384;
+    input.producer =
+        private_state_384::operand_plan::kProducerStack;
+    if (!make_stack_sparse_deltas(
+            entry->transition.persistent_state, deltas,
+            &delta_count) ||
+        private_state_384::live_bridge::stage_sparse_commit(
+            input, deltas, delta_count,
+            &entry->private_state_384_commit) !=
+            private_state_384::live_bridge::kStatusOk) {
+      return kStatusSharedPlanRejected;
+    }
+  }
   entry->commit_epoch = commit_epoch;
   entry->phase = kPhaseWriting;
   *timing_state = staged_timing;
@@ -304,8 +368,18 @@ status_kind enqueue_transition_write(
           &staged_backing, write) != private_shared::kStatusOk) {
     return kStatusSharedWriteRejected;
   }
+  private_state_384::live_bridge::pending_sparse_commit_v1
+      staged_private_commit = entry->private_state_384_commit;
+  if (entry->input.private_storage_profile ==
+          private_storage::kProfileCompressedShared384 &&
+      private_state_384::live_bridge::register_modeled_write(
+          write, &staged_private_commit) !=
+          private_state_384::live_bridge::kStatusOk) {
+    return kStatusSharedWriteRejected;
+  }
   entry->enqueued_write_mask = static_cast<uint16_t>(
       entry->enqueued_write_mask | (1u << chunk_index));
+  entry->private_state_384_commit = staged_private_commit;
   *timing_state = staged_timing;
   *private_backing = staged_backing;
   return kStatusOk;
@@ -344,8 +418,11 @@ bool valid_operation_input(const reservation_input_v0 &input,
                            bool existing_target) {
   if (input.producer_operation_seq == 0 ||
       input.pending_parent_resume_valid > 1 ||
-      !bytes_are_zero(input.reserved_zero,
-                      sizeof(input.reserved_zero))) {
+      input.recovery_target_inflight > 1 ||
+      (input.private_storage_profile !=
+           private_storage::kProfileLegacyShared832 &&
+       input.private_storage_profile !=
+           private_storage::kProfileCompressedShared384)) {
     return false;
   }
   if (existing_target != (input.target_operation_seq != 0) ||
@@ -373,7 +450,9 @@ status_kind reserve_impl(
   if (state == NULL || timing_state == NULL || reservation == NULL ||
       requests == NULL || state->initialized != 1 ||
       !valid_config(state->config) ||
-      !valid_operation_input(input, existing_target)) {
+      !valid_operation_input(input, existing_target) ||
+      input.private_storage_profile !=
+          private_storage::kProfileLegacyShared832) {
     return kStatusInvalidArgument;
   }
   *reservation = reservation_receipt_v0();
@@ -589,6 +668,10 @@ status_kind reserve(
   if (normalized.operation_kind == kOperationInvalid) {
     normalized.operation_kind = kOperationNodeTransition;
   }
+  if (normalized.private_storage_profile == 0) {
+    normalized.private_storage_profile =
+        private_storage::kProfileLegacyShared832;
+  }
   return reserve_impl(
       state, timing_state, private_backing, normalized,
       reservation_cycle, false, reservation, requests);
@@ -599,9 +682,154 @@ status_kind reserve_existing_target(
     const private_shared::backing_state_v0 &private_backing,
     const reservation_input_v0 &input, uint64_t reservation_cycle,
     reservation_receipt_v0 *reservation, request_plan_v0 *requests) {
+  reservation_input_v0 normalized = input;
+  if (normalized.private_storage_profile == 0) {
+    normalized.private_storage_profile =
+        private_storage::kProfileLegacyShared832;
+  }
   return reserve_impl(
-      state, timing_state, private_backing, input,
+      state, timing_state, private_backing, normalized,
       reservation_cycle, true, reservation, requests);
+}
+
+status_kind reserve_private_state_384(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_state_384::backing::state_v1 &private_backing,
+    const reservation_input_v0 &input, uint64_t reservation_cycle,
+    reservation_receipt_v0 *reservation, request_plan_v0 *requests) {
+  if (state == NULL || timing_state == NULL || reservation == NULL ||
+      requests == NULL || state->initialized != 1 ||
+      !valid_config(state->config) ||
+      !valid_operation_input(input, false) ||
+      input.operation_kind != kOperationNodeTransition ||
+      input.private_storage_profile !=
+          private_storage::kProfileCompressedShared384) {
+    return kStatusInvalidArgument;
+  }
+  *reservation = reservation_receipt_v0();
+  *requests = request_plan_v0();
+  request_owner::lane_binding_v0 request_binding = {};
+  if (!make_request_owner(input.owner, &request_binding) ||
+      private_state_384::backing::find_live_lane(
+          private_backing, input.owner) == NULL) {
+    return kStatusOwnerMismatch;
+  }
+  if (state->reservation_cycle != reservation_cycle) {
+    state->reservation_cycle = reservation_cycle;
+    state->reservations_this_cycle = 0;
+  }
+  if (state->reservations_this_cycle >=
+      state->config.reservation_width) {
+    emit_attempt(
+        input.owner, input.producer_operation_seq, reservation_cycle,
+        state->reservations_this_cycle,
+        stall_attribution::kStageAdmission,
+        stall_attribution::kOutcomeStall,
+        stall_attribution::kActionNone,
+        stall_attribution::kReasonReservationBudget);
+    return kStatusReservationBudgetBackpressure;
+  }
+  const int slot_index = find_free_slot(*state);
+  if (slot_index < 0) {
+    emit_attempt(
+        input.owner, input.producer_operation_seq, reservation_cycle,
+        state->reservations_this_cycle,
+        stall_attribution::kStageAdmission,
+        stall_attribution::kOutcomeStall,
+        stall_attribution::kActionNone,
+        stall_attribution::kReasonQueueCapacity);
+    return kStatusCapacityBackpressure;
+  }
+
+  engine_state_v0 staged_state = *state;
+  timing_driver::state_v0 staged_timing = *timing_state;
+  uint32_t operation_seq = 0;
+  if (timing_driver::allocate_target_operation(
+          &staged_timing, request_binding, &operation_seq) !=
+      timing_driver::kStatusOk) {
+    return kStatusTimingControlRejected;
+  }
+  operation_entry_v0 &entry = staged_state.slots[slot_index];
+  const uint32_t next_generation =
+      entry.reservation.slot_generation == UINT32_MAX
+          ? 1
+          : entry.reservation.slot_generation + 1;
+  entry = operation_entry_v0();
+  entry.input = input;
+  entry.issue_age = staged_state.next_age++;
+  entry.phase = kPhaseReading;
+  entry.valid = 1;
+  entry.reservation.owner = input.owner;
+  entry.reservation.reservation_id =
+      staged_state.next_reservation_id++;
+  entry.reservation.reservation_age = entry.issue_age;
+  entry.reservation.operation_seq = operation_seq;
+  entry.reservation.producer_operation_seq =
+      input.producer_operation_seq;
+  entry.reservation.slot_generation = next_generation;
+  entry.reservation.slot_index = static_cast<uint8_t>(slot_index);
+  entry.reservation.valid = 1;
+
+  private_state_384::live_bridge::read_input_v1 read_input = {};
+  read_input.owner = input.owner;
+  read_input.issue_cycle = reservation_cycle;
+  read_input.operation_sequence = operation_seq;
+  read_input.bvh_format_profile_id =
+      private_state_384::kGenRtBvhFormatProfileId;
+  read_input.reservation_generation = next_generation;
+  read_input.storage_profile =
+      private_storage::kProfileCompressedShared384;
+  read_input.consumer =
+      private_state_384::operand_plan::kConsumerStack;
+  read_input.operation =
+      private_state_384::operand_plan::kOperationDefault;
+  read_input.completion_reason =
+      private_state_384::operand_plan::kCompletionReasonNone;
+  read_input.destination =
+      RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL;
+  read_input.memory_op_seq_base = 1;
+  private_state_384::live_bridge::read_request_plan_v1 read_plan = {};
+  if (private_state_384::live_bridge::prepare_read_requests(
+          read_input, &read_plan) !=
+          private_state_384::live_bridge::kStatusOk ||
+      read_plan.request_count == 0 ||
+      read_plan.request_count > kMaxReadChunkCount ||
+      private_state_384::live_bridge::initialize_collector(
+          read_plan, &entry.private_state_384_collector) !=
+          private_state_384::live_bridge::kStatusOk) {
+    return kStatusSharedPlanRejected;
+  }
+  entry.reservation.read_chunk_count = read_plan.request_count;
+  if (timing_driver::bind_target_operation(
+          &staged_timing, request_binding, operation_seq,
+          timing_driver::kTargetOperationClassShortStack,
+          input.operation_kind, entry.reservation.reservation_id) !=
+      timing_driver::kStatusOk) {
+    return kStatusTimingControlRejected;
+  }
+  for (uint8_t index = 0; index < read_plan.request_count; ++index) {
+    if (timing_driver::begin_memory_transaction(
+            &staged_timing, request_binding, operation_seq) !=
+        timing_driver::kStatusOk) {
+      return kStatusTimingControlRejected;
+    }
+    requests->requests[index] = read_plan.requests[index];
+  }
+  requests->request_count = read_plan.request_count;
+  requests->valid = 1;
+  ++staged_state.reservations_this_cycle;
+  *reservation = entry.reservation;
+  *state = staged_state;
+  *timing_state = staged_timing;
+  emit_attempt(
+      input.owner, operation_seq, reservation_cycle,
+      static_cast<uint16_t>(
+          staged_state.reservations_this_cycle - 1),
+      stall_attribution::kStageAdmission,
+      stall_attribution::kOutcomeProgress,
+      stall_attribution::kActionAdmissionAccept,
+      stall_attribution::kReasonNone);
+  return kStatusOk;
 }
 
 status_kind accept_read_response(
@@ -734,6 +962,115 @@ status_kind accept_read_response(
                         : kPhaseReadyToIssue;
       entry.result_ready_cycle = response_cycle;
     }
+  }
+  *state = staged_state;
+  *timing_state = staged_timing;
+  return kStatusOk;
+}
+
+status_kind accept_private_state_384_read_response(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_state_384::backing::state_v1 &private_backing,
+    const rtcore_memory_unit_request_snapshot &request,
+    uint64_t response_cycle) {
+  if (state == NULL || timing_state == NULL ||
+      state->initialized != 1 ||
+      request.access_kind !=
+          RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ ||
+      request.destination !=
+          RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL ||
+      request.v04_private_state_384_read.storage_profile !=
+          private_storage::kProfileCompressedShared384 ||
+      request.v04_private_state_384_read.consumer !=
+          private_state_384::operand_plan::kConsumerStack ||
+      request.v04_private_state_384_read.operation_kind !=
+          private_state_384::operand_plan::kOperationDefault) {
+    return kStatusInvalidArgument;
+  }
+  int slot_index = -1;
+  for (unsigned index = 0; index < state->config.capacity; ++index) {
+    const operation_entry_v0 &entry = state->slots[index];
+    if (entry.valid != 0 && entry.phase == kPhaseReading &&
+        entry.input.private_storage_profile ==
+            private_storage::kProfileCompressedShared384 &&
+        entry.reservation.operation_seq ==
+            request.v04_private_state_384_read.operation_sequence &&
+        entry.reservation.slot_generation ==
+            request.v04_private_state_384_read.reservation_generation &&
+        entry.input.owner.owner_hw_sid == request.owner_hw_sid &&
+        entry.input.owner.request_identity == request.rt_request_id &&
+        entry.input.owner.generation == request.request_generation &&
+        entry.input.owner.private_slot_id == request.private_slot_id &&
+        entry.input.owner.resident_warp_id ==
+            request.resident_warp_id &&
+        entry.input.owner.lane_id == request.lane_id) {
+      if (slot_index >= 0) return kStatusMalformedTransport;
+      slot_index = static_cast<int>(index);
+    }
+  }
+  if (slot_index < 0) return kStatusMalformedTransport;
+
+  engine_state_v0 staged_state = *state;
+  timing_driver::state_v0 staged_timing = *timing_state;
+  operation_entry_v0 &entry = staged_state.slots[slot_index];
+  const private_state_384::live_bridge::status_kind bridge_status =
+      private_state_384::live_bridge::accept_read_response(
+          private_backing, request,
+          &entry.private_state_384_collector);
+  if (bridge_status != private_state_384::live_bridge::kStatusOk) {
+    return bridge_status ==
+                   private_state_384::live_bridge::kStatusCollectorRejected
+               ? kStatusDuplicateResponse
+               : kStatusMalformedTransport;
+  }
+  request_owner::lane_binding_v0 request_binding = {};
+  if (!make_request_owner(entry.input.owner, &request_binding) ||
+      timing_driver::complete_memory_transaction(
+          &staged_timing, request_binding,
+          entry.reservation.operation_seq) !=
+          timing_driver::kStatusOk) {
+    return kStatusTimingControlRejected;
+  }
+  entry.received_read_mask =
+      entry.private_state_384_collector.received_chunk_mask;
+  if (private_state_384::operand_materializer::responses_complete(
+          entry.private_state_384_collector)) {
+    private_state_384::operand_materializer::materialize_context_v1
+        context = {};
+    context.bvh_format_profile_id =
+        private_state_384::kGenRtBvhFormatProfileId;
+    if (private_state_384::operand_materializer::
+            materialize_stack_base(
+                entry.private_state_384_collector, context,
+                &entry.private_state_384_stack_operands) !=
+        private_state_384::operand_materializer::kStatusOk) {
+      return kStatusSharedPlanRejected;
+    }
+    short_stack_shared::persistent_state_v0 persistent = {};
+    persistent.tlas_build_generation =
+        entry.private_state_384_stack_operands
+            .tlas_build_generation;
+    persistent.blas_build_generation =
+        entry.private_state_384_stack_operands
+            .blas_build_generation;
+    persistent.stack =
+        entry.private_state_384_stack_operands.stack;
+    persistent.recovery_target_inflight =
+        entry.input.recovery_target_inflight;
+    if (!short_stack_shared::validate_persistent_state(persistent)) {
+      return kStatusSharedPlanRejected;
+    }
+    entry.input.ray_policy =
+        entry.private_state_384_stack_operands.ray_policy;
+    entry.input.current_decode_context =
+        entry.private_state_384_stack_operands
+            .active_decode_context;
+    entry.input.active_decode_context =
+        entry.private_state_384_stack_operands
+            .active_decode_context;
+    entry.private_state_384_operands_valid = 1;
+    entry.phase = kPhaseReadyToIssue;
+    entry.result_ready_cycle = response_cycle;
   }
   *state = staged_state;
   *timing_state = staged_timing;
@@ -933,23 +1270,62 @@ status_kind service_cycle(
     short_stack_transition::status_kind transition_status =
         short_stack_transition::kStatusInvalidArgument;
     if (entry.input.operation_kind == kOperationNodeTransition) {
-      short_stack_transition::node_input_v0 transition_input = {};
-      transition_input.owner = entry.input.owner;
-      transition_input.region = entry.input.private_region;
-      transition_input.canonical_slot = entry.read_slot;
-      transition_input.node_route = entry.input.node_route;
-      transition_input.current_target = entry.input.current_target;
-      transition_input.current_decode_context =
-          entry.input.current_decode_context;
-      transition_input.pending_parent_resume =
-          entry.input.pending_parent_resume;
-      transition_input.pending_parent_resume_valid =
-          entry.input.pending_parent_resume_valid;
-      transition_input.parent_edge = entry.parent_edge;
-      transition_input.parent_edge_valid = entry.parent_edge_valid;
-      transition_status =
-          short_stack_transition::prepare_node_transition(
-              transition_input, &transition);
+      if (entry.input.private_storage_profile ==
+          private_storage::kProfileCompressedShared384) {
+        if (entry.private_state_384_operands_valid != 1) {
+          return kStatusSharedPlanRejected;
+        }
+        short_stack_transition::node_operands_input_v1
+            transition_input = {};
+        transition_input.owner = entry.input.owner;
+        transition_input.region = entry.input.private_region;
+        transition_input.persistent_state.tlas_build_generation =
+            entry.private_state_384_stack_operands
+                .tlas_build_generation;
+        transition_input.persistent_state.blas_build_generation =
+            entry.private_state_384_stack_operands
+                .blas_build_generation;
+        transition_input.persistent_state.stack =
+            entry.private_state_384_stack_operands.stack;
+        transition_input.persistent_state
+            .recovery_target_inflight =
+            entry.input.recovery_target_inflight;
+        transition_input.node_route = entry.input.node_route;
+        transition_input.current_target =
+            entry.input.current_target;
+        transition_input.current_decode_context =
+            entry.private_state_384_stack_operands
+                .active_decode_context;
+        transition_input.pending_parent_resume =
+            entry.input.pending_parent_resume;
+        transition_input.pending_parent_resume_valid =
+            entry.input.pending_parent_resume_valid;
+        transition_input.parent_edge = entry.parent_edge;
+        transition_input.parent_edge_valid =
+            entry.parent_edge_valid;
+        transition_status =
+            short_stack_transition::
+                prepare_node_transition_from_operands(
+                    transition_input, &transition);
+      } else {
+        short_stack_transition::node_input_v0 transition_input = {};
+        transition_input.owner = entry.input.owner;
+        transition_input.region = entry.input.private_region;
+        transition_input.canonical_slot = entry.read_slot;
+        transition_input.node_route = entry.input.node_route;
+        transition_input.current_target = entry.input.current_target;
+        transition_input.current_decode_context =
+            entry.input.current_decode_context;
+        transition_input.pending_parent_resume =
+            entry.input.pending_parent_resume;
+        transition_input.pending_parent_resume_valid =
+            entry.input.pending_parent_resume_valid;
+        transition_input.parent_edge = entry.parent_edge;
+        transition_input.parent_edge_valid = entry.parent_edge_valid;
+        transition_status =
+            short_stack_transition::prepare_node_transition(
+                transition_input, &transition);
+      }
     } else if (entry.input.operation_kind ==
                kOperationResumeTransition) {
       short_stack_transition::resume_input_v0 transition_input = {};
@@ -1128,6 +1504,88 @@ status_kind accept_write_ack(
   *state = staged_state;
   *timing_state = staged_timing;
   *private_backing = staged_backing;
+  return kStatusOk;
+}
+
+status_kind accept_write_ack_with_private_state_384(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    private_shared::backing_state_v0 *private_backing,
+    private_state_384::backing::state_v1 *private_state_384_backing,
+    uint64_t service_cycle,
+    const private_shared::runtime_write_ack_v0 &ack) {
+  if (state == NULL || timing_state == NULL ||
+      private_backing == NULL ||
+      private_state_384_backing == NULL ||
+      !owns_ack(*state, ack)) {
+    return kStatusNoAckOwned;
+  }
+  int slot_index = -1;
+  for (unsigned index = 0; index < state->config.capacity; ++index) {
+    const operation_entry_v0 &entry = state->slots[index];
+    if (entry.valid != 0 && entry.phase == kPhaseWriting &&
+        entry.input.private_storage_profile ==
+            private_storage::kProfileCompressedShared384 &&
+        entry.reservation.operation_seq == ack.operation_seq &&
+        entry.commit_epoch == ack.commit_epoch &&
+        private_frontier::owners_equal(
+            entry.input.owner, ack.owner)) {
+      if (slot_index >= 0) return kStatusNoAckOwned;
+      slot_index = static_cast<int>(index);
+    }
+  }
+  if (slot_index < 0 || private_backing->outstanding.empty()) {
+    return kStatusNoAckOwned;
+  }
+
+  engine_state_v0 staged_state = *state;
+  timing_driver::state_v0 staged_timing = *timing_state;
+  private_shared::backing_state_v0 staged_backing =
+      *private_backing;
+  private_state_384::backing::state_v1 staged_private_384 =
+      *private_state_384_backing;
+  operation_entry_v0 &entry = staged_state.slots[slot_index];
+  request_owner::lane_binding_v0 request_binding = {};
+  const private_shared::shared_write_v0 modeled_write =
+      staged_backing.outstanding.front();
+  bool canonical_committed = false;
+  if (!make_request_owner(entry.input.owner, &request_binding) ||
+      timing_driver::complete_memory_transaction(
+          &staged_timing, request_binding,
+          entry.reservation.operation_seq) !=
+          timing_driver::kStatusOk ||
+      private_shared::detail::commit_runtime_write_ack(
+          &staged_backing, service_cycle, ack) !=
+          private_shared::kStatusOk ||
+      private_state_384::live_bridge::
+          accept_write_ack_and_maybe_commit(
+              &staged_private_384, modeled_write, ack,
+              &entry.private_state_384_commit,
+              &canonical_committed) !=
+          private_state_384::live_bridge::kStatusOk) {
+    return kStatusAckRejected;
+  }
+  entry.acknowledged_write_mask = static_cast<uint16_t>(
+      entry.acknowledged_write_mask |
+      (1u << (ack.memory_operation_seq - 1)));
+  if (entry.acknowledged_write_mask ==
+      all_write_chunks(entry.transition.write_plan.access_count)) {
+    if (!canonical_committed ||
+        timing_driver::commit_private_recovery_target_state(
+            &staged_timing, request_binding,
+            entry.reservation.operation_seq, entry.commit_epoch,
+            entry.transition.persistent_state
+                .recovery_target_inflight) !=
+            timing_driver::kStatusOk) {
+      return kStatusAckRejected;
+    }
+    entry.phase = kPhaseResultReady;
+  } else if (canonical_committed) {
+    return kStatusAckRejected;
+  }
+  *state = staged_state;
+  *timing_state = staged_timing;
+  *private_backing = staged_backing;
+  *private_state_384_backing = staged_private_384;
   return kStatusOk;
 }
 

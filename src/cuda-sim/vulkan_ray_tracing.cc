@@ -19168,12 +19168,21 @@ extern "C" bool rtcore_accept_v04_short_stack_private_shared_read(
     short_timing::engine_state_v0 staged_short = it->second;
     timing_driver::state_v0 staged_timing =
         rtcore_v04_timing_driver_for(request->owner_hw_sid);
+    const bool private_state_384 =
+        request->access_kind ==
+        RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ;
     const short_timing::status_kind status =
-        short_timing::accept_read_response(
-            &staged_short, &staged_timing,
-            rtcore_v04_private_shared_backing_for(
-                request->owner_hw_sid),
-            *request, response_cycle);
+        private_state_384
+            ? short_timing::accept_private_state_384_read_response(
+                  &staged_short, &staged_timing,
+                  rtcore_v04_private_state_384_backing_for(
+                      request->owner_hw_sid),
+                  *request, response_cycle)
+            : short_timing::accept_read_response(
+                  &staged_short, &staged_timing,
+                  rtcore_v04_private_shared_backing_for(
+                      request->owner_hw_sid),
+                  *request, response_cycle);
     if (status != short_timing::kStatusOk) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_SHORT_STACK_READ_FAULT "
@@ -19182,7 +19191,11 @@ extern "C" bool rtcore_accept_v04_short_stack_private_shared_read(
                 "response_cycle=%llu fault=%s\n",
                 request->owner_hw_sid, request->rt_request_id,
                 request->lane_id,
-                request->v04_stack_private_read.target_operation_seq,
+                private_state_384
+                    ? request->v04_private_state_384_read
+                          .operation_sequence
+                    : request->v04_stack_private_read
+                          .target_operation_seq,
                 request->chunk_id, response_cycle,
                 short_timing::status_name(status));
         fflush(stderr);
@@ -19295,6 +19308,9 @@ static bool rtcore_v04_private_storage_profile_for_owner(
 
 static rtcore::v04::private_frontier::region_binding_v0
 rtcore_v04_private_region_for(unsigned owner_hw_sid);
+static bool rtcore_v04_request_owner_from_private_owner(
+    const rtcore::v04::private_frontier::owner_binding_v0 &private_owner,
+    rtcore::v04::request_owner::lane_binding_v0 *request_owner);
 
 static rtcore::v04::node_timing::route_sink_result_kind
 rtcore_accept_v04_short_stack_node_route(
@@ -19326,7 +19342,40 @@ rtcore_accept_v04_short_stack_node_route(
     input.current_target = route->current_target_reference;
     input.current_decode_context = route->current_decode_context;
     input.active_decode_context = route->current_decode_context;
-    if (!rtcore_v04_immutable_trace_input_for(
+    uint8_t resident_private_storage_profile = 0;
+    rtcore::v04::request_owner::lane_binding_v0 request_owner = {};
+    if (!rtcore_v04_private_storage_profile_for_owner(
+            route->result_identity.owner,
+            &resident_private_storage_profile) ||
+        resident_private_storage_profile !=
+            route->result_identity.private_storage_profile ||
+        !rtcore_v04_request_owner_from_private_owner(
+            route->result_identity.owner, &request_owner)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_INGRESS_FAULT "
+                "owner_hw_sid=%u lane_id=%u "
+                "producer_operation_seq=%u "
+                "fault=private_storage_identity_missing\n",
+                context->owner_hw_sid,
+                route->result_identity.owner.lane_id,
+                route->result_identity.target_operation_seq);
+        fflush(stderr);
+        return node_timing::kRouteSinkRejected;
+    }
+    input.private_storage_profile =
+        resident_private_storage_profile;
+    const rtcore::v04::timing_driver::lane_control_state_v0 *control =
+        rtcore::v04::timing_driver::find_live_lane_control(
+            *staged_timing_state, request_owner);
+    if (control == NULL) {
+        return node_timing::kRouteSinkRejected;
+    }
+    input.recovery_target_inflight =
+        control->private_recovery_target_inflight;
+    if (resident_private_storage_profile ==
+            rtcore::v04::private_storage::
+                kProfileLegacyShared832 &&
+        !rtcore_v04_immutable_trace_input_for(
             route->result_identity.owner,
             &input.immutable_trace_input)) {
         fprintf(stderr,
@@ -19350,12 +19399,21 @@ rtcore_accept_v04_short_stack_node_route(
     short_timing::reservation_receipt_v0 reservation = {};
     short_timing::request_plan_v0 request_plan = {};
     const short_timing::status_kind status =
-        short_timing::reserve(
-            &staged_short, staged_timing_state,
-            rtcore_v04_private_shared_backing_for(
-                context->owner_hw_sid),
-            input, context->service_cycle, &reservation,
-            &request_plan);
+        resident_private_storage_profile ==
+                rtcore::v04::private_storage::
+                    kProfileCompressedShared384
+            ? short_timing::reserve_private_state_384(
+                  &staged_short, staged_timing_state,
+                  rtcore_v04_private_state_384_backing_for(
+                      context->owner_hw_sid),
+                  input, context->service_cycle, &reservation,
+                  &request_plan)
+            : short_timing::reserve(
+                  &staged_short, staged_timing_state,
+                  rtcore_v04_private_shared_backing_for(
+                      context->owner_hw_sid),
+                  input, context->service_cycle, &reservation,
+                  &request_plan);
     if (status == short_timing::kStatusCapacityBackpressure ||
         status ==
             short_timing::kStatusReservationBudgetBackpressure) {
@@ -19364,7 +19422,7 @@ rtcore_accept_v04_short_stack_node_route(
     if (status != short_timing::kStatusOk ||
         !reservation.valid || !request_plan.valid ||
         request_plan.request_count !=
-            short_timing::kReadChunkCount) {
+            reservation.read_chunk_count) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_SHORT_STACK_INGRESS_FAULT "
                 "owner_hw_sid=%u lane_id=%u "
@@ -21531,12 +21589,26 @@ static bool rtcore_service_v04_live_short_stack_ack(
     short_timing::engine_state_v0 staged_short =
         rtcore_v04_live_short_stack_timing_for(owner_hw_sid);
     private_shared::backing_state_v0 staged_backing = backing;
+    rtcore::v04::private_state_384::backing::state_v1
+        staged_private_384 =
+            rtcore_v04_private_state_384_backing_for(owner_hw_sid);
     timing_driver::state_v0 staged_timing =
         rtcore_v04_timing_driver_for(owner_hw_sid);
+    uint8_t resident_private_storage_profile = 0;
+    if (!rtcore_v04_private_storage_profile_for_owner(
+            front.owner, &resident_private_storage_profile)) {
+        return false;
+    }
     const short_timing::status_kind status =
-        short_timing::accept_write_ack(
-            &staged_short, &staged_timing, &staged_backing,
-            service_cycle, ack);
+        resident_private_storage_profile ==
+                rtcore::v04::private_storage::
+                    kProfileCompressedShared384
+            ? short_timing::accept_write_ack_with_private_state_384(
+                  &staged_short, &staged_timing, &staged_backing,
+                  &staged_private_384, service_cycle, ack)
+            : short_timing::accept_write_ack(
+                  &staged_short, &staged_timing, &staged_backing,
+                  service_cycle, ack);
     if (status != short_timing::kStatusOk) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_SHORT_STACK_ACK_FAULT "
@@ -21549,6 +21621,12 @@ static bool rtcore_service_v04_live_short_stack_ack(
     rtcore_v04_live_short_stack_timing_for(owner_hw_sid) =
         staged_short;
     backing = staged_backing;
+    if (resident_private_storage_profile ==
+        rtcore::v04::private_storage::
+            kProfileCompressedShared384) {
+        rtcore_v04_private_state_384_backing_for(owner_hw_sid) =
+            staged_private_384;
+    }
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
     return true;
 }

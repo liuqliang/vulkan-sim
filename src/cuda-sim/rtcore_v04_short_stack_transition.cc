@@ -149,8 +149,10 @@ bool append_access_plan(
 
 }  // namespace
 
-status_kind prepare_node_transition(const node_input_v0 &input,
-                                    result_v0 *result) {
+static status_kind prepare_node_transition_impl(
+    const node_operands_input_v1 &input,
+    const private_frontier::shadow_slot_v0 &write_seed,
+    result_v0 *result) {
   if (result == NULL ||
       input.pending_parent_resume_valid > 1 ||
       input.parent_edge_valid > 1 ||
@@ -160,10 +162,9 @@ status_kind prepare_node_transition(const node_input_v0 &input,
   }
   *result = result_v0();
 
-  short_stack_shared::persistent_state_v0 persistent = {};
-  if (short_stack_shared::decode_persistent_state(
-          input.canonical_slot, input.owner, &persistent) !=
-      short_stack_shared::kStatusOk) {
+  short_stack_shared::persistent_state_v0 persistent =
+      input.persistent_state;
+  if (!short_stack_shared::validate_persistent_state(persistent)) {
     return kStatusPrivateStateRejected;
   }
   const uint32_t build_generation =
@@ -326,8 +327,39 @@ status_kind prepare_node_transition(const node_input_v0 &input,
   }
 
   return finalize_persistent_state(
-      input.owner, input.region, input.canonical_slot,
-      persistent, result);
+      input.owner, input.region, write_seed, persistent, result);
+}
+
+status_kind prepare_node_transition(const node_input_v0 &input,
+                                    result_v0 *result) {
+  short_stack_shared::persistent_state_v0 persistent = {};
+  if (short_stack_shared::decode_persistent_state(
+          input.canonical_slot, input.owner, &persistent) !=
+      short_stack_shared::kStatusOk) {
+    return kStatusPrivateStateRejected;
+  }
+  node_operands_input_v1 operands = {};
+  operands.owner = input.owner;
+  operands.region = input.region;
+  operands.persistent_state = persistent;
+  operands.node_route = input.node_route;
+  operands.current_target = input.current_target;
+  operands.current_decode_context = input.current_decode_context;
+  operands.pending_parent_resume = input.pending_parent_resume;
+  operands.parent_edge = input.parent_edge;
+  operands.pending_parent_resume_valid =
+      input.pending_parent_resume_valid;
+  operands.parent_edge_valid = input.parent_edge_valid;
+  return prepare_node_transition_impl(
+      operands, input.canonical_slot, result);
+}
+
+status_kind prepare_node_transition_from_operands(
+    const node_operands_input_v1 &input, result_v0 *result) {
+  private_frontier::shadow_slot_v0 empty_write_seed = {};
+  empty_write_seed.owner = input.owner;
+  return prepare_node_transition_impl(
+      input, empty_write_seed, result);
 }
 
 status_kind prepare_resume_transition(const resume_input_v0 &input,

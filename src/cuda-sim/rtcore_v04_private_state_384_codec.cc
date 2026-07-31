@@ -845,6 +845,30 @@ status_kind initialize_new_launch_image(
   return kStatusOk;
 }
 
+status_kind encode_stack_sparse_projection(
+    const short_stack::state_v0 &stack,
+    stack_sparse_projection_v1 *projection) {
+  if (projection == NULL) return kStatusInvalidArgument;
+  *projection = stack_sparse_projection_v1();
+  if (!short_stack::validate_state(stack)) {
+    return kStatusInvalidStack;
+  }
+  projection->metadata[0] = stack.stack_count;
+  projection->metadata[1] = stack.stack_top_ptr;
+  projection->metadata[2] = stack.lost;
+  projection->metadata[3] = stack.active_domain;
+  for (uint8_t logical = 0; logical < stack.stack_count; ++logical) {
+    const uint8_t physical = static_cast<uint8_t>(
+        (stack.stack_top_ptr + logical) %
+        short_stack::kLogicalCapacity);
+    encode_entry(
+        projection->entries +
+            physical * sizeof(short_stack::entry_v0),
+        stack.entries[physical]);
+  }
+  return kStatusOk;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:

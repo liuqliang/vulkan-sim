@@ -65,7 +65,8 @@ struct result_commit_control_state_v0 {
 
 struct lane_control_state_v0 {
   bool live;
-  uint8_t reserved_zero[3];
+  uint8_t private_recovery_target_inflight;
+  uint8_t reserved_zero[2];
   request_owner::lane_binding_v0 owner;
   uint32_t next_target_operation_seq;
   uint32_t live_target_operation_seq;
@@ -216,6 +217,10 @@ status_kind begin_memory_transaction(
 status_kind complete_memory_transaction(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t operation_seq);
+status_kind commit_private_recovery_target_state(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint8_t recovery_target_inflight);
 status_kind complete_result_commit(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t commit_epoch);

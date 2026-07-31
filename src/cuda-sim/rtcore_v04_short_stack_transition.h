@@ -35,6 +35,22 @@ struct node_input_v0 {
   uint8_t reserved_zero[6];
 };
 
+// Profile-selected Stack operands. Unlike node_input_v0 this input never
+// carries a full private-slot image.
+struct node_operands_input_v1 {
+  private_frontier::owner_binding_v0 owner;
+  private_frontier::region_binding_v0 region;
+  short_stack_shared::persistent_state_v0 persistent_state;
+  typed_node::route_result_v0 node_route;
+  fetch_target::target_reference_v0 current_target;
+  typed_blas::as_decode_context_v0 current_decode_context;
+  short_stack::entry_v0 pending_parent_resume;
+  short_stack::parent_edge_v0 parent_edge;
+  uint8_t pending_parent_resume_valid;
+  uint8_t parent_edge_valid;
+  uint8_t reserved_zero[6];
+};
+
 struct resume_input_v0 {
   private_frontier::owner_binding_v0 owner;
   private_frontier::region_binding_v0 region;
@@ -79,6 +95,8 @@ struct result_v0 {
 
 status_kind prepare_node_transition(const node_input_v0 &input,
                                     result_v0 *result);
+status_kind prepare_node_transition_from_operands(
+    const node_operands_input_v1 &input, result_v0 *result);
 status_kind prepare_resume_transition(const resume_input_v0 &input,
                                       result_v0 *result);
 status_kind prepare_enter_blas_transition(

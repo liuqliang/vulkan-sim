@@ -5,6 +5,7 @@
 
 #include "rtcore_replay_interface.h"
 #include "rtcore_v04_private_shared_backing.h"
+#include "rtcore_v04_private_state_384_live_bridge.h"
 #include "rtcore_v04_short_stack_transition.h"
 #include "rtcore_v04_timing_driver.h"
 
@@ -16,6 +17,8 @@ static const uint8_t kMaxSlots = 16;
 static const uint8_t kMaxUnits = 1;
 static const uint8_t kReadChunkCount =
     short_stack_shared::kStateAccessChunkCount;
+static const uint8_t kMaxReadChunkCount =
+    private_state_384::operand_materializer::kMaxOperationReadChunks;
 static const uint8_t kWriteChunkCount =
     short_stack_shared::kStateAccessChunkCount;
 static const uint8_t kMaxWriteChunkCount = 12;
@@ -91,7 +94,8 @@ struct reservation_input_v0 {
   uint32_t blas_build_generation;
   uint8_t operation_kind;
   uint8_t pending_parent_resume_valid;
-  uint8_t reserved_zero[2];
+  uint8_t private_storage_profile;
+  uint8_t recovery_target_inflight;
 };
 
 struct reservation_receipt_v0 {
@@ -108,7 +112,7 @@ struct reservation_receipt_v0 {
 };
 
 struct request_plan_v0 {
-  rtcore_memory_unit_request_snapshot requests[kReadChunkCount];
+  rtcore_memory_unit_request_snapshot requests[kMaxReadChunkCount];
   uint8_t request_count;
   uint8_t valid;
   uint8_t reserved_zero[6];
@@ -119,6 +123,12 @@ struct operation_entry_v0 {
   reservation_receipt_v0 reservation;
   private_frontier::shadow_slot_v0 read_slot;
   private_frontier::access_plan_v0 read_plan;
+  private_state_384::operand_materializer::response_collector_v1
+      private_state_384_collector;
+  private_state_384::operand_materializer::stack_operands_v1
+      private_state_384_stack_operands;
+  private_state_384::live_bridge::pending_sparse_commit_v1
+      private_state_384_commit;
   short_stack_transition::result_v0 transition;
   short_stack::parent_edge_v0 parent_edge;
   uint8_t return_instance_payload[
@@ -128,14 +138,14 @@ struct operation_entry_v0 {
   uint64_t result_ready_cycle;
   uint64_t parent_lookup_ready_cycle;
   uint32_t commit_epoch;
-  uint8_t received_read_mask;
+  uint16_t received_read_mask;
   uint8_t received_return_instance_mask;
   uint16_t enqueued_write_mask;
   uint16_t acknowledged_write_mask;
   uint8_t phase;
   uint8_t parent_edge_valid;
+  uint8_t private_state_384_operands_valid;
   uint8_t valid;
-  uint8_t reserved_zero;
 };
 
 struct unit_state_v0 {
@@ -207,6 +217,12 @@ status_kind reserve_existing_target(
     const reservation_input_v0 &input, uint64_t reservation_cycle,
     reservation_receipt_v0 *reservation, request_plan_v0 *requests);
 
+status_kind reserve_private_state_384(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_state_384::backing::state_v1 &private_backing,
+    const reservation_input_v0 &input, uint64_t reservation_cycle,
+    reservation_receipt_v0 *reservation, request_plan_v0 *requests);
+
 status_kind accept_read_response(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
     const private_shared::backing_state_v0 &private_backing,
@@ -214,6 +230,12 @@ status_kind accept_read_response(
     uint64_t response_cycle,
     const uint8_t *return_instance_payload = NULL,
     uint8_t return_instance_payload_bytes = 0);
+
+status_kind accept_private_state_384_read_response(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_state_384::backing::state_v1 &private_backing,
+    const rtcore_memory_unit_request_snapshot &request,
+    uint64_t response_cycle);
 
 status_kind take_return_instance_read_plan(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
@@ -237,6 +259,13 @@ bool owns_ack(const engine_state_v0 &state,
 status_kind accept_write_ack(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
     private_shared::backing_state_v0 *private_backing,
+    uint64_t service_cycle,
+    const private_shared::runtime_write_ack_v0 &ack);
+
+status_kind accept_write_ack_with_private_state_384(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    private_shared::backing_state_v0 *private_backing,
+    private_state_384::backing::state_v1 *private_state_384_backing,
     uint64_t service_cycle,
     const private_shared::runtime_write_ack_v0 &ack);
 

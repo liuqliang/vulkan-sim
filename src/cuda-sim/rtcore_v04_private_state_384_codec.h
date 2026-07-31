@@ -165,6 +165,12 @@ struct sparse_write_plan_v1 {
   chunk_write_v1 writes[kLaunchWriteCount];
 };
 
+struct stack_sparse_projection_v1 {
+  uint8_t metadata[4];
+  uint8_t entries[short_stack::kLogicalCapacity *
+                  sizeof(short_stack::entry_v0)];
+};
+
 status_kind encode_image(uint32_t private_layout_profile_id,
                          uint32_t bvh_format_profile_id,
                          const state_v1 &state,
@@ -183,6 +189,10 @@ status_kind initialize_new_launch_image(
     const launch_input_v1 &input,
     image_v1 *image,
     sparse_write_plan_v1 *plan);
+
+status_kind encode_stack_sparse_projection(
+    const short_stack::state_v0 &stack,
+    stack_sparse_projection_v1 *projection);
 
 const char *status_name(status_kind status);
 

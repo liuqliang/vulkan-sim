@@ -699,6 +699,15 @@ static status_kind materialize_stack_common(
       find_chunk(collector, 6), find_chunk(collector, 7),
       &decoded.stack);
   if (status != kStatusOk) return status;
+  const uint8_t *chunk4 = find_chunk(collector, 4);
+  decoded.tlas_build_generation = load_u32(chunk4 + 16);
+  decoded.blas_build_generation = load_u32(chunk4 + 20);
+  if (decoded.tlas_build_generation == 0 ||
+      (decoded.stack.active_domain == short_stack::kDomainBlas
+           ? decoded.blas_build_generation == 0
+           : decoded.blas_build_generation != 0)) {
+    return kStatusInvalidEncoding;
+  }
   if ((decoded.stack.active_domain == short_stack::kDomainTlas
            ? kAsTypeTlas
            : kAsTypeBlas) != as_context.as_type) {

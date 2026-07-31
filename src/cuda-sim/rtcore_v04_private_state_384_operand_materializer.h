@@ -138,7 +138,8 @@ struct stack_operands_v1 {
   typed_blas::as_decode_context_v0 active_decode_context;
   short_stack::state_v0 stack;
   float effective_traversal_bound;
-  uint32_t reserved_zero;
+  uint32_t tlas_build_generation;
+  uint32_t blas_build_generation;
 };
 
 struct stack_terminal_operands_v1 {
