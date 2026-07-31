@@ -1307,6 +1307,8 @@ static bool rtcore_v04_request_owner_from_private_owner(
     rtcore::v04::request_owner::lane_binding_v0 *request_owner);
 
 struct rtcore_resident_rt_warp_record;
+static rtcore::v04::private_shared::backing_state_v0 &
+rtcore_v04_private_shared_backing_for(unsigned owner_hw_sid);
 static rtcore_resident_rt_warp_record *
 rtcore_find_v04_native_boundary_resident(
     const rtcore::v04::request_owner::lane_binding_v0 &owner);
@@ -1373,6 +1375,7 @@ struct rtcore_resident_rt_warp_record {
           v04_private_frontier_init_active_mask(0),
           v04_private_storage_profile(
               rtcore::v04::private_storage::kProfileLegacyShared832),
+          v04_private_storage_charge_bytes_per_lane(0),
           v04_root_packet_valid(false),
           v04_root_private_reads_enqueued_mask(0),
           v04_root_ready_mask(0),
@@ -1400,6 +1403,7 @@ struct rtcore_resident_rt_warp_record {
     bool v04_private_frontier_init_committed;
     unsigned v04_private_frontier_init_active_mask;
     unsigned v04_private_storage_profile;
+    unsigned v04_private_storage_charge_bytes_per_lane;
     bool v04_root_packet_valid;
     unsigned v04_root_private_reads_enqueued_mask;
     unsigned v04_root_ready_mask;
@@ -1415,6 +1419,61 @@ struct rtcore_resident_rt_warp_record {
     rtcore_v04_private_boundary_read_state
         v04_private_boundary_reads[32];
 };
+
+static bool rtcore_v04_private_storage_charge_matches_resident(
+    const rtcore_resident_rt_warp_record &record)
+{
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace private_storage = rtcore::v04::private_storage;
+    if (!record.valid ||
+        record.v04_resident_warp_slot >=
+            private_shared::kResidentWarpCapacity) {
+        return false;
+    }
+    const private_storage::profile_kind storage_profile =
+        static_cast<private_storage::profile_kind>(
+            record.v04_private_storage_profile);
+    private_shared::resident_charge_profile_kind
+        expected_charge_profile =
+            private_shared::kResidentChargeProfileInvalid;
+    if (storage_profile ==
+        private_storage::kProfileLegacyShared832) {
+        expected_charge_profile =
+            private_shared::kResidentChargeProfileLegacyShared832;
+    } else if (storage_profile ==
+               private_storage::kProfileCompressedShared384) {
+        expected_charge_profile =
+            private_shared::
+                kResidentChargeProfileCompressedShared384;
+    }
+    uint32_t expected_charge = 0;
+    if (private_storage::profile_resident_charge_bytes_per_lane(
+            storage_profile,
+            &expected_charge) != private_storage::kStatusOk ||
+        expected_charge_profile ==
+            private_shared::kResidentChargeProfileInvalid ||
+        expected_charge == 0 ||
+        record.v04_private_storage_charge_bytes_per_lane !=
+            expected_charge) {
+        return false;
+    }
+    const private_shared::resident_warp_state_v0 &resident =
+        rtcore_v04_private_shared_backing_for(
+            record.owner_hw_sid)
+            .resident_warps[record.v04_resident_warp_slot];
+    return resident.live &&
+           resident.owner_hw_sid == record.owner_hw_sid &&
+           resident.warp_uid == record.current_warp_uid &&
+           resident.warp_id == record.warp_id &&
+           resident.active_mask == record.active_mask &&
+           resident.resident_charge_profile ==
+               expected_charge_profile &&
+           resident.charge_bytes_per_lane == expected_charge &&
+           resident.charged_bytes ==
+               expected_charge *
+                   static_cast<unsigned>(
+                       __builtin_popcount(record.active_mask));
+}
 
 static bool rtcore_try_commit_v04_native_continuation_resubmit(
     rtcore_resident_rt_warp_record *record,
@@ -14429,6 +14488,10 @@ static bool rtcore_prepare_shader_visible_resubmit_admission(
         if (!record->v04_private_frontier_live_init_valid ||
             !record->v04_private_frontier_init_committed) {
             reason = "PRIVATE_FRONTIER_RESUBMIT_INIT_INCOMPLETE";
+        } else if (record->v04_root_packet_valid &&
+            !rtcore_v04_private_storage_charge_matches_resident(
+                *record)) {
+            reason = "PRIVATE_STORAGE_RESUBMIT_CHARGE_MISMATCH";
         } else {
             const rtcore::v04::private_shared::status_kind private_status =
                 rtcore::v04::private_shared::prepare_mask_shrink(
@@ -15993,6 +16056,10 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
         if (!record->v04_private_frontier_live_init_valid ||
             !record->v04_private_frontier_init_committed) {
             reason = "PRIVATE_FRONTIER_RETIRE_INIT_INCOMPLETE";
+        } else if (record->v04_root_packet_valid &&
+            !rtcore_v04_private_storage_charge_matches_resident(
+                *record)) {
+            reason = "PRIVATE_STORAGE_RETIRE_CHARGE_MISMATCH";
         } else {
             const rtcore::v04::private_shared::status_kind private_status =
                 rtcore::v04::private_shared::prepare_release_warp(
@@ -18191,6 +18258,8 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
     record.v04_private_frontier_init_active_mask =
         input->active_mask;
     record.v04_private_storage_profile = candidate_plan.profile;
+    record.v04_private_storage_charge_bytes_per_lane =
+        candidate_plan.resident_charge_bytes_per_lane;
     record.v04_root_packet_valid = true;
     if (rtcore_v04_native_boundary_completion_enabled() &&
         rtcore::v04::boundary_publication::initialize(
@@ -18260,18 +18329,32 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
         record.v04_continuation_lifecycle
             .completion_transaction_generation,
         record.active_mask, record.active_mask, issue_cycle);
+    unsigned private_init_chunks_per_lane = 0;
+    for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
+        if ((input->active_mask & (1u << lane)) == 0) continue;
+        private_init_chunks_per_lane =
+            candidate_plan.legacy_live_plan.init_plans[lane]
+                .access_count;
+        break;
+    }
     printf("GPGPU-Sim RTCORE_V04_ROOT_PACKET_ADMITTED "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
            "resident_slot=%u lanes=%u raw_global_requests=%zu "
-           "private_init_chunks_per_lane=9 producer_commit_required=0 "
-           "private_storage_profile=%s compressed_backing_committed=%u "
+           "private_init_chunks_per_lane=%u producer_commit_required=0 "
+           "private_storage_profile=%s "
+           "private_charge_bytes_per_lane=%u "
+           "resident_private_charge_bytes=%u "
+           "compressed_backing_committed=%u "
            "compatibility_proxy=1 pre_functional=1\n",
            input->owner_hw_sid, input->warp_uid, input->warp_id,
            input->active_mask, timing_plan.owner_plan.resident_warp_slot,
            lane_ordinal, raw_requests.size(),
+           private_init_chunks_per_lane,
            private_storage::profile_name(
                static_cast<private_storage::profile_kind>(
                    candidate_plan.profile)),
+           candidate_plan.resident_charge_bytes_per_lane,
+           candidate_plan.legacy_live_plan.charged_bytes,
            candidate_plan.profile ==
                    private_storage::kProfileCompressedShared384
                ? 1u
@@ -23646,6 +23729,18 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
                 "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
                 "owner_hw_sid=%u previous_warp_uid=%u warp_id=%u "
                 "phase=commit fault=lifecycle_staged_identity_invalid\n",
+                record->owner_hw_sid, previous_warp_uid,
+                record->warp_id);
+        fflush(stderr);
+        abort();
+    }
+    if (record->v04_root_packet_valid &&
+        !rtcore_v04_private_storage_charge_matches_resident(
+            *record)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                "owner_hw_sid=%u previous_warp_uid=%u warp_id=%u "
+                "phase=commit fault=private_storage_charge_mismatch\n",
                 record->owner_hw_sid, previous_warp_uid,
                 record->warp_id);
         fflush(stderr);

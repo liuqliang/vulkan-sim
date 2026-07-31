@@ -9,8 +9,6 @@ namespace private_state_384 {
 namespace live_bridge {
 namespace {
 
-static const uint64_t kPrivate384Base = UINT64_C(0xfe00000000000000);
-static const uint64_t kOwnerStride = UINT64_C(0x1000000);
 static const uint8_t kResponseTargetRtcore = 1;
 
 bool bytes_are_zero(const uint8_t *bytes, size_t count) {
@@ -162,8 +160,9 @@ bool request_shape_valid(
 
 uint64_t private_slot_base(
     const private_frontier::owner_binding_v0 &owner) {
-  return kPrivate384Base +
-         static_cast<uint64_t>(owner.owner_hw_sid) * kOwnerStride +
+  return kSharedPlacementBase +
+         static_cast<uint64_t>(owner.owner_hw_sid) *
+             kSharedPlacementOwnerStride +
          static_cast<uint64_t>(owner.private_slot_id) * kSlotBytes;
 }
 

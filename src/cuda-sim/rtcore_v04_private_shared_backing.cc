@@ -24,6 +24,28 @@ static uint32_t count_lanes(uint32_t mask) {
   return count;
 }
 
+static uint32_t resident_charge_bytes_per_lane(
+    resident_charge_profile_kind profile) {
+  switch (profile) {
+    case kResidentChargeProfileLegacyShared832:
+      return kLegacyResidentChargeBytesPerLane;
+    case kResidentChargeProfileCompressedShared384:
+      return kCompressedResidentChargeBytesPerLane;
+    case kResidentChargeProfileInvalid:
+      break;
+  }
+  return 0;
+}
+
+static bool resident_charge_binding_valid(
+    uint8_t profile, uint32_t charge_bytes_per_lane) {
+  const resident_charge_profile_kind typed_profile =
+      static_cast<resident_charge_profile_kind>(profile);
+  const uint32_t expected =
+      resident_charge_bytes_per_lane(typed_profile);
+  return expected != 0 && charge_bytes_per_lane == expected;
+}
+
 static bool bytes_are_zero(const uint8_t *bytes, size_t count) {
   for (size_t index = 0; index < count; ++index) {
     if (bytes[index] != 0) return false;
@@ -101,6 +123,74 @@ static uint64_t private_slot_base(
   return private_region_base(owner.owner_hw_sid) +
          static_cast<uint64_t>(owner.private_slot_id) *
              private_frontier::kPrivateDataSlotBytes;
+}
+
+static uint64_t compressed_private_slot_base(
+    const private_frontier::owner_binding_v0 &owner) {
+  return private_state_384::kSharedPlacementBase +
+         static_cast<uint64_t>(owner.owner_hw_sid) *
+             private_state_384::kSharedPlacementOwnerStride +
+         static_cast<uint64_t>(owner.private_slot_id) *
+             private_state_384::kSlotBytes;
+}
+
+static uint8_t compressed_launch_field_kind(uint8_t chunk) {
+  switch (chunk) {
+    case 0:
+      return private_frontier::kFieldMutableRayState;
+    case 1:
+      return private_frontier::kFieldAsDecodeContext;
+    case 2:
+    case 3:
+      return private_frontier::kFieldCommittedHit;
+    case 4:
+      return private_frontier::kFieldCurrentInstance;
+  }
+  return private_frontier::kFieldInvalid;
+}
+
+static bool prepare_compressed_launch_lane(
+    const private_frontier::owner_binding_v0 &owner,
+    const private_state_384::sparse_write_plan_v1 &source,
+    private_frontier::shadow_slot_v0 *staging,
+    private_frontier::access_plan_v0 *init_plan) {
+  if (staging == NULL || init_plan == NULL ||
+      source.write_count != private_state_384::kLaunchWriteCount ||
+      !bytes_are_zero(source.reserved_zero,
+                      sizeof(source.reserved_zero))) {
+    return false;
+  }
+  *staging = private_frontier::shadow_slot_v0();
+  *init_plan = private_frontier::access_plan_v0();
+  staging->owner = owner;
+  init_plan->owner = owner;
+  init_plan->access_count = private_state_384::kLaunchWriteCount;
+  const uint64_t slot_base = compressed_private_slot_base(owner);
+  for (uint8_t chunk = 0; chunk < private_state_384::kLaunchWriteCount;
+       ++chunk) {
+    const private_state_384::chunk_write_v1 &write =
+        source.writes[chunk];
+    const uint16_t expected_offset =
+        static_cast<uint16_t>(chunk * private_state_384::kChunkBytes);
+    const uint8_t field_kind = compressed_launch_field_kind(chunk);
+    if (write.slot_byte_offset != expected_offset ||
+        write.byte_count != private_state_384::kChunkBytes ||
+        write.byte_mask != std::numeric_limits<uint32_t>::max() ||
+        field_kind == private_frontier::kFieldInvalid) {
+      return false;
+    }
+    std::memcpy(staging->bytes + expected_offset, write.payload,
+                private_state_384::kChunkBytes);
+    private_frontier::shared_chunk_access_v0 &access =
+        init_plan->accesses[chunk];
+    access.aligned_32b_address = slot_base + expected_offset;
+    access.byte_mask = write.byte_mask;
+    access.slot_byte_offset = expected_offset;
+    access.byte_count = private_state_384::kChunkBytes;
+    access.field_kind = field_kind;
+    access.access_kind = private_frontier::kAccessWrite;
+  }
+  return true;
 }
 
 static bool field_contains_offset(uint8_t field_kind, uint32_t offset) {
@@ -375,9 +465,19 @@ static status_kind prepare_new_warp_impl(
     const private_frontier::owner_binding_v0 owners[kLaneCapacity],
     const private_frontier::root_private_operands_v0
         root_operands[kLaneCapacity],
+    const private_state_384::sparse_write_plan_v1
+        compressed_launch_plans[kLaneCapacity],
+    resident_charge_profile_kind resident_charge_profile,
     new_warp_plan_v0 *plan) {
+  const uint32_t charge_bytes_per_lane =
+      resident_charge_bytes_per_lane(resident_charge_profile);
+  const bool compressed_launch =
+      resident_charge_profile ==
+      kResidentChargeProfileCompressedShared384;
   if (plan == NULL || owners == NULL || !state.initialized ||
-      active_mask == 0) {
+      active_mask == 0 || charge_bytes_per_lane == 0 ||
+      (compressed_launch != (compressed_launch_plans != NULL)) ||
+      (compressed_launch && root_operands != NULL)) {
     return kStatusInvalidArgument;
   }
   std::memset(plan, 0, sizeof(*plan));
@@ -408,7 +508,7 @@ static status_kind prepare_new_warp_impl(
   }
 
   const uint32_t lane_count = count_lanes(active_mask);
-  const uint32_t charge = lane_count * kResidentChargeBytesPerLane;
+  const uint32_t charge = lane_count * charge_bytes_per_lane;
   if (charge > kResidentSharedBytes - state.charged_bytes) {
     return kStatusCapacityExceeded;
   }
@@ -440,37 +540,50 @@ static status_kind prepare_new_warp_impl(
       }
     }
 
-    private_frontier::region_binding_v0 region = {};
-    region.profile_id = private_frontier::kLayoutProfileId;
-    region.slot_count = 256;
-    region.private_region_base =
-        UINT64_C(0xff00000000000000) +
-        static_cast<uint64_t>(state.owner_hw_sid) * UINT64_C(0x1000000);
-    private_frontier::frontier_metadata_image_v0 metadata = {};
-    metadata.frontier_capacity = private_frontier::kFrontierEntryCapacity;
-    metadata.max_level_depth = 1;
-    const private_frontier::status_kind planner_status =
-        root_operands == NULL
-            ? private_frontier::initialize_shadow_slot(
-                  &plan->staging_slots[lane], owner, region, metadata,
-                  &plan->init_plans[lane])
-            : private_frontier::initialize_root_shadow_slot(
-                  &plan->staging_slots[lane], owner, region, metadata,
-                  root_operands[lane], &plan->init_plans[lane]);
-    if (planner_status != private_frontier::kStatusOk ||
-        plan->init_plans[lane].access_count !=
-            (root_operands == NULL ? 2 : 9)) {
-      return kStatusPlannerFailure;
+    if (compressed_launch) {
+      if (!prepare_compressed_launch_lane(
+              owner, compressed_launch_plans[lane],
+              &plan->staging_slots[lane], &plan->init_plans[lane])) {
+        return kStatusPlannerFailure;
+      }
+    } else {
+      private_frontier::region_binding_v0 region = {};
+      region.profile_id = private_frontier::kLayoutProfileId;
+      region.slot_count = 256;
+      region.private_region_base =
+          UINT64_C(0xff00000000000000) +
+          static_cast<uint64_t>(state.owner_hw_sid) * UINT64_C(0x1000000);
+      private_frontier::frontier_metadata_image_v0 metadata = {};
+      metadata.frontier_capacity =
+          private_frontier::kFrontierEntryCapacity;
+      metadata.max_level_depth = 1;
+      const private_frontier::status_kind planner_status =
+          root_operands == NULL
+              ? private_frontier::initialize_shadow_slot(
+                    &plan->staging_slots[lane], owner, region, metadata,
+                    &plan->init_plans[lane])
+              : private_frontier::initialize_root_shadow_slot(
+                    &plan->staging_slots[lane], owner, region, metadata,
+                    root_operands[lane], &plan->init_plans[lane]);
+      if (planner_status != private_frontier::kStatusOk ||
+          plan->init_plans[lane].access_count !=
+              (root_operands == NULL ? 2 : 9)) {
+        return kStatusPlannerFailure;
+      }
     }
   }
 
   plan->valid = true;
   plan->root_operands_initialized = root_operands != NULL;
+  plan->compressed_launch_initialized = compressed_launch;
   plan->resident_warp_slot = resident_slot;
   plan->owner_hw_sid = state.owner_hw_sid;
   plan->warp_uid = warp_uid;
   plan->warp_id = warp_id;
   plan->active_mask = active_mask;
+  plan->resident_charge_profile =
+      static_cast<uint8_t>(resident_charge_profile);
+  plan->charge_bytes_per_lane = charge_bytes_per_lane;
   plan->charged_bytes = charge;
   plan->expected_mutation_epoch = state.mutation_epoch;
   return kStatusOk;
@@ -482,7 +595,8 @@ status_kind prepare_new_warp(
     const private_frontier::owner_binding_v0 owners[kLaneCapacity],
     new_warp_plan_v0 *plan) {
   return prepare_new_warp_impl(state, warp_uid, warp_id, active_mask, owners,
-                               NULL, plan);
+                               NULL, NULL,
+                               kResidentChargeProfileLegacyShared832, plan);
 }
 
 status_kind prepare_new_warp_with_root_operands(
@@ -494,10 +608,12 @@ status_kind prepare_new_warp_with_root_operands(
     new_warp_plan_v0 *plan) {
   if (root_operands == NULL) return kStatusInvalidArgument;
   return prepare_new_warp_impl(state, warp_uid, warp_id, active_mask, owners,
-                               root_operands, plan);
+                               root_operands, NULL,
+                               kResidentChargeProfileLegacyShared832, plan);
 }
 
-status_kind prepare_new_warp_with_root_operands_and_short_stack(
+static status_kind
+prepare_new_warp_with_root_operands_and_short_stack_impl(
     const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
     uint32_t active_mask,
     const private_frontier::owner_binding_v0 owners[kLaneCapacity],
@@ -510,7 +626,8 @@ status_kind prepare_new_warp_with_root_operands_and_short_stack(
     return kStatusInvalidArgument;
   }
   status_kind status = prepare_new_warp_impl(
-      state, warp_uid, warp_id, active_mask, owners, root_operands, plan);
+      state, warp_uid, warp_id, active_mask, owners, root_operands,
+      NULL, kResidentChargeProfileLegacyShared832, plan);
   if (status != kStatusOk) return status;
 
   private_frontier::region_binding_v0 region = {};
@@ -539,6 +656,32 @@ status_kind prepare_new_warp_with_root_operands_and_short_stack(
   return kStatusOk;
 }
 
+status_kind prepare_new_warp_with_root_operands_and_short_stack(
+    const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
+    uint32_t active_mask,
+    const private_frontier::owner_binding_v0 owners[kLaneCapacity],
+    const private_frontier::root_private_operands_v0
+        root_operands[kLaneCapacity],
+    const uint32_t root_build_generations[kLaneCapacity],
+    new_warp_plan_v0 *plan) {
+  return prepare_new_warp_with_root_operands_and_short_stack_impl(
+      state, warp_uid, warp_id, active_mask, owners, root_operands,
+      root_build_generations, plan);
+}
+
+status_kind prepare_new_warp_with_compressed_launch(
+    const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
+    uint32_t active_mask,
+    const private_frontier::owner_binding_v0 owners[kLaneCapacity],
+    const private_state_384::sparse_write_plan_v1
+        launch_plans[kLaneCapacity],
+    new_warp_plan_v0 *plan) {
+  if (launch_plans == NULL) return kStatusInvalidArgument;
+  return prepare_new_warp_impl(
+      state, warp_uid, warp_id, active_mask, owners, NULL,
+      launch_plans, kResidentChargeProfileCompressedShared384, plan);
+}
+
 status_kind commit_new_warp(backing_state_v0 *state,
                             const new_warp_plan_v0 &plan) {
   if (state == NULL || !state->initialized || !plan.valid ||
@@ -551,11 +694,41 @@ status_kind commit_new_warp(backing_state_v0 *state,
   private_frontier::owner_binding_v0 owners[kLaneCapacity] = {};
   private_frontier::root_private_operands_v0
       root_operands[kLaneCapacity] = {};
+  private_state_384::sparse_write_plan_v1
+      compressed_launch_plans[kLaneCapacity] = {};
   uint32_t root_build_generations[kLaneCapacity] = {};
+  const bool compressed_launch =
+      plan.resident_charge_profile ==
+      kResidentChargeProfileCompressedShared384;
+  if (compressed_launch != plan.compressed_launch_initialized ||
+      (compressed_launch &&
+       (plan.root_operands_initialized ||
+        plan.short_stack_initialized)) ||
+      (!compressed_launch &&
+       plan.compressed_launch_initialized)) {
+    return kStatusPlannerFailure;
+  }
   for (uint32_t lane = 0; lane < kLaneCapacity; ++lane) {
     if ((plan.active_mask & lane_bit(lane)) == 0) continue;
     owners[lane] = plan.staging_slots[lane].owner;
-    if (plan.root_operands_initialized &&
+    if (compressed_launch) {
+      private_state_384::sparse_write_plan_v1 &launch =
+          compressed_launch_plans[lane];
+      launch.write_count = private_state_384::kLaunchWriteCount;
+      for (uint8_t chunk = 0;
+           chunk < private_state_384::kLaunchWriteCount; ++chunk) {
+        private_state_384::chunk_write_v1 &write =
+            launch.writes[chunk];
+        write.slot_byte_offset = static_cast<uint16_t>(
+            chunk * private_state_384::kChunkBytes);
+        write.byte_count = private_state_384::kChunkBytes;
+        write.byte_mask = std::numeric_limits<uint32_t>::max();
+        std::memcpy(
+            write.payload,
+            plan.staging_slots[lane].bytes + write.slot_byte_offset,
+            private_state_384::kChunkBytes);
+      }
+    } else if (plan.root_operands_initialized &&
         private_frontier::decode_root_private_operands(
             plan.staging_slots[lane], owners[lane],
             &root_operands[lane]) != private_frontier::kStatusOk) {
@@ -581,18 +754,24 @@ status_kind commit_new_warp(backing_state_v0 *state,
     }
   }
   new_warp_plan_v0 revalidated = {};
-  const status_kind revalidation_status =
-      plan.short_stack_initialized
-          ? prepare_new_warp_with_root_operands_and_short_stack(
-                *state, plan.warp_uid, plan.warp_id, plan.active_mask,
-                owners, root_operands, root_build_generations,
-                &revalidated)
-      : plan.root_operands_initialized
-          ? prepare_new_warp_with_root_operands(
-                *state, plan.warp_uid, plan.warp_id, plan.active_mask, owners,
-                root_operands, &revalidated)
-          : prepare_new_warp(*state, plan.warp_uid, plan.warp_id,
-                             plan.active_mask, owners, &revalidated);
+  status_kind revalidation_status = kStatusPlannerFailure;
+  if (compressed_launch) {
+    revalidation_status = prepare_new_warp_with_compressed_launch(
+        *state, plan.warp_uid, plan.warp_id, plan.active_mask,
+        owners, compressed_launch_plans, &revalidated);
+  } else if (plan.short_stack_initialized) {
+    revalidation_status =
+        prepare_new_warp_with_root_operands_and_short_stack_impl(
+            *state, plan.warp_uid, plan.warp_id, plan.active_mask,
+            owners, root_operands, root_build_generations,
+            &revalidated);
+  } else {
+    revalidation_status = prepare_new_warp_impl(
+        *state, plan.warp_uid, plan.warp_id, plan.active_mask,
+        owners,
+        plan.root_operands_initialized ? root_operands : NULL,
+        NULL, kResidentChargeProfileLegacyShared832, &revalidated);
+  }
   if (revalidation_status != kStatusOk) {
     return revalidation_status;
   }
@@ -602,8 +781,12 @@ status_kind commit_new_warp(backing_state_v0 *state,
   if (state->owner_hw_sid != plan.owner_hw_sid ||
       state->resident_warps[plan.resident_warp_slot].live ||
       plan.active_mask == 0 ||
+      !resident_charge_binding_valid(
+          plan.resident_charge_profile,
+          plan.charge_bytes_per_lane) ||
       plan.charged_bytes !=
-          count_lanes(plan.active_mask) * kResidentChargeBytesPerLane ||
+          count_lanes(plan.active_mask) *
+              plan.charge_bytes_per_lane ||
       plan.charged_bytes > kResidentSharedBytes - state->charged_bytes) {
     return kStatusOwnerMismatch;
   }
@@ -615,6 +798,9 @@ status_kind commit_new_warp(backing_state_v0 *state,
   committed.warp_uid = plan.warp_uid;
   committed.warp_id = plan.warp_id;
   committed.active_mask = plan.active_mask;
+  committed.resident_charge_profile =
+      plan.resident_charge_profile;
+  committed.charge_bytes_per_lane = plan.charge_bytes_per_lane;
   committed.charged_bytes = plan.charged_bytes;
   for (uint32_t lane = 0; lane < kLaneCapacity; ++lane) {
     if ((plan.active_mask & lane_bit(lane)) == 0) continue;
@@ -954,7 +1140,14 @@ status_kind prepare_mask_shrink(const backing_state_v0 &state,
   const resident_warp_state_v0 &warp = state.resident_warps[resident_warp_slot];
   if (!warp_matches(warp, state.owner_hw_sid, previous_warp_uid, warp_id) ||
       !warp.scheduler_ready || next_warp_uid == previous_warp_uid ||
-      next_active_mask == 0 || (next_active_mask & ~warp.active_mask) != 0) {
+      next_active_mask == 0 ||
+      (next_active_mask & ~warp.active_mask) != 0 ||
+      !resident_charge_binding_valid(
+          warp.resident_charge_profile,
+          warp.charge_bytes_per_lane) ||
+      warp.charged_bytes !=
+          count_lanes(warp.active_mask) *
+              warp.charge_bytes_per_lane) {
     return kStatusOwnerMismatch;
   }
   const uint32_t release_mask = warp.active_mask & ~next_active_mask;
@@ -972,7 +1165,7 @@ status_kind prepare_mask_shrink(const backing_state_v0 &state,
   plan->next_active_mask = next_active_mask;
   plan->release_mask = release_mask;
   plan->released_bytes =
-      count_lanes(release_mask) * kResidentChargeBytesPerLane;
+      count_lanes(release_mask) * warp.charge_bytes_per_lane;
   plan->expected_mutation_epoch = state.mutation_epoch;
   return kStatusOk;
 }
@@ -1032,7 +1225,13 @@ status_kind prepare_release_warp(const backing_state_v0 &state,
   std::memset(plan, 0, sizeof(*plan));
   const resident_warp_state_v0 &warp = state.resident_warps[resident_warp_slot];
   if (!warp_matches(warp, state.owner_hw_sid, warp_uid, warp_id) ||
-      !warp.scheduler_ready) {
+      !warp.scheduler_ready ||
+      !resident_charge_binding_valid(
+          warp.resident_charge_profile,
+          warp.charge_bytes_per_lane) ||
+      warp.charged_bytes !=
+          count_lanes(warp.active_mask) *
+              warp.charge_bytes_per_lane) {
     return kStatusOwnerMismatch;
   }
   const status_kind release_status =

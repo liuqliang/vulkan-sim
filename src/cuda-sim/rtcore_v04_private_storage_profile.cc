@@ -120,6 +120,38 @@ const char *profile_name(profile_kind profile) {
   return "invalid";
 }
 
+status_kind profile_resident_charge_bytes_per_lane(
+    profile_kind profile, uint32_t *charge_bytes_per_lane) {
+  if (charge_bytes_per_lane == NULL) return kStatusInvalidArgument;
+  switch (profile) {
+    case kProfileLegacyShared832:
+      *charge_bytes_per_lane =
+          private_shared::kLegacyResidentChargeBytesPerLane;
+      return kStatusOk;
+    case kProfileCompressedShared384:
+      *charge_bytes_per_lane =
+          private_shared::kCompressedResidentChargeBytesPerLane;
+      return kStatusOk;
+    case kProfileGlobal384:
+      *charge_bytes_per_lane = 0;
+      return kStatusOk;
+  }
+  return kStatusInvalidSelector;
+}
+
+static private_shared::resident_charge_profile_kind
+profile_resident_charge_profile(profile_kind profile) {
+  switch (profile) {
+    case kProfileLegacyShared832:
+      return private_shared::kResidentChargeProfileLegacyShared832;
+    case kProfileCompressedShared384:
+      return private_shared::kResidentChargeProfileCompressedShared384;
+    case kProfileGlobal384:
+      break;
+  }
+  return private_shared::kResidentChargeProfileInvalid;
+}
+
 static status_kind prepare_new_warp_with_profile(
     const private_shared::backing_state_v0 &state,
     uint32_t warp_uid, uint32_t warp_id, uint32_t active_mask,
@@ -155,30 +187,36 @@ static status_kind prepare_new_warp_with_profile(
     return kStatusInvalidSelector;
   }
 
+  uint32_t resident_charge_bytes_per_lane = 0;
+  const private_shared::resident_charge_profile_kind
+      resident_charge_profile =
+          profile_resident_charge_profile(profile);
+  const status_kind charge_status =
+      profile_resident_charge_bytes_per_lane(
+          profile, &resident_charge_bytes_per_lane);
+  if (charge_status != kStatusOk ||
+      resident_charge_bytes_per_lane == 0 ||
+      resident_charge_profile ==
+          private_shared::kResidentChargeProfileInvalid) {
+    return charge_status == kStatusOk ? kStatusUnsupportedProfile
+                                     : charge_status;
+  }
+
   admission_candidate_plan_v0 prepared = {};
   if (profile == kProfileCompressedShared384 &&
       !short_stack_enabled) {
     return kStatusUnsupportedProfile;
   }
-  const private_shared::status_kind legacy_status =
-      short_stack_enabled
-          ? private_shared::
-                prepare_new_warp_with_root_operands_and_short_stack(
-                    state, warp_uid, warp_id, active_mask, owners,
-                    root_operands, root_build_generations,
-                    &prepared.legacy_live_plan)
-          : private_shared::prepare_new_warp_with_root_operands(
-                state, warp_uid, warp_id, active_mask, owners,
-                root_operands, &prepared.legacy_live_plan);
-  if (legacy_status != private_shared::kStatusOk) {
-    *legacy_failure_status = legacy_status;
-    return kStatusLegacyAdmissionRejected;
-  }
-
   prepared.profile = static_cast<uint8_t>(profile);
   prepared.active_mask = active_mask;
   prepared.active_lane_count = count_lanes(active_mask);
+  prepared.resident_charge_profile =
+      static_cast<uint8_t>(resident_charge_profile);
+  prepared.resident_charge_bytes_per_lane =
+      resident_charge_bytes_per_lane;
   if (profile == kProfileCompressedShared384) {
+    private_state_384::sparse_write_plan_v1
+        launch_plans[private_shared::kLaneCapacity] = {};
     for (uint32_t lane = 0; lane < private_shared::kLaneCapacity;
          ++lane) {
       if ((active_mask & (uint32_t{1} << lane)) == 0) continue;
@@ -210,8 +248,32 @@ static status_kind prepare_new_warp_with_profile(
           static_cast<uint8_t>(
               (uint8_t{1} << private_state_384::kLaunchWriteCount) - 1u);
       candidate.owner = owners[lane];
+      launch_plans[lane] = candidate.sparse_writes;
+    }
+    const private_shared::status_kind compressed_status =
+        private_shared::prepare_new_warp_with_compressed_launch(
+            state, warp_uid, warp_id, active_mask, owners,
+            launch_plans, &prepared.legacy_live_plan);
+    if (compressed_status != private_shared::kStatusOk) {
+      *legacy_failure_status = compressed_status;
+      return kStatusLegacyAdmissionRejected;
     }
     prepared.compressed_candidate_valid = true;
+  } else {
+    const private_shared::status_kind legacy_status =
+        short_stack_enabled
+            ? private_shared::
+                  prepare_new_warp_with_root_operands_and_short_stack(
+                      state, warp_uid, warp_id, active_mask, owners,
+                      root_operands, root_build_generations,
+                      &prepared.legacy_live_plan)
+            : private_shared::prepare_new_warp_with_root_operands(
+                  state, warp_uid, warp_id, active_mask, owners,
+                  root_operands, &prepared.legacy_live_plan);
+    if (legacy_status != private_shared::kStatusOk) {
+      *legacy_failure_status = legacy_status;
+      return kStatusLegacyAdmissionRejected;
+    }
   }
   prepared.valid = true;
   *plan = prepared;

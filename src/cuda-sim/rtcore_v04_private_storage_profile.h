@@ -42,7 +42,10 @@ struct admission_candidate_plan_v0 {
   bool compressed_candidate_valid;
   uint8_t profile;
   uint8_t active_lane_count;
+  uint8_t resident_charge_profile;
+  uint8_t reserved_zero[3];
   uint32_t active_mask;
+  uint32_t resident_charge_bytes_per_lane;
   private_shared::new_warp_plan_v0 legacy_live_plan;
   lane_launch_candidate_v0 lanes[private_shared::kLaneCapacity];
 };
@@ -50,6 +53,9 @@ struct admission_candidate_plan_v0 {
 status_kind parse_profile(const char *value, profile_kind *profile);
 
 const char *profile_name(profile_kind profile);
+
+status_kind profile_resident_charge_bytes_per_lane(
+    profile_kind profile, uint32_t *charge_bytes_per_lane);
 
 status_kind prepare_new_warp_from_selector(
     const private_shared::backing_state_v0 &state,

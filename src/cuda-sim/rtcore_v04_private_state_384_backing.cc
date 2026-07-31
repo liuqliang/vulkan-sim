@@ -50,6 +50,21 @@ bool owner_equal(const private_frontier::owner_binding_v0 &lhs,
                         sizeof(rhs.reserved_zero));
 }
 
+uint8_t launch_field_kind(uint8_t chunk) {
+  switch (chunk) {
+    case 0:
+      return private_frontier::kFieldMutableRayState;
+    case 1:
+      return private_frontier::kFieldAsDecodeContext;
+    case 2:
+    case 3:
+      return private_frontier::kFieldCommittedHit;
+    case 4:
+      return private_frontier::kFieldCurrentInstance;
+  }
+  return private_frontier::kFieldInvalid;
+}
+
 bool operation_identity_matches(
     const private_frontier::owner_binding_v0 &owner,
     const operand_materializer::operation_identity_v1 &identity) {
@@ -151,8 +166,9 @@ status_kind prepare_new_warp(
       candidate.active_lane_count !=
           count_lanes(candidate.active_mask) ||
       !candidate.legacy_live_plan.valid ||
-      !candidate.legacy_live_plan.root_operands_initialized ||
-      !candidate.legacy_live_plan.short_stack_initialized ||
+      candidate.legacy_live_plan.root_operands_initialized ||
+      candidate.legacy_live_plan.short_stack_initialized ||
+      !candidate.legacy_live_plan.compressed_launch_initialized ||
       candidate.legacy_live_plan.resident_warp_slot >=
           kResidentWarpCapacity ||
       candidate.legacy_live_plan.owner_hw_sid !=
@@ -160,10 +176,19 @@ status_kind prepare_new_warp(
       candidate.legacy_live_plan.warp_uid != warp_uid ||
       candidate.legacy_live_plan.warp_id != warp_id ||
       candidate.legacy_live_plan.active_mask !=
-          candidate.active_mask ||
+      candidate.active_mask ||
+      candidate.resident_charge_profile !=
+          private_shared::
+              kResidentChargeProfileCompressedShared384 ||
+      candidate.legacy_live_plan.resident_charge_profile !=
+          candidate.resident_charge_profile ||
+      candidate.resident_charge_bytes_per_lane !=
+          private_shared::kCompressedResidentChargeBytesPerLane ||
+      candidate.legacy_live_plan.charge_bytes_per_lane !=
+          candidate.resident_charge_bytes_per_lane ||
       candidate.legacy_live_plan.charged_bytes !=
           candidate.active_lane_count *
-              private_shared::kResidentChargeBytesPerLane) {
+              candidate.resident_charge_bytes_per_lane) {
     return kStatusInvalidAdmission;
   }
   const uint8_t resident_warp_slot =
@@ -223,6 +248,15 @@ status_kind prepare_new_warp(
                         sizeof(source.sparse_writes.reserved_zero))) {
       return kStatusInvalidAdmission;
     }
+    const private_frontier::shadow_slot_v0 &compatibility_slot =
+        candidate.legacy_live_plan.staging_slots[lane];
+    const private_frontier::access_plan_v0 &compatibility_plan =
+        candidate.legacy_live_plan.init_plans[lane];
+    if (!owner_equal(compatibility_slot.owner, source.owner) ||
+        !owner_equal(compatibility_plan.owner, source.owner) ||
+        compatibility_plan.access_count != kLaunchWriteCount) {
+      return kStatusInvalidAdmission;
+    }
     for (uint8_t write_index = 0;
          write_index < source.sparse_writes.write_count;
          ++write_index) {
@@ -230,11 +264,33 @@ status_kind prepare_new_warp(
           source.sparse_writes.writes[write_index];
       const uint8_t chunk =
           static_cast<uint8_t>(write.slot_byte_offset / kChunkBytes);
+      const uint64_t expected_address =
+          kSharedPlacementBase +
+          static_cast<uint64_t>(source.owner.owner_hw_sid) *
+              kSharedPlacementOwnerStride +
+          static_cast<uint64_t>(source.owner.private_slot_id) *
+              kSlotBytes +
+          write.slot_byte_offset;
       if (chunk != write_index ||
           write.slot_byte_offset !=
               static_cast<uint16_t>(chunk * kChunkBytes) ||
           write.byte_count != kChunkBytes ||
-          write.byte_mask != kFullChunkByteMask) {
+          write.byte_mask != kFullChunkByteMask ||
+          compatibility_plan.accesses[write_index]
+                  .aligned_32b_address != expected_address ||
+          compatibility_plan.accesses[write_index].slot_byte_offset !=
+              write.slot_byte_offset ||
+          compatibility_plan.accesses[write_index].byte_count !=
+              write.byte_count ||
+          compatibility_plan.accesses[write_index].byte_mask !=
+              write.byte_mask ||
+          compatibility_plan.accesses[write_index].field_kind !=
+              launch_field_kind(chunk) ||
+          compatibility_plan.accesses[write_index].access_kind !=
+              private_frontier::kAccessWrite ||
+          std::memcmp(
+              compatibility_slot.bytes + write.slot_byte_offset,
+              write.payload, kChunkBytes) != 0) {
         return kStatusInvalidAdmission;
       }
       std::memcpy(destination.image.bytes +

@@ -5,6 +5,7 @@
 #include <deque>
 
 #include "rtcore_v04_private_frontier_layout.h"
+#include "rtcore_v04_private_state_384_codec.h"
 
 namespace rtcore {
 namespace v04 {
@@ -14,8 +15,11 @@ static const uint32_t kResidentSharedBytes = 96 * 1024;
 static const uint32_t kPrivateBytesPerLane =
     private_frontier::kPrivateDataSlotBytes;
 static const uint32_t kHandoffChargeBytesPerLane = 128;
-static const uint32_t kResidentChargeBytesPerLane =
+static const uint32_t kLegacyResidentChargeBytesPerLane =
     kPrivateBytesPerLane + kHandoffChargeBytesPerLane;
+static const uint32_t kCompressedResidentChargeBytesPerLane = 384;
+static const uint32_t kResidentChargeBytesPerLane =
+    kLegacyResidentChargeBytesPerLane;
 static const uint32_t kResidentWarpCapacity = 8;
 static const uint32_t kLaneCapacity = 32;
 static const uint32_t kSharedQueueCapacity = 32;
@@ -42,6 +46,12 @@ enum status_kind : uint8_t {
   kStatusPlannerFailure,
   kStatusDuplicateOperation,
   kStatusNoAckReady,
+};
+
+enum resident_charge_profile_kind : uint8_t {
+  kResidentChargeProfileInvalid = 0,
+  kResidentChargeProfileLegacyShared832 = 1,
+  kResidentChargeProfileCompressedShared384 = 2,
 };
 
 enum address_space_kind : uint8_t {
@@ -113,11 +123,12 @@ struct resident_warp_state_v0 {
   bool live;
   bool scheduler_ready;
   uint8_t resident_warp_slot;
-  uint8_t reserved_zero;
+  uint8_t resident_charge_profile;
   uint32_t owner_hw_sid;
   uint32_t warp_uid;
   uint32_t warp_id;
   uint32_t active_mask;
+  uint32_t charge_bytes_per_lane;
   uint32_t charged_bytes;
   uint32_t enqueued_chunk_count;
   uint32_t accepted_chunk_count;
@@ -152,11 +163,15 @@ struct new_warp_plan_v0 {
   bool valid;
   bool root_operands_initialized;
   bool short_stack_initialized;
+  bool compressed_launch_initialized;
   uint8_t resident_warp_slot;
+  uint8_t resident_charge_profile;
+  uint8_t reserved_zero[2];
   uint32_t owner_hw_sid;
   uint32_t warp_uid;
   uint32_t warp_id;
   uint32_t active_mask;
+  uint32_t charge_bytes_per_lane;
   uint32_t charged_bytes;
   uint64_t expected_mutation_epoch;
   private_frontier::shadow_slot_v0 staging_slots[kLaneCapacity];
@@ -223,6 +238,14 @@ status_kind prepare_new_warp_with_root_operands_and_short_stack(
     const private_frontier::root_private_operands_v0
         root_operands[kLaneCapacity],
     const uint32_t root_build_generations[kLaneCapacity],
+    new_warp_plan_v0 *plan);
+
+status_kind prepare_new_warp_with_compressed_launch(
+    const backing_state_v0 &state, uint32_t warp_uid, uint32_t warp_id,
+    uint32_t active_mask,
+    const private_frontier::owner_binding_v0 owners[kLaneCapacity],
+    const private_state_384::sparse_write_plan_v1
+        launch_plans[kLaneCapacity],
     new_warp_plan_v0 *plan);
 
 status_kind commit_new_warp(backing_state_v0 *state,

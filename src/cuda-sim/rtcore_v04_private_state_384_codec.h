@@ -19,6 +19,8 @@ static const uint32_t kSlotAlignmentBytes = 32;
 static const uint32_t kChunkBytes = 32;
 static const uint8_t kChunkCount = 12;
 static const uint8_t kLaunchWriteCount = 5;
+static const uint64_t kSharedPlacementBase = UINT64_C(0xfe00000000000000);
+static const uint64_t kSharedPlacementOwnerStride = UINT64_C(0x1000000);
 static const uint8_t kCommittedHitProjectionBytes = 56;
 static const uint8_t kBoundaryProjectionBytes = 64;
 
