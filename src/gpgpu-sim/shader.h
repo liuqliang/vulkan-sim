@@ -1576,6 +1576,11 @@ struct rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot 
 
 struct rtcore_replay_warp_completion_entry_snapshot;
 
+enum rtcore_shared_l1d_request_client {
+  RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU = 0,
+  RTCORE_SHARED_L1D_REQUEST_CLIENT_RT = 1,
+};
+
 class rt_unit : public pipelined_simd_unit {
     public:
         rt_unit(mem_fetch_interface *icnt,
@@ -1602,6 +1607,7 @@ class rt_unit : public pipelined_simd_unit {
         void get_L0C_sub_stats(struct cache_sub_stats &css) const;
 
         unsigned active_warps();
+        unsigned common_l1d_request_demand() const;
         rtcore_resident_warp_demand_snapshot
         rtcore_make_resident_warp_demand_snapshot(
             unsigned rt_core_out_pending_warps) const;
@@ -2331,6 +2337,7 @@ class ldst_unit : public pipelined_simd_unit {
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
+  unsigned common_l1d_request_demand() const;
 
   bool shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
                     mem_stage_access_type &fail_type);
@@ -3182,6 +3189,12 @@ class shader_core_ctx : public core_t {
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
   void get_L0C_sub_stats(struct cache_sub_stats &css) const;
   l1_cache * get_l1d() { return m_ldst_unit->get_l1d(); }
+  void prepare_rtcore_shared_l1d_request_arbiter(
+      unsigned long long current_cycle);
+  bool consume_rtcore_shared_l1d_request_grant(
+      enum rtcore_shared_l1d_request_client client);
+  void record_rtcore_shared_l1d_cache_access(
+      enum rtcore_shared_l1d_request_client client);
   
   void get_icnt_power_stats(long &n_simt_to_mem, long &n_mem_to_simt) const;
 
@@ -3510,6 +3523,26 @@ class shader_core_ctx : public core_t {
       m_fu;  // stallable pipelines should be last in this array
   ldst_unit *m_ldst_unit;
   rt_unit *m_rt_unit;
+  struct rtcore_shared_l1d_request_arbiter_state {
+    rtcore_shared_l1d_request_arbiter_state()
+        : prepared(false),
+          cycle(0),
+          lsu_demand(0),
+          rt_demand(0),
+          lsu_grants_remaining(0),
+          rt_grants_remaining(0),
+          unassigned_grants(0),
+          round_robin_next_client(RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU) {}
+
+    bool prepared;
+    unsigned long long cycle;
+    unsigned lsu_demand;
+    unsigned rt_demand;
+    unsigned lsu_grants_remaining;
+    unsigned rt_grants_remaining;
+    unsigned unassigned_grants;
+    enum rtcore_shared_l1d_request_client round_robin_next_client;
+  } m_rtcore_shared_l1d_request_arbiter;
   static const unsigned MAX_ALU_LATENCY = 512;
   unsigned num_result_bus;
   std::vector<std::bitset<MAX_ALU_LATENCY> *> m_result_bus;

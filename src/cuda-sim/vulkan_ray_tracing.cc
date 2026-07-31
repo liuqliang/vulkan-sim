@@ -24954,6 +24954,30 @@ extern "C" unsigned rtcore_count_memory_unit_requests_for_sm(
     return static_cast<unsigned>(queue_it->second.size());
 }
 
+extern "C" unsigned rtcore_count_global_memory_unit_requests_for_sm(
+    unsigned owner_hw_sid)
+{
+    std::map<unsigned,
+             std::deque<rtcore_memory_unit_request_snapshot> >::
+        const_iterator queue_it =
+            g_rtcore_memory_unit_request_snapshots_by_owner.find(
+                owner_hw_sid);
+    if (queue_it ==
+        g_rtcore_memory_unit_request_snapshots_by_owner.end()) {
+        return 0;
+    }
+    unsigned count = 0;
+    for (std::deque<rtcore_memory_unit_request_snapshot>::const_iterator it =
+             queue_it->second.begin();
+         it != queue_it->second.end(); ++it) {
+        if (it->valid &&
+            it->address_space == RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL) {
+            count++;
+        }
+    }
+    return count;
+}
+
 extern "C" unsigned rtcore_count_v02_lsu_sideband_requests_for_sm(
     unsigned owner_hw_sid)
 {

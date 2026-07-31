@@ -143,6 +143,8 @@ extern "C" bool rtcore_accept_v04_short_stack_return_instance_read(
     unsigned long long response_cycle);
 extern "C" unsigned rtcore_count_memory_unit_requests_for_sm(
     unsigned owner_hw_sid);
+extern "C" unsigned rtcore_count_global_memory_unit_requests_for_sm(
+    unsigned owner_hw_sid);
 extern "C" bool rtcore_record_memory_unit_response(
     unsigned owner_hw_sid, unsigned rt_request_id, unsigned memory_op_seq,
     unsigned chunk_id, unsigned chunk_count, unsigned response_target,
@@ -524,6 +526,7 @@ enum rtcore_shader_continuation_sbt_metadata_lookup_state {
 };
 
 static bool rtcore_shared_lsu_frontend_arbiter_gate_enabled();
+static bool rtcore_explicit_shared_l1d_request_arbiter_gate_enabled();
 static bool rtcore_replay_memory_unit_l1d_client_enabled();
 
 struct rtcore_shader_continuation_dispatcher_pending_key {
@@ -1143,20 +1146,23 @@ static bool rtcore_issue_shader_continuation_sbt_metadata_request(
   assert(entry.metadata_lookup_state ==
          RTCORE_SHADER_CONTINUATION_SBT_METADATA_NOT_REQUESTED);
   assert(entry.cohort_cursor < entry.cohort_count);
+  const bool shared_l1d_request_route_enabled =
+      rtcore_shared_lsu_frontend_arbiter_gate_enabled() ||
+      rtcore_explicit_shared_l1d_request_arbiter_gate_enabled();
   if (!rtcore_replay_cycle_hook_enabled() ||
       !rtcore_replay_memory_unit_l1d_client_enabled() ||
-      !rtcore_shared_lsu_frontend_arbiter_gate_enabled()) {
+      !shared_l1d_request_route_enabled) {
     fprintf(stderr,
             "GPGPU-Sim RTCORE_SHADER_CONTINUATION_SBT_METADATA_FAULT "
             "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
             "cycle_hook_enabled=%u l1d_client_enabled=%u "
-            "shared_frontend_enabled=%u "
+            "shared_l1d_request_route_enabled=%u "
             "fault=required_memory_route_disabled_fail_closed\n",
             owner_hw_sid, entry.warp_uid, entry.warp_id,
             entry.cohort_cursor,
             rtcore_replay_cycle_hook_enabled() ? 1u : 0u,
             rtcore_replay_memory_unit_l1d_client_enabled() ? 1u : 0u,
-            rtcore_shared_lsu_frontend_arbiter_gate_enabled() ? 1u : 0u);
+            shared_l1d_request_route_enabled ? 1u : 0u);
     fflush(stderr);
     return false;
   }
@@ -2074,6 +2080,7 @@ struct rtcore_replay_cycle_hook_consumer_stats {
   unsigned long long v02_lsu_sideband_cache_miss_count;
   unsigned long long v02_lsu_sideband_cache_reservation_fail_count;
   unsigned long long v02_lsu_sideband_cache_data_port_blocked_count;
+  unsigned long long v02_lsu_sideband_l1d_arbiter_blocked_count;
   unsigned long long v02_lsu_sideband_cache_read_hit_immediate_count;
   unsigned long long v02_lsu_sideband_cache_write_hit_pending_count;
   unsigned long long v02_lsu_sideband_cache_line_miss_count;
@@ -2224,6 +2231,30 @@ static unsigned long long g_rtcore_memory_unit_same_cycle_32b_merge_map_cycle = 
 static unsigned g_rtcore_memory_unit_request_offer_stats_logs_emitted = 0;
 static unsigned g_rtcore_v03_shader_only_ldst_observation_logs_emitted = 0;
 
+struct rtcore_shared_l1d_request_arbiter_stats {
+  unsigned long long arbitration_cycles;
+  unsigned long long idle_cycles;
+  unsigned long long conflict_cycles;
+  unsigned long long lsu_demand_count;
+  unsigned long long rt_demand_count;
+  unsigned long long lsu_grant_count;
+  unsigned long long rt_grant_count;
+  unsigned long long late_rt_grant_count;
+  unsigned long long lsu_consumed_grant_count;
+  unsigned long long rt_consumed_grant_count;
+  unsigned long long lsu_denied_count;
+  unsigned long long rt_denied_count;
+  unsigned long long lsu_cache_access_count;
+  unsigned long long rt_cache_access_count;
+  unsigned long long lsu_first_conflict_win_count;
+  unsigned long long rt_first_conflict_win_count;
+  unsigned long long round_robin_lsu_first_count;
+  unsigned long long round_robin_rt_first_count;
+};
+
+static std::map<unsigned, rtcore_shared_l1d_request_arbiter_stats>
+    g_rtcore_shared_l1d_request_arbiter_stats_by_sm;
+
 static bool rtcore_memory_unit_request_offer_log_enabled() {
   static int enabled = []() {
     const char *value = getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_REQUEST_OFFER_LOG");
@@ -2294,6 +2325,67 @@ static bool rtcore_shared_lsu_frontend_arbiter_gate_enabled() {
     return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
   }();
   return enabled != 0;
+}
+
+static bool rtcore_explicit_shared_l1d_request_arbiter_gate_enabled() {
+  static int enabled = []() {
+    const char *value = getenv(
+        "VULKAN_SIM_RTCORE_REPLAY_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_GATE");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static unsigned rtcore_explicit_shared_l1d_request_arbiter_budget_per_cycle() {
+  static unsigned budget = []() {
+    const char *value = getenv(
+        "VULKAN_SIM_RTCORE_REPLAY_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_BUDGET_PER_CYCLE");
+    if (value == NULL || *value == '\0') {
+      return 1u;
+    }
+    char *end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (end == value || parsed == 0) {
+      return 1u;
+    }
+    return static_cast<unsigned>(std::min(parsed, 4096ul));
+  }();
+  return budget;
+}
+
+enum rtcore_explicit_shared_l1d_request_arbiter_policy {
+  RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_LSU_FIRST = 0,
+  RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_RT_FIRST,
+  RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_ROUND_ROBIN,
+};
+
+static rtcore_explicit_shared_l1d_request_arbiter_policy
+rtcore_explicit_shared_l1d_request_arbiter_policy_value() {
+  static rtcore_explicit_shared_l1d_request_arbiter_policy policy = []() {
+    const char *value = getenv(
+        "VULKAN_SIM_RTCORE_REPLAY_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_POLICY");
+    if (value != NULL && strcmp(value, "rt_first") == 0) {
+      return RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_RT_FIRST;
+    }
+    if (value != NULL && strcmp(value, "round_robin") == 0) {
+      return RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_ROUND_ROBIN;
+    }
+    return RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_LSU_FIRST;
+  }();
+  return policy;
+}
+
+static const char *
+rtcore_explicit_shared_l1d_request_arbiter_policy_name() {
+  switch (rtcore_explicit_shared_l1d_request_arbiter_policy_value()) {
+    case RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_RT_FIRST:
+      return "rt_first";
+    case RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_ROUND_ROBIN:
+      return "round_robin";
+    case RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_LSU_FIRST:
+      return "lsu_first";
+  }
+  return "invalid";
 }
 
 static unsigned rtcore_shared_lsu_frontend_budget_per_cycle() {
@@ -2894,6 +2986,45 @@ static void rtcore_record_replay_cycle_hook_smoke(
       ready_progressed, progressed, identity_snapshot);
 }
 
+static void rtcore_log_explicit_shared_l1d_request_arbiter_stats(
+    unsigned owner_hw_sid) {
+  const rtcore_shared_l1d_request_arbiter_stats &stats =
+      g_rtcore_shared_l1d_request_arbiter_stats_by_sm[owner_hw_sid];
+  printf(
+      "GPGPU-Sim RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_STATS "
+      "owner_hw_sid=%u enabled=%u policy=%s budget_per_cycle=%u "
+      "arbitration_cycles=%llu idle_cycles=%llu conflict_cycles=%llu "
+      "lsu_demand_count=%llu rt_demand_count=%llu "
+      "lsu_grant_count=%llu rt_grant_count=%llu "
+      "late_rt_grant_count=%llu "
+      "lsu_consumed_grant_count=%llu rt_consumed_grant_count=%llu "
+      "lsu_denied_count=%llu rt_denied_count=%llu "
+      "lsu_cache_access_count=%llu rt_cache_access_count=%llu "
+      "lsu_first_conflict_win_count=%llu "
+      "rt_first_conflict_win_count=%llu "
+      "round_robin_lsu_first_count=%llu "
+      "round_robin_rt_first_count=%llu "
+      "legacy_proxy_frontend_effective=%u\n",
+      owner_hw_sid,
+      rtcore_explicit_shared_l1d_request_arbiter_gate_enabled() ? 1u : 0u,
+      rtcore_explicit_shared_l1d_request_arbiter_policy_name(),
+      rtcore_explicit_shared_l1d_request_arbiter_budget_per_cycle(),
+      stats.arbitration_cycles, stats.idle_cycles, stats.conflict_cycles,
+      stats.lsu_demand_count, stats.rt_demand_count, stats.lsu_grant_count,
+      stats.rt_grant_count, stats.late_rt_grant_count,
+      stats.lsu_consumed_grant_count, stats.rt_consumed_grant_count,
+      stats.lsu_denied_count, stats.rt_denied_count,
+      stats.lsu_cache_access_count, stats.rt_cache_access_count,
+      stats.lsu_first_conflict_win_count,
+      stats.rt_first_conflict_win_count,
+      stats.round_robin_lsu_first_count,
+      stats.round_robin_rt_first_count,
+      (rtcore_shared_lsu_frontend_arbiter_gate_enabled() &&
+       !rtcore_explicit_shared_l1d_request_arbiter_gate_enabled())
+          ? 1u
+          : 0u);
+}
+
 static void rtcore_maybe_log_memory_unit_request_offer_stats(
     unsigned owner_hw_sid) {
   if (!rtcore_memory_unit_request_offer_log_enabled()) {
@@ -2972,6 +3103,7 @@ static void rtcore_maybe_log_memory_unit_request_offer_stats(
          "cache_request_count=%llu cache_hit_count=%llu "
          "cache_miss_count=%llu cache_reservation_fail_count=%llu "
          "cache_data_port_blocked_count=%llu "
+         "l1d_request_arbiter_blocked_count=%llu "
          "immediate_completion_count=%llu response_wakeup_count=%llu "
          "response_latency_attribution_enabled=1 "
          "response_latency_observation_count=%llu "
@@ -3128,6 +3260,8 @@ static void rtcore_maybe_log_memory_unit_request_offer_stats(
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_cache_data_port_blocked_count,
          g_rtcore_replay_cycle_hook_consumer_stats
+             .v02_lsu_sideband_l1d_arbiter_blocked_count,
+         g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_immediate_completion_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_response_wakeup_count,
@@ -3241,7 +3375,10 @@ static void rtcore_maybe_log_memory_unit_request_offer_stats(
             .v02_lsu_sideband_issue_bandwidth_budget_exhausted_count,
         g_rtcore_replay_cycle_hook_consumer_stats
             .v02_lsu_sideband_issue_bandwidth_max_deferred_count,
-         rtcore_shared_lsu_frontend_arbiter_gate_enabled() ? 1u : 0u,
+         (rtcore_shared_lsu_frontend_arbiter_gate_enabled() &&
+          !rtcore_explicit_shared_l1d_request_arbiter_gate_enabled())
+             ? 1u
+             : 0u,
          rtcore_shared_lsu_frontend_policy_name(),
          rtcore_shared_lsu_frontend_budget_per_cycle(),
          g_rtcore_replay_cycle_hook_consumer_stats
@@ -3331,6 +3468,7 @@ static void rtcore_maybe_log_memory_unit_request_offer_stats(
              .v02_lsu_sideband_same_cycle_real_mem_fetch_saved_count,
          g_rtcore_replay_cycle_hook_consumer_stats
              .v02_lsu_sideband_same_cycle_fanout_wake_count);
+  rtcore_log_explicit_shared_l1d_request_arbiter_stats(owner_hw_sid);
   rtcore_maybe_log_memory_unit_cache_config_identity_stats(owner_hw_sid);
   fflush(stdout);
 }
@@ -3903,6 +4041,7 @@ enum rtcore_memory_unit_offer_outcome {
   RTCORE_MEMORY_UNIT_OFFER_L1D_ACCESS_PROGRESS,
   RTCORE_MEMORY_UNIT_OFFER_SHARED_PROGRESS,
   RTCORE_MEMORY_UNIT_OFFER_SAME_CYCLE_MERGED,
+  RTCORE_MEMORY_UNIT_OFFER_L1D_ARBITER_BLOCKED,
   RTCORE_MEMORY_UNIT_OFFER_L1D_DATA_PORT_BLOCKED,
   RTCORE_MEMORY_UNIT_OFFER_L1D_RESERVATION_BLOCKED,
   RTCORE_MEMORY_UNIT_OFFER_REJECTED,
@@ -4109,6 +4248,27 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     return RTCORE_MEMORY_UNIT_OFFER_L1D_DATA_PORT_BLOCKED;
   }
 
+  if (!core->consume_rtcore_shared_l1d_request_grant(
+          RTCORE_SHARED_L1D_REQUEST_CLIENT_RT)) {
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_rejected_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_l1d_arbiter_blocked_count++;
+    const bool requeued =
+        rtcore_requeue_v02_lsu_sideband_request_for_retry(result);
+    if (!requeued) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_MEMORY_UNIT_REQUEUE_FAULT "
+              "owner_hw_sid=%u request_key=%u lane_id=%u generation=%u "
+              "fault=shared_l1d_arbiter_retry_rejected\n",
+              snapshot.owner_hw_sid, snapshot.rt_request_id,
+              snapshot.lane_id, snapshot.request_generation);
+      fflush(stderr);
+      abort();
+    }
+    return RTCORE_MEMORY_UNIT_OFFER_L1D_ARBITER_BLOCKED;
+  }
+
   mem_fetch *mf = mf_allocator->alloc(
       addr, is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R,
       RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write, result.cycle);
@@ -4130,6 +4290,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
         .v02_lsu_sideband_mshr_entries_before_access_max =
         mshr_entries_before_access;
   }
+  core->record_rtcore_shared_l1d_cache_access(
+      RTCORE_SHARED_L1D_REQUEST_CLIENT_RT);
   const enum cache_request_status status =
       cache->access(mf->get_addr(), mf, result.cycle, events);
   const bool lower_memory_read_sent = was_read_sent(events);
@@ -4673,7 +4835,8 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   const bool issue_bandwidth_gate_enabled =
       rtcore_memory_unit_issue_bandwidth_gate_enabled();
   const bool shared_frontend_gate_enabled =
-      rtcore_shared_lsu_frontend_arbiter_gate_enabled();
+      rtcore_shared_lsu_frontend_arbiter_gate_enabled() &&
+      !rtcore_explicit_shared_l1d_request_arbiter_gate_enabled();
   const unsigned issue_budget_per_cycle =
       rtcore_memory_unit_issue_budget_per_cycle();
   const unsigned shared_frontend_budget_per_cycle =
@@ -4689,6 +4852,15 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
           const rtcore_memory_unit_request_snapshot &snapshot) {
         if (outcome == RTCORE_MEMORY_UNIT_OFFER_NONE) return;
         const unsigned arbitration_slot = memory_offer_attempt_count++;
+        if (outcome == RTCORE_MEMORY_UNIT_OFFER_L1D_ARBITER_BLOCKED) {
+          rtcore_emit_memory_unit_attempt(
+              snapshot, result.cycle, arbitration_slot,
+              rtcore::v04::stall_attribution::kStageFrontend,
+              rtcore::v04::stall_attribution::kOutcomeStall,
+              rtcore::v04::stall_attribution::kActionNone,
+              rtcore::v04::stall_attribution::kReasonL1dRequestArbiter);
+          return;
+        }
         rtcore_emit_memory_unit_attempt(
             snapshot, result.cycle, arbitration_slot,
             rtcore::v04::stall_attribution::kStageFrontend,
@@ -4877,6 +5049,8 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
         .v02_lsu_shared_frontend_normal_lsu_used_count +=
         shared_frontend_normal_lsu_used;
   }
+  const unsigned queued_sideband_count_before_direct =
+      rtcore_count_memory_unit_requests_for_sm(result.owner_hw_sid);
   bool direct_sideband_requeued = false;
   const bool direct_shared_request =
       result.lsu_sideband_valid &&
@@ -4897,11 +5071,11 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   if (!direct_sideband_requeued) {
     const rtcore_memory_unit_request_snapshot direct_snapshot =
         rtcore_v02_lsu_sideband_snapshot_from_result(result);
-    account_memory_offer(
+    const rtcore_memory_unit_offer_outcome direct_outcome =
         rtcore_consume_memory_unit_request_offer_from_rt_unit(
             result, mf_allocator, config, core, l1d_cache, l0_cache, stats,
-            sid),
-        direct_snapshot);
+            sid);
+    account_memory_offer(direct_outcome, direct_snapshot);
   }
   unsigned max_sideband_drain_per_cycle =
       (rtcore_memory_unit_response_wait_enabled() &&
@@ -5034,10 +5208,17 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
     }
   }
   unsigned drained_sideband_count = 0;
+  unsigned examined_sideband_count = 0;
+  const unsigned sideband_scan_limit =
+      rtcore_explicit_shared_l1d_request_arbiter_gate_enabled()
+          ? queued_sideband_count_before_direct
+          : 0xffffffffu;
   rtcore_memory_unit_request_snapshot sideband_snapshot = {};
-  while (drained_sideband_count < max_sideband_drain_per_cycle &&
+  while (examined_sideband_count < sideband_scan_limit &&
+         drained_sideband_count < max_sideband_drain_per_cycle &&
          rtcore_pop_memory_unit_request_for_sm(result.owner_hw_sid,
                                                     &sideband_snapshot)) {
+    examined_sideband_count++;
     const rtcore_replay_cycle_hook_result drained_result =
         rtcore_make_result_with_v02_lsu_sideband_snapshot(result,
                                                           sideband_snapshot);
@@ -5046,9 +5227,9 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
             drained_result, mf_allocator, config, core, l1d_cache, l0_cache,
             stats, sid);
     account_memory_offer(outcome, sideband_snapshot);
-    drained_sideband_count++;
-    if (outcome == RTCORE_MEMORY_UNIT_OFFER_L1D_DATA_PORT_BLOCKED) {
-      break;
+    if (outcome != RTCORE_MEMORY_UNIT_OFFER_L1D_ARBITER_BLOCKED &&
+        outcome != RTCORE_MEMORY_UNIT_OFFER_L1D_DATA_PORT_BLOCKED) {
+      drained_sideband_count++;
     }
   }
   const unsigned deferred_count =
@@ -9921,7 +10102,175 @@ int shader_core_ctx::test_res_bus(int latency) {
   return -1;
 }
 
+void shader_core_ctx::prepare_rtcore_shared_l1d_request_arbiter(
+    unsigned long long current_cycle) {
+  if (!rtcore_explicit_shared_l1d_request_arbiter_gate_enabled()) {
+    m_rtcore_shared_l1d_request_arbiter.prepared = false;
+    return;
+  }
+
+  rtcore_shared_l1d_request_arbiter_state &arbiter =
+      m_rtcore_shared_l1d_request_arbiter;
+  arbiter.prepared = true;
+  arbiter.cycle = current_cycle;
+  arbiter.lsu_demand =
+      m_ldst_unit == NULL ? 0u : m_ldst_unit->common_l1d_request_demand();
+  arbiter.rt_demand =
+      m_rt_unit == NULL ? 0u : m_rt_unit->common_l1d_request_demand();
+  arbiter.lsu_grants_remaining = 0;
+  arbiter.rt_grants_remaining = 0;
+
+  const unsigned budget =
+      rtcore_explicit_shared_l1d_request_arbiter_budget_per_cycle();
+  unsigned lsu_remaining = arbiter.lsu_demand;
+  unsigned rt_remaining = arbiter.rt_demand;
+  unsigned assigned = 0;
+  rtcore_shared_l1d_request_arbiter_stats &stats =
+      g_rtcore_shared_l1d_request_arbiter_stats_by_sm[m_sid];
+  stats.arbitration_cycles++;
+  stats.lsu_demand_count += arbiter.lsu_demand;
+  stats.rt_demand_count += arbiter.rt_demand;
+  if (arbiter.lsu_demand == 0 && arbiter.rt_demand == 0) {
+    stats.idle_cycles++;
+  }
+  const bool conflict = arbiter.lsu_demand != 0 && arbiter.rt_demand != 0;
+  if (conflict) {
+    stats.conflict_cycles++;
+  }
+
+  const rtcore_explicit_shared_l1d_request_arbiter_policy policy =
+      rtcore_explicit_shared_l1d_request_arbiter_policy_value();
+  if (policy == RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_ROUND_ROBIN) {
+    const rtcore_shared_l1d_request_client cycle_first_client =
+        arbiter.round_robin_next_client;
+    rtcore_shared_l1d_request_client slot_client = cycle_first_client;
+    while (assigned < budget && (lsu_remaining != 0 || rt_remaining != 0)) {
+      rtcore_shared_l1d_request_client client = slot_client;
+      if ((client == RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU &&
+           lsu_remaining == 0) ||
+          (client == RTCORE_SHARED_L1D_REQUEST_CLIENT_RT &&
+           rt_remaining == 0)) {
+        client = client == RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU
+                     ? RTCORE_SHARED_L1D_REQUEST_CLIENT_RT
+                     : RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU;
+      }
+      if (client == RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU) {
+        arbiter.lsu_grants_remaining++;
+        lsu_remaining--;
+        slot_client = RTCORE_SHARED_L1D_REQUEST_CLIENT_RT;
+        if (conflict && assigned == 0) {
+          stats.round_robin_lsu_first_count++;
+        }
+      } else {
+        arbiter.rt_grants_remaining++;
+        rt_remaining--;
+        slot_client = RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU;
+        if (conflict && assigned == 0) {
+          stats.round_robin_rt_first_count++;
+        }
+      }
+      assigned++;
+    }
+    if (conflict && assigned != 0) {
+      arbiter.round_robin_next_client =
+          cycle_first_client == RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU
+              ? RTCORE_SHARED_L1D_REQUEST_CLIENT_RT
+              : RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU;
+    }
+  } else {
+    const bool rt_first =
+        policy == RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_RT_FIRST;
+    unsigned &first_remaining = rt_first ? rt_remaining : lsu_remaining;
+    unsigned &first_grants = rt_first ? arbiter.rt_grants_remaining
+                                      : arbiter.lsu_grants_remaining;
+    unsigned &second_remaining = rt_first ? lsu_remaining : rt_remaining;
+    unsigned &second_grants = rt_first ? arbiter.lsu_grants_remaining
+                                       : arbiter.rt_grants_remaining;
+    const unsigned first_count = std::min(first_remaining, budget);
+    first_grants += first_count;
+    first_remaining -= first_count;
+    assigned += first_count;
+    const unsigned second_count =
+        std::min(second_remaining, budget - assigned);
+    second_grants += second_count;
+    assigned += second_count;
+    if (conflict && assigned != 0) {
+      if (rt_first) {
+        stats.rt_first_conflict_win_count++;
+      } else {
+        stats.lsu_first_conflict_win_count++;
+      }
+    }
+  }
+
+  arbiter.unassigned_grants = budget - assigned;
+  stats.lsu_grant_count += arbiter.lsu_grants_remaining;
+  stats.rt_grant_count += arbiter.rt_grants_remaining;
+}
+
+bool shader_core_ctx::consume_rtcore_shared_l1d_request_grant(
+    enum rtcore_shared_l1d_request_client client) {
+  if (!rtcore_explicit_shared_l1d_request_arbiter_gate_enabled()) {
+    return true;
+  }
+  rtcore_shared_l1d_request_arbiter_state &arbiter =
+      m_rtcore_shared_l1d_request_arbiter;
+  rtcore_shared_l1d_request_arbiter_stats &stats =
+      g_rtcore_shared_l1d_request_arbiter_stats_by_sm[m_sid];
+  if (!arbiter.prepared) {
+    if (client == RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU) {
+      stats.lsu_denied_count++;
+    } else {
+      stats.rt_denied_count++;
+    }
+    return false;
+  }
+  unsigned &remaining =
+      client == RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU
+          ? arbiter.lsu_grants_remaining
+          : arbiter.rt_grants_remaining;
+  if (remaining != 0) {
+    remaining--;
+    if (client == RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU) {
+      stats.lsu_consumed_grant_count++;
+    } else {
+      stats.rt_consumed_grant_count++;
+    }
+    return true;
+  }
+  if (client == RTCORE_SHARED_L1D_REQUEST_CLIENT_RT &&
+      arbiter.unassigned_grants != 0) {
+    arbiter.unassigned_grants--;
+    stats.rt_grant_count++;
+    stats.late_rt_grant_count++;
+    stats.rt_consumed_grant_count++;
+    return true;
+  }
+  if (client == RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU) {
+    stats.lsu_denied_count++;
+  } else {
+    stats.rt_denied_count++;
+  }
+  return false;
+}
+
+void shader_core_ctx::record_rtcore_shared_l1d_cache_access(
+    enum rtcore_shared_l1d_request_client client) {
+  if (!rtcore_explicit_shared_l1d_request_arbiter_gate_enabled()) {
+    return;
+  }
+  rtcore_shared_l1d_request_arbiter_stats &stats =
+      g_rtcore_shared_l1d_request_arbiter_stats_by_sm[m_sid];
+  if (client == RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU) {
+    stats.lsu_cache_access_count++;
+  } else {
+    stats.rt_cache_access_count++;
+  }
+}
+
 void shader_core_ctx::execute() {
+  prepare_rtcore_shared_l1d_request_arbiter(
+      get_gpu()->gpu_sim_cycle + get_gpu()->gpu_tot_sim_cycle);
   for (unsigned i = 0; i < num_result_bus; i++) {
     *(m_result_bus[i]) >>= 1;
   }
@@ -10158,6 +10507,33 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue(cache_t *cache,
   return process_cache_access(cache, mf->get_addr(), inst, events, mf, status);
 }
 
+unsigned ldst_unit::common_l1d_request_demand() const {
+  if (m_L1D == NULL) {
+    return 0;
+  }
+  if (m_config->m_L1D_config.l1_latency > 0) {
+    unsigned demand = 0;
+    for (int bank = 0; bank < m_config->m_L1D_config.l1_banks; ++bank) {
+      if (l1_latency_queue[bank][0] != NULL) {
+        demand++;
+      }
+    }
+    return demand;
+  }
+
+  const warp_inst_t &inst = *m_dispatch_reg;
+  if (inst.empty() || inst.accessq_empty() ||
+      (!inst.space.is_global() && !inst.space.is_local())) {
+    return 0;
+  }
+  bool bypass_l1d = CACHE_GLOBAL == inst.cache_op;
+  if (inst.space.is_global() && m_core->get_config()->gmem_skip_L1D &&
+      CACHE_L1 != inst.cache_op) {
+    bypass_l1d = true;
+  }
+  return bypass_l1d ? 0u : 1u;
+}
+
 mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
     l1_cache *cache, warp_inst_t &inst) {
   mem_stage_stall_type result = NO_RC_FAIL;
@@ -10202,11 +10578,17 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
 
     return result;
   } else {
+    if (!m_core->consume_rtcore_shared_l1d_request_grant(
+            RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU)) {
+      return DATA_PORT_STALL;
+    }
     mem_fetch *mf =
         m_mf_allocator->alloc(inst, inst.accessq_back(),
                               m_core->get_gpu()->gpu_sim_cycle +
                                   m_core->get_gpu()->gpu_tot_sim_cycle);
     std::list<cache_event> events;
+    m_core->record_rtcore_shared_l1d_cache_access(
+        RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU);
     enum cache_request_status status = cache->access(
         mf->get_addr(), mf,
         m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
@@ -10219,58 +10601,66 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
 void ldst_unit::L1_latency_queue_cycle() {
   for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {
     if ((l1_latency_queue[j][0]) != NULL) {
-      mem_fetch *mf_next = l1_latency_queue[j][0];
-      std::list<cache_event> events;
-      enum cache_request_status status =
-          m_L1D->access(mf_next->get_addr(), mf_next,
-                        m_core->get_gpu()->gpu_sim_cycle +
-                            m_core->get_gpu()->gpu_tot_sim_cycle,
-                        events);
+      const bool grant =
+          m_core->consume_rtcore_shared_l1d_request_grant(
+              RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU);
+      if (grant) {
+        mem_fetch *mf_next = l1_latency_queue[j][0];
+        std::list<cache_event> events;
+        m_core->record_rtcore_shared_l1d_cache_access(
+            RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU);
+        enum cache_request_status status =
+            m_L1D->access(mf_next->get_addr(), mf_next,
+                          m_core->get_gpu()->gpu_sim_cycle +
+                              m_core->get_gpu()->gpu_tot_sim_cycle,
+                          events);
 
-      bool write_sent = was_write_sent(events);
-      bool read_sent = was_read_sent(events);
+        bool write_sent = was_write_sent(events);
+        bool read_sent = was_read_sent(events);
 
-      if (status == HIT) {
-        assert(!read_sent);
-        l1_latency_queue[j][0] = NULL;
-        if (mf_next->get_inst().is_load()) {
-          for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
-            if (mf_next->get_inst().out[r] > 0) {
-              assert(m_pending_writes[mf_next->get_inst().warp_id()]
-                                     [mf_next->get_inst().out[r]] > 0);
-              unsigned still_pending =
-                  --m_pending_writes[mf_next->get_inst().warp_id()]
-                                    [mf_next->get_inst().out[r]];
-              if (!still_pending) {
-                m_pending_writes[mf_next->get_inst().warp_id()].erase(
-                    mf_next->get_inst().out[r]);
-                m_scoreboard->releaseRegister(mf_next->get_inst().warp_id(),
-                                              mf_next->get_inst().out[r]);
-                m_core->warp_inst_complete(mf_next->get_inst());
+        if (status == HIT) {
+          assert(!read_sent);
+          l1_latency_queue[j][0] = NULL;
+          if (mf_next->get_inst().is_load()) {
+            for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
+              if (mf_next->get_inst().out[r] > 0) {
+                assert(m_pending_writes[mf_next->get_inst().warp_id()]
+                                       [mf_next->get_inst().out[r]] > 0);
+                unsigned still_pending =
+                    --m_pending_writes[mf_next->get_inst().warp_id()]
+                                      [mf_next->get_inst().out[r]];
+                if (!still_pending) {
+                  m_pending_writes[mf_next->get_inst().warp_id()].erase(
+                      mf_next->get_inst().out[r]);
+                  m_scoreboard->releaseRegister(mf_next->get_inst().warp_id(),
+                                                mf_next->get_inst().out[r]);
+                  m_core->warp_inst_complete(mf_next->get_inst());
+                }
               }
-            }
+          }
+
+          // For write hit in WB policy
+          if (mf_next->get_inst().is_store() && !write_sent) {
+            unsigned dec_ack =
+                (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
+                    ? (mf_next->get_data_size() / SECTOR_SIZE)
+                    : 1;
+
+            mf_next->set_reply();
+
+            for (unsigned i = 0; i < dec_ack; ++i)
+              m_core->store_ack(mf_next);
+          }
+
+          if (!write_sent) delete mf_next;
+
+        } else if (status == RESERVATION_FAIL) {
+          assert(!read_sent);
+          assert(!write_sent);
+        } else {
+          assert(status == MISS || status == HIT_RESERVED);
+          l1_latency_queue[j][0] = NULL;
         }
-
-        // For write hit in WB policy
-        if (mf_next->get_inst().is_store() && !write_sent) {
-          unsigned dec_ack =
-              (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
-                  ? (mf_next->get_data_size() / SECTOR_SIZE)
-                  : 1;
-
-          mf_next->set_reply();
-
-          for (unsigned i = 0; i < dec_ack; ++i) m_core->store_ack(mf_next);
-        }
-
-        if (!write_sent) delete mf_next;
-
-      } else if (status == RESERVATION_FAIL) {
-        assert(!read_sent);
-        assert(!write_sent);
-      } else {
-        assert(status == MISS || status == HIT_RESERVED);
-        l1_latency_queue[j][0] = NULL;
       }
     }
 
@@ -10515,6 +10905,13 @@ void rt_unit::active_lanes_in_pipeline() {
   m_core->incsfuactivelanes_stat(active_count);
   m_core->incfuactivelanes_stat(active_count);
   m_core->incfumemactivelanes_stat(active_count);
+}
+
+unsigned rt_unit::common_l1d_request_demand() const {
+  if (!rtcore_replay_memory_unit_l1d_client_enabled()) {
+    return 0;
+  }
+  return rtcore_count_global_memory_unit_requests_for_sm(m_sid);
 }
 
 sp_unit::sp_unit(register_set *result_port, const shader_core_config *config,

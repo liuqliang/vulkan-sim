@@ -59,6 +59,7 @@ enum reason_kind : uint8_t {
   kReasonQueueCapacity,
   kReasonInvalidOffer,
   kReasonL1dDataPort,
+  kReasonL1dRequestArbiter,
 };
 
 struct attempt_record_v0 {
