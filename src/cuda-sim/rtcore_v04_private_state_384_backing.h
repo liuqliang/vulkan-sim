@@ -130,6 +130,13 @@ status_kind prepare_read_responses(
         responses[operand_materializer::kMaxOperationReadChunks],
     uint8_t *response_count);
 
+status_kind prepare_read_response(
+    const state_v1 &state,
+    const operand_plan::read_plan_v1 &read_plan,
+    const operand_materializer::operation_identity_v1 &identity,
+    uint8_t response_index,
+    operand_materializer::chunk_response_v1 *response);
+
 status_kind apply_sparse_deltas(
     state_v1 *state,
     const operand_materializer::operation_identity_v1 &identity,

@@ -344,37 +344,60 @@ status_kind prepare_read_responses(
   if (identity.private_slot_id >= kPrivateSlotCapacity) {
     return kStatusOwnerMismatch;
   }
+  for (uint8_t index = 0; index < read_plan.read_count; ++index) {
+    const status_kind status = prepare_read_response(
+        state, read_plan, identity, index, &responses[index]);
+    if (status != kStatusOk) return status;
+  }
+  *response_count = read_plan.read_count;
+  return kStatusOk;
+}
+
+status_kind prepare_read_response(
+    const state_v1 &state,
+    const operand_plan::read_plan_v1 &read_plan,
+    const operand_materializer::operation_identity_v1 &identity,
+    uint8_t response_index,
+    operand_materializer::chunk_response_v1 *response) {
+  if (response == NULL) return kStatusInvalidArgument;
+  *response = operand_materializer::chunk_response_v1();
+  if (state.initialized != 1 ||
+      !bytes_are_zero(state.reserved_zero,
+                      sizeof(state.reserved_zero)) ||
+      state.owner_hw_sid != identity.owner_hw_sid ||
+      !canonical_read_plan(read_plan) ||
+      response_index >= read_plan.read_count) {
+    return kStatusInvalidReadPlan;
+  }
+  if (identity.private_slot_id >= kPrivateSlotCapacity) {
+    return kStatusOwnerMismatch;
+  }
   const lane_slot_v1 &slot =
       state.slots[identity.private_slot_id];
   if (slot.live != 1 ||
       !operation_identity_matches(slot.owner, identity)) {
     return kStatusOwnerMismatch;
   }
-  for (uint8_t index = 0; index < read_plan.read_count; ++index) {
-    const operand_plan::chunk_read_v1 &read =
-        read_plan.reads[index];
-    if (read.chunk_index >= kChunkCount ||
-        slot.valid_byte_masks[read.chunk_index] !=
-            kFullChunkByteMask) {
-      return kStatusUninitializedChunk;
-    }
-    operand_materializer::chunk_response_v1 &response =
-        responses[index];
-    response.identity = identity;
-    response.private_layout_profile_id =
-        read_plan.private_layout_profile_id;
-    response.consumer = read_plan.consumer;
-    response.operation = read_plan.operation;
-    response.completion_reason =
-        read_plan.completion_reason;
-    response.chunk_index = read.chunk_index;
-    response.slot_byte_offset = read.slot_byte_offset;
-    response.byte_count = read.byte_count;
-    std::memcpy(response.payload,
-                slot.image.bytes + read.slot_byte_offset,
-                read.byte_count);
+  const operand_plan::chunk_read_v1 &read =
+      read_plan.reads[response_index];
+  if (read.chunk_index >= kChunkCount ||
+      slot.valid_byte_masks[read.chunk_index] !=
+          kFullChunkByteMask) {
+    return kStatusUninitializedChunk;
   }
-  *response_count = read_plan.read_count;
+  response->identity = identity;
+  response->private_layout_profile_id =
+      read_plan.private_layout_profile_id;
+  response->consumer = read_plan.consumer;
+  response->operation = read_plan.operation;
+  response->completion_reason =
+      read_plan.completion_reason;
+  response->chunk_index = read.chunk_index;
+  response->slot_byte_offset = read.slot_byte_offset;
+  response->byte_count = read.byte_count;
+  std::memcpy(response->payload,
+              slot.image.bytes + read.slot_byte_offset,
+              read.byte_count);
   return kStatusOk;
 }
 
