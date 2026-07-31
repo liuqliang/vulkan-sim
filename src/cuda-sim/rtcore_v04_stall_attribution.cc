@@ -64,6 +64,7 @@ bool stall_reason_matches_stage(uint8_t reason, uint8_t stage) {
     case kReasonFrontendBudget:
       return stage == kStageFrontend;
     case kReasonL1dReservation:
+    case kReasonL1dDataPort:
       return stage == kStageBackend;
     case kReasonReservationBudget:
     case kReasonQueueCapacity:
@@ -230,6 +231,8 @@ const char *reason_name(reason_kind reason) {
       return "queue_capacity";
     case kReasonInvalidOffer:
       return "invalid_offer";
+    case kReasonL1dDataPort:
+      return "l1d_data_port";
   }
   return "invalid";
 }
