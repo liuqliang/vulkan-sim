@@ -203,13 +203,16 @@ struct rtcore_v04_private_write_transport_snapshot {
 struct rtcore_v04_private_state_384_read_transport_snapshot {
   uint32_t operation_sequence;
   uint32_t private_layout_profile_id;
+  uint32_t bvh_format_profile_id;
+  uint32_t reservation_generation;
   uint8_t consumer;
   uint8_t operation_kind;
   uint8_t completion_reason;
   uint8_t read_index;
   uint8_t read_count;
+  uint8_t storage_profile;
   uint8_t valid;
-  uint8_t reserved_zero[2];
+  uint8_t reserved_zero;
 };
 
 struct rtcore_v04_handoff_publication_transport_snapshot {

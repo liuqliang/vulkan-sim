@@ -5,7 +5,9 @@
 #include <cstdint>
 
 #include "rtcore_replay_interface.h"
+#include "rtcore_v04_private_shared_backing.h"
 #include "rtcore_v04_private_state_384_backing.h"
+#include "rtcore_v04_private_storage_profile.h"
 
 namespace rtcore {
 namespace v04 {
@@ -24,21 +26,40 @@ enum status_kind : uint8_t {
   kStatusMalformedTransport,
   kStatusCollectorRejected,
   kStatusBackingRejected,
-  kStatusWriteAckRequired,
+  kStatusInvalidProfile,
+  kStatusInvalidCommit,
+  kStatusInvalidWriteAck,
+  kStatusDuplicateWriteAck,
   kStatusWriteRejected,
+};
+
+struct live_operation_key_v1 {
+  operand_materializer::operation_identity_v1 identity;
+  uint32_t private_layout_profile_id;
+  uint32_t bvh_format_profile_id;
+  uint32_t reservation_generation;
+  uint8_t storage_profile;
+  uint8_t consumer;
+  uint8_t operation;
+  uint8_t completion_reason;
 };
 
 struct read_input_v1 {
   private_frontier::owner_binding_v0 owner;
   uint64_t issue_cycle;
   uint32_t operation_sequence;
+  uint32_t bvh_format_profile_id;
+  uint32_t reservation_generation;
+  uint8_t storage_profile;
   uint8_t consumer;
   uint8_t operation;
   uint8_t completion_reason;
   uint8_t destination;
+  uint8_t reserved_zero[3];
 };
 
 struct read_request_plan_v1 {
+  live_operation_key_v1 key;
   operand_plan::read_plan_v1 operand_plan;
   operand_materializer::operation_identity_v1 identity;
   rtcore_memory_unit_request_snapshot requests[kMaxReadRequests];
@@ -50,9 +71,24 @@ struct read_request_plan_v1 {
 struct write_commit_input_v1 {
   private_frontier::owner_binding_v0 owner;
   uint32_t operation_sequence;
+  uint32_t commit_epoch;
+  uint32_t bvh_format_profile_id;
+  uint16_t expected_write_ack_count;
+  uint8_t storage_profile;
   uint8_t producer;
-  uint8_t matching_write_ack;
-  uint8_t reserved_zero[2];
+  uint8_t reserved_zero[4];
+};
+
+struct pending_sparse_commit_v1 {
+  live_operation_key_v1 key;
+  operand_plan::unit_sparse_write_plan_v1 merged_write_plan;
+  uint32_t commit_epoch;
+  uint16_t expected_ack_mask;
+  uint16_t acknowledged_ack_mask;
+  uint8_t producer;
+  uint8_t valid;
+  uint8_t committed;
+  uint8_t reserved_zero;
 };
 
 status_kind prepare_read_requests(const read_input_v1 &input,
@@ -67,9 +103,15 @@ status_kind accept_read_response(
     const rtcore_memory_unit_request_snapshot &request,
     operand_materializer::response_collector_v1 *collector);
 
-status_kind commit_sparse_deltas_after_ack(
-    backing::state_v1 *state, const write_commit_input_v1 &input,
-    const operand_plan::chunk_delta_v1 *deltas, size_t delta_count);
+status_kind stage_sparse_commit(
+    const write_commit_input_v1 &input,
+    const operand_plan::chunk_delta_v1 *deltas, size_t delta_count,
+    pending_sparse_commit_v1 *pending);
+
+status_kind accept_write_ack_and_maybe_commit(
+    backing::state_v1 *state,
+    const private_shared::runtime_write_ack_v0 &ack,
+    pending_sparse_commit_v1 *pending, bool *canonical_committed);
 
 uint64_t private_slot_base(
     const private_frontier::owner_binding_v0 &owner);
