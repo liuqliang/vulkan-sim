@@ -5051,6 +5051,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   }
   const unsigned queued_sideband_count_before_direct =
       rtcore_count_memory_unit_requests_for_sm(result.owner_hw_sid);
+  unsigned sideband_scan_limit = queued_sideband_count_before_direct;
   bool direct_sideband_requeued = false;
   const bool direct_shared_request =
       result.lsu_sideband_valid &&
@@ -5064,6 +5065,7 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
         rtcore_push_front_memory_unit_request_for_sm(
             result.owner_hw_sid, &direct_snapshot);
     if (direct_sideband_requeued) {
+      sideband_scan_limit++;
       g_rtcore_replay_cycle_hook_consumer_stats
           .v02_lsu_shared_frontend_direct_requeued_count++;
     }
@@ -5209,10 +5211,6 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
   }
   unsigned drained_sideband_count = 0;
   unsigned examined_sideband_count = 0;
-  const unsigned sideband_scan_limit =
-      rtcore_explicit_shared_l1d_request_arbiter_gate_enabled()
-          ? queued_sideband_count_before_direct
-          : 0xffffffffu;
   rtcore_memory_unit_request_snapshot sideband_snapshot = {};
   while (examined_sideband_count < sideband_scan_limit &&
          drained_sideband_count < max_sideband_drain_per_cycle &&
