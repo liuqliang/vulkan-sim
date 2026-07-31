@@ -313,6 +313,7 @@ class ptx_thread_info {
     rtcore_current_warp_metadata()
         : valid(false),
           warp_uid(0),
+          dynamic_warp_id(0),
           warp_id(0),
           owner_hw_sid(0),
           active_mask(0),
@@ -320,18 +321,22 @@ class ptx_thread_info {
 
     bool valid;
     unsigned warp_uid;
+    unsigned dynamic_warp_id;
     unsigned warp_id;
     unsigned owner_hw_sid;
     unsigned active_mask;
     unsigned static_inst_uid;
   };
 
-  void set_rtcore_current_warp_metadata(unsigned warp_uid, unsigned warp_id,
+  void set_rtcore_current_warp_metadata(unsigned warp_uid,
+                                        unsigned dynamic_warp_id,
+                                        unsigned warp_id,
                                         unsigned owner_hw_sid,
                                         unsigned active_mask,
                                         unsigned static_inst_uid) {
     m_rtcore_current_warp_metadata.valid = true;
     m_rtcore_current_warp_metadata.warp_uid = warp_uid;
+    m_rtcore_current_warp_metadata.dynamic_warp_id = dynamic_warp_id;
     m_rtcore_current_warp_metadata.warp_id = warp_id;
     m_rtcore_current_warp_metadata.owner_hw_sid = owner_hw_sid;
     m_rtcore_current_warp_metadata.active_mask = active_mask;

@@ -2007,9 +2007,9 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
     m_last_set_operand_value.u64 = 0;
     const unsigned rtcore_active_mask =
         static_cast<unsigned>(inst.get_warp_active_mask().to_ulong());
-    set_rtcore_current_warp_metadata(inst.get_uid(), inst.warp_id(),
-                                     get_hw_sid(), rtcore_active_mask,
-                                     pI->uid());
+    set_rtcore_current_warp_metadata(
+        inst.get_uid(), inst.dynamic_warp_id(), inst.warp_id(), get_hw_sid(),
+        rtcore_active_mask, pI->uid());
     rtcore_current_warp_metadata_scope rtcore_metadata_scope(this);
 
     if (is_done()) {
