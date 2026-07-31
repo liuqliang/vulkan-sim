@@ -90,7 +90,8 @@ struct node_operands_v1 {
   typed_node::ray_policy_v0 ray_policy;
   typed_blas::as_decode_context_v0 decode_context;
   float effective_traversal_bound;
-  uint32_t reserved_zero;
+  uint8_t committed_valid;
+  uint8_t reserved_zero[3];
 };
 
 // Completion/resubmit transport these producer-validated facts but cannot

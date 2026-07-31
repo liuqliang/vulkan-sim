@@ -159,6 +159,10 @@ fetch_target::reservation_receipt_v0 reconstruct_reservation(
       extension.producer_commit_epoch;
   reservation.slot_generation =
       extension.target_slot_generation;
+  reservation.private_layout_profile_id =
+      private_frontier::kLayoutProfileId;
+  reservation.bvh_format_profile_id =
+      typed_node::kGenRtDerivedProfileId;
   reservation.raw_payload_bytes = extension.raw_payload_bytes;
   reservation.target_kind = extension.target_kind;
   reservation.slot_index = extension.target_slot_index;
@@ -171,6 +175,8 @@ fetch_target::reservation_receipt_v0 reconstruct_reservation(
   reservation.producer_commit_required =
       extension.producer_commit_required;
   reservation.operation_kind = extension.operation_kind;
+  reservation.private_storage_profile =
+      private_storage::kProfileLegacyShared832;
   reservation.valid = 1;
   return reservation;
 }

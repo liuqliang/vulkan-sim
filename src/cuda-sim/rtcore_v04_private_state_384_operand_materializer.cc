@@ -870,6 +870,7 @@ status_kind materialize_node(
   if (status != kStatusOk) return status;
   make_typed_ray(ray, &decoded.ray);
   decoded.effective_traversal_bound = effective_bound(ray, hot);
+  decoded.committed_valid = hot.valid;
   *operands = decoded;
   return kStatusOk;
 }

@@ -6,6 +6,7 @@
 
 #include "rtcore_v04_short_stack_replay.h"
 #include "rtcore_v04_stack_result_commit.h"
+#include "rtcore_v04_private_state_384_live_bridge.h"
 
 namespace rtcore {
 namespace v04 {
@@ -45,6 +46,9 @@ enum status_kind : uint8_t {
   kStatusReadyFifoInvariant,
   kStatusNoReadyOperation,
   kStatusUnitInputBackpressure,
+  kStatusPrivate384PlanMismatch,
+  kStatusPrivate384ResponseRejected,
+  kStatusPrivate384MaterializeRejected,
 };
 
 enum target_kind : uint8_t {
@@ -180,6 +184,8 @@ struct reservation_receipt_v0 {
   uint32_t producer_operation_seq;
   uint32_t producer_commit_epoch;
   uint32_t slot_generation;
+  uint32_t private_layout_profile_id;
+  uint32_t bvh_format_profile_id;
   uint16_t raw_payload_bytes;
   uint8_t target_kind;
   uint8_t slot_index;
@@ -188,6 +194,7 @@ struct reservation_receipt_v0 {
   uint8_t producer_commit_required;
   uint8_t valid;
   uint8_t operation_kind;
+  uint8_t private_storage_profile;
   uint8_t reserved_zero[1];
 };
 
@@ -200,11 +207,14 @@ struct operation_packet_v0 {
   uint32_t producer_operation_seq;
   uint32_t producer_commit_epoch;
   uint32_t slot_generation;
+  uint32_t private_layout_profile_id;
+  uint32_t bvh_format_profile_id;
   uint16_t raw_payload_bytes;
   uint8_t target_kind;
   uint8_t valid;
   uint8_t operation_kind;
-  uint8_t reserved_zero[7];
+  uint8_t private_storage_profile;
+  uint8_t reserved_zero[6];
   target_reference_v0 target_reference;
   short_stack::entry_v0 pending_parent_resume;
   uint8_t pending_parent_resume_valid;
@@ -225,6 +235,8 @@ struct slot_metadata_v0 {
   uint32_t producer_operation_seq;
   uint32_t producer_commit_epoch;
   uint32_t slot_generation;
+  uint32_t private_layout_profile_id;
+  uint32_t bvh_format_profile_id;
   uint16_t raw_payload_bytes;
   uint8_t target_kind;
   uint8_t state;
@@ -243,6 +255,9 @@ struct slot_metadata_v0 {
   uint8_t pending_recovery_descriptor_response_count;
   uint8_t received_recovery_descriptor_chunk_mask;
   uint8_t operation_kind;
+  uint8_t private_storage_profile;
+  uint8_t private_state_384_projection_valid;
+  uint8_t reserved_zero_profile;
   target_reference_v0 target_reference;
   short_stack::entry_v0 pending_parent_resume;
   uint8_t pending_parent_resume_valid;
@@ -255,6 +270,14 @@ struct slot_metadata_v0 {
   uint8_t parent_frame_bytes[private_frontier::kParentFrameBytes];
   uint8_t recovery_descriptor_bytes[
       private_frontier::kStackTransitionSpillBytes];
+  private_state_384::live_bridge::live_operation_key_v1
+      private_state_384_key;
+  private_state_384::operand_materializer::response_collector_v1
+      private_state_384_collector;
+  private_frontier::root_private_operands_v0
+      private_state_384_root_projection;
+  private_frontier::instance_shader_projection_v0
+      private_state_384_current_instance_projection;
 };
 
 struct node_slot_v0 {
@@ -368,6 +391,24 @@ status_kind fill_private_operand_chunk(
     uint8_t chunk_count, uint8_t field_kind, uint16_t slot_chunk_offset,
     uint32_t byte_mask,
     const uint8_t payload[private_frontier::kSharedAccessChunkBytes]);
+
+status_kind configure_private_state_384_slot(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation,
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    const private_state_384::operand_materializer::response_collector_v1
+        &collector,
+    reservation_receipt_v0 *updated_reservation);
+
+status_kind publish_private_state_384_projection(
+    engine_state_v0 *state,
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    const private_state_384::operand_materializer::response_collector_v1
+        &collector,
+    const typed_node::ray_policy_v0 &ray_policy,
+    const private_frontier::root_private_operands_v0 &root_projection,
+    const private_frontier::instance_shader_projection_v0
+        &current_instance_projection);
 
 status_kind fill_recovery_descriptor_chunk(
     engine_state_v0 *state,

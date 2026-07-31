@@ -274,6 +274,10 @@ void build_receipt(const slot_metadata_v0 &metadata, uint8_t slot_index,
   receipt->producer_operation_seq = metadata.producer_operation_seq;
   receipt->producer_commit_epoch = metadata.producer_commit_epoch;
   receipt->slot_generation = metadata.slot_generation;
+  receipt->private_layout_profile_id =
+      metadata.private_layout_profile_id;
+  receipt->bvh_format_profile_id =
+      metadata.bvh_format_profile_id;
   receipt->raw_payload_bytes = metadata.raw_payload_bytes;
   receipt->target_kind = metadata.target_kind;
   receipt->slot_index = slot_index;
@@ -282,6 +286,8 @@ void build_receipt(const slot_metadata_v0 &metadata, uint8_t slot_index,
   receipt->producer_commit_required =
       metadata.producer_commit_required;
   receipt->operation_kind = metadata.operation_kind;
+  receipt->private_storage_profile =
+      metadata.private_storage_profile;
   receipt->valid = 1;
 }
 
@@ -316,6 +322,12 @@ status_kind reserve_in_queue(
   metadata.producer_operation_seq = input.producer_operation_seq;
   metadata.producer_commit_epoch = input.producer_commit_epoch;
   metadata.slot_generation = slot_generation;
+  metadata.private_layout_profile_id =
+      private_frontier::kLayoutProfileId;
+  metadata.bvh_format_profile_id =
+      typed_node::kGenRtDerivedProfileId;
+  metadata.private_storage_profile =
+      private_storage::kProfileLegacyShared832;
   metadata.raw_payload_bytes = raw_payload_bytes;
   metadata.target_kind = target;
   metadata.operation_kind = kOperationFetchTarget;
@@ -386,6 +398,12 @@ status_kind reserve_recovery_in_queue(
   metadata.reservation_age = state->next_reservation_age;
   metadata.target_operation_seq = input.target_operation_seq;
   metadata.slot_generation = slot_generation;
+  metadata.private_layout_profile_id =
+      private_frontier::kLayoutProfileId;
+  metadata.bvh_format_profile_id =
+      typed_node::kGenRtDerivedProfileId;
+  metadata.private_storage_profile =
+      private_storage::kProfileLegacyShared832;
   metadata.raw_payload_bytes = raw_payload_bytes;
   metadata.target_kind = target;
   metadata.operation_kind = kOperationFetchTarget;
@@ -438,6 +456,12 @@ status_kind reserve_instance_restore_in_queue(
   metadata.reservation_age = state->next_reservation_age;
   metadata.target_operation_seq = input.target_operation_seq;
   metadata.slot_generation = slot_generation;
+  metadata.private_layout_profile_id =
+      private_frontier::kLayoutProfileId;
+  metadata.bvh_format_profile_id =
+      typed_node::kGenRtDerivedProfileId;
+  metadata.private_storage_profile =
+      private_storage::kProfileLegacyShared832;
   metadata.target_kind = kTargetInstance;
   metadata.operation_kind = kOperationInstanceRestoreParent;
   metadata.state = kSlotReservedWaitDataOrCommit;
@@ -465,6 +489,12 @@ bool receipt_matches(const slot_metadata_v0 &metadata,
          metadata.producer_commit_epoch ==
              receipt.producer_commit_epoch &&
          metadata.slot_generation == receipt.slot_generation &&
+         metadata.private_layout_profile_id ==
+             receipt.private_layout_profile_id &&
+         metadata.bvh_format_profile_id ==
+             receipt.bvh_format_profile_id &&
+         metadata.private_storage_profile ==
+             receipt.private_storage_profile &&
          metadata.target_kind == receipt.target_kind &&
          metadata.raw_payload_bytes == receipt.raw_payload_bytes &&
          metadata.expected_raw_chunk_count == receipt.raw_chunk_count &&
@@ -773,6 +803,202 @@ status_kind fill_private_chunk_in_queue(
                           reservation.slot_index);
 }
 
+uint8_t consumer_for_target(target_kind target) {
+  switch (target) {
+    case kTargetNode:
+      return private_state_384::operand_plan::kConsumerNode;
+    case kTargetPrimitive:
+      return private_state_384::operand_plan::kConsumerPrimitive;
+    case kTargetInstance:
+      return private_state_384::operand_plan::kConsumerInstance;
+    case kTargetInvalid:
+      return private_state_384::operand_plan::kConsumerInvalid;
+  }
+  return private_state_384::operand_plan::kConsumerInvalid;
+}
+
+bool operation_key_matches_metadata(
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    const slot_metadata_v0 &metadata) {
+  const private_state_384::operand_materializer::operation_identity_v1
+      &identity = key.identity;
+  return key.private_layout_profile_id ==
+             private_state_384::kPrivateLayoutProfileId &&
+         key.private_layout_profile_id ==
+             metadata.private_layout_profile_id &&
+         key.bvh_format_profile_id ==
+             metadata.bvh_format_profile_id &&
+         key.reservation_generation == metadata.slot_generation &&
+         key.storage_profile ==
+             private_storage::kProfileCompressedShared384 &&
+         key.consumer ==
+             consumer_for_target(
+                 static_cast<target_kind>(metadata.target_kind)) &&
+         key.operation ==
+             private_state_384::operand_plan::kOperationDefault &&
+         key.completion_reason ==
+             private_state_384::operand_plan::kCompletionReasonNone &&
+         identity.owner_hw_sid == metadata.owner.owner_hw_sid &&
+         identity.resident_warp_id ==
+             metadata.owner.resident_warp_id &&
+         identity.request_identity ==
+             metadata.owner.request_identity &&
+         identity.request_generation == metadata.owner.generation &&
+         identity.private_slot_id == metadata.owner.private_slot_id &&
+         identity.operation_sequence ==
+             metadata.target_operation_seq &&
+         identity.lane_id == metadata.owner.lane_id &&
+         bytes_are_zero(identity.reserved_zero,
+                        sizeof(identity.reserved_zero));
+}
+
+bool collector_identity_matches_key(
+    const private_state_384::operand_materializer::
+        response_collector_v1 &collector,
+    const private_state_384::live_bridge::live_operation_key_v1 &key) {
+  const private_state_384::operand_materializer::operation_identity_v1
+      &identity = collector.identity;
+  return identity.owner_hw_sid == key.identity.owner_hw_sid &&
+         identity.resident_warp_id ==
+             key.identity.resident_warp_id &&
+         identity.request_identity ==
+             key.identity.request_identity &&
+         identity.request_generation ==
+             key.identity.request_generation &&
+         identity.private_slot_id ==
+             key.identity.private_slot_id &&
+         identity.operation_sequence ==
+             key.identity.operation_sequence &&
+         identity.lane_id == key.identity.lane_id &&
+         bytes_are_zero(identity.reserved_zero,
+                        sizeof(identity.reserved_zero)) &&
+         collector.private_layout_profile_id ==
+             key.private_layout_profile_id &&
+         collector.consumer == key.consumer &&
+         collector.operation == key.operation &&
+         collector.completion_reason == key.completion_reason;
+}
+
+template <typename Slot>
+status_kind configure_private_state_384_slot_in_queue(
+    Slot *slots, uint8_t capacity,
+    const reservation_receipt_v0 &reservation,
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    const private_state_384::operand_materializer::
+        response_collector_v1 &collector,
+    reservation_receipt_v0 *updated_reservation) {
+  if (reservation.slot_index >= capacity) {
+    return kStatusUnknownReservation;
+  }
+  Slot &slot = slots[reservation.slot_index];
+  if (!receipt_matches(slot.metadata, reservation)) {
+    return slot.metadata.state == kSlotFree
+               ? kStatusUnknownReservation
+               : kStatusStaleReservation;
+  }
+  slot_metadata_v0 &metadata = slot.metadata;
+  if (metadata.operation_kind != kOperationFetchTarget ||
+      metadata.private_storage_profile !=
+          private_storage::kProfileLegacyShared832 ||
+      metadata.received_private_chunk_mask != 0 ||
+      metadata.private_state_384_projection_valid != 0 ||
+      collector.initialized != 1 || collector.failed != 0 ||
+      collector.required_count == 0 ||
+      collector.required_count >
+          private_state_384::operand_materializer::
+              kMaxOperationReadChunks ||
+      collector.received_count != 0 ||
+      collector.received_chunk_mask != 0 ||
+      !collector_identity_matches_key(collector, key)) {
+    return kStatusPrivate384PlanMismatch;
+  }
+  metadata.private_layout_profile_id =
+      key.private_layout_profile_id;
+  metadata.bvh_format_profile_id =
+      key.bvh_format_profile_id;
+  metadata.private_storage_profile =
+      key.storage_profile;
+  if (!operation_key_matches_metadata(key, metadata)) {
+    return kStatusPrivate384PlanMismatch;
+  }
+  metadata.private_state_384_key = key;
+  metadata.private_state_384_collector = collector;
+  metadata.expected_private_chunk_count = collector.required_count;
+  metadata.pending_private_response_count = collector.required_count;
+  metadata.received_private_chunk_mask = 0;
+  std::memset(metadata.mutable_ray_bytes, 0,
+              sizeof(metadata.mutable_ray_bytes));
+  std::memset(metadata.decode_context_bytes, 0,
+              sizeof(metadata.decode_context_bytes));
+  std::memset(metadata.committed_hit_bytes, 0,
+              sizeof(metadata.committed_hit_bytes));
+  std::memset(metadata.current_instance_bytes, 0,
+              sizeof(metadata.current_instance_bytes));
+  build_receipt(metadata, reservation.slot_index,
+                updated_reservation);
+  return kStatusOk;
+}
+
+template <typename Slot>
+status_kind publish_private_state_384_projection_in_queue(
+    Slot *slots, uint8_t capacity, ready_fifo_v0 *fifo,
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    const private_state_384::operand_materializer::
+        response_collector_v1 &collector,
+    const typed_node::ray_policy_v0 &ray_policy,
+    const private_frontier::root_private_operands_v0 &root_projection,
+    const private_frontier::instance_shader_projection_v0
+        &current_instance_projection) {
+  int match = -1;
+  for (uint8_t index = 0; index < capacity; ++index) {
+    const slot_metadata_v0 &metadata = slots[index].metadata;
+    if (metadata.state == kSlotFree ||
+        metadata.private_storage_profile !=
+            private_storage::kProfileCompressedShared384 ||
+        !operation_key_matches_metadata(key, metadata)) {
+      continue;
+    }
+    if (match >= 0) return kStatusPrivate384ResponseRejected;
+    match = index;
+  }
+  if (match < 0) return kStatusPrivate384ResponseRejected;
+  Slot &slot = slots[match];
+  slot_metadata_v0 &metadata = slot.metadata;
+  if (!operation_key_matches_metadata(
+          metadata.private_state_384_key, metadata) ||
+      metadata.private_state_384_projection_valid != 0 ||
+      collector.initialized != 1 || collector.failed != 0 ||
+      collector.required_count !=
+          metadata.expected_private_chunk_count ||
+      collector.received_count != collector.required_count ||
+      collector.received_chunk_mask != collector.required_chunk_mask ||
+      !collector_identity_matches_key(collector, key) ||
+      !bytes_are_zero(ray_policy.reserved_zero,
+                      sizeof(ray_policy.reserved_zero))) {
+    return kStatusPrivate384MaterializeRejected;
+  }
+  metadata.private_state_384_collector = collector;
+  metadata.pending_private_response_count = 0;
+  metadata.received_private_chunk_mask =
+      collector.received_chunk_mask;
+  metadata.ray_policy = ray_policy;
+  metadata.private_state_384_root_projection =
+      root_projection;
+  metadata.private_state_384_current_instance_projection =
+      current_instance_projection;
+  metadata.private_state_384_projection_valid = 1;
+  const target_kind target =
+      static_cast<target_kind>(metadata.target_kind);
+  metadata.valid_operand_mask |= static_cast<uint8_t>(
+      kOperandMutableRayValid | kOperandRayPolicyValid |
+      kOperandDecodeContextValid | kOperandCommittedHitValid |
+      (target == kTargetPrimitive
+           ? kOperandCurrentInstanceValid
+           : 0));
+  return maybe_make_ready(&metadata, fifo, capacity,
+                          static_cast<uint8_t>(match));
+}
+
 struct expected_recovery_descriptor_chunk_v0 {
   uint16_t slot_chunk_offset;
   uint32_t byte_mask;
@@ -1018,9 +1244,15 @@ status_kind build_operation_packet(const Slot &slot, target_kind target,
   const uint8_t root_private_mask = static_cast<uint8_t>(
       kOperandMutableRayValid | kOperandDecodeContextValid |
       kOperandCommittedHitValid);
-  private_frontier::root_private_operands_v0 private_operands = {};
-  if ((slot.metadata.required_operand_mask & root_private_mask) ==
-      root_private_mask) {
+  private_frontier::root_private_operands_v0 private_operands =
+      slot.metadata.private_state_384_root_projection;
+  if (slot.metadata.private_storage_profile ==
+          private_storage::kProfileCompressedShared384) {
+    if (slot.metadata.private_state_384_projection_valid != 1) {
+      return kStatusPrivate384MaterializeRejected;
+    }
+  } else if ((slot.metadata.required_operand_mask & root_private_mask) ==
+             root_private_mask) {
     private_frontier::shadow_slot_v0 private_slot = {};
     private_slot.owner = slot.metadata.owner;
     std::memcpy(
@@ -1041,9 +1273,15 @@ status_kind build_operation_packet(const Slot &slot, target_kind target,
       return kStatusPrivateOperandShapeMismatch;
     }
   }
-  private_frontier::instance_shader_projection_v0 current_instance = {};
-  if ((slot.metadata.required_operand_mask &
-       kOperandCurrentInstanceValid) != 0) {
+  private_frontier::instance_shader_projection_v0 current_instance =
+      slot.metadata.private_state_384_current_instance_projection;
+  if (slot.metadata.private_storage_profile ==
+          private_storage::kProfileCompressedShared384) {
+    if (slot.metadata.private_state_384_projection_valid != 1) {
+      return kStatusPrivate384MaterializeRejected;
+    }
+  } else if ((slot.metadata.required_operand_mask &
+              kOperandCurrentInstanceValid) != 0) {
     private_frontier::shadow_slot_v0 private_slot = {};
     private_slot.owner = slot.metadata.owner;
     std::memcpy(
@@ -1056,10 +1294,18 @@ status_kind build_operation_packet(const Slot &slot, target_kind target,
       return kStatusPrivateOperandShapeMismatch;
     }
   }
-  return build_ready_operation_packet(
+  const status_kind status = build_ready_operation_packet(
       input, slot.metadata.reservation_id, slot.metadata.reservation_age,
       slot.metadata.slot_generation, private_operands, current_instance,
       slot.raw_payload, packet);
+  if (status != kStatusOk) return status;
+  packet->private_layout_profile_id =
+      slot.metadata.private_layout_profile_id;
+  packet->bvh_format_profile_id =
+      slot.metadata.bvh_format_profile_id;
+  packet->private_storage_profile =
+      slot.metadata.private_storage_profile;
+  return kStatusOk;
 }
 
 template <typename Slot>
@@ -1276,9 +1522,15 @@ status_kind build_ready_operation_packet(
   packet->producer_operation_seq = input.producer_operation_seq;
   packet->producer_commit_epoch = input.producer_commit_epoch;
   packet->slot_generation = slot_generation;
+  packet->private_layout_profile_id =
+      private_frontier::kLayoutProfileId;
+  packet->bvh_format_profile_id =
+      typed_node::kGenRtDerivedProfileId;
   packet->raw_payload_bytes = input.raw_payload_bytes;
   packet->target_kind = input.target_kind;
   packet->operation_kind = kOperationFetchTarget;
+  packet->private_storage_profile =
+      private_storage::kProfileLegacyShared832;
   packet->valid = 1;
   packet->target_reference = input.target_reference;
   packet->pending_parent_resume =
@@ -1772,6 +2024,83 @@ status_kind fill_private_operand_chunk(
   return status;
 }
 
+status_kind configure_private_state_384_slot(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation,
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    const private_state_384::operand_materializer::
+        response_collector_v1 &collector,
+    reservation_receipt_v0 *updated_reservation) {
+  if (state == NULL || updated_reservation == NULL ||
+      state->initialized != 1 || reservation.valid != 1) {
+    return kStatusInvalidArgument;
+  }
+  *updated_reservation = reservation_receipt_v0();
+  engine_state_v0 staged = *state;
+  status_kind status = kStatusInvalidArgument;
+  switch (static_cast<target_kind>(reservation.target_kind)) {
+    case kTargetNode:
+      status = configure_private_state_384_slot_in_queue(
+          staged.node_slots, staged.config.node_capacity,
+          reservation, key, collector, updated_reservation);
+      break;
+    case kTargetPrimitive:
+      status = configure_private_state_384_slot_in_queue(
+          staged.primitive_slots, staged.config.primitive_capacity,
+          reservation, key, collector, updated_reservation);
+      break;
+    case kTargetInstance:
+      status = configure_private_state_384_slot_in_queue(
+          staged.instance_slots, staged.config.instance_capacity,
+          reservation, key, collector, updated_reservation);
+      break;
+    case kTargetInvalid:
+      return kStatusInvalidArgument;
+  }
+  if (status == kStatusOk) *state = staged;
+  return status;
+}
+
+status_kind publish_private_state_384_projection(
+    engine_state_v0 *state,
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    const private_state_384::operand_materializer::
+        response_collector_v1 &collector,
+    const typed_node::ray_policy_v0 &ray_policy,
+    const private_frontier::root_private_operands_v0 &root_projection,
+    const private_frontier::instance_shader_projection_v0
+        &current_instance_projection) {
+  if (state == NULL || state->initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  engine_state_v0 staged = *state;
+  status_kind status = kStatusPrivate384MaterializeRejected;
+  switch (key.consumer) {
+    case private_state_384::operand_plan::kConsumerNode:
+      status = publish_private_state_384_projection_in_queue(
+          staged.node_slots, staged.config.node_capacity,
+          &staged.node_ready, key, collector, ray_policy,
+          root_projection, current_instance_projection);
+      break;
+    case private_state_384::operand_plan::kConsumerPrimitive:
+      status = publish_private_state_384_projection_in_queue(
+          staged.primitive_slots, staged.config.primitive_capacity,
+          &staged.primitive_ready, key, collector, ray_policy,
+          root_projection, current_instance_projection);
+      break;
+    case private_state_384::operand_plan::kConsumerInstance:
+      status = publish_private_state_384_projection_in_queue(
+          staged.instance_slots, staged.config.instance_capacity,
+          &staged.instance_ready, key, collector, ray_policy,
+          root_projection, current_instance_projection);
+      break;
+    default:
+      return kStatusPrivate384MaterializeRejected;
+  }
+  if (status == kStatusOk) *state = staged;
+  return status;
+}
+
 status_kind fill_recovery_descriptor_chunk(
     engine_state_v0 *state,
     const reservation_receipt_v0 &reservation, uint8_t chunk_id,
@@ -2155,6 +2484,12 @@ const char *status_name(status_kind status) {
       return "no_ready_operation";
     case kStatusUnitInputBackpressure:
       return "unit_input_backpressure";
+    case kStatusPrivate384PlanMismatch:
+      return "private_384_plan_mismatch";
+    case kStatusPrivate384ResponseRejected:
+      return "private_384_response_rejected";
+    case kStatusPrivate384MaterializeRejected:
+      return "private_384_materialize_rejected";
   }
   return "unknown";
 }
