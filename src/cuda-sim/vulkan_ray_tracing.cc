@@ -62,6 +62,7 @@
 #include "rtcore_v04_stack_target_transport.h"
 #include "rtcore_v04_stack_timing_driver.h"
 #include "rtcore_v04_target_shared_memory_bridge.h"
+#include "rtcore_v04_target_private_state_384_bridge.h"
 #include "rtcore_v04_timing_driver.h"
 #include "rtcore_v04_typed_blas_decode_context.h"
 #include "rtcore_v04_typed_diagnostic_collector.h"
@@ -1985,6 +1986,9 @@ extern "C" bool rtcore_record_v04_memory_conservation_event(
     if (snapshot->v04_target_raw_read.valid) {
         operation_seq =
             snapshot->v04_target_raw_read.target_operation_seq;
+    } else if (snapshot->v04_private_state_384_read.valid) {
+        operation_seq =
+            snapshot->v04_private_state_384_read.operation_sequence;
     } else if (snapshot->v04_stack_private_read.valid) {
         operation_seq =
             snapshot->v04_stack_private_read.target_operation_seq;
@@ -3651,7 +3655,10 @@ static bool rtcore_v04_genrt_short_stack_replay_enabled()
 static bool rtcore_v04_live_short_stack_timing_enabled()
 {
     return rtcore_v04_genrt_short_stack_replay_enabled() &&
-           rtcore_v04_live_node_timing_enabled();
+           rtcore_v04_live_node_timing_enabled() &&
+           rtcore_v04_live_selected_fetch_transition_enabled() &&
+           rtcore_v04_private_frontier_live_init_enabled() &&
+           rtcore_v04_live_stack_terminal_publication_enabled();
 }
 
 static bool rtcore_v04_producer_backed_instance_blas_reference_enabled()
@@ -16269,12 +16276,88 @@ static bool rtcore_service_resident_warp_continuation_for_owner(
     return false;
 }
 
+static uint8_t rtcore_v04_private_state_384_consumer_for_target(
+    uint8_t target_kind)
+{
+    namespace operand_plan =
+        rtcore::v04::private_state_384::operand_plan;
+    namespace target = rtcore::v04::fetch_target;
+    switch (static_cast<target::target_kind>(target_kind)) {
+        case target::kTargetNode:
+            return operand_plan::kConsumerNode;
+        case target::kTargetPrimitive:
+            return operand_plan::kConsumerPrimitive;
+        case target::kTargetInstance:
+            return operand_plan::kConsumerInstance;
+        case target::kTargetInvalid:
+            return operand_plan::kConsumerInvalid;
+    }
+    return operand_plan::kConsumerInvalid;
+}
+
+static bool rtcore_prepare_v04_target_private_state_384_read_plan(
+    const rtcore::v04::fetch_target::reservation_receipt_v0 &reservation,
+    unsigned long long issue_cycle,
+    rtcore::v04::private_state_384::live_bridge::read_request_plan_v1 *plan)
+{
+    namespace live_bridge =
+        rtcore::v04::private_state_384::live_bridge;
+    namespace operand_plan =
+        rtcore::v04::private_state_384::operand_plan;
+    namespace private_frontier =
+        rtcore::v04::private_frontier;
+    namespace private_storage = rtcore::v04::private_storage;
+    namespace target = rtcore::v04::fetch_target;
+    const bool transition_profile_valid =
+        (reservation.private_layout_profile_id ==
+             private_frontier::kLayoutProfileId &&
+         reservation.private_storage_profile ==
+             private_storage::kProfileLegacyShared832) ||
+        (reservation.private_layout_profile_id ==
+             rtcore::v04::private_state_384::
+                 kPrivateLayoutProfileId &&
+         reservation.private_storage_profile ==
+             private_storage::kProfileCompressedShared384);
+    if (plan == NULL || !reservation.valid ||
+        reservation.operation_kind != target::kOperationFetchTarget ||
+        !transition_profile_valid ||
+        reservation.bvh_format_profile_id !=
+            rtcore::v04::typed_node::kGenRtDerivedProfileId) {
+        return false;
+    }
+    const uint8_t consumer =
+        rtcore_v04_private_state_384_consumer_for_target(
+            reservation.target_kind);
+    if (consumer == operand_plan::kConsumerInvalid) {
+        return false;
+    }
+    live_bridge::read_input_v1 input = {};
+    input.owner = reservation.owner;
+    input.issue_cycle = issue_cycle;
+    input.operation_sequence = reservation.target_operation_seq;
+    input.bvh_format_profile_id = reservation.bvh_format_profile_id;
+    input.reservation_generation = reservation.slot_generation;
+    input.storage_profile =
+        private_storage::kProfileCompressedShared384;
+    input.consumer = consumer;
+    input.operation = operand_plan::kOperationDefault;
+    input.completion_reason =
+        operand_plan::kCompletionReasonNone;
+    input.destination =
+        RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL;
+    return live_bridge::prepare_read_requests(input, plan) ==
+           live_bridge::kStatusOk;
+}
+
 static bool rtcore_enqueue_v04_root_private_operand_reads(
     rtcore_resident_rt_warp_record *record, unsigned long long service_cycle,
     const char **failure_reason)
 {
     namespace private_frontier = rtcore::v04::private_frontier;
     namespace private_shared = rtcore::v04::private_shared;
+    namespace private_state_384 =
+        rtcore::v04::private_state_384;
+    namespace private_storage = rtcore::v04::private_storage;
     namespace target_shared = rtcore::v04::target_shared_memory;
     namespace timing_driver = rtcore::v04::timing_driver;
     const char *failure = "accepted";
@@ -16287,42 +16370,82 @@ static bool rtcore_enqueue_v04_root_private_operand_reads(
         return false;
     }
 
-    private_shared::backing_state_v0 &backing =
-        rtcore_v04_private_shared_backing_for(record->owner_hw_sid);
     timing_driver::state_v0 staged_driver =
         rtcore_v04_timing_driver_for(record->owner_hw_sid);
     std::deque<rtcore_memory_unit_request_snapshot> requests;
+    unsigned chunks_per_lane = 0;
     for (unsigned lane = 0; lane < 32; ++lane) {
         const unsigned lane_mask = 1u << lane;
         if ((record->active_mask & lane_mask) == 0) continue;
         const rtcore::v04::fetch_target::reservation_receipt_v0 &reservation =
             record->v04_root_reservations[lane];
-        private_frontier::access_plan_v0 read_plan = {};
-        if (private_shared::prepare_root_operand_read_plan(
-                backing, reservation.owner, &read_plan) !=
-            private_shared::kStatusOk) {
-            failure = "ROOT_PRIVATE_READ_PLAN_INVALID";
-            break;
-        }
-        target_shared::request_plan_v0 request_plan = {};
-        if (target_shared::prepare_request_plan(
-                reservation, read_plan, service_cycle, &request_plan) !=
-            target_shared::kStatusOk) {
-            failure = "ROOT_PRIVATE_READ_TRANSPORT_INVALID";
-            break;
-        }
         const rtcore::v04::request_owner::lane_binding_v0 &owner =
             record->lane_identity[lane].v04_request_owner_binding;
-        for (unsigned index = 0; index < request_plan.request_count; ++index) {
-            const timing_driver::status_kind status =
-                timing_driver::begin_memory_transaction(
-                    &staged_driver, owner,
-                    reservation.target_operation_seq);
-            if (status != timing_driver::kStatusOk) {
-                failure = timing_driver::status_name(status);
+        if (record->v04_private_storage_profile ==
+            private_storage::kProfileCompressedShared384) {
+            private_state_384::live_bridge::read_request_plan_v1
+                request_plan = {};
+            if (!rtcore_prepare_v04_target_private_state_384_read_plan(
+                    reservation, service_cycle, &request_plan) ||
+                request_plan.request_count !=
+                    reservation.private_chunk_count) {
+                failure = "ROOT_PRIVATE_384_READ_PLAN_INVALID";
                 break;
             }
-            requests.push_back(request_plan.requests[index]);
+            if (chunks_per_lane == 0) {
+                chunks_per_lane = request_plan.request_count;
+            } else if (chunks_per_lane != request_plan.request_count) {
+                failure = "ROOT_PRIVATE_384_READ_SHAPE_DIVERGENT";
+                break;
+            }
+            for (unsigned index = 0;
+                 index < request_plan.request_count; ++index) {
+                const timing_driver::status_kind status =
+                    timing_driver::begin_memory_transaction(
+                        &staged_driver, owner,
+                        reservation.target_operation_seq);
+                if (status != timing_driver::kStatusOk) {
+                    failure = timing_driver::status_name(status);
+                    break;
+                }
+                requests.push_back(request_plan.requests[index]);
+            }
+        } else {
+            private_shared::backing_state_v0 &backing =
+                rtcore_v04_private_shared_backing_for(
+                    record->owner_hw_sid);
+            private_frontier::access_plan_v0 read_plan = {};
+            if (private_shared::prepare_root_operand_read_plan(
+                    backing, reservation.owner, &read_plan) !=
+                private_shared::kStatusOk) {
+                failure = "ROOT_PRIVATE_READ_PLAN_INVALID";
+                break;
+            }
+            target_shared::request_plan_v0 request_plan = {};
+            if (target_shared::prepare_request_plan(
+                    reservation, read_plan, service_cycle,
+                    &request_plan) != target_shared::kStatusOk) {
+                failure = "ROOT_PRIVATE_READ_TRANSPORT_INVALID";
+                break;
+            }
+            if (chunks_per_lane == 0) {
+                chunks_per_lane = request_plan.request_count;
+            } else if (chunks_per_lane != request_plan.request_count) {
+                failure = "ROOT_PRIVATE_READ_SHAPE_DIVERGENT";
+                break;
+            }
+            for (unsigned index = 0;
+                 index < request_plan.request_count; ++index) {
+                const timing_driver::status_kind status =
+                    timing_driver::begin_memory_transaction(
+                        &staged_driver, owner,
+                        reservation.target_operation_seq);
+                if (status != timing_driver::kStatusOk) {
+                    failure = timing_driver::status_name(status);
+                    break;
+                }
+                requests.push_back(request_plan.requests[index]);
+            }
         }
         if (strcmp(failure, "accepted") != 0) break;
     }
@@ -16338,9 +16461,13 @@ static bool rtcore_enqueue_v04_root_private_operand_reads(
     record->v04_root_private_reads_enqueued_mask = record->active_mask;
     printf("GPGPU-Sim RTCORE_V04_ROOT_PRIVATE_READS_ENQUEUED "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
-           "shared_requests=%zu chunks_per_lane=7 same_target_identity=1\n",
+           "shared_requests=%zu chunks_per_lane=%u "
+           "private_storage_profile=%s same_target_identity=1\n",
            record->owner_hw_sid, record->current_warp_uid, record->warp_id,
-           record->active_mask, requests.size());
+           record->active_mask, requests.size(), chunks_per_lane,
+           private_storage::profile_name(
+               static_cast<private_storage::profile_kind>(
+                   record->v04_private_storage_profile)));
     fflush(stdout);
     return true;
 }
@@ -17854,20 +17981,30 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
         if (failure_reason != NULL) *failure_reason = failure;
         return false;
     }
+    private_state_384::state_v1 staged_compressed_backing = {};
+    bool staged_compressed_backing_valid = false;
     private_state_384::new_warp_plan_v1 compressed_backing_plan = {};
     if (candidate_plan.profile ==
         private_storage::kProfileCompressedShared384) {
-        const private_state_384::status_kind backing_status =
+        staged_compressed_backing =
+            rtcore_v04_private_state_384_backing_for(
+                input->owner_hw_sid);
+        private_state_384::status_kind backing_status =
             private_state_384::prepare_new_warp(
-                rtcore_v04_private_state_384_backing_for(
-                    input->owner_hw_sid),
+                staged_compressed_backing,
                 candidate_plan, input->warp_uid, input->warp_id,
                 &compressed_backing_plan);
+        if (backing_status == private_state_384::kStatusOk) {
+            backing_status = private_state_384::commit_new_warp(
+                &staged_compressed_backing,
+                compressed_backing_plan);
+        }
         if (backing_status != private_state_384::kStatusOk) {
             failure = private_state_384::status_name(backing_status);
             if (failure_reason != NULL) *failure_reason = failure;
             return false;
         }
+        staged_compressed_backing_valid = true;
     }
     private_shared::status_kind private_status =
         private_shared::commit_new_warp(
@@ -17931,6 +18068,24 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
             failure = fetch_target::status_name(target_status);
             break;
         }
+        if (candidate_plan.profile ==
+            private_storage::kProfileCompressedShared384) {
+            rtcore::v04::private_state_384::live_bridge::
+                read_request_plan_v1 private_read_plan = {};
+            fetch_target::reservation_receipt_v0
+                updated_reservation = {};
+            if (!rtcore_prepare_v04_target_private_state_384_read_plan(
+                    reservations[lane], modeled_reservation_cycle,
+                    &private_read_plan) ||
+                rtcore::v04::target_private_state_384::configure_read(
+                    &staged_target, reservations[lane],
+                    private_read_plan, &updated_reservation) !=
+                    rtcore::v04::target_private_state_384::kStatusOk) {
+                failure = "ROOT_PACKET_PRIVATE_384_CONFIGURE_REJECTED";
+                break;
+            }
+            reservations[lane] = updated_reservation;
+        }
 
         target_memory::raw_read_plan_v0 raw_plan = {};
         live_global::request_plan_v0 request_plan = {};
@@ -17961,16 +18116,6 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
         return false;
     }
 
-    rtcore_v04_timing_driver_for(input->owner_hw_sid) = staged_driver;
-    rtcore_v04_private_shared_backing_for(input->owner_hw_sid) =
-        staged_backing;
-    rtcore_v04_live_target_engine_for(input->owner_hw_sid) =
-        staged_target;
-    std::deque<rtcore_memory_unit_request_snapshot> &live_request_queue =
-        g_rtcore_memory_unit_request_snapshots_by_owner[input->owner_hw_sid];
-    live_request_queue.insert(live_request_queue.end(),
-                              raw_requests.begin(), raw_requests.end());
-
     rtcore_resident_rt_warp_record record;
     record.valid = true;
     record.owner_hw_sid = input->owner_hw_sid;
@@ -17979,7 +18124,7 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
     record.current_static_inst_uid = input->static_inst_uid;
     record.active_mask = input->active_mask;
     record.resident_generation =
-        g_rtcore_next_resident_rt_warp_generation++;
+        g_rtcore_next_resident_rt_warp_generation;
     record.v04_request_owner_binding_valid = true;
     record.v04_resident_warp_slot =
         timing_plan.owner_plan.resident_warp_slot;
@@ -18028,20 +18173,21 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
         record.v04_immutable_trace_inputs[lane] =
             private_operands[lane];
     }
-    if (candidate_plan.profile ==
-        private_storage::kProfileCompressedShared384) {
-        const private_state_384::status_kind backing_status =
-            private_state_384::commit_new_warp(
-                &rtcore_v04_private_state_384_backing_for(
-                    input->owner_hw_sid),
-                compressed_backing_plan);
-        if (backing_status != private_state_384::kStatusOk) {
-            failure = private_state_384::status_name(backing_status);
-            if (failure_reason != NULL) *failure_reason = failure;
-            return false;
-        }
+    rtcore_v04_timing_driver_for(input->owner_hw_sid) = staged_driver;
+    rtcore_v04_private_shared_backing_for(input->owner_hw_sid) =
+        staged_backing;
+    rtcore_v04_live_target_engine_for(input->owner_hw_sid) =
+        staged_target;
+    if (staged_compressed_backing_valid) {
+        rtcore_v04_private_state_384_backing_for(
+            input->owner_hw_sid) = staged_compressed_backing;
     }
+    std::deque<rtcore_memory_unit_request_snapshot> &live_request_queue =
+        g_rtcore_memory_unit_request_snapshots_by_owner[input->owner_hw_sid];
+    live_request_queue.insert(live_request_queue.end(),
+                              raw_requests.begin(), raw_requests.end());
     g_rtcore_resident_rt_warp_records[record_key] = record;
+    ++g_rtcore_next_resident_rt_warp_generation;
     for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
         if ((input->active_mask & (1u << lane)) == 0) continue;
         rtcore_record_v04_lane_conservation_or_abort(
@@ -18241,6 +18387,10 @@ static bool rtcore_v04_reservation_from_target_request(
         request.v04_target_raw_read.producer_commit_epoch;
     reservation->slot_generation =
         request.v04_target_raw_read.target_slot_generation;
+    reservation->private_layout_profile_id =
+        request.v04_target_raw_read.private_layout_profile_id;
+    reservation->bvh_format_profile_id =
+        request.v04_target_raw_read.bvh_format_profile_id;
     reservation->raw_payload_bytes =
         request.v04_target_raw_read.raw_payload_bytes;
     reservation->target_kind =
@@ -18256,6 +18406,8 @@ static bool rtcore_v04_reservation_from_target_request(
         request.v04_target_raw_read.producer_commit_required;
     reservation->operation_kind =
         request.v04_target_raw_read.operation_kind;
+    reservation->private_storage_profile =
+        request.v04_target_raw_read.private_storage_profile;
     reservation->valid = 1;
     return true;
 }
@@ -18501,6 +18653,49 @@ extern "C" bool rtcore_accept_v04_target_private_shared_read(
         request->owner_hw_sid, response_cycle);
     rtcore_maybe_publish_v04_selected_fetch_ready(
         *request, response_cycle);
+    return true;
+}
+
+extern "C" bool rtcore_accept_v04_target_private_state_384_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle)
+{
+    namespace private_384 =
+        rtcore::v04::target_private_state_384;
+    namespace target = rtcore::v04::fetch_target;
+    if (request == NULL ||
+        (!rtcore_v04_root_node_ready_packet_enabled() &&
+         !rtcore_v04_live_instance_service_enabled())) {
+        return false;
+    }
+    std::map<unsigned, target::engine_state_v0>::iterator it =
+        g_rtcore_v04_live_target_engine_by_owner.find(
+            request->owner_hw_sid);
+    if (it == g_rtcore_v04_live_target_engine_by_owner.end()) {
+        return false;
+    }
+    rtcore::v04::request_owner::lane_binding_v0 owner = {};
+    if (!rtcore_v04_owner_binding_from_target_request(*request, &owner)) {
+        return false;
+    }
+    target::engine_state_v0 staged_target = it->second;
+    rtcore::v04::timing_driver::state_v0 staged_driver =
+        rtcore_v04_timing_driver_for(request->owner_hw_sid);
+    if (private_384::accept_response(
+            &staged_target,
+            rtcore_v04_private_state_384_backing_for(
+                request->owner_hw_sid),
+            *request) != private_384::kStatusOk ||
+        rtcore::v04::timing_driver::complete_memory_transaction(
+            &staged_driver, owner,
+            request->v04_private_state_384_read.operation_sequence) !=
+            rtcore::v04::timing_driver::kStatusOk) {
+        return false;
+    }
+    it->second = staged_target;
+    rtcore_v04_timing_driver_for(request->owner_hw_sid) = staged_driver;
+    rtcore_maybe_publish_v04_root_ready_packet(
+        request->owner_hw_sid, response_cycle);
     return true;
 }
 
@@ -19639,12 +19834,13 @@ static bool rtcore_service_v04_live_node_timing(
                "target_operation_seq=%u reservation_id=%llu "
                "slot_generation=%u commit_epoch=%u "
                "operator_invocations=%u route=%s next_target=%u "
-               "frontier_count=%u issue_cycle=%llu "
-               "result_ready_cycle=%llu capture_cycle=%llu "
-               "commit_cycle=%llu modeled_node_latency=%llu "
-               "lt5_next_target_materialized=%u "
-               "next_target_operation_seq=%u "
-               "materialized_target_kind=%u legacy_authority=0\n",
+                   "frontier_count=%u issue_cycle=%llu "
+                   "result_ready_cycle=%llu capture_cycle=%llu "
+                   "commit_cycle=%llu modeled_node_latency=%llu "
+                   "private_storage_profile=%s "
+                   "lt5_next_target_materialized=%u "
+                   "next_target_operation_seq=%u "
+                   "materialized_target_kind=%u legacy_authority=0\n",
                receipt.result_identity.owner.owner_hw_sid,
                receipt.result_identity.owner.resident_warp_id,
                receipt.result_identity.owner.lane_id,
@@ -19667,6 +19863,11 @@ static bool rtcore_service_v04_live_node_timing(
                (unsigned long long)receipt.commit_cycle,
                (unsigned long long)(
                    receipt.result_ready_cycle - receipt.issue_cycle),
+               rtcore::v04::private_storage::profile_name(
+                   static_cast<
+                       rtcore::v04::private_storage::profile_kind>(
+                       receipt.result_identity
+                           .private_storage_profile)),
                receipt.next_target_materialized,
                receipt.next_target_operation_seq,
                receipt.next_target_kind);

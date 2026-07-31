@@ -56,6 +56,11 @@ bool common_transport_shape_valid(
          extension.target_operation_seq != 0 &&
          producer_tag_valid &&
          extension.target_slot_generation != 0 &&
+         extension.private_layout_profile_id != 0 &&
+         extension.bvh_format_profile_id ==
+             typed_node::kGenRtDerivedProfileId &&
+         extension.private_storage_profile <=
+             private_storage::kProfileCompressedShared384 &&
          extension.producer_commit_required <= 1 &&
          extension.operand_kind ==
              RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL &&
@@ -138,6 +143,10 @@ status_kind lower_raw_read_chunk(
   extension.producer_commit_epoch =
       reservation.producer_commit_epoch;
   extension.target_slot_generation = reservation.slot_generation;
+  extension.private_layout_profile_id =
+      reservation.private_layout_profile_id;
+  extension.bvh_format_profile_id =
+      reservation.bvh_format_profile_id;
   extension.raw_payload_bytes = reservation.raw_payload_bytes;
   extension.target_kind = reservation.target_kind;
   extension.target_slot_index = reservation.slot_index;
@@ -148,6 +157,9 @@ status_kind lower_raw_read_chunk(
       RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL;
   extension.private_chunk_count =
       reservation.private_chunk_count;
+  extension.operation_kind = reservation.operation_kind;
+  extension.private_storage_profile =
+      reservation.private_storage_profile;
   extension.valid = 1;
   return kStatusOk;
 }
@@ -183,6 +195,10 @@ status_kind reconstruct_raw_read_chunk(
       extension.producer_commit_epoch;
   reservation.slot_generation =
       extension.target_slot_generation;
+  reservation.private_layout_profile_id =
+      extension.private_layout_profile_id;
+  reservation.bvh_format_profile_id =
+      extension.bvh_format_profile_id;
   reservation.raw_payload_bytes = extension.raw_payload_bytes;
   reservation.target_kind = extension.target_kind;
   reservation.slot_index = extension.target_slot_index;
@@ -192,6 +208,9 @@ status_kind reconstruct_raw_read_chunk(
       extension.private_chunk_count;
   reservation.producer_commit_required =
       extension.producer_commit_required;
+  reservation.operation_kind = extension.operation_kind;
+  reservation.private_storage_profile =
+      extension.private_storage_profile;
   reservation.valid = 1;
 
   chunk->aligned_32b_address = request.aligned_32b_addr;

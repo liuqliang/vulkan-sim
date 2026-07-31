@@ -86,6 +86,10 @@ void populate_common_request(
   extension.producer_commit_epoch =
       reservation.producer_commit_epoch;
   extension.target_slot_generation = reservation.slot_generation;
+  extension.private_layout_profile_id =
+      reservation.private_layout_profile_id;
+  extension.bvh_format_profile_id =
+      reservation.bvh_format_profile_id;
   extension.raw_payload_bytes = reservation.raw_payload_bytes;
   extension.target_kind = reservation.target_kind;
   extension.target_slot_index = reservation.slot_index;
@@ -95,6 +99,9 @@ void populate_common_request(
       private_frontier::kSharedAccessChunkBytes;
   extension.private_chunk_count =
       reservation.private_chunk_count;
+  extension.operation_kind = reservation.operation_kind;
+  extension.private_storage_profile =
+      reservation.private_storage_profile;
   extension.valid = 1;
 }
 
@@ -122,6 +129,12 @@ bool common_transport_valid(
          request.v04_target_raw_read.reservation_age != 0 &&
          request.v04_target_raw_read.target_operation_seq != 0 &&
          request.v04_target_raw_read.target_slot_generation != 0 &&
+         request.v04_target_raw_read.private_layout_profile_id ==
+             private_frontier::kLayoutProfileId &&
+         request.v04_target_raw_read.bvh_format_profile_id ==
+             typed_node::kGenRtDerivedProfileId &&
+         request.v04_target_raw_read.private_storage_profile ==
+             private_storage::kProfileLegacyShared832 &&
          producer_valid &&
          request.v04_target_raw_read.private_chunk_count ==
              (request.v04_target_raw_read.target_kind ==
@@ -209,6 +222,10 @@ bool reconstruct_reservation(
       extension.producer_commit_epoch;
   reservation->slot_generation =
       extension.target_slot_generation;
+  reservation->private_layout_profile_id =
+      extension.private_layout_profile_id;
+  reservation->bvh_format_profile_id =
+      extension.bvh_format_profile_id;
   reservation->raw_payload_bytes = extension.raw_payload_bytes;
   reservation->target_kind = extension.target_kind;
   reservation->slot_index = extension.target_slot_index;
@@ -219,6 +236,9 @@ bool reconstruct_reservation(
       extension.private_chunk_count;
   reservation->producer_commit_required =
       extension.producer_commit_required;
+  reservation->operation_kind = extension.operation_kind;
+  reservation->private_storage_profile =
+      extension.private_storage_profile;
   reservation->valid = 1;
   return true;
 }

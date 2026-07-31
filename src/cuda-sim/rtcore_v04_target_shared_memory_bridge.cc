@@ -127,6 +127,12 @@ bool request_shape_valid(
          extension.target_operation_seq != 0 &&
          producer_tag_valid &&
          extension.target_slot_generation != 0 &&
+         extension.private_layout_profile_id ==
+             private_frontier::kLayoutProfileId &&
+         extension.bvh_format_profile_id ==
+             typed_node::kGenRtDerivedProfileId &&
+         extension.private_storage_profile ==
+             private_storage::kProfileLegacyShared832 &&
          extension.producer_commit_required <= 1 &&
          extension.transfer_bytes ==
              private_frontier::kSharedAccessChunkBytes &&
@@ -160,9 +166,9 @@ fetch_target::reservation_receipt_v0 reconstruct_reservation(
   reservation.slot_generation =
       extension.target_slot_generation;
   reservation.private_layout_profile_id =
-      private_frontier::kLayoutProfileId;
+      extension.private_layout_profile_id;
   reservation.bvh_format_profile_id =
-      typed_node::kGenRtDerivedProfileId;
+      extension.bvh_format_profile_id;
   reservation.raw_payload_bytes = extension.raw_payload_bytes;
   reservation.target_kind = extension.target_kind;
   reservation.slot_index = extension.target_slot_index;
@@ -176,7 +182,7 @@ fetch_target::reservation_receipt_v0 reconstruct_reservation(
       extension.producer_commit_required;
   reservation.operation_kind = extension.operation_kind;
   reservation.private_storage_profile =
-      private_storage::kProfileLegacyShared832;
+      extension.private_storage_profile;
   reservation.valid = 1;
   return reservation;
 }
@@ -243,6 +249,10 @@ status_kind prepare_request_plan(
     extension.producer_commit_epoch =
         reservation.producer_commit_epoch;
     extension.target_slot_generation = reservation.slot_generation;
+    extension.private_layout_profile_id =
+        reservation.private_layout_profile_id;
+    extension.bvh_format_profile_id =
+        reservation.bvh_format_profile_id;
     extension.raw_payload_bytes = reservation.raw_payload_bytes;
     extension.slot_chunk_offset = static_cast<uint16_t>(
         access.aligned_32b_address - slot_base);
@@ -258,6 +268,8 @@ status_kind prepare_request_plan(
     extension.private_chunk_count =
         reservation.private_chunk_count;
     extension.operation_kind = reservation.operation_kind;
+    extension.private_storage_profile =
+        reservation.private_storage_profile;
     extension.valid = 1;
     if (!request_shape_valid(request)) return kStatusMalformedPlan;
   }

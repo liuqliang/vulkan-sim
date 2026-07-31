@@ -47,6 +47,8 @@ result_identity_envelope_v0 make_result_identity(
   identity.reservation_id = packet.reservation_id;
   identity.target_operation_seq = packet.target_operation_seq;
   identity.slot_generation = packet.slot_generation;
+  identity.private_storage_profile =
+      packet.private_storage_profile;
   return identity;
 }
 
@@ -569,7 +571,11 @@ bool validate_result_identity(
          identity.target_operation_seq ==
              packet.target_operation_seq &&
          identity.slot_generation != 0 &&
-         identity.slot_generation == packet.slot_generation;
+         identity.slot_generation == packet.slot_generation &&
+         identity.private_storage_profile ==
+             packet.private_storage_profile &&
+         bytes_are_zero(identity.reserved_zero,
+                        sizeof(identity.reserved_zero));
 }
 
 status_kind service_cycle(

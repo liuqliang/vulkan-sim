@@ -4541,6 +4541,13 @@ rtcore_consume_memory_unit_request_offer_from_rt_unit(
             RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
         result.memory_unit_snapshot.access_kind ==
             RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ;
+    const bool target_private_state_384_read =
+        result.memory_unit_snapshot.operation ==
+            RTCORE_MEMORY_OPERATION_READ &&
+        result.memory_unit_snapshot.destination ==
+            RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
+        result.memory_unit_snapshot.access_kind ==
+            RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ;
     const bool stack_private_read =
         result.memory_unit_snapshot.operation ==
             RTCORE_MEMORY_OPERATION_READ &&
@@ -4573,7 +4580,10 @@ rtcore_consume_memory_unit_request_offer_from_rt_unit(
         private_shared_write
             ? rtcore_accept_v04_private_shared_request(
                   &result.memory_unit_snapshot, result.cycle)
-            : (target_private_read &&
+            : (target_private_state_384_read &&
+               rtcore_accept_v04_target_private_state_384_read(
+                   &result.memory_unit_snapshot, result.cycle)) ||
+                  (target_private_read &&
                rtcore_accept_v04_target_private_shared_read(
                    &result.memory_unit_snapshot, result.cycle)) ||
                   (stack_private_read &&

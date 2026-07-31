@@ -55,6 +55,8 @@ struct result_identity_envelope_v0 {
   uint64_t reservation_id;
   uint32_t target_operation_seq;
   uint32_t slot_generation;
+  uint8_t private_storage_profile;
+  uint8_t reserved_zero[3];
 };
 
 struct node_unit_state_v0 {

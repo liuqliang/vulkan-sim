@@ -160,6 +160,8 @@ struct rtcore_v04_target_raw_read_transport_snapshot {
   uint32_t producer_operation_seq;
   uint32_t producer_commit_epoch;
   uint32_t target_slot_generation;
+  uint32_t private_layout_profile_id;
+  uint32_t bvh_format_profile_id;
   uint16_t raw_payload_bytes;
   uint16_t slot_chunk_offset;
   uint8_t target_kind;
@@ -171,6 +173,7 @@ struct rtcore_v04_target_raw_read_transport_snapshot {
   uint8_t private_chunk_count;
   uint8_t valid;
   uint8_t operation_kind;
+  uint8_t private_storage_profile;
   uint8_t reserved_zero[1];
 };
 
@@ -357,6 +360,10 @@ bool rtcore_accept_v04_target_raw_read_response(
     unsigned long long response_cycle);
 
 bool rtcore_accept_v04_target_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle);
+
+bool rtcore_accept_v04_target_private_state_384_read(
     const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle);
 
