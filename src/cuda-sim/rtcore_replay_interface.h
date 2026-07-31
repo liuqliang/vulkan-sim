@@ -270,6 +270,7 @@ static const unsigned RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL = 2u;
 static const unsigned RTCORE_MEMORY_DESTINATION_STACK_QUEUE_FILL = 3u;
 static const unsigned RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK = 4u;
 static const unsigned RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL = 5u;
+static const unsigned RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL = 6u;
 static const unsigned RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT = 8u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_RAW_READ = 9u;
 static const unsigned RTCORE_MEMORY_ACCESS_TARGET_PRIVATE_READ = 10u;
@@ -385,6 +386,10 @@ bool rtcore_accept_v04_stack_private_shared_read(
     unsigned long long response_cycle);
 
 bool rtcore_accept_v04_short_stack_private_shared_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle);
+
+bool rtcore_accept_v04_private_boundary_state_384_read(
     const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle);
 

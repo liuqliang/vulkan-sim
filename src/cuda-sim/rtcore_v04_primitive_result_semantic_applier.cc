@@ -344,7 +344,8 @@ status_kind prepare_private_commit(
     const semantic_plan_v0 &semantic_plan,
     const private_frontier::region_binding_v0 &region,
     const private_frontier::shadow_slot_v0 &canonical_slot,
-    private_commit_plan_v0 *plan) {
+    private_commit_plan_v0 *plan,
+    bool allow_terminal_shader_return) {
   if (plan == NULL) return kStatusInvalidArgument;
   *plan = private_commit_plan_v0();
   if (semantic_plan.valid != 1 ||
@@ -391,7 +392,9 @@ status_kind prepare_private_commit(
     if (layout_status != private_frontier::kStatusOk ||
         (semantic_plan.shader_return_valid != 0 &&
          (retained_candidate != NULL || primitive_resume != NULL ||
-          semantic_plan.route_kind != kRouteStackPopNext))) {
+          (semantic_plan.route_kind != kRouteStackPopNext &&
+           (!allow_terminal_shader_return ||
+            semantic_plan.route_kind != kRouteFinalHitBoundary))))) {
       return kStatusLayoutRejected;
     }
     uint8_t fragment_count = 0;

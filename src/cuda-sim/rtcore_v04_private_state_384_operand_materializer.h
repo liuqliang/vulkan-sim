@@ -146,6 +146,15 @@ struct stack_operands_v1 {
   uint8_t reserved_zero[3];
 };
 
+struct stack_metadata_v1 {
+  uint8_t stack_count;
+  uint8_t stack_top_ptr;
+  uint8_t lost;
+  uint8_t active_domain;
+  uint8_t cross_as;
+  uint8_t reserved_zero[3];
+};
+
 struct stack_terminal_operands_v1 {
   stack_operands_v1 base;
   typed_stack::committed_hit_projection_v0 committed_hit;
@@ -207,6 +216,10 @@ status_kind materialize_stack_base(
     const response_collector_v1 &collector,
     const materialize_context_v1 &context,
     stack_operands_v1 *operands);
+
+status_kind materialize_stack_metadata(
+    const response_collector_v1 &collector,
+    stack_metadata_v1 *metadata);
 
 status_kind materialize_stack_terminal(
     const response_collector_v1 &collector,

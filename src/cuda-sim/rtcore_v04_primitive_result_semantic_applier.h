@@ -94,7 +94,8 @@ status_kind prepare_private_commit(
     const semantic_plan_v0 &semantic_plan,
     const private_frontier::region_binding_v0 &region,
     const private_frontier::shadow_slot_v0 &canonical_slot,
-    private_commit_plan_v0 *plan);
+    private_commit_plan_v0 *plan,
+    bool allow_terminal_shader_return = false);
 
 const char *status_name(status_kind status);
 const char *route_name(route_kind route);

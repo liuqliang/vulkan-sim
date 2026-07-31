@@ -323,6 +323,7 @@ static status_kind capture_semantic_plan_impl(
     const primitive_semantic::semantic_plan_v0 &semantic_plan,
     uint8_t private_storage_profile,
     const typed_blas::as_decode_context_v0 *explicit_active_decode_context,
+    uint8_t private_state_384_producer,
     capture_receipt_v0 *receipt) {
   const bool internal_successor =
       semantic_plan.route_kind ==
@@ -344,7 +345,12 @@ static status_kind capture_semantic_plan_impl(
            private_storage::kProfileCompressedShared384) ||
       (private_storage_profile ==
            private_storage::kProfileCompressedShared384 &&
-       explicit_active_decode_context == NULL)) {
+       (explicit_active_decode_context == NULL ||
+        (private_state_384_producer !=
+             private_state_384::operand_plan::kProducerPrimitive &&
+         private_state_384_producer !=
+             private_state_384::operand_plan::
+                 kProducerResubmitApply)))) {
     return kStatusInvalidArgument;
   }
   *receipt = capture_receipt_v0();
@@ -362,8 +368,14 @@ static status_kind capture_semantic_plan_impl(
 
   primitive_semantic::private_commit_plan_v0 commit = {};
   private_frontier::root_private_operands_v0 active_operands = {};
+  const bool allow_terminal_shader_return =
+      private_storage_profile ==
+          private_storage::kProfileCompressedShared384 &&
+      private_state_384_producer ==
+          private_state_384::operand_plan::kProducerResubmitApply;
   if (primitive_semantic::prepare_private_commit(
-          semantic_plan, region, canonical_slot, &commit) !=
+          semantic_plan, region, canonical_slot, &commit,
+          allow_terminal_shader_return) !=
           primitive_semantic::kStatusOk ||
       (explicit_active_decode_context == NULL &&
        private_frontier::decode_root_private_operands(
@@ -401,8 +413,7 @@ static status_kind capture_semantic_plan_impl(
           commit.write_fragment_count;
       input.storage_profile =
           private_storage::kProfileCompressedShared384;
-      input.producer =
-          private_state_384::operand_plan::kProducerPrimitive;
+      input.producer = private_state_384_producer;
       if (private_state_384::live_bridge::stage_sparse_commit(
               input, deltas, delta_count,
               &private_state_384_commit) !=
@@ -481,7 +492,8 @@ status_kind capture_result(
       state, producer_operation_seq, commit_epoch,
       target_operation_seq, region, canonical_slot, semantic,
       private_storage::kProfileLegacyShared832,
-      &input.decode_context, receipt);
+      &input.decode_context,
+      private_state_384::operand_plan::kProducerInvalid, receipt);
 }
 
 status_kind capture_result_with_private_state_384(
@@ -504,7 +516,8 @@ status_kind capture_result_with_private_state_384(
       state, producer_operation_seq, commit_epoch,
       target_operation_seq, region, compatibility_slot, semantic,
       private_storage::kProfileCompressedShared384,
-      &input.decode_context, receipt);
+      &input.decode_context,
+      private_state_384::operand_plan::kProducerPrimitive, receipt);
 }
 
 status_kind capture_semantic_plan(
@@ -518,7 +531,33 @@ status_kind capture_semantic_plan(
   return capture_semantic_plan_impl(
       state, producer_operation_seq, commit_epoch,
       target_operation_seq, region, canonical_slot, semantic_plan,
-      private_storage::kProfileLegacyShared832, NULL, receipt);
+      private_storage::kProfileLegacyShared832, NULL,
+      private_state_384::operand_plan::kProducerInvalid, receipt);
+}
+
+status_kind capture_resubmit_semantic_plan_with_private_state_384(
+    engine_state_v0 *state,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &compatibility_slot,
+    const primitive_semantic::semantic_plan_v0 &semantic_plan,
+    capture_receipt_v0 *receipt) {
+  if (semantic_plan.shader_return_valid != 1 ||
+      semantic_plan.retained_candidate_valid != 0 ||
+      semantic_plan.primitive_resume_valid != 0 ||
+      semantic_plan.intersection_boundary_valid != 0) {
+    return kStatusSemanticPlanRejected;
+  }
+  const typed_blas::as_decode_context_v0 unused_decode_context = {};
+  return capture_semantic_plan_impl(
+      state, producer_operation_seq, commit_epoch,
+      target_operation_seq, region, compatibility_slot,
+      semantic_plan,
+      private_storage::kProfileCompressedShared384,
+      &unused_decode_context,
+      private_state_384::operand_plan::kProducerResubmitApply,
+      receipt);
 }
 
 status_kind peek_write_offer(const engine_state_v0 &state,
@@ -812,7 +851,17 @@ status_kind enqueue_boundary_receipt(
   if (state->boundary_count >= state->config.boundary_capacity) {
     return kStatusBoundaryBackpressure;
   }
-  state->boundary_receipts[state->boundary_count++] = event;
+  ready_event_v0 queued = event;
+  if (event.private_storage_profile ==
+      private_storage::kProfileCompressedShared384) {
+    queued.semantic_plan = primitive_semantic::semantic_plan_v0();
+    queued.semantic_plan.owner = event.owner;
+    queued.semantic_plan.operation_seq =
+        event.producer_operation_seq;
+    queued.semantic_plan.route_kind = event.route_kind;
+    queued.semantic_plan.valid = 1;
+  }
+  state->boundary_receipts[state->boundary_count++] = queued;
   return kStatusOk;
 }
 

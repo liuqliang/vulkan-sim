@@ -287,6 +287,40 @@ status_kind arm_boundary(
       commit_epoch, arm_cycle, receipt);
 }
 
+status_kind arm_private_state_384_boundary(
+    warp_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq,
+    const private_state_384::operand_materializer::software_boundary_v1
+        &boundary,
+    const std::array<uint32_t, abi_v04::kWordCount> &preimage_words,
+    uint32_t commit_epoch, uint64_t arm_cycle,
+    arm_receipt_v0 *receipt) {
+  primitive_semantic::semantic_plan_v0 plan = {};
+  plan.owner = owner;
+  plan.operation_seq = producer_operation_seq;
+  plan.retained_candidate.identity_and_policy =
+      boundary.identity_and_policy;
+  plan.retained_candidate_valid = 1;
+  if (boundary.reason == abi_v04::kReasonAnyHitRequired) {
+    plan.route_kind = primitive_semantic::kRouteAnyHitBoundary;
+    plan.retained_candidate.triangle_hit =
+        boundary.reason_facts.triangle_hit;
+  } else if (
+      boundary.reason == abi_v04::kReasonIntersectionRequired) {
+    plan.route_kind =
+        primitive_semantic::kRouteIntersectionBoundary;
+    plan.intersection_boundary_valid = 1;
+    plan.intersection_boundary =
+        boundary.reason_facts.intersection;
+  } else {
+    return kStatusInvalidSemanticPlan;
+  }
+  plan.valid = 1;
+  return arm_boundary(
+      state, plan, preimage_words, commit_epoch, arm_cycle, receipt);
+}
+
 status_kind arm_terminal_boundary(
     warp_state_v0 *state,
     const private_frontier::owner_binding_v0 &owner,

@@ -85,6 +85,8 @@ bool destination_valid(uint8_t destination) {
              RTCORE_MEMORY_DESTINATION_STACK_QUEUE_FILL ||
          destination ==
              RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL ||
+         destination ==
+             RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL ||
          destination == RTCORE_MEMORY_DESTINATION_LEGACY;
 }
 

@@ -486,8 +486,7 @@ static status_kind decode_stack(
     const uint8_t *chunk6, const uint8_t *chunk7,
     uint8_t recovery_target_inflight,
     short_stack::state_v0 *stack) {
-  if (chunk4 == NULL || chunk5 == NULL || chunk6 == NULL ||
-      chunk7 == NULL || stack == NULL ||
+  if (chunk4 == NULL || stack == NULL ||
       recovery_target_inflight > 1) {
     return kStatusInvalidArgument;
   }
@@ -506,10 +505,16 @@ static status_kind decode_stack(
       !bytes_are_zero(chunk4 + 28, 4)) {
     return kStatusInvalidEncoding;
   }
+  if (decoded.stack_count != 0 &&
+      (chunk5 == NULL || chunk6 == NULL || chunk7 == NULL)) {
+    return kStatusIncompleteResponses;
+  }
   uint8_t encoded_entries[3 * kChunkBytes] = {};
-  std::memcpy(encoded_entries + 0, chunk5, kChunkBytes);
-  std::memcpy(encoded_entries + 32, chunk6, kChunkBytes);
-  std::memcpy(encoded_entries + 64, chunk7, kChunkBytes);
+  if (decoded.stack_count != 0) {
+    std::memcpy(encoded_entries + 0, chunk5, kChunkBytes);
+    std::memcpy(encoded_entries + 32, chunk6, kChunkBytes);
+    std::memcpy(encoded_entries + 64, chunk7, kChunkBytes);
+  }
   for (uint8_t logical = 0; logical < decoded.stack_count; ++logical) {
     const uint8_t physical = static_cast<uint8_t>(
         (decoded.stack_top_ptr + logical) %
@@ -879,14 +884,21 @@ status_kind promote_stack_collector(
   if (selected_collector == NULL) return kStatusInvalidArgument;
   *selected_collector = response_collector_v1();
   if (selected_operation !=
+          operand_plan::kOperationStackEntries &&
+      selected_operation !=
           operand_plan::kOperationStackTerminal &&
       selected_operation !=
           operand_plan::kOperationStackCrossAsReturn) {
     return kStatusInvalidConsumerOperation;
   }
+  const uint8_t required_base_operation =
+      selected_operation ==
+              operand_plan::kOperationStackCrossAsReturn
+          ? operand_plan::kOperationStackEntries
+          : operand_plan::kOperationDefault;
   status_kind status = require_collector(
       base_collector, operand_plan::kConsumerStack,
-      operand_plan::kOperationDefault,
+      required_base_operation,
       operand_plan::kCompletionReasonNone);
   if (status != kStatusOk) return status;
 
@@ -1055,13 +1067,51 @@ status_kind materialize_stack_base(
     stack_operands_v1 *operands) {
   if (operands == NULL) return kStatusInvalidArgument;
   *operands = stack_operands_v1();
-  status_kind status = require_collector(
-      collector, operand_plan::kConsumerStack,
-      operand_plan::kOperationDefault,
-      operand_plan::kCompletionReasonNone);
+  status_kind status =
+      collector.operation == operand_plan::kOperationDefault ||
+              collector.operation ==
+                  operand_plan::kOperationStackEntries
+          ? require_collector(
+                collector, operand_plan::kConsumerStack,
+                collector.operation,
+                operand_plan::kCompletionReasonNone)
+          : kStatusInvalidConsumerOperation;
   return status == kStatusOk
              ? materialize_stack_common(collector, context, operands)
              : status;
+}
+
+status_kind materialize_stack_metadata(
+    const response_collector_v1 &collector,
+    stack_metadata_v1 *metadata) {
+  if (metadata == NULL) return kStatusInvalidArgument;
+  *metadata = stack_metadata_v1();
+  const status_kind status = require_collector(
+      collector, operand_plan::kConsumerStack,
+      operand_plan::kOperationDefault,
+      operand_plan::kCompletionReasonNone);
+  if (status != kStatusOk) return status;
+  const uint8_t *chunk4 = find_chunk(collector, 4);
+  if (chunk4 == NULL) return kStatusIncompleteResponses;
+  stack_metadata_v1 decoded = {};
+  decoded.stack_count = chunk4[24];
+  decoded.stack_top_ptr = chunk4[25];
+  decoded.lost = chunk4[26];
+  decoded.active_domain = chunk4[27];
+  decoded.cross_as =
+      decoded.active_domain == short_stack::kDomainBlas ? 1 : 0;
+  if (decoded.stack_count > short_stack::kLogicalCapacity ||
+      (decoded.stack_count == 0 && decoded.stack_top_ptr != 0) ||
+      decoded.stack_top_ptr >= short_stack::kLogicalCapacity ||
+      decoded.lost > 1 ||
+      decoded.active_domain > short_stack::kDomainBlas ||
+      !bytes_are_zero(decoded.reserved_zero,
+                      sizeof(decoded.reserved_zero)) ||
+      !bytes_are_zero(chunk4 + 28, 4)) {
+    return kStatusInvalidEncoding;
+  }
+  *metadata = decoded;
+  return kStatusOk;
 }
 
 status_kind materialize_stack_terminal(

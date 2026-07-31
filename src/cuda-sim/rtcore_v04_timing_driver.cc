@@ -740,6 +740,68 @@ status_kind complete_memory_transaction(
   return kStatusOk;
 }
 
+status_kind begin_terminal_boundary_memory_transaction(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint8_t terminal_kind) {
+  if (state == NULL || producer_operation_seq == 0 ||
+      commit_epoch == 0 || !state->initialized ||
+      !valid_terminal_kind(terminal_kind)) {
+    return kStatusInvalidArgument;
+  }
+  lane_control_state_v0 *control = find_lane_control(state, owner);
+  if (control == NULL || !validate_owner_binding(*state, owner)) {
+    return kStatusOwnerMismatch;
+  }
+  if (control->pending_terminal_kind != terminal_kind ||
+      control->pending_terminal_producer_operation_seq !=
+          producer_operation_seq ||
+      control->pending_terminal_commit_epoch != commit_epoch ||
+      control->live_target_operation_seq != 0 ||
+      control->live_commit_producer_operation_seq != 0 ||
+      control->live_commit_epoch != 0 ||
+      control->pending_recovery_operation_seq != 0 ||
+      control->live_commit_memory_transaction_count != 0) {
+    return kStatusMemoryTransactionMismatch;
+  }
+  if (control->live_memory_transaction_count == 0xffffu) {
+    return kStatusMemoryTransactionOverflow;
+  }
+  ++control->live_memory_transaction_count;
+  ++state->mutation_epoch;
+  return kStatusOk;
+}
+
+status_kind complete_terminal_boundary_memory_transaction(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint8_t terminal_kind) {
+  if (state == NULL || producer_operation_seq == 0 ||
+      commit_epoch == 0 || !state->initialized ||
+      !valid_terminal_kind(terminal_kind)) {
+    return kStatusInvalidArgument;
+  }
+  lane_control_state_v0 *control = find_lane_control(state, owner);
+  if (control == NULL || !validate_owner_binding(*state, owner)) {
+    return kStatusOwnerMismatch;
+  }
+  if (control->pending_terminal_kind != terminal_kind ||
+      control->pending_terminal_producer_operation_seq !=
+          producer_operation_seq ||
+      control->pending_terminal_commit_epoch != commit_epoch ||
+      control->live_target_operation_seq != 0 ||
+      control->live_commit_producer_operation_seq != 0 ||
+      control->live_commit_epoch != 0 ||
+      control->pending_recovery_operation_seq != 0 ||
+      control->live_commit_memory_transaction_count != 0 ||
+      control->live_memory_transaction_count == 0) {
+    return kStatusMemoryTransactionMismatch;
+  }
+  --control->live_memory_transaction_count;
+  ++state->mutation_epoch;
+  return kStatusOk;
+}
+
 status_kind commit_private_recovery_target_state(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
@@ -852,7 +914,6 @@ status_kind find_pending_terminal_boundary(
         control.live_commit_producer_operation_seq != 0 ||
         control.live_commit_epoch != 0 ||
         control.pending_recovery_operation_seq != 0 ||
-        control.live_memory_transaction_count != 0 ||
         control.live_commit_memory_transaction_count != 0) {
       return kStatusCommitMismatch;
     }

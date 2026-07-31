@@ -1302,6 +1302,9 @@ struct rtcore_v04_handoff_authority_snapshot {
 static bool rtcore_resolve_v04_handoff_authority(
     const rtcore::v04::request_owner::lane_binding_v0 &owner,
     rtcore_v04_handoff_authority_snapshot *snapshot);
+static bool rtcore_v04_request_owner_from_private_owner(
+    const rtcore::v04::private_frontier::owner_binding_v0 &private_owner,
+    rtcore::v04::request_owner::lane_binding_v0 *request_owner);
 
 struct rtcore_resident_rt_warp_record;
 static rtcore_resident_rt_warp_record *
@@ -1312,6 +1315,51 @@ static bool rtcore_v04_immutable_trace_input_for(
     rtcore::v04::private_frontier::root_private_operands_v0 *input);
 static uint32_t rtcore_v04_native_publication_chunk_byte_mask(
     uint32_t word_mask, unsigned chunk);
+
+enum rtcore_v04_private_boundary_read_purpose {
+    RTCORE_V04_PRIVATE_BOUNDARY_READ_NONE = 0,
+    RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION = 1,
+    RTCORE_V04_PRIVATE_BOUNDARY_READ_RESUBMIT = 2,
+};
+
+enum rtcore_v04_private_boundary_read_phase {
+    RTCORE_V04_PRIVATE_BOUNDARY_PHASE_INVALID = 0,
+    RTCORE_V04_PRIVATE_BOUNDARY_PHASE_HANDOFF_STAGED = 1,
+    RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READING = 2,
+    RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READY = 3,
+};
+
+struct rtcore_v04_private_boundary_read_state {
+    rtcore_v04_private_boundary_read_state()
+        : valid(false), result_commit_closed(false),
+          terminal_pending_read(false),
+          purpose(RTCORE_V04_PRIVATE_BOUNDARY_READ_NONE),
+          phase(RTCORE_V04_PRIVATE_BOUNDARY_PHASE_INVALID),
+          completion_reason(0), route_kind(0), operation_seq(0),
+          read_generation(0), commit_epoch(0), owner(), collector(),
+          software_boundary(), final_completion(), handoff_words()
+    {
+    }
+
+    bool valid;
+    bool result_commit_closed;
+    bool terminal_pending_read;
+    uint8_t purpose;
+    uint8_t phase;
+    uint8_t completion_reason;
+    uint8_t route_kind;
+    uint32_t operation_seq;
+    uint32_t read_generation;
+    uint32_t commit_epoch;
+    rtcore::v04::private_frontier::owner_binding_v0 owner;
+    rtcore::v04::private_state_384::operand_materializer::
+        response_collector_v1 collector;
+    rtcore::v04::private_state_384::operand_materializer::
+        software_boundary_v1 software_boundary;
+    rtcore::v04::private_state_384::operand_materializer::
+        final_completion_operands_v1 final_completion;
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> handoff_words;
+};
 
 struct rtcore_resident_rt_warp_record {
     rtcore_resident_rt_warp_record()
@@ -1328,7 +1376,8 @@ struct rtcore_resident_rt_warp_record {
           v04_root_packet_valid(false),
           v04_root_private_reads_enqueued_mask(0),
           v04_root_ready_mask(0),
-          v04_boundary_completion(), v04_continuation_lifecycle()
+          v04_boundary_completion(), v04_continuation_lifecycle(),
+          v04_private_boundary_reads()
     {
         memset(v04_root_reservations, 0, sizeof(v04_root_reservations));
     }
@@ -1363,7 +1412,13 @@ struct rtcore_resident_rt_warp_record {
         v04_boundary_completion;
     rtcore::v04::continuation_lifecycle::warp_state_v0
         v04_continuation_lifecycle;
+    rtcore_v04_private_boundary_read_state
+        v04_private_boundary_reads[32];
 };
+
+static bool rtcore_try_commit_v04_native_continuation_resubmit(
+    rtcore_resident_rt_warp_record *record,
+    unsigned long long service_cycle);
 
 struct rtcore_replay_warp_completion_entry_state {
     bool valid;
@@ -19207,6 +19262,211 @@ extern "C" bool rtcore_accept_v04_short_stack_private_shared_read(
     return true;
 }
 
+extern "C" bool rtcore_accept_v04_private_boundary_state_384_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle)
+{
+    namespace live_bridge =
+        rtcore::v04::private_state_384::live_bridge;
+    namespace materializer =
+        rtcore::v04::private_state_384::operand_materializer;
+    namespace operand_plan =
+        rtcore::v04::private_state_384::operand_plan;
+    namespace lifecycle = rtcore::v04::continuation_lifecycle;
+    namespace private_frontier = rtcore::v04::private_frontier;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (request == NULL ||
+        request->access_kind !=
+            RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ ||
+        request->destination !=
+            RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL ||
+        request->lane_id >= 32) {
+        return false;
+    }
+    const uint8_t consumer =
+        request->v04_private_state_384_read.consumer;
+    const uint8_t expected_purpose =
+        consumer == operand_plan::kConsumerCompletionPublisher
+            ? RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION
+            : consumer == operand_plan::kConsumerResubmitApply
+                  ? RTCORE_V04_PRIVATE_BOUNDARY_READ_RESUBMIT
+                  : RTCORE_V04_PRIVATE_BOUNDARY_READ_NONE;
+    if (expected_purpose == RTCORE_V04_PRIVATE_BOUNDARY_READ_NONE) {
+        return false;
+    }
+
+    private_frontier::owner_binding_v0 private_owner = {};
+    private_owner.owner_hw_sid = request->owner_hw_sid;
+    private_owner.resident_warp_id =
+        static_cast<uint8_t>(request->resident_warp_id);
+    private_owner.request_identity = request->rt_request_id;
+    private_owner.generation = request->request_generation;
+    private_owner.private_slot_id = request->private_slot_id;
+    private_owner.lane_id = static_cast<uint8_t>(request->lane_id);
+    rtcore::v04::request_owner::lane_binding_v0 owner = {};
+    if (!rtcore_v04_request_owner_from_private_owner(
+            private_owner, &owner)) {
+        return false;
+    }
+    rtcore_resident_rt_warp_record *record =
+        rtcore_find_v04_native_boundary_resident(owner);
+    if (record == NULL ||
+        record->v04_private_storage_profile !=
+            rtcore::v04::private_storage::
+                kProfileCompressedShared384) {
+        return false;
+    }
+    rtcore_v04_private_boundary_read_state staged_read =
+        record->v04_private_boundary_reads[request->lane_id];
+    if (!staged_read.valid ||
+        staged_read.purpose != expected_purpose ||
+        staged_read.phase !=
+            RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READING ||
+        !private_frontier::owners_equal(
+            staged_read.owner, private_owner) ||
+        staged_read.operation_seq !=
+            request->v04_private_state_384_read
+                .operation_sequence ||
+        staged_read.read_generation !=
+            request->v04_private_state_384_read
+                .reservation_generation ||
+        staged_read.completion_reason !=
+            request->v04_private_state_384_read
+                .completion_reason) {
+        return false;
+    }
+
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(request->owner_hw_sid);
+    const live_bridge::status_kind read_status =
+        live_bridge::accept_read_response(
+            rtcore_v04_private_state_384_backing_for(
+                request->owner_hw_sid),
+            *request, &staged_read.collector);
+    const timing_driver::status_kind timing_status =
+        staged_read.terminal_pending_read
+            ? timing_driver::
+                  complete_terminal_boundary_memory_transaction(
+                      &staged_timing, owner,
+                      staged_read.operation_seq,
+                      staged_read.commit_epoch,
+                      staged_read.route_kind)
+            : timing_driver::complete_memory_transaction(
+                  &staged_timing, owner,
+                  staged_read.operation_seq);
+    if (read_status != live_bridge::kStatusOk ||
+        timing_status != timing_driver::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim "
+                "RTCORE_V04_PRIVATE_BOUNDARY_READ_FAULT "
+                "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                "operation_seq=%u consumer=%u chunk_id=%u "
+                "response_cycle=%llu fault=%s\n",
+                request->owner_hw_sid, request->rt_request_id,
+                request->lane_id, staged_read.operation_seq,
+                consumer, request->chunk_id, response_cycle,
+                live_bridge::status_name(read_status));
+        fflush(stderr);
+        return false;
+    }
+    bool resubmit_terminal_commit_ready = false;
+    lifecycle::warp_state_v0 staged_lifecycle =
+        record->v04_continuation_lifecycle;
+    if (materializer::responses_complete(
+            staged_read.collector)) {
+        const materializer::status_kind materialize_status =
+            expected_purpose ==
+                    RTCORE_V04_PRIVATE_BOUNDARY_READ_RESUBMIT
+                ? materializer::materialize_resubmit(
+                      staged_read.collector,
+                      &staged_read.software_boundary)
+                : (staged_read.completion_reason ==
+                           operand_plan::
+                               kCompletionReasonClosestHitReady ||
+                       staged_read.completion_reason ==
+                           operand_plan::kCompletionReasonMiss
+                       ? materializer::materialize_final_completion(
+                             staged_read.collector,
+                             &staged_read.final_completion)
+                       : materializer::
+                             materialize_boundary_completion(
+                                 staged_read.collector,
+                                 &staged_read.software_boundary));
+        if (materialize_status != materializer::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim "
+                    "RTCORE_V04_PRIVATE_BOUNDARY_READ_FAULT "
+                    "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                    "operation_seq=%u consumer=%u "
+                    "response_cycle=%llu phase=materialize fault=%s\n",
+                    request->owner_hw_sid, request->rt_request_id,
+                    request->lane_id, staged_read.operation_seq,
+                    consumer, response_cycle,
+                    materializer::status_name(materialize_status));
+            fflush(stderr);
+            return false;
+        }
+        staged_read.phase =
+            RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READY;
+        const uint32_t lane_bit = uint32_t{1} << request->lane_id;
+        const lifecycle::lane_state_v0 &lane_state =
+            staged_lifecycle.lanes[request->lane_id];
+        resubmit_terminal_commit_ready =
+            expected_purpose ==
+                RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION &&
+            staged_lifecycle.resubmit_pending == 1 &&
+            (staged_lifecycle.pending_shader_terminal_mask &
+             lane_bit) != 0 &&
+            (staged_lifecycle.commit_enqueued_mask & lane_bit) != 0 &&
+            lane_state.producer_operation_seq ==
+                staged_read.operation_seq &&
+            lane_state.commit_epoch == staged_read.commit_epoch;
+        if (resubmit_terminal_commit_ready) {
+            const lifecycle::status_kind lifecycle_status =
+                lifecycle::mark_lane_commit_ready(
+                    &staged_lifecycle,
+                    static_cast<uint8_t>(request->lane_id),
+                    staged_read.operation_seq,
+                    staged_read.commit_epoch, 0);
+            if (lifecycle_status != lifecycle::kStatusOk ||
+                timing_driver::complete_result_commit(
+                    &staged_timing, owner,
+                    staged_read.operation_seq,
+                    staged_read.commit_epoch) !=
+                    timing_driver::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim "
+                        "RTCORE_V04_PRIVATE_BOUNDARY_READ_FAULT "
+                        "owner_hw_sid=%u request_key=0x%08x "
+                        "lane_id=%u operation_seq=%u "
+                        "phase=resubmit_terminal_ready "
+                        "lifecycle=%s\n",
+                        request->owner_hw_sid,
+                        request->rt_request_id,
+                        request->lane_id,
+                        staged_read.operation_seq,
+                        lifecycle::status_name(lifecycle_status));
+                fflush(stderr);
+                return false;
+            }
+            staged_read.result_commit_closed = true;
+        }
+    }
+    record->v04_private_boundary_reads[request->lane_id] =
+        staged_read;
+    if (resubmit_terminal_commit_ready) {
+        record->v04_continuation_lifecycle =
+            staged_lifecycle;
+    }
+    rtcore_v04_timing_driver_for(request->owner_hw_sid) =
+        staged_timing;
+    if (resubmit_terminal_commit_ready) {
+        (void)rtcore_try_commit_v04_native_continuation_resubmit(
+            record, response_cycle);
+    }
+    return true;
+}
+
 extern "C" bool rtcore_accept_v04_short_stack_return_instance_read(
     const rtcore_memory_unit_request_snapshot *request,
     const uint8_t *response_payload,
@@ -20255,7 +20515,8 @@ static bool rtcore_service_v04_live_short_stack_timing(
     if (private_followup_status == short_timing::kStatusOk) {
         if (!private_state_384_followup.valid ||
             private_state_384_followup.request_count == 0 ||
-            private_state_384_followup.request_count > 2) {
+            private_state_384_followup.request_count >
+                short_timing::kMaxReadChunkCount) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
                     "owner_hw_sid=%u service_cycle=%llu "
@@ -20920,10 +21181,21 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
     lifecycle::warp_state_v0 staged_lifecycle = {};
     rtcore::v04::primitive_semantic::semantic_plan_v0
         semantic_plans[32] = {};
+    rtcore_v04_private_boundary_read_state
+        staged_boundary_reads[32];
     unsigned resume_mask = 0;
     unsigned shader_terminal_mask = 0;
+    const bool compressed_private_state =
+        record != NULL &&
+        record->v04_private_storage_profile ==
+            rtcore::v04::private_storage::
+                kProfileCompressedShared384;
     if (strcmp(failure, "accepted") == 0) {
         staged_lifecycle = record->v04_continuation_lifecycle;
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            staged_boundary_reads[lane] =
+                record->v04_private_boundary_reads[lane];
+        }
     }
 
     const private_shared::backing_state_v0 *backing = NULL;
@@ -20972,12 +21244,6 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
             private_owner =
                 rtcore::v04::request_owner::
                     make_private_frontier_owner(owner);
-        const private_shared::lane_slot_state_v0 *private_lane =
-            private_shared::find_live_lane(*backing, private_owner);
-        if (private_lane == NULL) {
-            failure = "RESUBMIT_LANE_PRIVATE_STATE_MISSING";
-            break;
-        }
         std::array<uint32_t, rtcore::abi_v04::kWordCount> words = {};
         const unsigned long long lane_address =
             identity.handoff_window_base +
@@ -20990,20 +21256,58 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
                 record->v04_boundary_completion.lanes[lane];
         rtcore::v04::primitive_semantic::semantic_plan_v0
             semantic_plan = {};
-        const lifecycle::status_kind semantic_status =
-            lifecycle::prepare_shader_return_semantic_plan(
-                private_owner, control->next_target_operation_seq,
-                completion.reason, words, private_lane->canonical_slot,
-                &semantic_plan);
+        uint8_t route_kind =
+            rtcore::v04::primitive_semantic::kRouteInvalid;
+        lifecycle::status_kind semantic_status =
+            lifecycle::kStatusInvalidArgument;
+        if (compressed_private_state) {
+            rtcore_v04_private_boundary_read_state &read_state =
+                staged_boundary_reads[lane];
+            if (read_state.valid) {
+                failure = "RESUBMIT_LANE_PRIVATE_READ_BUSY";
+                break;
+            }
+            semantic_status = lifecycle::classify_shader_return(
+                completion.reason, words, &route_kind);
+            if (semantic_status == lifecycle::kStatusOk) {
+                read_state =
+                    rtcore_v04_private_boundary_read_state();
+                read_state.valid = true;
+                read_state.purpose =
+                    RTCORE_V04_PRIVATE_BOUNDARY_READ_RESUBMIT;
+                read_state.phase =
+                    RTCORE_V04_PRIVATE_BOUNDARY_PHASE_HANDOFF_STAGED;
+                read_state.completion_reason =
+                    static_cast<uint8_t>(completion.reason);
+                read_state.route_kind = route_kind;
+                read_state.owner = private_owner;
+                read_state.handoff_words = words;
+            }
+        } else {
+            const private_shared::lane_slot_state_v0 *private_lane =
+                private_shared::find_live_lane(
+                    *backing, private_owner);
+            if (private_lane == NULL) {
+                failure = "RESUBMIT_LANE_PRIVATE_STATE_MISSING";
+                break;
+            }
+            semantic_status =
+                lifecycle::prepare_shader_return_semantic_plan(
+                    private_owner,
+                    control->next_target_operation_seq,
+                    completion.reason, words,
+                    private_lane->canonical_slot, &semantic_plan);
+            route_kind = semantic_plan.route_kind;
+        }
         if (semantic_status != lifecycle::kStatusOk) {
             failure = lifecycle::status_name(semantic_status);
             break;
         }
         semantic_plans[lane] = semantic_plan;
-        if (semantic_plan.route_kind ==
+        if (route_kind ==
             rtcore::v04::primitive_semantic::kRouteFinalHitBoundary) {
             shader_terminal_mask |= lane_mask;
-        } else if (semantic_plan.route_kind ==
+        } else if (route_kind ==
                    rtcore::v04::primitive_semantic::kRouteStackPopNext) {
             resume_mask |= lane_mask;
         } else {
@@ -21023,6 +21327,7 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
         }
     }
     for (unsigned lane = 0;
+         !compressed_private_state &&
          strcmp(failure, "accepted") == 0 && lane < 32; ++lane) {
         const unsigned lane_mask = 1u << lane;
         if ((next_active_mask & lane_mask) == 0) continue;
@@ -21037,6 +21342,12 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
 
     if (strcmp(failure, "accepted") == 0) {
         record->v04_continuation_lifecycle = staged_lifecycle;
+        if (compressed_private_state) {
+            for (unsigned lane = 0; lane < 32; ++lane) {
+                record->v04_private_boundary_reads[lane] =
+                    staged_boundary_reads[lane];
+            }
+        }
         printf("GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_STAGED "
                "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u "
                "warp_id=%u resident_generation=%u "
@@ -22727,7 +23038,7 @@ static bool rtcore_service_v04_live_instance_ready(
         if (short_status != short_timing::kStatusOk ||
             !reservation.valid || !short_stack_requests.valid ||
             short_stack_requests.request_count !=
-                short_timing::kReadChunkCount ||
+                reservation.read_chunk_count ||
             timing_driver::complete_result_commit(
                 &staged_timing, owner,
                 event.producer_operation_seq,
@@ -23299,6 +23610,8 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
     namespace boundary = rtcore::v04::boundary_publication;
     namespace lifecycle = rtcore::v04::continuation_lifecycle;
     namespace private_shared = rtcore::v04::private_shared;
+    namespace private_state_384 =
+        rtcore::v04::private_state_384::backing;
     namespace request_owner = rtcore::v04::request_owner;
     namespace short_timing = rtcore::v04::short_stack_timing;
     namespace timing_driver = rtcore::v04::timing_driver;
@@ -23416,6 +23729,15 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
         rtcore_v04_timing_driver_for(record->owner_hw_sid);
     private_shared::backing_state_v0 staged_private =
         rtcore_v04_private_shared_backing_for(record->owner_hw_sid);
+    const bool compressed_private_state =
+        record->v04_private_storage_profile ==
+        rtcore::v04::private_storage::kProfileCompressedShared384;
+    private_state_384::state_v1 staged_compressed_private = {};
+    if (compressed_private_state) {
+        staged_compressed_private =
+            rtcore_v04_private_state_384_backing_for(
+                record->owner_hw_sid);
+    }
     lifecycle::warp_state_v0 staged_lifecycle = pending;
     timing_driver::resubmit_plan_v0 timing_plan = {};
     timing_driver::continuation_resubmit_expectation_v0
@@ -23450,6 +23772,7 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
         }
     }
     private_shared::mask_shrink_plan_v0 private_plan = {};
+    private_state_384::mask_shrink_plan_v1 compressed_private_plan = {};
     const timing_driver::status_kind prepare_timing =
         timing_driver::prepare_continuation_resubmit(
             staged_timing,
@@ -23463,15 +23786,32 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
             static_cast<uint8_t>(record->v04_resident_warp_slot),
             previous_warp_uid, next_warp_uid, record->warp_id,
             next_active_mask, &private_plan);
+    const private_state_384::status_kind prepare_compressed_private =
+        compressed_private_state
+            ? private_state_384::prepare_mask_shrink(
+                  staged_compressed_private,
+                  static_cast<uint8_t>(
+                      record->v04_resident_warp_slot),
+                  previous_warp_uid, next_warp_uid,
+                  record->warp_id, next_active_mask,
+                  &compressed_private_plan)
+            : private_state_384::kStatusOk;
     boundary::warp_state_v0 next_completion = {};
     if (prepare_timing != timing_driver::kStatusOk ||
         prepare_private != private_shared::kStatusOk ||
+        prepare_compressed_private !=
+            private_state_384::kStatusOk ||
         timing_driver::commit_resubmit(
             &staged_timing, timing_plan) !=
             timing_driver::kStatusOk ||
         private_shared::commit_mask_shrink(
             &staged_private, private_plan) !=
             private_shared::kStatusOk ||
+        (compressed_private_state &&
+         private_state_384::commit_mask_shrink(
+             &staged_compressed_private,
+             compressed_private_plan) !=
+             private_state_384::kStatusOk) ||
         lifecycle::commit_resubmit(
             &staged_lifecycle, next_warp_uid) !=
             lifecycle::kStatusOk ||
@@ -23482,11 +23822,14 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
                 "owner_hw_sid=%u previous_warp_uid=%u warp_uid=%u "
-                "warp_id=%u phase=commit timing=%s private=%s\n",
+                "warp_id=%u phase=commit timing=%s private=%s "
+                "compressed_private=%s\n",
                 record->owner_hw_sid, previous_warp_uid,
                 next_warp_uid, record->warp_id,
                 timing_driver::status_name(prepare_timing),
-                private_shared::status_name(prepare_private));
+                private_shared::status_name(prepare_private),
+                private_state_384::status_name(
+                    prepare_compressed_private));
         if (prepare_timing ==
             timing_driver::kStatusOperationInFlight) {
             for (unsigned lane = 0; lane < 32; ++lane) {
@@ -23583,6 +23926,10 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
         staged_timing;
     rtcore_v04_private_shared_backing_for(record->owner_hw_sid) =
         staged_private;
+    if (compressed_private_state) {
+        rtcore_v04_private_state_384_backing_for(
+            record->owner_hw_sid) = staged_compressed_private;
+    }
     record->v04_continuation_lifecycle = staged_lifecycle;
     record->v04_boundary_completion = next_completion;
     g_rtcore_next_replay_ready_order = next_ready_order;
@@ -23659,6 +24006,10 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
     namespace lifecycle = rtcore::v04::continuation_lifecycle;
+    namespace live_bridge =
+        rtcore::v04::private_state_384::live_bridge;
+    namespace operand_plan =
+        rtcore::v04::private_state_384::operand_plan;
     namespace primitive_shared = rtcore::v04::primitive_shared;
     namespace private_shared = rtcore::v04::private_shared;
     namespace timing_driver = rtcore::v04::timing_driver;
@@ -23675,13 +24026,30 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
             lifecycle_state.resubmit_pending != 1) {
             continue;
         }
+        const bool compressed_private_state =
+            record.v04_private_storage_profile ==
+            rtcore::v04::private_storage::
+                kProfileCompressedShared384;
         const unsigned pending_mask =
             lifecycle_state.pending_next_active_mask &
             ~lifecycle_state.commit_enqueued_mask;
         if (pending_mask == 0) continue;
         unsigned lane = 0;
-        while (lane < 32 &&
-               (pending_mask & (1u << lane)) == 0) {
+        while (lane < 32) {
+            const bool pending =
+                (pending_mask & (1u << lane)) != 0;
+            const rtcore_v04_private_boundary_read_state &read_state =
+                record.v04_private_boundary_reads[lane];
+            const bool selectable_compressed =
+                !compressed_private_state ||
+                (read_state.valid &&
+                 read_state.purpose ==
+                     RTCORE_V04_PRIVATE_BOUNDARY_READ_RESUBMIT &&
+                 (read_state.phase ==
+                      RTCORE_V04_PRIVATE_BOUNDARY_PHASE_HANDOFF_STAGED ||
+                  read_state.phase ==
+                      RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READY));
+            if (pending && selectable_compressed) break;
             ++lane;
         }
         if (lane >= 32) continue;
@@ -23705,6 +24073,103 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
             private_owner =
                 rtcore::v04::request_owner::
                     make_private_frontier_owner(owner);
+        if (compressed_private_state &&
+            record.v04_private_boundary_reads[lane].phase ==
+                RTCORE_V04_PRIVATE_BOUNDARY_PHASE_HANDOFF_STAGED) {
+            rtcore_v04_private_boundary_read_state staged_read =
+                record.v04_private_boundary_reads[lane];
+            timing_driver::state_v0 staged_timing =
+                rtcore_v04_timing_driver_for(owner_hw_sid);
+            uint32_t operation_seq = 0;
+            const uint32_t read_generation =
+                lifecycle_state.completion_transaction_generation ==
+                        UINT32_MAX
+                    ? 0
+                    : lifecycle_state
+                              .completion_transaction_generation +
+                          1;
+            live_bridge::read_input_v1 input = {};
+            input.owner = private_owner;
+            input.issue_cycle = service_cycle;
+            input.bvh_format_profile_id =
+                rtcore::v04::private_state_384::
+                    kGenRtBvhFormatProfileId;
+            input.reservation_generation = read_generation;
+            input.storage_profile =
+                rtcore::v04::private_storage::
+                    kProfileCompressedShared384;
+            input.consumer = operand_plan::kConsumerResubmitApply;
+            input.operation = operand_plan::kOperationDefault;
+            input.completion_reason =
+                staged_read.completion_reason;
+            input.destination =
+                RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL;
+            input.memory_op_seq_base = 40;
+            live_bridge::read_request_plan_v1 requests = {};
+            const timing_driver::status_kind allocate_status =
+                timing_driver::allocate_target_operation(
+                    &staged_timing, owner, &operation_seq);
+            input.operation_sequence = operation_seq;
+            if (read_generation == 0 ||
+                allocate_status != timing_driver::kStatusOk ||
+                live_bridge::prepare_read_requests(
+                    input, &requests) != live_bridge::kStatusOk ||
+                requests.request_count != 2 ||
+                live_bridge::initialize_collector(
+                    requests, &staged_read.collector) !=
+                    live_bridge::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                        "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                        "lane_id=%u phase=operand_read_plan "
+                        "fault=%s\n",
+                        owner_hw_sid, record.current_warp_uid,
+                        record.warp_id, lane,
+                        timing_driver::status_name(allocate_status));
+                fflush(stderr);
+                abort();
+            }
+            for (unsigned index = 0;
+                 index < requests.request_count; ++index) {
+                if (timing_driver::begin_memory_transaction(
+                        &staged_timing, owner, operation_seq) !=
+                    timing_driver::kStatusOk) {
+                    fprintf(stderr,
+                            "GPGPU-Sim "
+                            "RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                            "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                            "lane_id=%u phase=operand_read_begin\n",
+                            owner_hw_sid, record.current_warp_uid,
+                            record.warp_id, lane);
+                    fflush(stderr);
+                    abort();
+                }
+            }
+            staged_read.operation_seq = operation_seq;
+            staged_read.read_generation = read_generation;
+            staged_read.phase =
+                RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READING;
+            record.v04_private_boundary_reads[lane] = staged_read;
+            rtcore_v04_timing_driver_for(owner_hw_sid) =
+                staged_timing;
+            std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+                g_rtcore_memory_unit_request_snapshots_by_owner[
+                    owner_hw_sid];
+            live_queue.insert(
+                live_queue.end(), requests.requests,
+                requests.requests + requests.request_count);
+            printf("GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_OPERANDS_ISSUED "
+                   "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                   "operation_seq=%u reason=%u chunks=%u "
+                   "service_cycle=%llu\n",
+                   owner_hw_sid, record.current_warp_uid,
+                   record.warp_id, lane, operation_seq,
+                   staged_read.completion_reason,
+                   requests.request_count, service_cycle);
+            fflush(stdout);
+            return true;
+        }
+
         const private_shared::lane_slot_state_v0 *private_lane =
             private_shared::find_live_lane(
                 rtcore_v04_private_shared_backing_for(owner_hw_sid),
@@ -23729,11 +24194,45 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
         uint32_t producer_operation_seq = 0;
         uint32_t commit_epoch = 0;
         uint32_t successor_operation_seq = 0;
-        const timing_driver::status_kind allocate_status =
-            timing_driver::allocate_target_operation(
-                &staged_timing, owner, &producer_operation_seq);
-        const rtcore::v04::primitive_semantic::semantic_plan_v0
-            &semantic_plan = staged_lifecycle.lanes[lane].semantic_plan;
+        rtcore::v04::primitive_semantic::semantic_plan_v0
+            semantic_plan = {};
+        timing_driver::status_kind allocate_status =
+            timing_driver::kStatusOk;
+        if (compressed_private_state) {
+            const rtcore_v04_private_boundary_read_state &read_state =
+                record.v04_private_boundary_reads[lane];
+            producer_operation_seq = read_state.operation_seq;
+            const lifecycle::status_kind semantic_status =
+                lifecycle::
+                    prepare_shader_return_semantic_plan_from_private_state_384(
+                        private_owner, producer_operation_seq,
+                        read_state.completion_reason,
+                        read_state.handoff_words,
+                        read_state.software_boundary,
+                        &semantic_plan);
+            if (read_state.phase !=
+                    RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READY ||
+                semantic_status != lifecycle::kStatusOk ||
+                semantic_plan.route_kind != read_state.route_kind) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                        "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                        "lane_id=%u phase=operand_materialize "
+                        "fault=%s\n",
+                        owner_hw_sid, record.current_warp_uid,
+                        record.warp_id, lane,
+                        lifecycle::status_name(semantic_status));
+                fflush(stderr);
+                abort();
+            }
+        } else {
+            allocate_status =
+                timing_driver::allocate_target_operation(
+                    &staged_timing, owner,
+                    &producer_operation_seq);
+            semantic_plan =
+                staged_lifecycle.lanes[lane].semantic_plan;
+        }
         const bool terminal_return =
             semantic_plan.route_kind ==
             rtcore::v04::primitive_semantic::kRouteFinalHitBoundary;
@@ -23744,7 +24243,7 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
                 &staged_timing, owner, producer_operation_seq,
                 &commit_epoch) != timing_driver::kStatusOk ||
             (!terminal_return &&
-             timing_driver::allocate_commit_successor_operation(
+                 timing_driver::allocate_commit_successor_operation(
                  &staged_timing, owner, producer_operation_seq,
                  commit_epoch, &successor_operation_seq) !=
                  timing_driver::kStatusOk)) {
@@ -23760,24 +24259,46 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
         }
         primitive_shared::capture_receipt_v0 receipt = {};
         const primitive_shared::status_kind capture_status =
-            primitive_shared::capture_semantic_plan(
-                &staged_primitive, producer_operation_seq,
-                commit_epoch, successor_operation_seq,
-                rtcore_v04_private_region_for(owner_hw_sid),
-                private_lane->canonical_slot, semantic_plan, &receipt);
+            compressed_private_state
+                ? primitive_shared::
+                      capture_resubmit_semantic_plan_with_private_state_384(
+                          &staged_primitive,
+                          producer_operation_seq, commit_epoch,
+                          successor_operation_seq,
+                          rtcore_v04_private_region_for(owner_hw_sid),
+                          private_lane->canonical_slot,
+                          semantic_plan, &receipt)
+                : primitive_shared::capture_semantic_plan(
+                      &staged_primitive, producer_operation_seq,
+                      commit_epoch, successor_operation_seq,
+                      rtcore_v04_private_region_for(owner_hw_sid),
+                      private_lane->canonical_slot,
+                      semantic_plan, &receipt);
         if (capture_status ==
                 primitive_shared::kStatusResultBackpressure ||
             capture_status ==
                 primitive_shared::kStatusTrackerBackpressure) {
             return false;
         }
-        const lifecycle::status_kind lifecycle_status =
-            capture_status == primitive_shared::kStatusOk
-                ? lifecycle::mark_lane_commit_enqueued(
-                      &staged_lifecycle, static_cast<uint8_t>(lane),
-                      producer_operation_seq, commit_epoch,
-                      successor_operation_seq)
-                : lifecycle::kStatusInvalidArgument;
+        lifecycle::status_kind lifecycle_status =
+            lifecycle::kStatusInvalidArgument;
+        if (capture_status == primitive_shared::kStatusOk) {
+            lifecycle_status =
+                compressed_private_state
+                    ? lifecycle::stage_lane_return(
+                          &staged_lifecycle,
+                          static_cast<uint8_t>(lane),
+                          semantic_plan)
+                    : lifecycle::kStatusOk;
+            if (lifecycle_status == lifecycle::kStatusOk) {
+                lifecycle_status =
+                    lifecycle::mark_lane_commit_enqueued(
+                        &staged_lifecycle,
+                        static_cast<uint8_t>(lane),
+                        producer_operation_seq, commit_epoch,
+                        successor_operation_seq);
+            }
+        }
         if (capture_status != primitive_shared::kStatusOk ||
             !receipt.valid ||
             lifecycle_status != lifecycle::kStatusOk) {
@@ -23797,6 +24318,10 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
         rtcore_v04_live_primitive_shared_for(owner_hw_sid) =
             staged_primitive;
         lifecycle_state = staged_lifecycle;
+        if (compressed_private_state) {
+            record.v04_private_boundary_reads[lane] =
+                rtcore_v04_private_boundary_read_state();
+        }
         printf("GPGPU-Sim RTCORE_V04_NATIVE_SHADER_RETURN_INGRESS "
                "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
                "producer_operation_seq=%u commit_epoch=%u "
@@ -23936,7 +24461,7 @@ static bool rtcore_service_v04_live_primitive_ready(
                 !reservation.valid ||
                 !short_stack_requests.valid ||
                 short_stack_requests.request_count !=
-                    short_timing::kReadChunkCount ||
+                    reservation.read_chunk_count ||
                 timing_driver::complete_result_commit(
                     &staged_timing, owner,
                     event.producer_operation_seq,
@@ -24011,15 +24536,21 @@ static bool rtcore_service_v04_live_primitive_ready(
         const primitive_shared::status_kind boundary_status =
             primitive_shared::enqueue_boundary_receipt(
                 &staged_primitive, event);
+        const bool deferred_private_state_384_completion =
+            event.private_storage_profile ==
+            rtcore::v04::private_storage::
+                kProfileCompressedShared384;
         if (boundary_status ==
             primitive_shared::kStatusBoundaryBackpressure) {
             return false;
         }
         if (boundary_status != primitive_shared::kStatusOk ||
-            timing_driver::complete_result_commit(
-                &staged_timing, owner,
-                event.producer_operation_seq, event.commit_epoch) !=
-                timing_driver::kStatusOk) {
+            (!deferred_private_state_384_completion &&
+             timing_driver::complete_result_commit(
+                 &staged_timing, owner,
+                 event.producer_operation_seq,
+                 event.commit_epoch) !=
+                 timing_driver::kStatusOk)) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_READY_FAULT "
                     "owner_hw_sid=%u service_cycle=%llu "
@@ -24029,7 +24560,8 @@ static bool rtcore_service_v04_live_primitive_ready(
             fflush(stderr);
             abort();
         }
-        if (native_resubmit_record != NULL) {
+        if (native_resubmit_record != NULL &&
+            !deferred_private_state_384_completion) {
             const rtcore::v04::continuation_lifecycle::status_kind
                 lifecycle_status =
                     rtcore::v04::continuation_lifecycle::
@@ -24647,6 +25179,10 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
     bool *memory_progressed)
 {
     namespace boundary = rtcore::v04::boundary_publication;
+    namespace live_bridge =
+        rtcore::v04::private_state_384::live_bridge;
+    namespace operand_plan =
+        rtcore::v04::private_state_384::operand_plan;
     namespace private_frontier = rtcore::v04::private_frontier;
     namespace private_shared = rtcore::v04::private_shared;
     namespace timing_driver = rtcore::v04::timing_driver;
@@ -24687,20 +25223,28 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
     const private_frontier::owner_binding_v0 private_owner =
         rtcore::v04::request_owner::make_private_frontier_owner(
             terminal.owner);
+    const bool compressed_private_state =
+        record != NULL &&
+        record->v04_private_storage_profile ==
+            rtcore::v04::private_storage::
+                kProfileCompressedShared384;
     const private_shared::lane_slot_state_v0 *private_lane =
-        private_shared::find_live_lane(
-            rtcore_v04_private_shared_backing_for(owner_hw_sid),
-            private_owner);
+        compressed_private_state
+            ? NULL
+            : private_shared::find_live_lane(
+                  rtcore_v04_private_shared_backing_for(owner_hw_sid),
+                  private_owner);
     private_frontier::committed_hit_projection_v0 committed_hit = {};
     if (record == NULL ||
         !rtcore_resolve_v04_handoff_authority(
             terminal.owner, &authority) ||
         !authority.valid || authority.memory_backing == NULL ||
         authority.handoff_window_base == 0 ||
-        private_lane == NULL ||
-        private_frontier::decode_committed_hit(
-            private_lane->canonical_slot, private_owner,
-            &committed_hit) != private_frontier::kStatusOk) {
+        (!compressed_private_state &&
+         (private_lane == NULL ||
+          private_frontier::decode_committed_hit(
+              private_lane->canonical_slot, private_owner,
+              &committed_hit) != private_frontier::kStatusOk))) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_LIVE_STACK_TERMINAL_FAULT "
                 "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
@@ -24710,6 +25254,152 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
                 terminal.owner.lane_id, service_cycle);
         fflush(stderr);
         abort();
+    }
+
+    rtcore_v04_private_boundary_read_state *private_read =
+        &record->v04_private_boundary_reads[terminal.owner.lane_id];
+    if (compressed_private_state && !private_read->valid) {
+        const uint8_t completion_reason =
+            terminal.terminal_kind ==
+                    timing_driver::kTerminalBoundaryFinalHit
+                ? operand_plan::kCompletionReasonClosestHitReady
+                : terminal.terminal_kind ==
+                          timing_driver::kTerminalBoundaryFinalMiss
+                      ? operand_plan::kCompletionReasonMiss
+                      : operand_plan::kCompletionReasonNone;
+        live_bridge::read_input_v1 input = {};
+        input.owner = private_owner;
+        input.issue_cycle = service_cycle;
+        input.operation_sequence = terminal.producer_operation_seq;
+        input.bvh_format_profile_id =
+            rtcore::v04::private_state_384::
+                kGenRtBvhFormatProfileId;
+        input.reservation_generation = terminal.commit_epoch;
+        input.storage_profile =
+            rtcore::v04::private_storage::
+                kProfileCompressedShared384;
+        input.consumer =
+            operand_plan::kConsumerCompletionPublisher;
+        input.operation = operand_plan::kOperationDefault;
+        input.completion_reason = completion_reason;
+        input.destination =
+            RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL;
+        input.memory_op_seq_base = 32;
+        live_bridge::read_request_plan_v1 read_plan = {};
+        rtcore_v04_private_boundary_read_state staged_read = {};
+        staged_read.valid = true;
+        staged_read.terminal_pending_read = true;
+        staged_read.purpose =
+            RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION;
+        staged_read.phase =
+            RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READING;
+        staged_read.completion_reason = completion_reason;
+        staged_read.route_kind =
+            static_cast<uint8_t>(terminal.terminal_kind);
+        staged_read.operation_seq =
+            terminal.producer_operation_seq;
+        staged_read.read_generation = terminal.commit_epoch;
+        staged_read.commit_epoch = terminal.commit_epoch;
+        staged_read.owner = private_owner;
+        if (completion_reason ==
+                operand_plan::kCompletionReasonNone ||
+            live_bridge::prepare_read_requests(
+                input, &read_plan) != live_bridge::kStatusOk ||
+            read_plan.request_count != 2 ||
+            live_bridge::initialize_collector(
+                read_plan, &staged_read.collector) !=
+                live_bridge::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim "
+                    "RTCORE_V04_LIVE_STACK_TERMINAL_FAULT "
+                    "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                    "service_cycle=%llu phase=read_plan "
+                    "fault=private_state_384_plan_rejected\n",
+                    owner_hw_sid, terminal.owner.packed_request_key,
+                    terminal.owner.lane_id, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        for (unsigned index = 0;
+             index < read_plan.request_count; ++index) {
+            if (timing_driver::
+                    begin_terminal_boundary_memory_transaction(
+                        &staged_timing, terminal.owner,
+                        terminal.producer_operation_seq,
+                        terminal.commit_epoch,
+                        terminal.terminal_kind) !=
+                timing_driver::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim "
+                        "RTCORE_V04_LIVE_STACK_TERMINAL_FAULT "
+                        "owner_hw_sid=%u request_key=0x%08x "
+                        "lane_id=%u service_cycle=%llu "
+                        "phase=read_begin\n",
+                        owner_hw_sid,
+                        terminal.owner.packed_request_key,
+                        terminal.owner.lane_id, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+        }
+        *private_read = staged_read;
+        rtcore_v04_timing_driver_for(owner_hw_sid) =
+            staged_timing;
+        std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+            g_rtcore_memory_unit_request_snapshots_by_owner[
+                owner_hw_sid];
+        live_queue.insert(
+            live_queue.end(), read_plan.requests,
+            read_plan.requests + read_plan.request_count);
+        if (memory_progressed != NULL) {
+            *memory_progressed = true;
+        }
+        printf("GPGPU-Sim "
+               "RTCORE_V04_NATIVE_BOUNDARY_OPERANDS_ISSUED "
+               "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+               "producer_operation_seq=%u commit_epoch=%u "
+               "reason=%u chunks=%u source=stack_terminal "
+               "service_cycle=%llu\n",
+               owner_hw_sid, terminal.owner.packed_request_key,
+               terminal.owner.lane_id,
+               terminal.producer_operation_seq,
+               terminal.commit_epoch, completion_reason,
+               read_plan.request_count, service_cycle);
+        fflush(stdout);
+        return true;
+    }
+    if (compressed_private_state &&
+        (!private_read->valid ||
+         private_read->purpose !=
+             RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION ||
+         private_read->phase !=
+             RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READY ||
+         !private_frontier::owners_equal(
+             private_read->owner, private_owner) ||
+         private_read->operation_seq !=
+             terminal.producer_operation_seq ||
+         private_read->read_generation != terminal.commit_epoch ||
+         private_read->commit_epoch != terminal.commit_epoch ||
+         private_read->route_kind !=
+             static_cast<uint8_t>(terminal.terminal_kind))) {
+        if (private_read->valid &&
+            private_read->phase ==
+                RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READING) {
+            return false;
+        }
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_STACK_TERMINAL_FAULT "
+                "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                "service_cycle=%llu phase=read_identity "
+                "fault=private_state_384_state_mismatch\n",
+                owner_hw_sid, terminal.owner.packed_request_key,
+                terminal.owner.lane_id, service_cycle);
+        fflush(stderr);
+        abort();
+    }
+    if (compressed_private_state) {
+        committed_hit =
+            private_read->final_completion.committed_hit;
     }
 
     const unsigned long long lane_offset =
@@ -24792,6 +25482,10 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
     }
 
     record->v04_boundary_completion = staged_completion;
+    if (compressed_private_state) {
+        *private_read =
+            rtcore_v04_private_boundary_read_state();
+    }
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
     std::deque<rtcore_memory_unit_request_snapshot> &memory_queue =
         g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid];
@@ -24828,7 +25522,12 @@ static bool rtcore_service_v04_native_boundary_publication(
     unsigned owner_hw_sid, unsigned long long service_cycle)
 {
     namespace boundary = rtcore::v04::boundary_publication;
+    namespace live_bridge =
+        rtcore::v04::private_state_384::live_bridge;
+    namespace operand_plan =
+        rtcore::v04::private_state_384::operand_plan;
     namespace primitive_shared = rtcore::v04::primitive_shared;
+    namespace timing_driver = rtcore::v04::timing_driver;
     if (!rtcore_v04_native_boundary_completion_enabled()) {
         return false;
     }
@@ -24874,6 +25573,174 @@ static bool rtcore_service_v04_native_boundary_publication(
         fflush(stderr);
         abort();
     }
+    const bool compressed_private_state =
+        boundary_receipt.private_storage_profile ==
+            rtcore::v04::private_storage::
+                kProfileCompressedShared384;
+    if (compressed_private_state !=
+        (record->v04_private_storage_profile ==
+         rtcore::v04::private_storage::
+             kProfileCompressedShared384)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_FAULT "
+                "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                "service_cycle=%llu phase=profile "
+                "fault=receipt_resident_profile_mismatch\n",
+                owner_hw_sid, owner.packed_request_key, owner.lane_id,
+                service_cycle);
+        fflush(stderr);
+        abort();
+    }
+
+    rtcore_v04_private_boundary_read_state *private_read =
+        &record->v04_private_boundary_reads[owner.lane_id];
+    if (compressed_private_state && !private_read->valid) {
+        uint8_t completion_reason =
+            operand_plan::kCompletionReasonNone;
+        if (boundary_receipt.route_kind ==
+            rtcore::v04::primitive_semantic::
+                kRouteAnyHitBoundary) {
+            completion_reason =
+                operand_plan::kCompletionReasonAnyHitRequired;
+        } else if (
+            boundary_receipt.route_kind ==
+            rtcore::v04::primitive_semantic::
+                kRouteIntersectionBoundary) {
+            completion_reason =
+                operand_plan::
+                    kCompletionReasonIntersectionRequired;
+        } else if (
+            boundary_receipt.route_kind ==
+            rtcore::v04::primitive_semantic::
+                kRouteFinalHitBoundary) {
+            completion_reason =
+                operand_plan::kCompletionReasonClosestHitReady;
+        }
+        live_bridge::read_input_v1 input = {};
+        input.owner = boundary_receipt.owner;
+        input.issue_cycle = service_cycle;
+        input.operation_sequence =
+            boundary_receipt.producer_operation_seq;
+        input.bvh_format_profile_id =
+            rtcore::v04::private_state_384::
+                kGenRtBvhFormatProfileId;
+        input.reservation_generation =
+            boundary_receipt.commit_epoch;
+        input.storage_profile =
+            rtcore::v04::private_storage::
+                kProfileCompressedShared384;
+        input.consumer =
+            operand_plan::kConsumerCompletionPublisher;
+        input.operation = operand_plan::kOperationDefault;
+        input.completion_reason = completion_reason;
+        input.destination =
+            RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL;
+        input.memory_op_seq_base = 32;
+        live_bridge::read_request_plan_v1 read_plan = {};
+        rtcore_v04_private_boundary_read_state staged_read = {};
+        staged_read.valid = true;
+        staged_read.purpose =
+            RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION;
+        staged_read.phase =
+            RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READING;
+        staged_read.completion_reason = completion_reason;
+        staged_read.route_kind = boundary_receipt.route_kind;
+        staged_read.operation_seq =
+            boundary_receipt.producer_operation_seq;
+        staged_read.read_generation =
+            boundary_receipt.commit_epoch;
+        staged_read.commit_epoch =
+            boundary_receipt.commit_epoch;
+        staged_read.owner = boundary_receipt.owner;
+        timing_driver::state_v0 staged_timing =
+            rtcore_v04_timing_driver_for(owner_hw_sid);
+        if (completion_reason ==
+                operand_plan::kCompletionReasonNone ||
+            live_bridge::prepare_read_requests(
+                input, &read_plan) != live_bridge::kStatusOk ||
+            read_plan.request_count != 2 ||
+            live_bridge::initialize_collector(
+                read_plan, &staged_read.collector) !=
+                live_bridge::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_FAULT "
+                    "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                    "service_cycle=%llu phase=read_plan "
+                    "fault=private_state_384_plan_rejected\n",
+                    owner_hw_sid, owner.packed_request_key,
+                    owner.lane_id, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        for (unsigned index = 0;
+             index < read_plan.request_count; ++index) {
+            if (timing_driver::begin_memory_transaction(
+                    &staged_timing, owner,
+                    boundary_receipt.producer_operation_seq) !=
+                timing_driver::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_FAULT "
+                        "owner_hw_sid=%u request_key=0x%08x "
+                        "lane_id=%u service_cycle=%llu "
+                        "phase=read_begin\n",
+                        owner_hw_sid, owner.packed_request_key,
+                        owner.lane_id, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+        }
+        *private_read = staged_read;
+        rtcore_v04_timing_driver_for(owner_hw_sid) =
+            staged_timing;
+        std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+            g_rtcore_memory_unit_request_snapshots_by_owner[
+                owner_hw_sid];
+        live_queue.insert(
+            live_queue.end(), read_plan.requests,
+            read_plan.requests + read_plan.request_count);
+        printf("GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_OPERANDS_ISSUED "
+               "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+               "producer_operation_seq=%u commit_epoch=%u "
+               "reason=%u chunks=%u service_cycle=%llu\n",
+               owner_hw_sid, owner.packed_request_key, owner.lane_id,
+               boundary_receipt.producer_operation_seq,
+               boundary_receipt.commit_epoch, completion_reason,
+               read_plan.request_count, service_cycle);
+        fflush(stdout);
+        return true;
+    }
+    if (compressed_private_state &&
+        (!private_read->valid ||
+         private_read->purpose !=
+             RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION ||
+         !rtcore::v04::private_frontier::owners_equal(
+             private_read->owner, boundary_receipt.owner) ||
+         private_read->operation_seq !=
+             boundary_receipt.producer_operation_seq ||
+         private_read->commit_epoch !=
+             boundary_receipt.commit_epoch ||
+         private_read->route_kind != boundary_receipt.route_kind)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_FAULT "
+                "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                "service_cycle=%llu phase=read_identity "
+                "fault=private_state_384_state_mismatch\n",
+                owner_hw_sid, owner.packed_request_key, owner.lane_id,
+                service_cycle);
+        fflush(stderr);
+        abort();
+    }
+    if (compressed_private_state &&
+        private_read->phase !=
+            RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READY) {
+        return false;
+    }
+    if (compressed_private_state &&
+        private_read->result_commit_closed &&
+        record->v04_continuation_lifecycle.resubmit_pending == 1) {
+        return false;
+    }
+
     const unsigned long long lane_address =
         authority.handoff_window_base +
         static_cast<unsigned long long>(owner.lane_id) *
@@ -24895,12 +25762,38 @@ static bool rtcore_service_v04_native_boundary_publication(
         lane_address, sizeof(preimage), preimage.data());
     boundary::warp_state_v0 staged_completion =
         record->v04_boundary_completion;
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(owner_hw_sid);
     boundary::arm_receipt_v0 arm = {};
-    const boundary::status_kind arm_status =
-        boundary::arm_boundary(
+    boundary::status_kind arm_status = boundary::kStatusInvalidArgument;
+    if (!compressed_private_state) {
+        arm_status = boundary::arm_boundary(
             &staged_completion, boundary_receipt.semantic_plan,
             preimage, boundary_receipt.commit_epoch,
             service_cycle, &arm);
+    } else if (
+        private_read->completion_reason ==
+            operand_plan::kCompletionReasonClosestHitReady ||
+        private_read->completion_reason ==
+            operand_plan::kCompletionReasonMiss) {
+        const boundary::terminal_kind terminal =
+            private_read->completion_reason ==
+                    operand_plan::kCompletionReasonClosestHitReady
+                ? boundary::kTerminalFinalHit
+                : boundary::kTerminalFinalMiss;
+        arm_status = boundary::arm_terminal_boundary(
+            &staged_completion, boundary_receipt.owner,
+            boundary_receipt.producer_operation_seq, terminal,
+            private_read->final_completion.committed_hit,
+            preimage, boundary_receipt.commit_epoch,
+            service_cycle, &arm);
+    } else {
+        arm_status = boundary::arm_private_state_384_boundary(
+            &staged_completion, boundary_receipt.owner,
+            boundary_receipt.producer_operation_seq,
+            private_read->software_boundary, preimage,
+            boundary_receipt.commit_epoch, service_cycle, &arm);
+    }
     if (arm_status == boundary::kStatusLaneBusy) {
         return false;
     }
@@ -24933,6 +25826,22 @@ static bool rtcore_service_v04_native_boundary_publication(
         fflush(stderr);
         abort();
     }
+    if (compressed_private_state &&
+        !private_read->result_commit_closed &&
+        timing_driver::complete_result_commit(
+            &staged_timing, owner,
+            boundary_receipt.producer_operation_seq,
+            boundary_receipt.commit_epoch) !=
+            timing_driver::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_FAULT "
+                "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                "service_cycle=%llu phase=commit_close\n",
+                owner_hw_sid, owner.packed_request_key, owner.lane_id,
+                service_cycle);
+        fflush(stderr);
+        abort();
+    }
 
     primitive_shared::boundary_receipt_v0 popped = {};
     const primitive_shared::status_kind pop_status =
@@ -24957,6 +25866,12 @@ static bool rtcore_service_v04_native_boundary_publication(
     }
 
     record->v04_boundary_completion = staged_completion;
+    if (compressed_private_state) {
+        *private_read =
+            rtcore_v04_private_boundary_read_state();
+        rtcore_v04_timing_driver_for(owner_hw_sid) =
+            staged_timing;
+    }
     rtcore_v04_live_primitive_shared_for(owner_hw_sid) =
         staged_primitive;
     std::deque<rtcore_memory_unit_request_snapshot> &memory_queue =
@@ -24967,8 +25882,7 @@ static bool rtcore_service_v04_native_boundary_publication(
         boundary_receipt.owner,
         boundary_receipt.producer_operation_seq,
         boundary_receipt.commit_epoch, arm.pending_chunk_mask,
-        static_cast<uint8_t>(
-            boundary_receipt.semantic_plan.route_kind),
+        boundary_receipt.route_kind,
         false, service_cycle);
     printf("GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_ARMED "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u "

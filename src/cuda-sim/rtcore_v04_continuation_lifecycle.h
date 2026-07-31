@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "rtcore_v04_primitive_result_semantic_applier.h"
+#include "rtcore_v04_private_state_384_operand_materializer.h"
 #include "rtcore_v04_shadow_shader_return.h"
 
 namespace rtcore {
@@ -126,6 +127,19 @@ status_kind prepare_shader_return_semantic_plan(
     uint32_t producer_operation_seq, uint32_t reason,
     const std::array<uint32_t, abi_v04::kWordCount> &words,
     const private_frontier::shadow_slot_v0 &canonical_slot,
+    primitive_semantic::semantic_plan_v0 *semantic_plan);
+
+status_kind classify_shader_return(
+    uint32_t reason,
+    const std::array<uint32_t, abi_v04::kWordCount> &words,
+    uint8_t *route_kind);
+
+status_kind prepare_shader_return_semantic_plan_from_private_state_384(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t reason,
+    const std::array<uint32_t, abi_v04::kWordCount> &words,
+    const private_state_384::operand_materializer::software_boundary_v1
+        &boundary,
     primitive_semantic::semantic_plan_v0 *semantic_plan);
 
 const char *status_name(status_kind status);

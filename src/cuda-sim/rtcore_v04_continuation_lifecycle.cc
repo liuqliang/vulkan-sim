@@ -133,6 +133,56 @@ procedural_committed_hit(
   return hit;
 }
 
+status_kind prepare_shader_return_semantic_plan_from_retained(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t reason,
+    const std::array<uint32_t, abi_v04::kWordCount> &words,
+    const private_frontier::retained_candidate_projection_v0 &retained,
+    primitive_semantic::semantic_plan_v0 *semantic_plan) {
+  if (semantic_plan == NULL || producer_operation_seq == 0 ||
+      !identity_matches_handoff(retained, reason, words)) {
+    return kStatusRetainedCandidateMismatch;
+  }
+  *semantic_plan = primitive_semantic::semantic_plan_v0();
+  const abi_v04::shadow::shader_return_observation observation =
+      abi_v04::shadow::decode_shader_return_words(words, reason);
+  if (!observation.valid()) return kStatusShaderReturnRejected;
+
+  primitive_semantic::semantic_plan_v0 prepared = {};
+  prepared.owner = owner;
+  prepared.ray_policy.ray_flags =
+      abi_v04::extract_field(words, abi_v04::kRayFlags);
+  prepared.ray_policy.cull_mask = static_cast<uint8_t>(
+      abi_v04::extract_field(words, abi_v04::kCullMask));
+  prepared.operation_seq = producer_operation_seq;
+  const bool terminate_search =
+      (observation.traversal_effect & (uint32_t{1} << 2)) != 0;
+  prepared.route_kind =
+      terminate_search ? primitive_semantic::kRouteFinalHitBoundary
+                       : primitive_semantic::kRouteStackPopNext;
+  prepared.shader_return_valid = 1;
+  if (observation.update.action ==
+      abi_v04::shadow::kBoundaryReturnCommitAnyHit) {
+    prepared.committed_hit_valid = 1;
+    prepared.committed_hit = triangle_committed_hit(retained);
+  } else if (observation.update.action ==
+             abi_v04::shadow::kBoundaryReturnCommitIntersection) {
+    const float reported_t = fp32_value(observation.update.reported_t_fp32);
+    const float boundary_tmax = fp32_value(
+        abi_v04::extract_field(words, abi_v04::kBoundaryRayTmaxFp32));
+    if (!std::isfinite(reported_t) || !std::isfinite(boundary_tmax) ||
+        reported_t > boundary_tmax) {
+      return kStatusShaderReturnRejected;
+    }
+    prepared.committed_hit_valid = 1;
+    prepared.committed_hit =
+        procedural_committed_hit(retained, observation.update);
+  }
+  prepared.valid = 1;
+  *semantic_plan = prepared;
+  return kStatusOk;
+}
+
 }  // namespace
 
 status_kind initialize(
@@ -457,44 +507,52 @@ status_kind prepare_shader_return_semantic_plan(
   private_frontier::retained_candidate_projection_v0 retained = {};
   if (private_frontier::decode_retained_candidate(
           canonical_slot, owner, &retained) !=
-          private_frontier::kStatusOk ||
-      !identity_matches_handoff(retained, reason, words)) {
+          private_frontier::kStatusOk) {
     return kStatusRetainedCandidateMismatch;
   }
 
-  primitive_semantic::semantic_plan_v0 prepared = {};
-  prepared.owner = owner;
-  prepared.ray_policy.ray_flags =
-      abi_v04::extract_field(words, abi_v04::kRayFlags);
-  prepared.ray_policy.cull_mask = static_cast<uint8_t>(
-      abi_v04::extract_field(words, abi_v04::kCullMask));
-  prepared.operation_seq = producer_operation_seq;
-  const bool terminate_search =
-      (observation.traversal_effect & (uint32_t{1} << 2)) != 0;
-  prepared.route_kind =
-      terminate_search ? primitive_semantic::kRouteFinalHitBoundary
-                       : primitive_semantic::kRouteStackPopNext;
-  prepared.shader_return_valid = 1;
-  if (observation.update.action ==
-      abi_v04::shadow::kBoundaryReturnCommitAnyHit) {
-    prepared.committed_hit_valid = 1;
-    prepared.committed_hit = triangle_committed_hit(retained);
-  } else if (observation.update.action ==
-             abi_v04::shadow::kBoundaryReturnCommitIntersection) {
-    const float reported_t = fp32_value(observation.update.reported_t_fp32);
-    const float boundary_tmax = fp32_value(
-        abi_v04::extract_field(words, abi_v04::kBoundaryRayTmaxFp32));
-    if (!std::isfinite(reported_t) || !std::isfinite(boundary_tmax) ||
-        reported_t > boundary_tmax) {
-      return kStatusShaderReturnRejected;
-    }
-    prepared.committed_hit_valid = 1;
-    prepared.committed_hit =
-        procedural_committed_hit(retained, observation.update);
-  }
-  prepared.valid = 1;
-  *semantic_plan = prepared;
+  return prepare_shader_return_semantic_plan_from_retained(
+      owner, producer_operation_seq, reason, words, retained,
+      semantic_plan);
+}
+
+status_kind classify_shader_return(
+    uint32_t reason,
+    const std::array<uint32_t, abi_v04::kWordCount> &words,
+    uint8_t *route_kind) {
+  if (route_kind == NULL) return kStatusInvalidArgument;
+  *route_kind = primitive_semantic::kRouteInvalid;
+  const abi_v04::shadow::shader_return_observation observation =
+      abi_v04::shadow::decode_shader_return_words(words, reason);
+  if (!observation.valid()) return kStatusShaderReturnRejected;
+  *route_kind =
+      (observation.traversal_effect & (uint32_t{1} << 2)) != 0
+          ? primitive_semantic::kRouteFinalHitBoundary
+          : primitive_semantic::kRouteStackPopNext;
   return kStatusOk;
+}
+
+status_kind prepare_shader_return_semantic_plan_from_private_state_384(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t reason,
+    const std::array<uint32_t, abi_v04::kWordCount> &words,
+    const private_state_384::operand_materializer::software_boundary_v1
+        &boundary,
+    primitive_semantic::semantic_plan_v0 *semantic_plan) {
+  if (semantic_plan == NULL ||
+      boundary.reason != reason ||
+      (reason != abi_v04::kReasonAnyHitRequired &&
+       reason != abi_v04::kReasonIntersectionRequired)) {
+    return kStatusInvalidArgument;
+  }
+  private_frontier::retained_candidate_projection_v0 retained = {};
+  retained.identity_and_policy = boundary.identity_and_policy;
+  if (reason == abi_v04::kReasonAnyHitRequired) {
+    retained.triangle_hit = boundary.reason_facts.triangle_hit;
+  }
+  return prepare_shader_return_semantic_plan_from_retained(
+      owner, producer_operation_seq, reason, words, retained,
+      semantic_plan);
 }
 
 const char *status_name(status_kind status) {

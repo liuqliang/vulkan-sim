@@ -217,6 +217,14 @@ status_kind begin_memory_transaction(
 status_kind complete_memory_transaction(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t operation_seq);
+status_kind begin_terminal_boundary_memory_transaction(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint8_t terminal_kind);
+status_kind complete_terminal_boundary_memory_transaction(
+    state_v0 *state, const request_owner::lane_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint8_t terminal_kind);
 status_kind commit_private_recovery_target_state(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t commit_epoch,

@@ -41,6 +41,7 @@ enum operation_kind : uint8_t {
   kOperationPrimitiveResume,
   kOperationStackTerminal,
   kOperationStackCrossAsReturn,
+  kOperationStackEntries,
 };
 
 // Values match the V0.4 compact-result reason encoding.

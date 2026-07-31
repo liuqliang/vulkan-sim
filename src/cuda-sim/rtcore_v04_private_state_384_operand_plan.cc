@@ -42,7 +42,7 @@ static status_kind validate_read_request(
       request.consumer > kConsumerResubmitApply) {
     return kStatusInvalidConsumer;
   }
-  if (request.operation > kOperationStackCrossAsReturn) {
+  if (request.operation > kOperationStackEntries) {
     return kStatusInvalidOperation;
   }
   if (!is_valid_completion_reason(request.completion_reason)) {
@@ -72,7 +72,8 @@ static status_kind validate_read_request(
       }
       return request.operation == kOperationDefault ||
                      request.operation == kOperationStackTerminal ||
-                     request.operation == kOperationStackCrossAsReturn
+                     request.operation == kOperationStackCrossAsReturn ||
+                     request.operation == kOperationStackEntries
                  ? kStatusOk
                  : kStatusInvalidOperationReasonCombination;
     case kConsumerCompletionPublisher:
@@ -198,9 +199,12 @@ status_kind make_read_plan(const read_request_v1 &request,
         append_read(3, &result);
       }
       append_read(4, &result);
-      append_read(5, &result);
-      append_read(6, &result);
-      append_read(7, &result);
+      if (request.operation == kOperationStackEntries ||
+          request.operation == kOperationStackCrossAsReturn) {
+        append_read(5, &result);
+        append_read(6, &result);
+        append_read(7, &result);
+      }
       if (request.operation == kOperationStackCrossAsReturn) {
         append_read(10, &result);
         append_read(11, &result);

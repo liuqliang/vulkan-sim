@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "rtcore_v04_primitive_result_semantic_applier.h"
+#include "rtcore_v04_private_state_384_operand_materializer.h"
 #include "rtcore_v04_request_owner_binding.h"
 #include "rtcore_v04_shadow_boundary.h"
 
@@ -130,6 +131,16 @@ status_kind arm_boundary(
     const primitive_semantic::semantic_plan_v0 &semantic_plan,
     const std::array<uint32_t, abi_v04::kWordCount> &preimage_words,
     uint32_t commit_epoch, uint64_t arm_cycle, arm_receipt_v0 *receipt);
+
+status_kind arm_private_state_384_boundary(
+    warp_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq,
+    const private_state_384::operand_materializer::software_boundary_v1
+        &boundary,
+    const std::array<uint32_t, abi_v04::kWordCount> &preimage_words,
+    uint32_t commit_epoch, uint64_t arm_cycle,
+    arm_receipt_v0 *receipt);
 
 status_kind arm_terminal_boundary(
     warp_state_v0 *state,

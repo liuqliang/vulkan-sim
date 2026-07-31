@@ -1381,6 +1381,31 @@ status_kind accept_private_state_384_read_response(
         entry.private_state_384_collector.operation;
     if (selected_operation ==
         private_state_384::operand_plan::kOperationDefault) {
+      private_state_384::operand_materializer::stack_metadata_v1
+          metadata = {};
+      if (private_state_384::operand_materializer::
+              materialize_stack_metadata(
+                  entry.private_state_384_collector,
+                  &metadata) !=
+          private_state_384::operand_materializer::kStatusOk) {
+        return kStatusSharedPlanRejected;
+      }
+      if (metadata.stack_count != 0) {
+        entry.private_state_384_selected_operation =
+            private_state_384::operand_plan::
+                kOperationStackEntries;
+        entry.phase = kPhasePrivate384FollowupPlanReady;
+        entry.result_ready_cycle = response_cycle;
+        *state = staged_state;
+        *timing_state = staged_timing;
+        return kStatusOk;
+      }
+    }
+    if (selected_operation ==
+            private_state_384::operand_plan::kOperationDefault ||
+        selected_operation ==
+            private_state_384::operand_plan::
+                kOperationStackEntries) {
       if (private_state_384::operand_materializer::
               materialize_stack_base(
                   entry.private_state_384_collector, context,
@@ -1447,18 +1472,26 @@ status_kind accept_private_state_384_read_response(
           entry.input.operation_kind ==
               kOperationResumeTransition &&
           persistent.stack.stack_count == 0;
+      if (terminal_followup) {
+        entry.private_state_384_selected_operation =
+            private_state_384::operand_plan::
+                kOperationStackTerminal;
+        entry.phase = kPhasePrivate384FollowupPlanReady;
+      } else {
+        entry.phase = kPhaseReadyToIssue;
+      }
+    } else if (
+        selected_operation ==
+        private_state_384::operand_plan::kOperationStackEntries) {
       const bool cross_as_followup =
           entry.input.operation_kind ==
               kOperationResumeTransition &&
           persistent.stack.cross_as != 0 &&
           persistent.stack.stack_count == 1;
-      if (terminal_followup || cross_as_followup) {
+      if (cross_as_followup) {
         entry.private_state_384_selected_operation =
-            terminal_followup
-                ? private_state_384::operand_plan::
-                      kOperationStackTerminal
-                : private_state_384::operand_plan::
-                      kOperationStackCrossAsReturn;
+            private_state_384::operand_plan::
+                kOperationStackCrossAsReturn;
         entry.phase = kPhasePrivate384FollowupPlanReady;
       } else {
         entry.phase = kPhaseReadyToIssue;
@@ -1503,9 +1536,16 @@ status_kind take_private_state_384_followup_read_plan(
   engine_state_v0 staged_state = *state;
   timing_driver::state_v0 staged_timing = *timing_state;
   operation_entry_v0 &entry = staged_state.slots[slot_index];
+  const bool stack_entries_followup =
+      !completion_followup &&
+      entry.private_state_384_selected_operation ==
+          private_state_384::operand_plan::
+              kOperationStackEntries;
   if (entry.input.private_storage_profile !=
           private_storage::kProfileCompressedShared384 ||
-      entry.private_state_384_operands_valid != 1) {
+      (stack_entries_followup
+           ? entry.private_state_384_operands_valid != 0
+           : entry.private_state_384_operands_valid != 1)) {
     return kStatusSharedPlanRejected;
   }
   if (completion_followup) {
@@ -1524,6 +1564,9 @@ status_kind take_private_state_384_followup_read_plan(
       return kStatusSharedPlanRejected;
     }
   } else if (
+      entry.private_state_384_selected_operation !=
+          private_state_384::operand_plan::
+              kOperationStackEntries &&
       entry.private_state_384_selected_operation !=
           private_state_384::operand_plan::
               kOperationStackTerminal &&
@@ -1614,6 +1657,10 @@ status_kind take_private_state_384_followup_read_plan(
   const uint8_t expected_missing =
       completion_followup
           ? 2
+          : entry.private_state_384_selected_operation ==
+                    private_state_384::operand_plan::
+                        kOperationStackEntries
+          ? 3
           : entry.private_state_384_selected_operation ==
                     private_state_384::operand_plan::
                         kOperationStackTerminal
