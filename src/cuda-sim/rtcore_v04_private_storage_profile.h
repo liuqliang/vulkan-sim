@@ -1,8 +1,10 @@
 #ifndef RTCORE_V04_PRIVATE_STORAGE_PROFILE_H
 #define RTCORE_V04_PRIVATE_STORAGE_PROFILE_H
 
+#include <cstddef>
 #include <cstdint>
 
+#include "rtcore_v04_private_global_region.h"
 #include "rtcore_v04_private_shared_backing.h"
 #include "rtcore_v04_private_state_384_codec.h"
 #include "rtcore_v04_typed_node_kernel.h"
@@ -27,6 +29,7 @@ enum status_kind : uint8_t {
   kStatusUnsupportedProfile,
   kStatusLegacyAdmissionRejected,
   kStatusCodecRejected,
+  kStatusGlobalPlanRejected,
 };
 
 struct lane_launch_candidate_v0 {
@@ -71,6 +74,21 @@ status_kind prepare_new_warp_from_selector(
     const char *selector_value, bool short_stack_enabled,
     private_shared::status_kind *legacy_failure_status,
     admission_candidate_plan_v0 *plan);
+
+status_kind prepare_global384_launch_candidate_from_selector(
+    const char *selector_value,
+    const private_global_region::region_config_v0 &config,
+    const private_global_region::address_range_v0
+        *application_visible_ranges,
+    size_t application_visible_range_count,
+    uint32_t owner_hw_sid, uint32_t warp_uid, uint32_t warp_id,
+    uint8_t resident_warp_slot, uint32_t active_mask,
+    const private_frontier::owner_binding_v0
+        owners[private_global_region::kLaneCapacity],
+    const private_state_384::sparse_write_plan_v1
+        launch_plans[private_global_region::kLaneCapacity],
+    private_global_region::status_kind *global_failure_status,
+    private_global_region::whole_mask_launch_plan_v0 *plan);
 
 const char *status_name(status_kind status);
 

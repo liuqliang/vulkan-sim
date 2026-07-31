@@ -309,6 +309,52 @@ status_kind prepare_new_warp_from_selector(
       short_stack_enabled, legacy_failure_status, plan);
 }
 
+status_kind prepare_global384_launch_candidate_from_selector(
+    const char *selector_value,
+    const private_global_region::region_config_v0 &config,
+    const private_global_region::address_range_v0
+        *application_visible_ranges,
+    size_t application_visible_range_count,
+    uint32_t owner_hw_sid, uint32_t warp_uid, uint32_t warp_id,
+    uint8_t resident_warp_slot, uint32_t active_mask,
+    const private_frontier::owner_binding_v0
+        owners[private_global_region::kLaneCapacity],
+    const private_state_384::sparse_write_plan_v1
+        launch_plans[private_global_region::kLaneCapacity],
+    private_global_region::status_kind *global_failure_status,
+    private_global_region::whole_mask_launch_plan_v0 *plan) {
+  if (global_failure_status != NULL) {
+    *global_failure_status =
+        private_global_region::kStatusInvalidArgument;
+  }
+  if (plan != NULL) {
+    *plan = private_global_region::whole_mask_launch_plan_v0();
+  }
+  if (global_failure_status == NULL || plan == NULL) {
+    return kStatusInvalidArgument;
+  }
+  *global_failure_status =
+      private_global_region::kStatusOk;
+  profile_kind profile = kProfileLegacyShared832;
+  const status_kind profile_status =
+      parse_profile(selector_value, &profile);
+  if (profile_status != kStatusOk) return profile_status;
+  if (profile != kProfileGlobal384) {
+    return kStatusUnsupportedProfile;
+  }
+  const private_global_region::status_kind global_status =
+      private_global_region::prepare_whole_mask_launch_plan(
+          config, application_visible_ranges,
+          application_visible_range_count, owner_hw_sid,
+          warp_uid, warp_id, resident_warp_slot, active_mask,
+          owners, launch_plans, plan);
+  if (global_status != private_global_region::kStatusOk) {
+    *global_failure_status = global_status;
+    return kStatusGlobalPlanRejected;
+  }
+  return kStatusOk;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:
@@ -323,6 +369,8 @@ const char *status_name(status_kind status) {
       return "legacy_admission_rejected";
     case kStatusCodecRejected:
       return "codec_rejected";
+    case kStatusGlobalPlanRejected:
+      return "global_plan_rejected";
   }
   return "unknown";
 }
