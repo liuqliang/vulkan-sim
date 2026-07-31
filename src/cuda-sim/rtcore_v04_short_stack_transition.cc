@@ -362,18 +362,20 @@ status_kind prepare_node_transition_from_operands(
       input, empty_write_seed, result);
 }
 
-status_kind prepare_resume_transition(const resume_input_v0 &input,
-                                      result_v0 *result) {
-  if (result == NULL || input.parent_edge_valid > 1 ||
+static status_kind prepare_resume_transition_impl(
+    const resume_operands_input_v1 &input,
+    const private_frontier::shadow_slot_v0 &write_seed,
+    result_v0 *result) {
+  if (result == NULL || input.parent_restore_valid > 1 ||
+      input.parent_edge_valid > 1 ||
       !bytes_are_zero(input.reserved_zero,
                       sizeof(input.reserved_zero))) {
     return kStatusInvalidArgument;
   }
   *result = result_v0();
-  short_stack_shared::persistent_state_v0 persistent = {};
-  if (short_stack_shared::decode_persistent_state(
-          input.canonical_slot, input.owner, &persistent) !=
-      short_stack_shared::kStatusOk) {
+  short_stack_shared::persistent_state_v0 persistent =
+      input.persistent_state;
+  if (!short_stack_shared::validate_persistent_state(persistent)) {
     return kStatusPrivateStateRejected;
   }
   if (persistent.recovery_target_inflight != 0) {
@@ -393,7 +395,7 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
     }
     result->terminal = 1;
     return finalize_persistent_state(
-        input.owner, input.region, input.canonical_slot,
+        input.owner, input.region, write_seed,
         persistent, result);
   }
 
@@ -401,8 +403,8 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
       persistent.stack.stack_count == 1) {
     short_stack::entry_v0 return_entry = {};
     if (persistent.stack.lost != 0 ||
-        input.immutable_trace_input.decode_context.as_object.as_type !=
-            1 ||
+        input.parent_restore_valid == 0 ||
+        input.parent_decode_context.as_object.as_type != 1 ||
         !short_stack::read_logical_entry(
             persistent.stack, 0, &return_entry) ||
         short_stack::control_kind(return_entry.control) !=
@@ -411,7 +413,7 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
     }
     if (input.parent_edge_valid == 0) {
       result->parent_lookup_decode_context =
-          input.immutable_trace_input.decode_context;
+          input.parent_decode_context;
       result->parent_lookup_build_generation =
           persistent.tlas_build_generation;
       result->parent_lookup_payload_offset =
@@ -432,11 +434,11 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
         persistent.tlas_build_generation;
 
     private_frontier::traversal_frame_projection_v0 root = {};
-    root.ray = input.immutable_trace_input.mutable_ray;
+    root.ray = input.parent_ray;
     root.current_decode_context =
-        input.immutable_trace_input.decode_context;
+        input.parent_decode_context;
     private_frontier::shadow_slot_v0 restored_slot =
-        input.canonical_slot;
+        write_seed;
     private_frontier::access_plan_v0 restore_plan = {};
     if (private_frontier::apply_parent_state_restore(
             &restored_slot, input.owner, input.region, root,
@@ -459,7 +461,7 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
               short_stack::kEntryParentResume ||
           !selected_fetch_from_entry(
               popped.entry,
-              input.immutable_trace_input.decode_context,
+              input.parent_decode_context,
               &result->selected_fetch, &result->replay_cursor)) {
         return kStatusShortStackRejected;
       }
@@ -537,22 +539,60 @@ status_kind prepare_resume_transition(const resume_input_v0 &input,
   result->selected_valid = 1;
   result->next_build_generation = build_generation;
   return finalize_persistent_state(
-      input.owner, input.region, input.canonical_slot,
+      input.owner, input.region, write_seed,
       persistent, result);
 }
 
-status_kind prepare_enter_blas_transition(
-    const enter_blas_input_v0 &input, result_v0 *result) {
+status_kind prepare_resume_transition(const resume_input_v0 &input,
+                                      result_v0 *result) {
+  if (result == NULL ||
+      !bytes_are_zero(input.reserved_zero,
+                      sizeof(input.reserved_zero))) {
+    return kStatusInvalidArgument;
+  }
+  resume_operands_input_v1 operands = {};
+  operands.owner = input.owner;
+  operands.region = input.region;
+  if (short_stack_shared::decode_persistent_state(
+          input.canonical_slot, input.owner,
+          &operands.persistent_state) !=
+      short_stack_shared::kStatusOk) {
+    return kStatusPrivateStateRejected;
+  }
+  operands.parent_ray =
+      input.immutable_trace_input.mutable_ray;
+  operands.parent_decode_context =
+      input.immutable_trace_input.decode_context;
+  operands.active_decode_context =
+      input.active_decode_context;
+  operands.parent_edge = input.parent_edge;
+  operands.parent_restore_valid = 1;
+  operands.parent_edge_valid = input.parent_edge_valid;
+  return prepare_resume_transition_impl(
+      operands, input.canonical_slot, result);
+}
+
+status_kind prepare_resume_transition_from_operands(
+    const resume_operands_input_v1 &input, result_v0 *result) {
+  private_frontier::shadow_slot_v0 empty_write_seed = {};
+  empty_write_seed.owner = input.owner;
+  return prepare_resume_transition_impl(
+      input, empty_write_seed, result);
+}
+
+static status_kind prepare_enter_blas_transition_impl(
+    const enter_blas_operands_input_v1 &input,
+    const private_frontier::shadow_slot_v0 &write_seed,
+    result_v0 *result) {
   if (result == NULL ||
       !bytes_are_zero(input.reserved_zero,
                       sizeof(input.reserved_zero))) {
     return kStatusInvalidArgument;
   }
   *result = result_v0();
-  short_stack_shared::persistent_state_v0 persistent = {};
-  if (short_stack_shared::decode_persistent_state(
-          input.canonical_slot, input.owner, &persistent) !=
-      short_stack_shared::kStatusOk) {
+  short_stack_shared::persistent_state_v0 persistent =
+      input.persistent_state;
+  if (!short_stack_shared::validate_persistent_state(persistent)) {
     return kStatusPrivateStateRejected;
   }
   if (persistent.recovery_target_inflight != 0) {
@@ -604,8 +644,41 @@ status_kind prepare_enter_blas_transition(
   result->next_build_generation =
       input.blas_build_generation;
   return finalize_persistent_state(
-      input.owner, input.region, input.canonical_slot,
+      input.owner, input.region, write_seed,
       persistent, result);
+}
+
+status_kind prepare_enter_blas_transition(
+    const enter_blas_input_v0 &input, result_v0 *result) {
+  if (result == NULL ||
+      !bytes_are_zero(input.reserved_zero,
+                      sizeof(input.reserved_zero))) {
+    return kStatusInvalidArgument;
+  }
+  enter_blas_operands_input_v1 operands = {};
+  operands.owner = input.owner;
+  operands.region = input.region;
+  if (short_stack_shared::decode_persistent_state(
+          input.canonical_slot, input.owner,
+          &operands.persistent_state) !=
+      short_stack_shared::kStatusOk) {
+    return kStatusPrivateStateRejected;
+  }
+  operands.tlas_instance_target =
+      input.tlas_instance_target;
+  operands.blas_root = input.blas_root;
+  operands.blas_build_generation =
+      input.blas_build_generation;
+  return prepare_enter_blas_transition_impl(
+      operands, input.canonical_slot, result);
+}
+
+status_kind prepare_enter_blas_transition_from_operands(
+    const enter_blas_operands_input_v1 &input, result_v0 *result) {
+  private_frontier::shadow_slot_v0 empty_write_seed = {};
+  empty_write_seed.owner = input.owner;
+  return prepare_enter_blas_transition_impl(
+      input, empty_write_seed, result);
 }
 
 const char *status_name(status_kind status) {

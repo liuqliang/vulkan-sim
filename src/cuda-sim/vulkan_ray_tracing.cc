@@ -22470,7 +22470,8 @@ rtcore_accept_v04_live_instance_enter_result(
             enter->operation_packet.target_reference,
             enter->typed_input,
             enter->typed_result, &receipt,
-            rtcore_v04_live_short_stack_timing_enabled());
+            rtcore_v04_live_short_stack_timing_enabled(),
+            enter->operation_packet.private_storage_profile);
     if (capture_status ==
             instance_shared::kStatusResultBackpressure ||
         capture_status ==
@@ -22570,7 +22571,12 @@ static bool rtcore_service_v04_live_instance_ready(
         input.ray_policy = event.ray_policy;
         input.active_decode_context =
             event.active_decode_context;
-        if (!rtcore_v04_immutable_trace_input_for(
+        input.private_storage_profile =
+            event.private_storage_profile;
+        if (event.private_storage_profile !=
+                rtcore::v04::private_storage::
+                    kProfileCompressedShared384 &&
+            !rtcore_v04_immutable_trace_input_for(
                 event.owner, &input.immutable_trace_input)) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
@@ -22598,6 +22604,10 @@ static bool rtcore_service_v04_live_instance_ready(
             input.blas_root = event.root_fetch;
             input.blas_build_generation =
                 event.root_build_generation;
+            input.instance_object_ray = event.object_ray;
+            input.instance_projection =
+                event.instance_projection;
+            input.deferred_instance_valid = 1;
             route_name = "short_stack_blas_enter";
         } else {
             fprintf(stderr,
@@ -22610,11 +22620,21 @@ static bool rtcore_service_v04_live_instance_ready(
         }
         short_timing::reservation_receipt_v0 reservation = {};
         const short_timing::status_kind short_status =
-            short_timing::reserve_existing_target(
-                &staged_short_stack, &staged_timing,
-                rtcore_v04_private_shared_backing_for(owner_hw_sid),
-                input, service_cycle, &reservation,
-                &short_stack_requests);
+            event.private_storage_profile ==
+                    rtcore::v04::private_storage::
+                        kProfileCompressedShared384
+                ? short_timing::reserve_private_state_384(
+                      &staged_short_stack, &staged_timing,
+                      rtcore_v04_private_state_384_backing_for(
+                          owner_hw_sid),
+                      input, service_cycle, &reservation,
+                      &short_stack_requests)
+                : short_timing::reserve_existing_target(
+                      &staged_short_stack, &staged_timing,
+                      rtcore_v04_private_shared_backing_for(
+                          owner_hw_sid),
+                      input, service_cycle, &reservation,
+                      &short_stack_requests);
         if (short_status ==
                 short_timing::kStatusCapacityBackpressure ||
             short_status ==
@@ -23781,7 +23801,12 @@ static bool rtcore_service_v04_live_primitive_ready(
             input.ray_policy = event.semantic_plan.ray_policy;
             input.active_decode_context =
                 event.active_decode_context;
-            if (!rtcore_v04_immutable_trace_input_for(
+            input.private_storage_profile =
+                event.private_storage_profile;
+            if (event.private_storage_profile !=
+                    rtcore::v04::private_storage::
+                        kProfileCompressedShared384 &&
+                !rtcore_v04_immutable_trace_input_for(
                     event.owner, &input.immutable_trace_input)) {
                 fprintf(
                     stderr,
@@ -23802,12 +23827,21 @@ static bool rtcore_service_v04_live_primitive_ready(
                 short_timing::kOperationResumeTransition;
             short_timing::reservation_receipt_v0 reservation = {};
             const short_timing::status_kind short_status =
-                short_timing::reserve_existing_target(
-                    &staged_short_stack, &staged_timing,
-                    rtcore_v04_private_shared_backing_for(
-                        owner_hw_sid),
-                    input, service_cycle, &reservation,
-                    &short_stack_requests);
+                event.private_storage_profile ==
+                        rtcore::v04::private_storage::
+                            kProfileCompressedShared384
+                    ? short_timing::reserve_private_state_384(
+                          &staged_short_stack, &staged_timing,
+                          rtcore_v04_private_state_384_backing_for(
+                              owner_hw_sid),
+                          input, service_cycle, &reservation,
+                          &short_stack_requests)
+                    : short_timing::reserve_existing_target(
+                          &staged_short_stack, &staged_timing,
+                          rtcore_v04_private_shared_backing_for(
+                              owner_hw_sid),
+                          input, service_cycle, &reservation,
+                          &short_stack_requests);
             if (short_status ==
                     short_timing::kStatusCapacityBackpressure ||
                 short_status ==

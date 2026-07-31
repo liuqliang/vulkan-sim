@@ -143,7 +143,8 @@ static uint32_t producer_allowed_byte_mask(uint8_t producer,
       }
       if (chunk == 3) return kCurrentInstanceRef;
       if (chunk == 4) {
-        return kCurrentInstanceHead | kStackMetadata;
+        return kCurrentInstanceHead | kBlasBuildGeneration |
+               kStackMetadata;
       }
       return 0;
     case kProducerInvalid:

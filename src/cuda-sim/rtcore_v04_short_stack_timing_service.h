@@ -8,6 +8,7 @@
 #include "rtcore_v04_private_state_384_live_bridge.h"
 #include "rtcore_v04_short_stack_transition.h"
 #include "rtcore_v04_timing_driver.h"
+#include "rtcore_v04_typed_instance_kernel.h"
 
 namespace rtcore {
 namespace v04 {
@@ -87,6 +88,9 @@ struct reservation_input_v0 {
   typed_blas::as_decode_context_v0 active_decode_context;
   fetch_target::target_reference_v0 tlas_instance_target;
   typed_node::selected_child_fetch_work_item_v0 blas_root;
+  typed_instance::mutable_ray_state_v0 instance_object_ray;
+  typed_instance::instance_shader_projection_v0
+      instance_projection;
   short_stack::entry_v0 pending_parent_resume;
   uint32_t producer_operation_seq;
   uint32_t producer_commit_epoch;
@@ -96,6 +100,7 @@ struct reservation_input_v0 {
   uint8_t pending_parent_resume_valid;
   uint8_t private_storage_profile;
   uint8_t recovery_target_inflight;
+  uint8_t deferred_instance_valid;
 };
 
 struct reservation_receipt_v0 {

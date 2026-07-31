@@ -6,6 +6,7 @@
 #include "rtcore_v04_fetch_target_queue.h"
 #include "rtcore_v04_instance_result_semantic_applier.h"
 #include "rtcore_v04_private_shared_backing.h"
+#include "rtcore_v04_private_storage_profile.h"
 
 namespace rtcore {
 namespace v04 {
@@ -83,9 +84,12 @@ struct ready_event_v0 {
   uint32_t root_build_generation;
   uint8_t valid;
   uint8_t route_kind;
-  uint8_t reserved_zero[2];
+  uint8_t private_storage_profile;
+  uint8_t reserved_zero;
   typed_node::selected_child_fetch_work_item_v0 root_fetch;
   typed_node::ray_policy_v0 ray_policy;
+  typed_instance::mutable_ray_state_v0 object_ray;
+  typed_instance::instance_shader_projection_v0 instance_projection;
 };
 
 struct result_commit_entry_v0 {
@@ -118,9 +122,12 @@ struct commit_tracker_v0 {
   uint8_t valid;
   uint8_t ready;
   uint8_t route_kind;
-  uint8_t reserved_zero[3];
+  uint8_t private_storage_profile;
+  uint8_t reserved_zero[2];
   typed_node::selected_child_fetch_work_item_v0 root_fetch;
   typed_node::ray_policy_v0 ray_policy;
+  typed_instance::mutable_ray_state_v0 object_ray;
+  typed_instance::instance_shader_projection_v0 instance_projection;
 };
 
 struct engine_state_v0 {
@@ -155,7 +162,9 @@ status_kind capture_enter_result(
     const fetch_target::target_reference_v0 &source_target_reference,
     const typed_instance::enter_input_v0 &input,
     const typed_instance::enter_result_v0 &result,
-    capture_receipt_v0 *receipt, bool short_stack_mode = false);
+    capture_receipt_v0 *receipt, bool short_stack_mode = false,
+    uint8_t private_storage_profile =
+        private_storage::kProfileLegacyShared832);
 
 status_kind peek_write_offer(const engine_state_v0 &state,
                              write_offer_v0 *offer);

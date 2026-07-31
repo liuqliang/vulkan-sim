@@ -36,7 +36,8 @@ uint16_t all_write_chunks(uint8_t write_count) {
 
 bool make_stack_sparse_deltas(
     const short_stack_shared::persistent_state_v0 &persistent,
-    private_state_384::operand_plan::chunk_delta_v1 deltas[4],
+    private_state_384::live_bridge::sparse_chunk_delta_v1
+        deltas[private_state_384::kChunkCount],
     uint8_t *delta_count) {
   if (deltas == NULL || delta_count == NULL ||
       !short_stack_shared::validate_persistent_state(persistent)) {
@@ -50,7 +51,7 @@ bool make_stack_sparse_deltas(
   }
   std::memset(
       deltas, 0,
-      sizeof(private_state_384::operand_plan::chunk_delta_v1) * 4);
+      sizeof(*deltas) * private_state_384::kChunkCount);
   deltas[0].chunk_index = 4;
   deltas[0].byte_mask = 0x0f000000u;
   std::memcpy(
@@ -68,6 +69,136 @@ bool make_stack_sparse_deltas(
         private_state_384::kChunkBytes);
   }
   *delta_count = 4;
+  return true;
+}
+
+template <typename SourceRay>
+void copy_codec_ray(const SourceRay &source,
+                    private_state_384::ray_v1 *destination) {
+  for (uint8_t component = 0; component < 3; ++component) {
+    destination->origin[component] = source.origin[component];
+    destination->direction[component] = source.direction[component];
+  }
+  destination->t_min = source.t_min;
+  destination->t_max = source.t_max;
+}
+
+bool copy_codec_as(
+    const typed_blas::as_decode_context_v0 &source,
+    uint8_t cull_mask,
+    private_state_384::as_context_v1 *destination) {
+  if (destination == NULL ||
+      source.bvh_format_profile_id !=
+          private_state_384::kGenRtBvhFormatProfileId ||
+      source.as_object.object_id == 0 ||
+      source.as_object.generation == 0 ||
+      source.device_range_bytes == 0) {
+    return false;
+  }
+  *destination = private_state_384::as_context_v1();
+  destination->as_object_id = source.as_object.object_id;
+  destination->device_base = source.device_base;
+  destination->device_range_bytes = source.device_range_bytes;
+  destination->as_object_generation =
+      source.as_object.generation;
+  destination->as_type = source.as_object.as_type;
+  destination->cull_mask = cull_mask;
+  return true;
+}
+
+void copy_sparse_chunk(
+    uint8_t chunk_index, uint32_t byte_mask,
+    const private_state_384::image_v1 &image,
+    private_state_384::live_bridge::sparse_chunk_delta_v1 *delta) {
+  *delta =
+      private_state_384::live_bridge::sparse_chunk_delta_v1();
+  delta->chunk_index = chunk_index;
+  delta->byte_mask = byte_mask;
+  const uint16_t byte_offset =
+      static_cast<uint16_t>(
+          chunk_index * private_state_384::kChunkBytes);
+  for (uint8_t byte = 0; byte < private_state_384::kChunkBytes;
+       ++byte) {
+    if ((byte_mask & (uint32_t{1} << byte)) != 0) {
+      delta->payload[byte] =
+          image.bytes[byte_offset + byte];
+    }
+  }
+}
+
+bool make_instance_enter_sparse_deltas(
+    const operation_entry_v0 &entry,
+    private_state_384::live_bridge::sparse_chunk_delta_v1
+        deltas[private_state_384::kChunkCount],
+    uint8_t *delta_count) {
+  if (deltas == NULL || delta_count == NULL ||
+      entry.input.deferred_instance_valid != 1 ||
+      entry.input.operation_kind != kOperationEnterBlasTransition ||
+      !short_stack_shared::validate_persistent_state(
+          entry.transition.persistent_state)) {
+    return false;
+  }
+  private_state_384::state_v1 state = {};
+  copy_codec_ray(entry.input.instance_object_ray, &state.ray);
+  const uint8_t cull_mask =
+      entry.private_state_384_stack_operands.ray_policy.cull_mask;
+  if (!copy_codec_as(
+          entry.input.blas_root.decode_context, cull_mask,
+          &state.active_as) ||
+      !copy_codec_as(
+          entry.private_state_384_stack_operands
+              .active_decode_context,
+          cull_mask, &state.parent_restore.tlas_context)) {
+    return false;
+  }
+  state.current_instance.instance_metadata_ref =
+      entry.input.instance_projection
+          .instance_metadata_reference;
+  state.current_instance.instance_index =
+      entry.input.instance_projection.instance_index;
+  state.current_instance.instance_custom_index =
+      entry.input.instance_projection.instance_custom_index;
+  state.current_instance.instance_sbt_contribution =
+      entry.input.instance_projection
+          .instance_sbt_contribution;
+  state.current_instance.instance_policy_flags =
+      entry.input.instance_projection.instance_flags;
+  state.ray_flags =
+      entry.private_state_384_stack_operands.ray_policy.ray_flags;
+  state.tlas_build_generation =
+      entry.private_state_384_stack_operands
+          .tlas_build_generation;
+  state.blas_build_generation =
+      entry.input.blas_build_generation;
+  state.stack = entry.transition.persistent_state.stack;
+  copy_codec_ray(
+      entry.private_state_384_stack_operands.ray,
+      &state.parent_restore.ray);
+  private_state_384::control_tags_v1 control = {};
+  control.parent_restore_valid = 1;
+  private_state_384::image_v1 image = {};
+  if (private_state_384::encode_image(
+          private_state_384::kPrivateLayoutProfileId,
+          private_state_384::kGenRtBvhFormatProfileId,
+          state, control, &image) !=
+      private_state_384::kStatusOk) {
+    return false;
+  }
+  std::memset(
+      deltas, 0,
+      sizeof(*deltas) * private_state_384::kChunkCount);
+  static const uint8_t chunks[] = {0, 1, 3, 4, 5, 6, 7, 10, 11};
+  static const uint32_t masks[] = {
+      0xffffffffu, 0xffffffffu, 0xff000000u,
+      0x0ff00fffu, 0xffffffffu, 0xffffffffu,
+      0xffffffffu, 0xffffffffu, 0xffffffffu};
+  static const uint8_t kInstanceEnterDeltaCount = 9;
+  for (uint8_t index = 0; index < kInstanceEnterDeltaCount;
+       ++index) {
+    copy_sparse_chunk(
+        chunks[index], masks[index], image, &deltas[index]);
+  }
+  *delta_count = kInstanceEnterDeltaCount;
   return true;
 }
 
@@ -269,7 +400,8 @@ status_kind begin_transition_commit(
   }
   if (entry->input.private_storage_profile ==
       private_storage::kProfileCompressedShared384) {
-    private_state_384::operand_plan::chunk_delta_v1 deltas[4] = {};
+    private_state_384::live_bridge::sparse_chunk_delta_v1
+        deltas[private_state_384::kChunkCount] = {};
     uint8_t delta_count = 0;
     private_state_384::live_bridge::write_commit_input_v1 input = {};
     input.owner = entry->input.owner;
@@ -282,11 +414,20 @@ status_kind begin_transition_commit(
         entry->transition.write_plan.access_count;
     input.storage_profile =
         private_storage::kProfileCompressedShared384;
+    const bool instance_enter =
+        entry->input.operation_kind ==
+        kOperationEnterBlasTransition;
     input.producer =
-        private_state_384::operand_plan::kProducerStack;
-    if (!make_stack_sparse_deltas(
-            entry->transition.persistent_state, deltas,
-            &delta_count) ||
+        instance_enter
+            ? private_state_384::operand_plan::
+                  kProducerInstanceEnter
+            : private_state_384::operand_plan::kProducerStack;
+    if (!(instance_enter
+              ? make_instance_enter_sparse_deltas(
+                    *entry, deltas, &delta_count)
+              : make_stack_sparse_deltas(
+                    entry->transition.persistent_state, deltas,
+                    &delta_count)) ||
         private_state_384::live_bridge::stage_sparse_commit(
             input, deltas, delta_count,
             &entry->private_state_384_commit) !=
@@ -419,6 +560,7 @@ bool valid_operation_input(const reservation_input_v0 &input,
   if (input.producer_operation_seq == 0 ||
       input.pending_parent_resume_valid > 1 ||
       input.recovery_target_inflight > 1 ||
+      input.deferred_instance_valid > 1 ||
       (input.private_storage_profile !=
            private_storage::kProfileLegacyShared832 &&
        input.private_storage_profile !=
@@ -433,10 +575,13 @@ bool valid_operation_input(const reservation_input_v0 &input,
     return !existing_target;
   }
   if (input.operation_kind == kOperationResumeTransition) {
-    return existing_target;
+    return existing_target && input.deferred_instance_valid == 0;
   }
   if (input.operation_kind == kOperationEnterBlasTransition) {
-    return existing_target && input.blas_build_generation != 0;
+    return existing_target && input.blas_build_generation != 0 &&
+           (input.private_storage_profile ==
+                    private_storage::kProfileLegacyShared832 ||
+            input.deferred_instance_valid == 1);
   }
   return false;
 }
@@ -697,11 +842,11 @@ status_kind reserve_private_state_384(
     const private_state_384::backing::state_v1 &private_backing,
     const reservation_input_v0 &input, uint64_t reservation_cycle,
     reservation_receipt_v0 *reservation, request_plan_v0 *requests) {
+  const bool existing_target = input.target_operation_seq != 0;
   if (state == NULL || timing_state == NULL || reservation == NULL ||
       requests == NULL || state->initialized != 1 ||
       !valid_config(state->config) ||
-      !valid_operation_input(input, false) ||
-      input.operation_kind != kOperationNodeTransition ||
+      !valid_operation_input(input, existing_target) ||
       input.private_storage_profile !=
           private_storage::kProfileCompressedShared384) {
     return kStatusInvalidArgument;
@@ -743,10 +888,26 @@ status_kind reserve_private_state_384(
 
   engine_state_v0 staged_state = *state;
   timing_driver::state_v0 staged_timing = *timing_state;
-  uint32_t operation_seq = 0;
-  if (timing_driver::allocate_target_operation(
-          &staged_timing, request_binding, &operation_seq) !=
-      timing_driver::kStatusOk) {
+  uint32_t operation_seq = input.target_operation_seq;
+  if (existing_target) {
+    const timing_driver::lane_control_state_v0 *control =
+        timing_driver::find_live_lane_control(
+            staged_timing, request_binding);
+    if (control == NULL ||
+        control->live_target_operation_seq != operation_seq ||
+        control->live_commit_producer_operation_seq !=
+            input.producer_operation_seq ||
+        control->live_commit_epoch != input.producer_commit_epoch ||
+        control->pending_recovery_operation_seq != 0 ||
+        control->pending_terminal_kind !=
+            timing_driver::kTerminalBoundaryInvalid ||
+        control->live_memory_transaction_count != 0 ||
+        control->live_commit_memory_transaction_count != 0) {
+      return kStatusTimingControlRejected;
+    }
+  } else if (timing_driver::allocate_target_operation(
+                 &staged_timing, request_binding, &operation_seq) !=
+             timing_driver::kStatusOk) {
     return kStatusTimingControlRejected;
   }
   operation_entry_v0 &entry = staged_state.slots[slot_index];
@@ -1328,33 +1489,98 @@ status_kind service_cycle(
       }
     } else if (entry.input.operation_kind ==
                kOperationResumeTransition) {
-      short_stack_transition::resume_input_v0 transition_input = {};
-      transition_input.owner = entry.input.owner;
-      transition_input.region = entry.input.private_region;
-      transition_input.canonical_slot = entry.read_slot;
-      transition_input.immutable_trace_input =
-          entry.input.immutable_trace_input;
-      transition_input.active_decode_context =
-          entry.input.active_decode_context;
-      transition_input.parent_edge = entry.parent_edge;
-      transition_input.parent_edge_valid = entry.parent_edge_valid;
-      transition_status =
-          short_stack_transition::prepare_resume_transition(
-              transition_input, &transition);
+      if (entry.input.private_storage_profile ==
+          private_storage::kProfileCompressedShared384) {
+        if (entry.private_state_384_operands_valid != 1) {
+          return kStatusSharedPlanRejected;
+        }
+        short_stack_transition::resume_operands_input_v1
+            transition_input = {};
+        transition_input.owner = entry.input.owner;
+        transition_input.region = entry.input.private_region;
+        transition_input.persistent_state.tlas_build_generation =
+            entry.private_state_384_stack_operands
+                .tlas_build_generation;
+        transition_input.persistent_state.blas_build_generation =
+            entry.private_state_384_stack_operands
+                .blas_build_generation;
+        transition_input.persistent_state.stack =
+            entry.private_state_384_stack_operands.stack;
+        transition_input.persistent_state
+            .recovery_target_inflight =
+            entry.input.recovery_target_inflight;
+        transition_input.active_decode_context =
+            entry.private_state_384_stack_operands
+                .active_decode_context;
+        transition_input.parent_edge = entry.parent_edge;
+        transition_input.parent_edge_valid =
+            entry.parent_edge_valid;
+        transition_status =
+            short_stack_transition::
+                prepare_resume_transition_from_operands(
+                    transition_input, &transition);
+      } else {
+        short_stack_transition::resume_input_v0 transition_input = {};
+        transition_input.owner = entry.input.owner;
+        transition_input.region = entry.input.private_region;
+        transition_input.canonical_slot = entry.read_slot;
+        transition_input.immutable_trace_input =
+            entry.input.immutable_trace_input;
+        transition_input.active_decode_context =
+            entry.input.active_decode_context;
+        transition_input.parent_edge = entry.parent_edge;
+        transition_input.parent_edge_valid =
+            entry.parent_edge_valid;
+        transition_status =
+            short_stack_transition::prepare_resume_transition(
+                transition_input, &transition);
+      }
     } else if (entry.input.operation_kind ==
                kOperationEnterBlasTransition) {
-      short_stack_transition::enter_blas_input_v0 transition_input = {};
-      transition_input.owner = entry.input.owner;
-      transition_input.region = entry.input.private_region;
-      transition_input.canonical_slot = entry.read_slot;
-      transition_input.tlas_instance_target =
-          entry.input.tlas_instance_target;
-      transition_input.blas_root = entry.input.blas_root;
-      transition_input.blas_build_generation =
-          entry.input.blas_build_generation;
-      transition_status =
-          short_stack_transition::prepare_enter_blas_transition(
-              transition_input, &transition);
+      if (entry.input.private_storage_profile ==
+          private_storage::kProfileCompressedShared384) {
+        if (entry.private_state_384_operands_valid != 1 ||
+            entry.input.deferred_instance_valid != 1) {
+          return kStatusSharedPlanRejected;
+        }
+        short_stack_transition::enter_blas_operands_input_v1
+            transition_input = {};
+        transition_input.owner = entry.input.owner;
+        transition_input.region = entry.input.private_region;
+        transition_input.persistent_state.tlas_build_generation =
+            entry.private_state_384_stack_operands
+                .tlas_build_generation;
+        transition_input.persistent_state.blas_build_generation =
+            entry.private_state_384_stack_operands
+                .blas_build_generation;
+        transition_input.persistent_state.stack =
+            entry.private_state_384_stack_operands.stack;
+        transition_input.persistent_state
+            .recovery_target_inflight =
+            entry.input.recovery_target_inflight;
+        transition_input.tlas_instance_target =
+            entry.input.tlas_instance_target;
+        transition_input.blas_root = entry.input.blas_root;
+        transition_input.blas_build_generation =
+            entry.input.blas_build_generation;
+        transition_status =
+            short_stack_transition::
+                prepare_enter_blas_transition_from_operands(
+                    transition_input, &transition);
+      } else {
+        short_stack_transition::enter_blas_input_v0 transition_input = {};
+        transition_input.owner = entry.input.owner;
+        transition_input.region = entry.input.private_region;
+        transition_input.canonical_slot = entry.read_slot;
+        transition_input.tlas_instance_target =
+            entry.input.tlas_instance_target;
+        transition_input.blas_root = entry.input.blas_root;
+        transition_input.blas_build_generation =
+            entry.input.blas_build_generation;
+        transition_status =
+            short_stack_transition::prepare_enter_blas_transition(
+                transition_input, &transition);
+      }
     }
     if (transition_status ==
         short_stack_transition::kStatusParentLookupRequired) {

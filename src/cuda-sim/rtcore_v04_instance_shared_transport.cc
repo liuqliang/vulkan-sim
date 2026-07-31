@@ -255,11 +255,19 @@ status_kind capture_enter_result(
     const fetch_target::target_reference_v0 &source_target_reference,
     const typed_instance::enter_input_v0 &input,
     const typed_instance::enter_result_v0 &result,
-    capture_receipt_v0 *receipt, bool short_stack_mode) {
+    capture_receipt_v0 *receipt, bool short_stack_mode,
+    uint8_t private_storage_profile) {
   if (state == NULL || receipt == NULL || state->initialized != 1 ||
       producer_operation_seq == 0 || commit_epoch == 0 ||
       target_operation_seq == 0 ||
-      target_operation_seq == producer_operation_seq) {
+      target_operation_seq == producer_operation_seq ||
+      (private_storage_profile !=
+           private_storage::kProfileLegacyShared832 &&
+       private_storage_profile !=
+           private_storage::kProfileCompressedShared384) ||
+      (private_storage_profile ==
+           private_storage::kProfileCompressedShared384 &&
+       !short_stack_mode)) {
     return kStatusInvalidArgument;
   }
   *receipt = capture_receipt_v0();
@@ -323,6 +331,9 @@ status_kind capture_enter_result(
   tracker.root_fetch = plan.root_fetch;
   tracker.ray_policy = plan.ray_policy;
   tracker.root_build_generation = plan.root_build_generation;
+  tracker.private_storage_profile = private_storage_profile;
+  tracker.object_ray = result.object_ray;
+  tracker.instance_projection = result.instance_projection;
   tracker.valid = 1;
   tracker.ready = plan.write_fragment_count == 0 ? 1 : 0;
   state->trackers[tracker_index] = tracker;
@@ -501,8 +512,13 @@ status_kind pop_ready_event(engine_state_v0 *state,
   event->root_build_generation =
       tracker.root_build_generation;
   event->route_kind = tracker.route_kind;
+  event->private_storage_profile =
+      tracker.private_storage_profile;
   event->root_fetch = tracker.root_fetch;
   event->ray_policy = tracker.ray_policy;
+  event->object_ray = tracker.object_ray;
+  event->instance_projection =
+      tracker.instance_projection;
   event->valid = 1;
   state->trackers[selected] = commit_tracker_v0();
   return kStatusOk;
