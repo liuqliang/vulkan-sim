@@ -313,7 +313,7 @@ status_kind accept_read_response(
 
 status_kind stage_sparse_commit(
     const write_commit_input_v1 &input,
-    const operand_plan::chunk_delta_v1 *deltas, size_t delta_count,
+    const sparse_chunk_delta_v1 *deltas, size_t delta_count,
     pending_sparse_commit_v1 *pending) {
   if (pending == NULL) return kStatusInvalidArgument;
   *pending = pending_sparse_commit_v1();

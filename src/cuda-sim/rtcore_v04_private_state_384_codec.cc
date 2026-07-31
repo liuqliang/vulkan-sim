@@ -869,6 +869,41 @@ status_kind encode_stack_sparse_projection(
   return kStatusOk;
 }
 
+status_kind encode_committed_hit_sparse_projection(
+    const typed_stack::committed_hit_projection_v0 &hit,
+    uint8_t payload[kCommittedHitProjectionBytes]) {
+  if (payload == NULL) return kStatusInvalidArgument;
+  std::memset(payload, 0, kCommittedHitProjectionBytes);
+  const status_kind status = validate_hit(hit);
+  if (status != kStatusOk) return status;
+  encode_committed_hit(payload, hit);
+  return kStatusOk;
+}
+
+status_kind encode_boundary_sparse_projection(
+    const boundary_state_v1 &boundary, uint8_t reason,
+    const as_context_v1 &active_as,
+    uint8_t payload[kBoundaryProjectionBytes]) {
+  if (payload == NULL ||
+      (reason != kBoundaryReasonAnyHit &&
+       reason != kBoundaryReasonProceduralIntersection)) {
+    return kStatusInvalidArgument;
+  }
+  std::memset(payload, 0, kBoundaryProjectionBytes);
+  state_v1 validation = {};
+  validation.active_as = active_as;
+  validation.boundary = boundary;
+  control_tags_v1 control = {};
+  control.union_arm = kUnionArmBoundary;
+  control.boundary_reason = reason;
+  status_kind status = validate_as_context(active_as, true);
+  if (status != kStatusOk) return status;
+  status = validate_boundary(validation, control);
+  if (status != kStatusOk) return status;
+  encode_boundary(payload, boundary, reason);
+  return kStatusOk;
+}
+
 const char *status_name(status_kind status) {
   switch (status) {
     case kStatusOk:

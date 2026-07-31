@@ -19,6 +19,8 @@ static const uint32_t kSlotAlignmentBytes = 32;
 static const uint32_t kChunkBytes = 32;
 static const uint8_t kChunkCount = 12;
 static const uint8_t kLaunchWriteCount = 5;
+static const uint8_t kCommittedHitProjectionBytes = 56;
+static const uint8_t kBoundaryProjectionBytes = 64;
 
 static const uint16_t kChunk0Offset = 0x000;
 static const uint16_t kChunk1Offset = 0x020;
@@ -193,6 +195,15 @@ status_kind initialize_new_launch_image(
 status_kind encode_stack_sparse_projection(
     const short_stack::state_v0 &stack,
     stack_sparse_projection_v1 *projection);
+
+status_kind encode_committed_hit_sparse_projection(
+    const typed_stack::committed_hit_projection_v0 &hit,
+    uint8_t payload[kCommittedHitProjectionBytes]);
+
+status_kind encode_boundary_sparse_projection(
+    const boundary_state_v1 &boundary, uint8_t reason,
+    const as_context_v1 &active_as,
+    uint8_t payload[kBoundaryProjectionBytes]);
 
 const char *status_name(status_kind status);
 

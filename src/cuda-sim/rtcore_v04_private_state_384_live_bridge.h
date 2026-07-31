@@ -17,6 +17,8 @@ namespace live_bridge {
 static const uint8_t kMaxReadRequests =
     operand_materializer::kMaxOperationReadChunks;
 
+typedef operand_plan::chunk_delta_v1 sparse_chunk_delta_v1;
+
 enum status_kind : uint8_t {
   kStatusOk = 0,
   kStatusInvalidArgument,
@@ -120,7 +122,7 @@ status_kind accept_read_response(
 
 status_kind stage_sparse_commit(
     const write_commit_input_v1 &input,
-    const operand_plan::chunk_delta_v1 *deltas, size_t delta_count,
+    const sparse_chunk_delta_v1 *deltas, size_t delta_count,
     pending_sparse_commit_v1 *pending);
 
 status_kind register_modeled_write(

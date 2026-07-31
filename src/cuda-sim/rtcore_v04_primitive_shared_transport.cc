@@ -10,6 +10,8 @@ namespace v04 {
 namespace primitive_shared {
 namespace {
 
+static const uint8_t kMaxPrivateState384DeltaCount = 4;
+
 bool bytes_are_zero(const uint8_t *bytes, size_t count) {
   for (size_t index = 0; index < count; ++index) {
     if (bytes[index] != 0) return false;
@@ -171,6 +173,135 @@ status_kind prepare_shared_write(
   return kStatusOk;
 }
 
+void append_private_state_384_delta(
+    uint8_t chunk_index, uint32_t byte_mask, const uint8_t *payload,
+    private_state_384::live_bridge::sparse_chunk_delta_v1
+        deltas[kMaxPrivateState384DeltaCount],
+    uint8_t *delta_count) {
+  private_state_384::live_bridge::sparse_chunk_delta_v1 &delta =
+      deltas[(*delta_count)++];
+  delta.chunk_index = chunk_index;
+  delta.byte_mask = byte_mask;
+  for (uint8_t byte = 0; byte < private_state_384::kChunkBytes; ++byte) {
+    if ((byte_mask & (uint32_t{1} << byte)) != 0) {
+      delta.payload[byte] = payload[byte];
+    }
+  }
+}
+
+bool make_private_state_384_as_context(
+    const typed_blas::as_decode_context_v0 &typed,
+    uint8_t cull_mask, private_state_384::as_context_v1 *context) {
+  if (context == NULL ||
+      typed.bvh_format_profile_id !=
+          private_state_384::kGenRtBvhFormatProfileId ||
+      typed.reserved_zero != 0 ||
+      !bytes_are_zero(typed.as_object.reserved_zero,
+                      sizeof(typed.as_object.reserved_zero))) {
+    return false;
+  }
+  *context = private_state_384::as_context_v1();
+  context->as_object_id = typed.as_object.object_id;
+  context->device_base = typed.device_base;
+  context->device_range_bytes = typed.device_range_bytes;
+  context->as_object_generation = typed.as_object.generation;
+  context->as_type = typed.as_object.as_type;
+  context->cull_mask = cull_mask;
+  return true;
+}
+
+bool prepare_private_state_384_deltas(
+    const primitive_semantic::semantic_plan_v0 &semantic_plan,
+    const typed_blas::as_decode_context_v0 &active_decode_context,
+    private_state_384::live_bridge::sparse_chunk_delta_v1
+        deltas[kMaxPrivateState384DeltaCount],
+    uint8_t *delta_count) {
+  if (deltas == NULL || delta_count == NULL) return false;
+  std::memset(
+      deltas, 0,
+      sizeof(*deltas) * kMaxPrivateState384DeltaCount);
+  *delta_count = 0;
+  if (semantic_plan.valid != 1 || semantic_plan.operation_seq == 0 ||
+      semantic_plan.reserved_zero != 0 ||
+      semantic_plan.committed_hit_valid > 1 ||
+      semantic_plan.retained_candidate_valid > 1 ||
+      semantic_plan.primitive_resume_valid > 1 ||
+      semantic_plan.intersection_boundary_valid > 1 ||
+      semantic_plan.shader_return_valid > 1) {
+    return false;
+  }
+
+  if (semantic_plan.committed_hit_valid != 0) {
+    uint8_t payload[
+        private_state_384::kCommittedHitProjectionBytes] = {};
+    if (private_state_384::encode_committed_hit_sparse_projection(
+            semantic_plan.committed_hit, payload) !=
+        private_state_384::kStatusOk) {
+      return false;
+    }
+    append_private_state_384_delta(
+        2, 0xffffffffu, payload, deltas, delta_count);
+    append_private_state_384_delta(
+        3, 0x00ffffffu,
+        payload + private_state_384::kChunkBytes, deltas,
+        delta_count);
+  }
+
+  if (semantic_plan.retained_candidate_valid != 0) {
+    private_state_384::boundary_state_v1 boundary = {};
+    boundary.identity_and_policy =
+        semantic_plan.retained_candidate.identity_and_policy;
+    boundary.primitive_resume = semantic_plan.primitive_resume;
+    uint8_t reason = private_state_384::kBoundaryReasonNone;
+    if (semantic_plan.route_kind ==
+            primitive_semantic::kRouteAnyHitBoundary &&
+        semantic_plan.intersection_boundary_valid == 0) {
+      reason = private_state_384::kBoundaryReasonAnyHit;
+      boundary.triangle_hit =
+          semantic_plan.retained_candidate.triangle_hit;
+    } else if (
+        semantic_plan.route_kind ==
+            primitive_semantic::kRouteIntersectionBoundary &&
+        semantic_plan.intersection_boundary_valid == 1) {
+      reason =
+          private_state_384::kBoundaryReasonProceduralIntersection;
+      boundary.intersection = semantic_plan.intersection_boundary;
+    } else {
+      return false;
+    }
+    private_state_384::as_context_v1 active_as = {};
+    uint8_t payload[private_state_384::kBoundaryProjectionBytes] = {};
+    if (!make_private_state_384_as_context(
+            active_decode_context, semantic_plan.ray_policy.cull_mask,
+            &active_as) ||
+        private_state_384::encode_boundary_sparse_projection(
+            boundary, reason, active_as, payload) !=
+            private_state_384::kStatusOk) {
+      return false;
+    }
+    append_private_state_384_delta(
+        8, 0xffffffffu, payload, deltas, delta_count);
+    append_private_state_384_delta(
+        9, 0xffffffffu,
+        payload + private_state_384::kChunkBytes, deltas,
+        delta_count);
+  } else if (semantic_plan.shader_return_valid != 0) {
+    const uint8_t cleared[private_state_384::kBoundaryProjectionBytes] = {};
+    append_private_state_384_delta(
+        8, 0xffffffffu, cleared, deltas, delta_count);
+    append_private_state_384_delta(
+        9, 0xffffffffu,
+        cleared + private_state_384::kChunkBytes, deltas,
+        delta_count);
+  }
+
+  return *delta_count <= kMaxPrivateState384DeltaCount &&
+         !(semantic_plan.retained_candidate_valid != 0 &&
+           semantic_plan.shader_return_valid != 0) &&
+         !(semantic_plan.primitive_resume_valid != 0 &&
+           semantic_plan.retained_candidate_valid == 0);
+}
+
 }  // namespace
 
 status_kind initialize(engine_state_v0 *state, const config_v0 &config) {
@@ -183,42 +314,15 @@ status_kind initialize(engine_state_v0 *state, const config_v0 &config) {
   return kStatusOk;
 }
 
-status_kind capture_result(
-    engine_state_v0 *state,
-    const private_frontier::owner_binding_v0 &owner,
-    uint32_t producer_operation_seq, uint32_t commit_epoch,
-    uint32_t target_operation_seq,
-    const private_frontier::region_binding_v0 &region,
-    const private_frontier::shadow_slot_v0 &canonical_slot,
-    const typed_primitive::route_input_v0 &input,
-    const typed_primitive::route_result_v0 &result,
-    capture_receipt_v0 *receipt) {
-  primitive_semantic::semantic_plan_v0 semantic = {};
-  if (primitive_semantic::prepare_result(
-          owner, producer_operation_seq, input, result, &semantic) !=
-      primitive_semantic::kStatusOk) {
-    return kStatusSemanticPlanRejected;
-  }
-  const status_kind status = capture_semantic_plan(
-      state, producer_operation_seq, commit_epoch,
-      target_operation_seq, region, canonical_slot, semantic,
-      receipt);
-  if (status != kStatusOk) return status;
-  const int tracker_index = find_tracker(
-      *state, owner, producer_operation_seq, commit_epoch);
-  if (tracker_index < 0) return kStatusSemanticPlanRejected;
-  state->trackers[tracker_index].active_decode_context =
-      input.decode_context;
-  return kStatusOk;
-}
-
-status_kind capture_semantic_plan(
+static status_kind capture_semantic_plan_impl(
     engine_state_v0 *state,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
     uint32_t target_operation_seq,
     const private_frontier::region_binding_v0 &region,
     const private_frontier::shadow_slot_v0 &canonical_slot,
     const primitive_semantic::semantic_plan_v0 &semantic_plan,
+    uint8_t private_storage_profile,
+    const typed_blas::as_decode_context_v0 *explicit_active_decode_context,
     capture_receipt_v0 *receipt) {
   const bool internal_successor =
       semantic_plan.route_kind ==
@@ -233,7 +337,14 @@ status_kind capture_semantic_plan(
       (!internal_successor && !boundary) ||
       semantic_plan.operation_seq != producer_operation_seq ||
       !private_frontier::owners_equal(
-          semantic_plan.owner, canonical_slot.owner)) {
+          semantic_plan.owner, canonical_slot.owner) ||
+      (private_storage_profile !=
+           private_storage::kProfileLegacyShared832 &&
+       private_storage_profile !=
+           private_storage::kProfileCompressedShared384) ||
+      (private_storage_profile ==
+           private_storage::kProfileCompressedShared384 &&
+       explicit_active_decode_context == NULL)) {
     return kStatusInvalidArgument;
   }
   *receipt = capture_receipt_v0();
@@ -254,13 +365,53 @@ status_kind capture_semantic_plan(
   if (primitive_semantic::prepare_private_commit(
           semantic_plan, region, canonical_slot, &commit) !=
           primitive_semantic::kStatusOk ||
-      private_frontier::decode_root_private_operands(
-          canonical_slot, semantic_plan.owner,
-          &active_operands) != private_frontier::kStatusOk ||
+      (explicit_active_decode_context == NULL &&
+       private_frontier::decode_root_private_operands(
+           canonical_slot, semantic_plan.owner,
+           &active_operands) != private_frontier::kStatusOk) ||
       commit.valid != 1 ||
       commit.semantic_plan.route_kind == primitive_semantic::kRouteInvalid) {
     return kStatusSemanticPlanRejected;
   }
+  if (explicit_active_decode_context != NULL) {
+    active_operands.decode_context = *explicit_active_decode_context;
+  }
+
+  private_state_384::live_bridge::pending_sparse_commit_v1
+      private_state_384_commit = {};
+  if (private_storage_profile ==
+      private_storage::kProfileCompressedShared384) {
+    private_state_384::live_bridge::sparse_chunk_delta_v1
+        deltas[kMaxPrivateState384DeltaCount] = {};
+    uint8_t delta_count = 0;
+    if (!prepare_private_state_384_deltas(
+            semantic_plan, active_operands.decode_context, deltas,
+            &delta_count) ||
+        ((commit.write_fragment_count == 0) != (delta_count == 0))) {
+      return kStatusPrivateState384Rejected;
+    }
+    if (delta_count != 0) {
+      private_state_384::live_bridge::write_commit_input_v1 input = {};
+      input.owner = semantic_plan.owner;
+      input.operation_sequence = producer_operation_seq;
+      input.commit_epoch = commit_epoch;
+      input.bvh_format_profile_id =
+          private_state_384::kGenRtBvhFormatProfileId;
+      input.expected_write_ack_count =
+          commit.write_fragment_count;
+      input.storage_profile =
+          private_storage::kProfileCompressedShared384;
+      input.producer =
+          private_state_384::operand_plan::kProducerPrimitive;
+      if (private_state_384::live_bridge::stage_sparse_commit(
+              input, deltas, delta_count,
+              &private_state_384_commit) !=
+          private_state_384::live_bridge::kStatusOk) {
+        return kStatusPrivateState384Rejected;
+      }
+    }
+  }
+
   const int result_index =
       commit.write_fragment_count == 0 ? -1 : find_free_result(*state);
   if (commit.write_fragment_count != 0 && result_index < 0) {
@@ -293,7 +444,9 @@ status_kind capture_semantic_plan(
       active_operands.decode_context;
   tracker.expected_write_count = commit.write_fragment_count;
   tracker.route_kind = commit.semantic_plan.route_kind;
+  tracker.private_storage_profile = private_storage_profile;
   tracker.semantic_plan = commit.semantic_plan;
+  tracker.private_state_384_commit = private_state_384_commit;
   tracker.valid = 1;
   tracker.ready = commit.write_fragment_count == 0 ? 1 : 0;
   state->trackers[tracker_index] = tracker;
@@ -306,6 +459,66 @@ status_kind capture_semantic_plan(
   receipt->route_kind = commit.semantic_plan.route_kind;
   receipt->valid = 1;
   return kStatusOk;
+}
+
+status_kind capture_result(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    const typed_primitive::route_input_v0 &input,
+    const typed_primitive::route_result_v0 &result,
+    capture_receipt_v0 *receipt) {
+  primitive_semantic::semantic_plan_v0 semantic = {};
+  if (primitive_semantic::prepare_result(
+          owner, producer_operation_seq, input, result, &semantic) !=
+      primitive_semantic::kStatusOk) {
+    return kStatusSemanticPlanRejected;
+  }
+  return capture_semantic_plan_impl(
+      state, producer_operation_seq, commit_epoch,
+      target_operation_seq, region, canonical_slot, semantic,
+      private_storage::kProfileLegacyShared832,
+      &input.decode_context, receipt);
+}
+
+status_kind capture_result_with_private_state_384(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &compatibility_slot,
+    const typed_primitive::route_input_v0 &input,
+    const typed_primitive::route_result_v0 &result,
+    capture_receipt_v0 *receipt) {
+  primitive_semantic::semantic_plan_v0 semantic = {};
+  if (primitive_semantic::prepare_result(
+          owner, producer_operation_seq, input, result, &semantic) !=
+      primitive_semantic::kStatusOk) {
+    return kStatusSemanticPlanRejected;
+  }
+  return capture_semantic_plan_impl(
+      state, producer_operation_seq, commit_epoch,
+      target_operation_seq, region, compatibility_slot, semantic,
+      private_storage::kProfileCompressedShared384,
+      &input.decode_context, receipt);
+}
+
+status_kind capture_semantic_plan(
+    engine_state_v0 *state,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    const primitive_semantic::semantic_plan_v0 &semantic_plan,
+    capture_receipt_v0 *receipt) {
+  return capture_semantic_plan_impl(
+      state, producer_operation_seq, commit_epoch,
+      target_operation_seq, region, canonical_slot, semantic_plan,
+      private_storage::kProfileLegacyShared832, NULL, receipt);
 }
 
 status_kind peek_write_offer(const engine_state_v0 &state,
@@ -359,6 +572,13 @@ status_kind transfer_next_write(
       (tracker.accepted_write_mask & bit) != 0) {
     return kStatusWriteOfferMismatch;
   }
+  if (tracker.private_storage_profile ==
+          private_storage::kProfileCompressedShared384 &&
+      private_state_384::live_bridge::register_modeled_write(
+          operation, &tracker.private_state_384_commit) !=
+          private_state_384::live_bridge::kStatusOk) {
+    return kStatusPrivateState384Rejected;
+  }
   tracker.accepted_write_mask |= bit;
   ++entry.next_write_index;
   if (entry.next_write_index == entry.write_count) {
@@ -380,6 +600,28 @@ bool owns_ack(const engine_state_v0 &state,
   return state.initialized == 1 && ack.valid &&
          find_tracker(state, ack.owner, ack.operation_seq,
                       ack.commit_epoch) >= 0;
+}
+
+bool profile_for_write(
+    const engine_state_v0 &state,
+    const private_shared::shared_write_v0 &write,
+    uint8_t *private_storage_profile) {
+  if (private_storage_profile == NULL || state.initialized != 1 ||
+      !write.valid) {
+    return false;
+  }
+  const int tracker_index =
+      find_tracker(state, write.owner, write.operation_seq,
+                   write.commit_epoch);
+  if (tracker_index < 0) return false;
+  const uint8_t profile =
+      state.trackers[tracker_index].private_storage_profile;
+  if (profile != private_storage::kProfileLegacyShared832 &&
+      profile != private_storage::kProfileCompressedShared384) {
+    return false;
+  }
+  *private_storage_profile = profile;
+  return true;
 }
 
 status_kind service_next_ack(
@@ -405,6 +647,10 @@ status_kind service_next_ack(
                    ack.commit_epoch);
   if (tracker_index < 0) return kStatusUnknownAck;
   commit_tracker_v0 &tracker = state->trackers[tracker_index];
+  if (tracker.private_storage_profile !=
+      private_storage::kProfileLegacyShared832) {
+    return kStatusPrivateState384Rejected;
+  }
   if (ack.memory_operation_seq == 0 ||
       ack.memory_operation_seq > tracker.expected_write_count) {
     return kStatusStaleAck;
@@ -432,6 +678,83 @@ status_kind service_next_ack(
     return kStatusSharedAckRejected;
   }
   *state = staged;
+  receipt->valid = true;
+  receipt->shared_ack = ack;
+  return kStatusOk;
+}
+
+status_kind service_next_ack_with_private_state_384(
+    engine_state_v0 *state,
+    private_shared::backing_state_v0 *shared_state,
+    private_state_384::backing::state_v1 *private_state_384_backing,
+    uint64_t service_cycle, ack_receipt_v0 *receipt) {
+  if (state == NULL || shared_state == NULL ||
+      private_state_384_backing == NULL || receipt == NULL ||
+      state->initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  *receipt = ack_receipt_v0();
+  private_shared::runtime_write_ack_v0 ack = {};
+  const private_shared::status_kind peek_status =
+      private_shared::detail::peek_runtime_write_ack(
+          *shared_state, service_cycle, &ack);
+  if (peek_status == private_shared::kStatusNoAckReady) {
+    return kStatusNoAckReady;
+  }
+  if (peek_status != private_shared::kStatusOk ||
+      shared_state->outstanding.empty()) {
+    return kStatusSharedAckRejected;
+  }
+  const int tracker_index =
+      find_tracker(*state, ack.owner, ack.operation_seq,
+                   ack.commit_epoch);
+  if (tracker_index < 0) return kStatusUnknownAck;
+  const commit_tracker_v0 &tracker = state->trackers[tracker_index];
+  if (tracker.private_storage_profile !=
+          private_storage::kProfileCompressedShared384 ||
+      tracker.private_state_384_commit.valid != 1 ||
+      ack.memory_operation_seq == 0 ||
+      ack.memory_operation_seq > tracker.expected_write_count) {
+    return kStatusPrivateState384Rejected;
+  }
+  const uint16_t bit = static_cast<uint16_t>(
+      uint16_t{1} << (ack.memory_operation_seq - 1));
+  if ((tracker.accepted_write_mask & bit) == 0) {
+    return kStatusAckBeforeTransfer;
+  }
+  if ((tracker.acknowledged_write_mask & bit) != 0) {
+    return kStatusDuplicateAck;
+  }
+
+  engine_state_v0 staged = *state;
+  private_shared::backing_state_v0 staged_shared = *shared_state;
+  private_state_384::backing::state_v1 staged_private_384 =
+      *private_state_384_backing;
+  commit_tracker_v0 &staged_tracker =
+      staged.trackers[tracker_index];
+  const private_shared::shared_write_v0 modeled_write =
+      staged_shared.outstanding.front();
+  bool canonical_committed = false;
+  staged_tracker.acknowledged_write_mask |= bit;
+  const bool all_acked =
+      staged_tracker.acknowledged_write_mask ==
+      expected_mask(staged_tracker.expected_write_count);
+  if (private_shared::detail::commit_runtime_write_ack(
+          &staged_shared, service_cycle, ack) !=
+          private_shared::kStatusOk ||
+      private_state_384::live_bridge::
+              accept_write_ack_and_maybe_commit(
+                  &staged_private_384, modeled_write, ack,
+                  &staged_tracker.private_state_384_commit,
+                  &canonical_committed) !=
+          private_state_384::live_bridge::kStatusOk ||
+      canonical_committed != all_acked) {
+    return kStatusPrivateState384Rejected;
+  }
+  if (all_acked) staged_tracker.ready = 1;
+  *state = staged;
+  *shared_state = staged_shared;
+  *private_state_384_backing = staged_private_384;
   receipt->valid = true;
   receipt->shared_ack = ack;
   return kStatusOk;
@@ -469,6 +792,8 @@ status_kind pop_ready_event(engine_state_v0 *state,
   event->target_operation_seq = tracker.target_operation_seq;
   event->commit_epoch = tracker.commit_epoch;
   event->route_kind = tracker.route_kind;
+  event->private_storage_profile =
+      tracker.private_storage_profile;
   event->semantic_plan = tracker.semantic_plan;
   event->valid = 1;
   state->trackers[selected] = commit_tracker_v0();
@@ -589,6 +914,8 @@ const char *status_name(status_kind status) {
       return "no_boundary_receipt";
     case kStatusInvalidRoute:
       return "invalid_route";
+    case kStatusPrivateState384Rejected:
+      return "private_state_384_rejected";
   }
   return "unknown";
 }

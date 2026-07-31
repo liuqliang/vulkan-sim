@@ -5,6 +5,8 @@
 
 #include "rtcore_v04_primitive_result_semantic_applier.h"
 #include "rtcore_v04_private_shared_backing.h"
+#include "rtcore_v04_private_state_384_live_bridge.h"
+#include "rtcore_v04_private_storage_profile.h"
 
 namespace rtcore {
 namespace v04 {
@@ -37,6 +39,7 @@ enum status_kind : uint8_t {
   kStatusNoReadyEvent,
   kStatusNoBoundaryReceipt,
   kStatusInvalidRoute,
+  kStatusPrivateState384Rejected,
 };
 
 struct config_v0 {
@@ -86,7 +89,8 @@ struct ready_event_v0 {
   uint32_t commit_epoch;
   uint8_t valid;
   uint8_t route_kind;
-  uint8_t reserved_zero[2];
+  uint8_t private_storage_profile;
+  uint8_t reserved_zero;
   primitive_semantic::semantic_plan_v0 semantic_plan;
 };
 
@@ -120,8 +124,10 @@ struct commit_tracker_v0 {
   uint8_t valid;
   uint8_t ready;
   uint8_t route_kind;
-  uint8_t reserved_zero;
+  uint8_t private_storage_profile;
   primitive_semantic::semantic_plan_v0 semantic_plan;
+  private_state_384::live_bridge::pending_sparse_commit_v1
+      private_state_384_commit;
 };
 
 struct engine_state_v0 {
@@ -148,6 +154,17 @@ status_kind capture_result(
     const typed_primitive::route_result_v0 &result,
     capture_receipt_v0 *receipt);
 
+status_kind capture_result_with_private_state_384(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &compatibility_slot,
+    const typed_primitive::route_input_v0 &input,
+    const typed_primitive::route_result_v0 &result,
+    capture_receipt_v0 *receipt);
+
 status_kind capture_semantic_plan(
     engine_state_v0 *state,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
@@ -167,8 +184,19 @@ status_kind transfer_next_write(
 bool owns_ack(const engine_state_v0 &state,
               const private_shared::runtime_write_ack_v0 &ack);
 
+bool profile_for_write(
+    const engine_state_v0 &state,
+    const private_shared::shared_write_v0 &write,
+    uint8_t *private_storage_profile);
+
 status_kind service_next_ack(
     engine_state_v0 *state, private_shared::backing_state_v0 *shared_state,
+    uint64_t service_cycle, ack_receipt_v0 *receipt);
+
+status_kind service_next_ack_with_private_state_384(
+    engine_state_v0 *state,
+    private_shared::backing_state_v0 *shared_state,
+    private_state_384::backing::state_v1 *private_state_384_backing,
     uint64_t service_cycle, ack_receipt_v0 *receipt);
 
 status_kind pop_ready_event(engine_state_v0 *state,

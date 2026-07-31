@@ -21733,13 +21733,29 @@ static bool rtcore_service_v04_live_primitive_ack(
     primitive_shared::engine_state_v0 staged_primitive =
         rtcore_v04_live_primitive_shared_for(owner_hw_sid);
     private_shared::backing_state_v0 staged_backing = backing;
+    rtcore::v04::private_state_384::backing::state_v1
+        staged_private_384 =
+            rtcore_v04_private_state_384_backing_for(owner_hw_sid);
     timing_driver::state_v0 staged_timing =
         rtcore_v04_timing_driver_for(owner_hw_sid);
+    uint8_t tracker_private_storage_profile = 0;
+    if (!primitive_shared::profile_for_write(
+            staged_primitive, backing.outstanding.front(),
+            &tracker_private_storage_profile)) {
+        return false;
+    }
     primitive_shared::ack_receipt_v0 receipt = {};
     const primitive_shared::status_kind ack_status =
-        primitive_shared::service_next_ack(
-            &staged_primitive, &staged_backing, service_cycle,
-            &receipt);
+        tracker_private_storage_profile ==
+                rtcore::v04::private_storage::
+                    kProfileCompressedShared384
+            ? primitive_shared::
+                  service_next_ack_with_private_state_384(
+                      &staged_primitive, &staged_backing,
+                      &staged_private_384, service_cycle, &receipt)
+            : primitive_shared::service_next_ack(
+                  &staged_primitive, &staged_backing, service_cycle,
+                  &receipt);
     rtcore::v04::request_owner::lane_binding_v0 owner = {};
     if (ack_status != primitive_shared::kStatusOk ||
         !receipt.valid ||
@@ -21761,6 +21777,12 @@ static bool rtcore_service_v04_live_primitive_ack(
     rtcore_v04_live_primitive_shared_for(owner_hw_sid) =
         staged_primitive;
     backing = staged_backing;
+    if (tracker_private_storage_profile ==
+        rtcore::v04::private_storage::
+            kProfileCompressedShared384) {
+        rtcore_v04_private_state_384_backing_for(owner_hw_sid) =
+            staged_private_384;
+    }
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
     return true;
 }
@@ -23104,15 +23126,32 @@ rtcore_accept_v04_live_primitive_result(
         rtcore_v04_live_primitive_shared_for(
             context->owner_hw_sid);
     primitive_shared::capture_receipt_v0 receipt = {};
+    const uint8_t private_storage_profile =
+        completed->operation_packet.private_storage_profile;
     const primitive_shared::status_kind capture_status =
-        primitive_shared::capture_result(
-            &staged_primitive, completed->operation_packet.owner,
-            completed->producer_operation_seq,
-            completed->commit_epoch,
-            completed->target_operation_seq,
-            rtcore_v04_private_region_for(context->owner_hw_sid),
-            lane_slot->canonical_slot, completed->typed_input,
-            completed->typed_result, &receipt);
+        private_storage_profile ==
+                rtcore::v04::private_storage::
+                    kProfileCompressedShared384
+            ? primitive_shared::capture_result_with_private_state_384(
+                  &staged_primitive,
+                  completed->operation_packet.owner,
+                  completed->producer_operation_seq,
+                  completed->commit_epoch,
+                  completed->target_operation_seq,
+                  rtcore_v04_private_region_for(
+                      context->owner_hw_sid),
+                  lane_slot->canonical_slot, completed->typed_input,
+                  completed->typed_result, &receipt)
+            : primitive_shared::capture_result(
+                  &staged_primitive,
+                  completed->operation_packet.owner,
+                  completed->producer_operation_seq,
+                  completed->commit_epoch,
+                  completed->target_operation_seq,
+                  rtcore_v04_private_region_for(
+                      context->owner_hw_sid),
+                  lane_slot->canonical_slot, completed->typed_input,
+                  completed->typed_result, &receipt);
     if (capture_status ==
             primitive_shared::kStatusResultBackpressure ||
         capture_status ==
