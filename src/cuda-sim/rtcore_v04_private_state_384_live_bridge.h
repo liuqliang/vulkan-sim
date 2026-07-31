@@ -55,7 +55,8 @@ struct read_input_v1 {
   uint8_t operation;
   uint8_t completion_reason;
   uint8_t destination;
-  uint8_t reserved_zero[3];
+  uint8_t memory_op_seq_base;
+  uint8_t reserved_zero[2];
 };
 
 struct read_request_plan_v1 {

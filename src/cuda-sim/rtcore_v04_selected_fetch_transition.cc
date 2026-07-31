@@ -65,17 +65,40 @@ bool target_backpressure(fetch_target::status_kind status) {
              fetch_target::kStatusReservationBudgetBackpressure;
 }
 
+uint8_t private_state_384_consumer(fetch_target::target_kind target) {
+  switch (target) {
+    case fetch_target::kTargetNode:
+      return private_state_384::operand_plan::kConsumerNode;
+    case fetch_target::kTargetPrimitive:
+      return private_state_384::operand_plan::kConsumerPrimitive;
+    case fetch_target::kTargetInstance:
+      return private_state_384::operand_plan::kConsumerInstance;
+    case fetch_target::kTargetInvalid:
+      return private_state_384::operand_plan::kConsumerInvalid;
+  }
+  return private_state_384::operand_plan::kConsumerInvalid;
+}
+
 }  // namespace
 
 status_kind try_accept_direct(
     timing_driver::state_v0 *timing_state,
     fetch_target::engine_state_v0 *target_state,
     const private_shared::backing_state_v0 &private_backing,
+    const private_state_384::backing::state_v1
+        &private_state_384_backing,
     const direct_transition_input_v0 &input,
     accepted_transition_v0 *accepted) {
+  const bool legacy_profile =
+      input.private_storage_profile ==
+      private_storage::kProfileLegacyShared832;
+  const bool compressed_profile =
+      input.private_storage_profile ==
+      private_storage::kProfileCompressedShared384;
   if (timing_state == NULL || target_state == NULL || accepted == NULL ||
       !timing_state->initialized || target_state->initialized != 1 ||
       input.producer_operation_seq == 0 ||
+      (!legacy_profile && !compressed_profile) ||
       !bytes_are_zero(input.reserved_zero,
                       sizeof(input.reserved_zero))) {
     return kStatusInvalidArgument;
@@ -85,9 +108,15 @@ status_kind try_accept_direct(
   request_owner::lane_binding_v0 request_binding = {};
   if (!make_request_owner(input.owner, &request_binding) ||
       timing_driver::find_live_lane_control(
-          *timing_state, request_binding) == NULL ||
-      private_shared::find_live_lane(
-          private_backing, input.owner) == NULL) {
+          *timing_state, request_binding) == NULL) {
+    return kStatusOwnerMismatch;
+  }
+  if ((legacy_profile &&
+       private_shared::find_live_lane(
+           private_backing, input.owner) == NULL) ||
+      (compressed_profile &&
+       private_state_384::backing::find_live_lane(
+           private_state_384_backing, input.owner) == NULL)) {
     return kStatusOwnerMismatch;
   }
 
@@ -145,25 +174,76 @@ status_kind try_accept_direct(
   target_memory::raw_read_plan_v0 raw_read_plan = {};
   private_frontier::access_plan_v0 private_read_plan = {};
   target_shared_memory::request_plan_v0 private_request_plan = {};
+  private_state_384::live_bridge::read_request_plan_v1
+      private_state_384_request_plan = {};
+  if (compressed_profile) {
+    const fetch_target::target_kind target =
+        static_cast<fetch_target::target_kind>(
+            reservation.target_kind);
+    const uint8_t consumer = private_state_384_consumer(target);
+    if (consumer ==
+        private_state_384::operand_plan::kConsumerInvalid) {
+      return kStatusMemoryPlanRejected;
+    }
+    private_state_384::live_bridge::read_input_v1 read_input = {};
+    read_input.owner = input.owner;
+    read_input.issue_cycle = input.reservation_cycle;
+    read_input.operation_sequence =
+        reservation.target_operation_seq;
+    read_input.bvh_format_profile_id =
+        reservation.bvh_format_profile_id;
+    read_input.reservation_generation =
+        reservation.slot_generation;
+    read_input.storage_profile =
+        private_storage::kProfileCompressedShared384;
+    read_input.consumer = consumer;
+    read_input.operation =
+        private_state_384::operand_plan::kOperationDefault;
+    read_input.completion_reason =
+        private_state_384::operand_plan::kCompletionReasonNone;
+    read_input.destination =
+        RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL;
+    read_input.memory_op_seq_base = static_cast<uint8_t>(
+        reservation.raw_chunk_count + 1u);
+    fetch_target::reservation_receipt_v0 updated_reservation = {};
+    if (private_state_384::live_bridge::prepare_read_requests(
+            read_input, &private_state_384_request_plan) !=
+            private_state_384::live_bridge::kStatusOk ||
+        target_private_state_384::configure_read(
+            &staged_target, reservation,
+            private_state_384_request_plan,
+            &updated_reservation) !=
+            target_private_state_384::kStatusOk) {
+      return kStatusMemoryPlanRejected;
+    }
+    reservation = updated_reservation;
+  } else {
+    if ((reservation.target_kind == fetch_target::kTargetPrimitive
+             ? private_shared::prepare_primitive_operand_read_plan(
+                   private_backing, input.owner, &private_read_plan)
+             : private_shared::prepare_root_operand_read_plan(
+                   private_backing, input.owner, &private_read_plan)) !=
+            private_shared::kStatusOk ||
+        target_shared_memory::prepare_request_plan(
+            reservation, private_read_plan,
+            input.reservation_cycle,
+            &private_request_plan) !=
+            target_shared_memory::kStatusOk) {
+      return kStatusMemoryPlanRejected;
+    }
+  }
   if (target_memory::prepare_raw_read_plan(
-          reservation, &raw_read_plan) != target_memory::kStatusOk ||
-      (reservation.target_kind == fetch_target::kTargetPrimitive
-           ? private_shared::prepare_primitive_operand_read_plan(
-                 private_backing, input.owner, &private_read_plan)
-           : private_shared::prepare_root_operand_read_plan(
-                 private_backing, input.owner, &private_read_plan)) !=
-          private_shared::kStatusOk ||
-      target_shared_memory::prepare_request_plan(
-          reservation, private_read_plan,
-          input.reservation_cycle,
-          &private_request_plan) !=
-          target_shared_memory::kStatusOk) {
+          reservation, &raw_read_plan) != target_memory::kStatusOk) {
     return kStatusMemoryPlanRejected;
   }
 
+  const unsigned private_request_count =
+      compressed_profile
+          ? private_state_384_request_plan.request_count
+          : private_request_plan.request_count;
   const unsigned transaction_count =
       static_cast<unsigned>(raw_read_plan.chunk_count) +
-      static_cast<unsigned>(private_request_plan.request_count);
+      private_request_count;
   for (unsigned index = 0; index < transaction_count; ++index) {
     if (timing_driver::begin_memory_transaction(
             &staged_timing, request_binding,
@@ -175,10 +255,14 @@ status_kind try_accept_direct(
   accepted->reservation = reservation;
   accepted->raw_read_plan = raw_read_plan;
   accepted->private_request_plan = private_request_plan;
+  accepted->private_state_384_request_plan =
+      private_state_384_request_plan;
   accepted->producer_operation_seq =
       input.producer_operation_seq;
   accepted->target_operation_seq = target_operation_seq;
   accepted->target_kind = reservation.target_kind;
+  accepted->private_storage_profile =
+      input.private_storage_profile;
   accepted->valid = 1;
   *timing_state = staged_timing;
   *target_state = staged_target;

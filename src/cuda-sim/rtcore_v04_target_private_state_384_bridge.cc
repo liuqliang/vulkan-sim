@@ -140,7 +140,12 @@ bool plan_is_canonical(
         memory.lane_id != owner.lane_id ||
         memory.chunk_id != index ||
         memory.chunk_count != plan.request_count ||
-        memory.memory_op_seq != static_cast<unsigned>(index) + 1u ||
+        transport.memory_op_seq_base == 0 ||
+        transport.memory_op_seq_base !=
+            plan.requests[0]
+                .v04_private_state_384_read.memory_op_seq_base ||
+        memory.memory_op_seq !=
+            static_cast<unsigned>(transport.memory_op_seq_base) + index ||
         memory.aligned_32b_addr !=
             private_state_384::live_bridge::private_slot_base(owner) +
                 canonical.reads[index].slot_byte_offset ||
@@ -159,7 +164,7 @@ bool plan_is_canonical(
         transport.read_index != index ||
         transport.read_count != plan.request_count ||
         transport.storage_profile != plan.key.storage_profile ||
-        transport.valid != 1 || transport.reserved_zero != 0) {
+        transport.valid != 1) {
       return false;
     }
   }

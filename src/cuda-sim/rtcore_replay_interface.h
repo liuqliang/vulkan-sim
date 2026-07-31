@@ -215,7 +215,7 @@ struct rtcore_v04_private_state_384_read_transport_snapshot {
   uint8_t read_count;
   uint8_t storage_profile;
   uint8_t valid;
-  uint8_t reserved_zero;
+  uint8_t memory_op_seq_base;
 };
 
 struct rtcore_v04_handoff_publication_transport_snapshot {

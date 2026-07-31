@@ -16345,6 +16345,8 @@ static bool rtcore_prepare_v04_target_private_state_384_read_plan(
         operand_plan::kCompletionReasonNone;
     input.destination =
         RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL;
+    input.memory_op_seq_base = static_cast<uint8_t>(
+        reservation.raw_chunk_count + 1u);
     return live_bridge::prepare_read_requests(input, plan) ==
            live_bridge::kStatusOk;
 }
@@ -18486,16 +18488,12 @@ static void rtcore_maybe_publish_v04_root_ready_packet(
 }
 
 static void rtcore_maybe_publish_v04_selected_fetch_ready(
-    const rtcore_memory_unit_request_snapshot &request,
+    const rtcore::v04::fetch_target::reservation_receipt_v0
+        &reservation,
     unsigned long long ready_cycle)
 {
     namespace target = rtcore::v04::fetch_target;
     if (!rtcore_v04_live_selected_fetch_transition_enabled()) {
-        return;
-    }
-    target::reservation_receipt_v0 reservation = {};
-    if (!rtcore_v04_reservation_from_target_request(
-            request, &reservation)) {
         return;
     }
     if (reservation.operation_kind !=
@@ -18504,7 +18502,7 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
     }
     std::map<unsigned, target::engine_state_v0>::const_iterator it =
         g_rtcore_v04_live_target_engine_by_owner.find(
-            request.owner_hw_sid);
+            reservation.owner.owner_hw_sid);
     if (it == g_rtcore_v04_live_target_engine_by_owner.end()) {
         return;
     }
@@ -18534,13 +18532,17 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
             reservation.producer_operation_seq ||
         packet.producer_commit_epoch !=
             reservation.producer_commit_epoch ||
-        packet.target_kind != reservation.target_kind) {
+        packet.target_kind != reservation.target_kind ||
+        packet.private_storage_profile !=
+            reservation.private_storage_profile) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_SELECTED_FETCH_READY_FAULT "
                 "owner_hw_sid=%u request_identity=%u lane_id=%u "
                 "target_operation_seq=%u status=%s\n",
-                request.owner_hw_sid, request.rt_request_id,
-                request.lane_id, reservation.target_operation_seq,
+                reservation.owner.owner_hw_sid,
+                reservation.owner.request_identity,
+                reservation.owner.lane_id,
+                reservation.target_operation_seq,
                 target::status_name(status));
         fflush(stderr);
         abort();
@@ -18555,6 +18557,7 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
            "target_operation_seq=%u reservation_id=%llu "
            "slot_generation=%u target_kind=%u "
            "source_kind=%u producer_backed_instance_root=%u "
+           "private_storage_profile=%s "
            "raw_global_complete=1 private_shared_complete=1 "
            "producer_gate_complete=1 required_field_mask_complete=1 "
            "ready_cycle=%llu\n",
@@ -18564,7 +18567,12 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
            (unsigned long long)packet.reservation_id,
            packet.slot_generation, packet.target_kind,
            packet.target_reference.source_kind,
-           instance_root_source ? 1u : 0u, ready_cycle);
+           instance_root_source ? 1u : 0u,
+           rtcore::v04::private_storage::profile_name(
+               static_cast<
+                   rtcore::v04::private_storage::profile_kind>(
+                   packet.private_storage_profile)),
+           ready_cycle);
     fflush(stdout);
 }
 
@@ -18608,8 +18616,12 @@ extern "C" bool rtcore_accept_v04_target_raw_read_response(
     rtcore_v04_timing_driver_for(request->owner_hw_sid) = staged_driver;
     rtcore_maybe_publish_v04_root_ready_packet(
         request->owner_hw_sid, response_cycle);
-    rtcore_maybe_publish_v04_selected_fetch_ready(
-        *request, response_cycle);
+    target::reservation_receipt_v0 reservation = {};
+    if (rtcore_v04_reservation_from_target_request(
+            *request, &reservation)) {
+        rtcore_maybe_publish_v04_selected_fetch_ready(
+            reservation, response_cycle);
+    }
     return true;
 }
 
@@ -18621,6 +18633,7 @@ extern "C" bool rtcore_accept_v04_target_private_shared_read(
     namespace target_shared = rtcore::v04::target_shared_memory;
     if (request == NULL ||
         (!rtcore_v04_root_node_ready_packet_enabled() &&
+         !rtcore_v04_live_selected_fetch_transition_enabled() &&
          !rtcore_v04_live_instance_service_enabled())) {
         return false;
     }
@@ -18651,8 +18664,12 @@ extern "C" bool rtcore_accept_v04_target_private_shared_read(
     rtcore_v04_timing_driver_for(request->owner_hw_sid) = staged_driver;
     rtcore_maybe_publish_v04_root_ready_packet(
         request->owner_hw_sid, response_cycle);
-    rtcore_maybe_publish_v04_selected_fetch_ready(
-        *request, response_cycle);
+    target::reservation_receipt_v0 reservation = {};
+    if (rtcore_v04_reservation_from_target_request(
+            *request, &reservation)) {
+        rtcore_maybe_publish_v04_selected_fetch_ready(
+            reservation, response_cycle);
+    }
     return true;
 }
 
@@ -18665,6 +18682,7 @@ extern "C" bool rtcore_accept_v04_target_private_state_384_read(
     namespace target = rtcore::v04::fetch_target;
     if (request == NULL ||
         (!rtcore_v04_root_node_ready_packet_enabled() &&
+         !rtcore_v04_live_selected_fetch_transition_enabled() &&
          !rtcore_v04_live_instance_service_enabled())) {
         return false;
     }
@@ -18692,10 +18710,47 @@ extern "C" bool rtcore_accept_v04_target_private_state_384_read(
             rtcore::v04::timing_driver::kStatusOk) {
         return false;
     }
+    rtcore::v04::private_state_384::live_bridge::
+        live_operation_key_v1 key = {};
+    key.identity.owner_hw_sid = request->owner_hw_sid;
+    key.identity.resident_warp_id = request->resident_warp_id;
+    key.identity.request_identity = request->rt_request_id;
+    key.identity.request_generation =
+        request->request_generation;
+    key.identity.private_slot_id = request->private_slot_id;
+    key.identity.operation_sequence =
+        request->v04_private_state_384_read.operation_sequence;
+    key.identity.lane_id =
+        static_cast<uint8_t>(request->lane_id);
+    key.private_layout_profile_id =
+        request->v04_private_state_384_read
+            .private_layout_profile_id;
+    key.bvh_format_profile_id =
+        request->v04_private_state_384_read
+            .bvh_format_profile_id;
+    key.reservation_generation =
+        request->v04_private_state_384_read
+            .reservation_generation;
+    key.storage_profile =
+        request->v04_private_state_384_read.storage_profile;
+    key.consumer =
+        request->v04_private_state_384_read.consumer;
+    key.operation =
+        request->v04_private_state_384_read.operation_kind;
+    key.completion_reason =
+        request->v04_private_state_384_read.completion_reason;
+    target::reservation_receipt_v0 reservation = {};
+    if (target::find_private_state_384_reservation(
+            staged_target, key, &reservation) !=
+        target::kStatusOk) {
+        return false;
+    }
     it->second = staged_target;
     rtcore_v04_timing_driver_for(request->owner_hw_sid) = staged_driver;
     rtcore_maybe_publish_v04_root_ready_packet(
         request->owner_hw_sid, response_cycle);
+    rtcore_maybe_publish_v04_selected_fetch_ready(
+        reservation, response_cycle);
     return true;
 }
 
@@ -19190,6 +19245,54 @@ struct rtcore_v04_selected_fetch_sink_context {
     unsigned long long service_cycle;
 };
 
+static bool rtcore_v04_private_storage_profile_for_owner(
+    const rtcore::v04::private_frontier::owner_binding_v0 &owner,
+    uint8_t *profile)
+{
+    namespace private_frontier = rtcore::v04::private_frontier;
+    namespace private_storage = rtcore::v04::private_storage;
+    namespace request_owner = rtcore::v04::request_owner;
+    if (profile == NULL || owner.lane_id >= 32) return false;
+    bool found = false;
+    uint8_t selected = private_storage::kProfileLegacyShared832;
+    for (std::map<rtcore_resident_rt_warp_record_key,
+                  rtcore_resident_rt_warp_record>::const_iterator it =
+             g_rtcore_resident_rt_warp_records.begin();
+         it != g_rtcore_resident_rt_warp_records.end(); ++it) {
+        const rtcore_resident_rt_warp_record &record = it->second;
+        if (!record.valid || record.owner_hw_sid != owner.owner_hw_sid ||
+            !record.v04_request_owner_binding_valid ||
+            record.v04_resident_warp_slot != owner.resident_warp_id ||
+            (record.v04_request_owner_active_mask &
+             (1u << owner.lane_id)) == 0) {
+            continue;
+        }
+        const rtcore_resident_rt_warp_lane_identity &identity =
+            record.lane_identity[owner.lane_id];
+        if (!identity.valid ||
+            !identity.v04_request_owner_binding_valid ||
+            !private_frontier::owners_equal(
+                request_owner::make_private_frontier_owner(
+                    identity.v04_request_owner_binding),
+                owner)) {
+            continue;
+        }
+        if (record.v04_private_storage_profile !=
+                private_storage::kProfileLegacyShared832 &&
+            record.v04_private_storage_profile !=
+                private_storage::kProfileCompressedShared384) {
+            return false;
+        }
+        if (found) return false;
+        found = true;
+        selected = static_cast<uint8_t>(
+            record.v04_private_storage_profile);
+    }
+    if (!found) return false;
+    *profile = selected;
+    return true;
+}
+
 static rtcore::v04::private_frontier::region_binding_v0
 rtcore_v04_private_region_for(unsigned owner_hw_sid);
 
@@ -19350,11 +19453,23 @@ rtcore_accept_v04_direct_selected_fetch_route(
     input.build_generation =
         route->current_target_reference.build_generation;
     input.reservation_cycle = context->service_cycle;
+    uint8_t resident_private_storage_profile = 0;
+    if (!rtcore_v04_private_storage_profile_for_owner(
+            route->result_identity.owner,
+            &resident_private_storage_profile) ||
+        route->result_identity.private_storage_profile !=
+            resident_private_storage_profile) {
+        return node_timing::kRouteSinkRejected;
+    }
+    input.private_storage_profile =
+        resident_private_storage_profile;
     transition::accepted_transition_v0 accepted = {};
     const transition::status_kind status =
         transition::try_accept_direct(
             staged_timing_state, &staged_target,
             rtcore_v04_private_shared_backing_for(
+                context->owner_hw_sid),
+            rtcore_v04_private_state_384_backing_for(
                 context->owner_hw_sid),
             input, &accepted);
     if (status == transition::kStatusTargetBackpressure) {
@@ -19407,6 +19522,18 @@ rtcore_accept_v04_direct_selected_fetch_route(
         }
         requests.push_back(request);
     }
+    for (unsigned index = 0;
+         index <
+             accepted.private_state_384_request_plan.request_count;
+         ++index) {
+        const rtcore_memory_unit_request_snapshot &request =
+            accepted.private_state_384_request_plan.requests[index];
+        if (!request.valid ||
+            request.owner_hw_sid != context->owner_hw_sid) {
+            return node_timing::kRouteSinkRejected;
+        }
+        requests.push_back(request);
+    }
 
     rtcore_v04_live_target_engine_for(context->owner_hw_sid) =
         staged_target;
@@ -19429,6 +19556,7 @@ rtcore_accept_v04_direct_selected_fetch_route(
            "producer_operation_seq=%u target_operation_seq=%u "
            "target_kind=%u reservation_id=%llu slot_generation=%u "
            "raw_requests=%u private_requests=%u "
+           "private_storage_profile=%s "
            "route_retained_until_accept=1 legacy_authority=0 "
            "service_cycle=%llu\n",
            route->result_identity.owner.owner_hw_sid,
@@ -19442,7 +19570,15 @@ rtcore_accept_v04_direct_selected_fetch_route(
            (unsigned long long)accepted.reservation.reservation_id,
            accepted.reservation.slot_generation,
            raw_request_plan.request_count,
-           accepted.private_request_plan.request_count,
+           accepted.private_storage_profile ==
+                   rtcore::v04::private_storage::
+                       kProfileCompressedShared384
+               ? accepted.private_state_384_request_plan.request_count
+               : accepted.private_request_plan.request_count,
+           rtcore::v04::private_storage::profile_name(
+               static_cast<
+                   rtcore::v04::private_storage::profile_kind>(
+                   accepted.private_storage_profile)),
            context->service_cycle);
     fflush(stdout);
     return node_timing::kRouteSinkAccepted;
@@ -20145,11 +20281,29 @@ static bool rtcore_service_v04_live_short_stack_timing(
             input.reservation_cycle = service_cycle;
             input.pending_parent_resume_valid =
                 ready.transition.pending_parent_resume_valid;
+            uint8_t resident_private_storage_profile = 0;
+            if (!rtcore_v04_private_storage_profile_for_owner(
+                    ready.owner,
+                    &resident_private_storage_profile)) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                        "owner_hw_sid=%u lane_id=%u service_cycle=%llu "
+                        "fault=private_storage_profile_missing\n",
+                        owner_hw_sid, ready.owner.lane_id,
+                        service_cycle);
+                fflush(stderr);
+                abort();
+            }
+            input.private_storage_profile =
+                resident_private_storage_profile;
             selected_transition::accepted_transition_v0 accepted = {};
             const selected_transition::status_kind transition_status =
                 selected_transition::try_accept_direct(
                     &ready_timing, &staged_target,
-                    staged_backing, input, &accepted);
+                    staged_backing,
+                    rtcore_v04_private_state_384_backing_for(
+                        owner_hw_sid),
+                    input, &accepted);
             if (transition_status ==
                 selected_transition::kStatusTargetBackpressure) {
                 successor_backpressured = true;
@@ -20207,6 +20361,23 @@ static bool rtcore_service_v04_live_short_stack_timing(
                         accepted.private_request_plan
                             .requests[index]);
                 }
+                for (unsigned index = 0;
+                     index <
+                         accepted.private_state_384_request_plan
+                             .request_count;
+                     ++index) {
+                    if (!accepted.private_state_384_request_plan
+                             .requests[index]
+                             .valid ||
+                        accepted.private_state_384_request_plan
+                                .requests[index]
+                                .owner_hw_sid != owner_hw_sid) {
+                        abort();
+                    }
+                    requests.push_back(
+                        accepted.private_state_384_request_plan
+                            .requests[index]);
+                }
                 if (short_timing::consume_ready_result(
                         &ready_short, ready) !=
                     short_timing::kStatusOk) {
@@ -20226,6 +20397,7 @@ static bool rtcore_service_v04_live_short_stack_timing(
                        "lane_id=%u short_operation_seq=%u "
                        "target_operation_seq=%u target_kind=%u "
                        "raw_requests=%u private_requests=%u "
+                       "private_storage_profile=%s "
                        "replay_anchor_valid=%u "
                        "parent_resume_valid=%u service_cycle=%llu\n",
                        owner_hw_sid, ready.owner.resident_warp_id,
@@ -20233,7 +20405,16 @@ static bool rtcore_service_v04_live_short_stack_timing(
                        accepted.target_operation_seq,
                        accepted.target_kind,
                        raw_request_plan.request_count,
-                       accepted.private_request_plan.request_count,
+                       accepted.private_storage_profile ==
+                               rtcore::v04::private_storage::
+                                   kProfileCompressedShared384
+                           ? accepted.private_state_384_request_plan
+                                 .request_count
+                           : accepted.private_request_plan.request_count,
+                       rtcore::v04::private_storage::profile_name(
+                           static_cast<
+                               rtcore::v04::private_storage::profile_kind>(
+                               accepted.private_storage_profile)),
                        ready.transition.replay_cursor.anchor_valid,
                        ready.transition.pending_parent_resume_valid,
                        service_cycle);

@@ -1,6 +1,7 @@
 #include "rtcore_v04_private_state_384_live_bridge.h"
 
 #include <cstring>
+#include <limits>
 
 namespace rtcore {
 namespace v04 {
@@ -120,7 +121,6 @@ bool request_shape_valid(
           RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ ||
       request.is_write || request.byte_mask != backing::kFullChunkByteMask ||
       transport.valid != 1 ||
-      transport.reserved_zero != 0 ||
       transport.operation_sequence == 0 ||
       transport.storage_profile !=
           private_storage::kProfileCompressedShared384 ||
@@ -131,8 +131,10 @@ bool request_shape_valid(
       transport.read_index >= transport.read_count ||
       request.chunk_id != transport.read_index ||
       request.chunk_count != transport.read_count ||
+      transport.memory_op_seq_base == 0 ||
       request.memory_op_seq !=
-          static_cast<unsigned>(transport.read_index) + 1u) {
+          static_cast<unsigned>(transport.memory_op_seq_base) +
+              transport.read_index) {
     return false;
   }
   const operand_plan::chunk_read_v1 &read =
@@ -182,6 +184,12 @@ status_kind prepare_read_requests(const read_input_v1 &input,
   if (!destination_valid(input.destination)) {
     return kStatusInvalidDestination;
   }
+  if (input.memory_op_seq_base == 0 ||
+      static_cast<unsigned>(input.memory_op_seq_base) +
+              operand_materializer::kMaxOperationReadChunks - 1u >
+          std::numeric_limits<uint8_t>::max()) {
+    return kStatusInvalidOperation;
+  }
   operand_plan::read_request_v1 request = {};
   request.private_layout_profile_id = kPrivateLayoutProfileId;
   request.consumer = input.consumer;
@@ -222,7 +230,8 @@ status_kind prepare_read_requests(const read_input_v1 &input,
     memory.resident_warp_id = input.owner.resident_warp_id;
     memory.request_generation = input.owner.generation;
     memory.private_slot_id = input.owner.private_slot_id;
-    memory.memory_op_seq = static_cast<unsigned>(index) + 1u;
+    memory.memory_op_seq =
+        static_cast<unsigned>(input.memory_op_seq_base) + index;
     memory.chunk_id = index;
     memory.chunk_count = prepared.operand_plan.read_count;
     memory.access_kind =
@@ -245,6 +254,7 @@ status_kind prepare_read_requests(const read_input_v1 &input,
     transport.read_count = prepared.operand_plan.read_count;
     transport.storage_profile = input.storage_profile;
     transport.valid = 1;
+    transport.memory_op_seq_base = input.memory_op_seq_base;
     operand_plan::read_plan_v1 checked_plan = {};
     operand_materializer::operation_identity_v1 checked_identity = {};
     if (!request_shape_valid(memory, &checked_plan, &checked_identity) ||

@@ -2402,6 +2402,55 @@ status_kind peek_ready_reservation(
   return kStatusInvalidArgument;
 }
 
+template <typename Slot>
+status_kind find_private_state_384_reservation_in_queue(
+    const Slot *slots, uint8_t capacity,
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    reservation_receipt_v0 *reservation) {
+  int match = -1;
+  for (uint8_t index = 0; index < capacity; ++index) {
+    const slot_metadata_v0 &metadata = slots[index].metadata;
+    if (metadata.state == kSlotFree ||
+        metadata.private_storage_profile !=
+            private_storage::kProfileCompressedShared384 ||
+        !operation_key_matches_metadata(key, metadata)) {
+      continue;
+    }
+    if (match >= 0) return kStatusPrivate384PlanMismatch;
+    match = index;
+  }
+  if (match < 0) return kStatusUnknownReservation;
+  build_receipt(slots[match].metadata, static_cast<uint8_t>(match),
+                reservation);
+  return kStatusOk;
+}
+
+status_kind find_private_state_384_reservation(
+    const engine_state_v0 &state,
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    reservation_receipt_v0 *reservation) {
+  if (reservation == NULL || state.initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  *reservation = reservation_receipt_v0();
+  switch (key.consumer) {
+    case private_state_384::operand_plan::kConsumerNode:
+      return find_private_state_384_reservation_in_queue(
+          state.node_slots, state.config.node_capacity, key,
+          reservation);
+    case private_state_384::operand_plan::kConsumerPrimitive:
+      return find_private_state_384_reservation_in_queue(
+          state.primitive_slots, state.config.primitive_capacity, key,
+          reservation);
+    case private_state_384::operand_plan::kConsumerInstance:
+      return find_private_state_384_reservation_in_queue(
+          state.instance_slots, state.config.instance_capacity, key,
+          reservation);
+    default:
+      return kStatusInvalidArgument;
+  }
+}
+
 uint8_t active_slot_count(const engine_state_v0 &state, target_kind target) {
   if (state.initialized != 1) return 0;
   switch (target) {

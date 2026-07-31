@@ -468,6 +468,11 @@ status_kind peek_ready_reservation(
     const reservation_receipt_v0 &reservation,
     operation_packet_v0 *packet);
 
+status_kind find_private_state_384_reservation(
+    const engine_state_v0 &state,
+    const private_state_384::live_bridge::live_operation_key_v1 &key,
+    reservation_receipt_v0 *reservation);
+
 uint8_t active_slot_count(const engine_state_v0 &state, target_kind target);
 uint8_t ready_slot_count(const engine_state_v0 &state, target_kind target);
 
