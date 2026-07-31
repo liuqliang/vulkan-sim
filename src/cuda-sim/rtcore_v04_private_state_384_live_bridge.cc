@@ -359,12 +359,65 @@ status_kind stage_sparse_commit(
           ? 0xffffu
           : (uint16_t{1} << input.expected_write_ack_count) - 1u);
   pending->producer = input.producer;
+  pending->expected_write_ack_count =
+      static_cast<uint8_t>(input.expected_write_ack_count);
   pending->valid = 1;
+  return kStatusOk;
+}
+
+status_kind register_modeled_write(
+    const private_shared::shared_write_v0 &write,
+    pending_sparse_commit_v1 *pending) {
+  if (pending == NULL || pending->valid != 1 ||
+      pending->committed != 0 || !operation_key_valid(pending->key) ||
+      !write.valid ||
+      !bytes_are_zero(write.reserved_zero,
+                      sizeof(write.reserved_zero)) ||
+      write.reserved_zero1 != 0 ||
+      write.address_space != private_shared::kAddressSpaceShared ||
+      write.address_mode != private_shared::kAddressModePrivateField ||
+      write.access_operation != private_shared::kAccessOperationWrite ||
+      write.destination != private_shared::kDestinationPrivateCommitAck ||
+      !bridge_owners_equal(
+          write.owner, make_owner(pending->key.identity)) ||
+      write.operation_seq !=
+          pending->key.identity.operation_sequence ||
+      write.commit_epoch != pending->commit_epoch ||
+      write.memory_op_seq == 0 || write.memory_op_seq > 16 ||
+      write.chunk_count != pending->expected_write_ack_count ||
+      write.chunk_id >= write.chunk_count ||
+      write.memory_op_seq != static_cast<uint32_t>(write.chunk_id) + 1u ||
+      write.field_kind == 0 || write.aligned_32b_address == 0 ||
+      (write.aligned_32b_address % kChunkBytes) != 0 ||
+      write.byte_mask == 0) {
+    return kStatusInvalidCommit;
+  }
+  const uint16_t write_bit = static_cast<uint16_t>(
+      uint16_t{1} << (write.memory_op_seq - 1u));
+  if ((pending->expected_ack_mask & write_bit) == 0 ||
+      (pending->registered_ack_mask & write_bit) != 0) {
+    return kStatusInvalidCommit;
+  }
+  pending_sparse_commit_v1::expected_write_ack_v1 &expected =
+      pending->expected_writes[write.memory_op_seq - 1u];
+  expected.aligned_32b_address = write.aligned_32b_address;
+  expected.byte_mask = write.byte_mask;
+  expected.memory_operation_seq =
+      static_cast<uint16_t>(write.memory_op_seq);
+  expected.chunk_id = write.chunk_id;
+  expected.chunk_count = write.chunk_count;
+  expected.field_kind = write.field_kind;
+  expected.valid = 1;
+  std::memcpy(expected.payload, write.payload,
+              sizeof(expected.payload));
+  pending->registered_ack_mask = static_cast<uint16_t>(
+      pending->registered_ack_mask | write_bit);
   return kStatusOk;
 }
 
 status_kind accept_write_ack_and_maybe_commit(
     backing::state_v1 *state,
+    const private_shared::shared_write_v0 &write,
     const private_shared::runtime_write_ack_v0 &ack,
     pending_sparse_commit_v1 *pending, bool *canonical_committed) {
   if (state == NULL || pending == NULL || canonical_committed == NULL) {
@@ -376,6 +429,8 @@ status_kind accept_write_ack_and_maybe_commit(
       pending->producer == operand_plan::kProducerInvalid ||
       pending->commit_epoch == 0 ||
       pending->expected_ack_mask == 0 ||
+      (pending->registered_ack_mask &
+       ~pending->expected_ack_mask) != 0 ||
       (pending->acknowledged_ack_mask &
        ~pending->expected_ack_mask) != 0) {
     return kStatusInvalidCommit;
@@ -394,17 +449,44 @@ status_kind accept_write_ack_and_maybe_commit(
   }
   const uint16_t ack_bit = static_cast<uint16_t>(
       uint16_t{1} << (ack.memory_operation_seq - 1u));
-  if ((pending->expected_ack_mask & ack_bit) == 0) {
+  if ((pending->expected_ack_mask & ack_bit) == 0 ||
+      (pending->registered_ack_mask & ack_bit) == 0) {
     return kStatusInvalidWriteAck;
   }
   if ((pending->acknowledged_ack_mask & ack_bit) != 0) {
     return kStatusDuplicateWriteAck;
+  }
+  const pending_sparse_commit_v1::expected_write_ack_v1 &expected =
+      pending->expected_writes[ack.memory_operation_seq - 1u];
+  if (expected.valid != 1 ||
+      expected.memory_operation_seq != ack.memory_operation_seq ||
+      expected.field_kind != ack.field_kind ||
+      !write.valid ||
+      write.address_space != private_shared::kAddressSpaceShared ||
+      write.address_mode != private_shared::kAddressModePrivateField ||
+      write.access_operation != private_shared::kAccessOperationWrite ||
+      write.destination != private_shared::kDestinationPrivateCommitAck ||
+      !bridge_owners_equal(write.owner, ack.owner) ||
+      write.operation_seq != ack.operation_seq ||
+      write.commit_epoch != ack.commit_epoch ||
+      write.memory_op_seq != ack.memory_operation_seq ||
+      write.chunk_id != expected.chunk_id ||
+      write.chunk_count != expected.chunk_count ||
+      write.field_kind != ack.field_kind ||
+      write.aligned_32b_address != expected.aligned_32b_address ||
+      write.byte_mask != expected.byte_mask ||
+      std::memcmp(write.payload, expected.payload,
+                  sizeof(expected.payload)) != 0) {
+    return kStatusInvalidWriteAck;
   }
   pending->acknowledged_ack_mask = static_cast<uint16_t>(
       pending->acknowledged_ack_mask | ack_bit);
   if (pending->acknowledged_ack_mask !=
       pending->expected_ack_mask) {
     return kStatusOk;
+  }
+  if (pending->registered_ack_mask != pending->expected_ack_mask) {
+    return kStatusInvalidCommit;
   }
 
   operand_plan::chunk_delta_v1 deltas[kChunkCount] = {};

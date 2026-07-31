@@ -81,15 +81,29 @@ struct write_commit_input_v1 {
 };
 
 struct pending_sparse_commit_v1 {
+  struct expected_write_ack_v1 {
+    uint64_t aligned_32b_address;
+    uint32_t byte_mask;
+    uint16_t memory_operation_seq;
+    uint8_t chunk_id;
+    uint8_t chunk_count;
+    uint8_t field_kind;
+    uint8_t valid;
+    uint8_t payload[kChunkBytes];
+  };
+
   live_operation_key_v1 key;
   operand_plan::unit_sparse_write_plan_v1 merged_write_plan;
   uint32_t commit_epoch;
   uint16_t expected_ack_mask;
+  uint16_t registered_ack_mask;
   uint16_t acknowledged_ack_mask;
   uint8_t producer;
+  uint8_t expected_write_ack_count;
   uint8_t valid;
   uint8_t committed;
-  uint8_t reserved_zero;
+  uint8_t reserved_zero[2];
+  expected_write_ack_v1 expected_writes[16];
 };
 
 status_kind prepare_read_requests(const read_input_v1 &input,
@@ -109,8 +123,13 @@ status_kind stage_sparse_commit(
     const operand_plan::chunk_delta_v1 *deltas, size_t delta_count,
     pending_sparse_commit_v1 *pending);
 
+status_kind register_modeled_write(
+    const private_shared::shared_write_v0 &write,
+    pending_sparse_commit_v1 *pending);
+
 status_kind accept_write_ack_and_maybe_commit(
     backing::state_v1 *state,
+    const private_shared::shared_write_v0 &write,
     const private_shared::runtime_write_ack_v0 &ack,
     pending_sparse_commit_v1 *pending, bool *canonical_committed);
 
