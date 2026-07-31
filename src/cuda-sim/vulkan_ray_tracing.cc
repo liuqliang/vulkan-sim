@@ -20231,8 +20231,53 @@ static bool rtcore_service_v04_live_short_stack_timing(
     bool successor_accepted = false;
     bool terminal_accepted = false;
     bool successor_backpressured = false;
+    bool private_state_384_followup_issued = false;
     bool return_reads_issued = false;
     std::deque<rtcore_memory_unit_request_snapshot> requests;
+    short_timing::request_plan_v0 private_state_384_followup = {};
+    const short_timing::status_kind private_followup_status =
+        short_timing::take_private_state_384_followup_read_plan(
+            &staged_short, &staged_timing, service_cycle,
+            &private_state_384_followup);
+    if (private_followup_status != short_timing::kStatusOk &&
+        private_followup_status !=
+            short_timing::kStatusNoFollowupRead) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                "owner_hw_sid=%u service_cycle=%llu "
+                "phase=private_state_384_followup fault=%s\n",
+                owner_hw_sid, service_cycle,
+                short_timing::status_name(
+                    private_followup_status));
+        fflush(stderr);
+        abort();
+    }
+    if (private_followup_status == short_timing::kStatusOk) {
+        if (!private_state_384_followup.valid ||
+            private_state_384_followup.request_count == 0 ||
+            private_state_384_followup.request_count > 2) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "phase=private_state_384_followup "
+                    "fault=malformed_request_plan\n",
+                    owner_hw_sid, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        for (unsigned index = 0;
+             index < private_state_384_followup.request_count;
+             ++index) {
+            if (!private_state_384_followup.requests[index].valid ||
+                private_state_384_followup.requests[index]
+                        .owner_hw_sid != owner_hw_sid) {
+                abort();
+            }
+            requests.push_back(
+                private_state_384_followup.requests[index]);
+        }
+        private_state_384_followup_issued = true;
+    }
     short_timing::request_plan_v0 return_reads = {};
     const short_timing::status_kind return_status =
         short_timing::take_return_instance_read_plan(
@@ -20480,18 +20525,51 @@ static bool rtcore_service_v04_live_short_stack_timing(
             }
         } else if (ready.transition.terminal != 0 &&
                    ready.transition.selected_valid == 0) {
-            const rtcore::v04::private_shared::lane_slot_state_v0 *lane =
-                rtcore::v04::private_shared::find_live_lane(
-                    staged_backing, ready.owner);
             private_frontier::committed_hit_projection_v0 committed_hit = {};
-            if (lane == NULL ||
-                private_frontier::decode_committed_hit(
-                    lane->canonical_slot, ready.owner,
-                    &committed_hit) != private_frontier::kStatusOk) {
+            if (ready.private_storage_profile ==
+                rtcore::v04::private_storage::
+                    kProfileCompressedShared384) {
+                if (ready.terminal_committed_hit_valid != 1) {
+                    fprintf(
+                        stderr,
+                        "GPGPU-Sim "
+                        "RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=compressed_terminal_hit_missing\n",
+                        owner_hw_sid, service_cycle);
+                    fflush(stderr);
+                    abort();
+                }
+                committed_hit = ready.terminal_committed_hit;
+            } else {
+                const rtcore::v04::private_shared::lane_slot_state_v0
+                    *lane =
+                        rtcore::v04::private_shared::find_live_lane(
+                            staged_backing, ready.owner);
+                if (lane == NULL ||
+                    private_frontier::decode_committed_hit(
+                        lane->canonical_slot, ready.owner,
+                        &committed_hit) !=
+                        private_frontier::kStatusOk) {
+                    fprintf(
+                        stderr,
+                        "GPGPU-Sim "
+                        "RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=terminal_hit_decode_rejected\n",
+                        owner_hw_sid, service_cycle);
+                    fflush(stderr);
+                    abort();
+                }
+            }
+            if (ready.private_storage_profile !=
+                    rtcore::v04::private_storage::
+                        kProfileCompressedShared384 &&
+                ready.terminal_committed_hit_valid != 0) {
                 fprintf(stderr,
                         "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
                         "owner_hw_sid=%u service_cycle=%llu "
-                        "fault=terminal_hit_decode_rejected\n",
+                        "fault=legacy_terminal_typed_hit_present\n",
                         owner_hw_sid, service_cycle);
                 fflush(stderr);
                 abort();
@@ -20555,12 +20633,14 @@ static bool rtcore_service_v04_live_short_stack_timing(
     }
     if (memory_progressed != NULL) {
         *memory_progressed =
-            successor_accepted || return_reads_issued;
+            successor_accepted || return_reads_issued ||
+            private_state_384_followup_issued;
     }
     if (cycle_result.issued != 0 ||
         cycle_result.transition_committed != 0 ||
         cycle_result.parent_lookup_completed != 0 ||
         cycle_result.return_instance_requested != 0 ||
+        private_state_384_followup_issued ||
         return_reads_issued ||
         successor_accepted || terminal_accepted ||
         successor_backpressured) {
@@ -20568,6 +20648,7 @@ static bool rtcore_service_v04_live_short_stack_timing(
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
                "transition_committed=%u parent_lookup_completed=%u "
                "return_instance_requested=%u "
+               "private_state_384_followup_issued=%u "
                "return_reads_issued=%u "
                "successor_accepted=%u "
                "successor_backpressured=%u terminal_accepted=%u "
@@ -20576,6 +20657,7 @@ static bool rtcore_service_v04_live_short_stack_timing(
                cycle_result.transition_committed,
                cycle_result.parent_lookup_completed,
                cycle_result.return_instance_requested,
+               private_state_384_followup_issued ? 1u : 0u,
                return_reads_issued ? 1u : 0u,
                successor_accepted ? 1u : 0u,
                successor_backpressured ? 1u : 0u,
@@ -20588,6 +20670,7 @@ static bool rtcore_service_v04_live_short_stack_timing(
            cycle_result.transition_committed != 0 ||
            cycle_result.parent_lookup_completed != 0 ||
            cycle_result.return_instance_requested != 0 ||
+           private_state_384_followup_issued ||
            return_reads_issued ||
            successor_accepted || terminal_accepted;
 }

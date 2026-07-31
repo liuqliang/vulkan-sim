@@ -83,6 +83,8 @@ struct response_collector_v1 {
 struct materialize_context_v1 {
   uint32_t bvh_format_profile_id;
   uint32_t reserved_zero;
+  uint8_t recovery_target_inflight;
+  uint8_t reserved_zero1[3];
 };
 
 struct node_operands_v1 {
@@ -140,6 +142,8 @@ struct stack_operands_v1 {
   float effective_traversal_bound;
   uint32_t tlas_build_generation;
   uint32_t blas_build_generation;
+  uint8_t committed_valid;
+  uint8_t reserved_zero[3];
 };
 
 struct stack_terminal_operands_v1 {
@@ -173,6 +177,11 @@ status_kind accept_response(const chunk_response_v1 &response,
                             response_collector_v1 *collector);
 
 bool responses_complete(const response_collector_v1 &collector);
+
+status_kind promote_stack_collector(
+    const response_collector_v1 &base_collector,
+    uint8_t selected_operation,
+    response_collector_v1 *selected_collector);
 
 status_kind materialize_node(
     const response_collector_v1 &collector,

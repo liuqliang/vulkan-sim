@@ -68,6 +68,7 @@ struct resume_operands_input_v1 {
   short_stack_shared::persistent_state_v0 persistent_state;
   private_frontier::mutable_ray_state_v0 parent_ray;
   typed_blas::as_decode_context_v0 parent_decode_context;
+  private_frontier::instance_shader_projection_v0 parent_instance;
   typed_blas::as_decode_context_v0 active_decode_context;
   short_stack::parent_edge_v0 parent_edge;
   uint8_t parent_restore_valid;

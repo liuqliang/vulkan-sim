@@ -45,7 +45,8 @@ bool make_stack_sparse_deltas(
   }
   private_state_384::stack_sparse_projection_v1 projection = {};
   if (private_state_384::encode_stack_sparse_projection(
-          persistent.stack, &projection) !=
+          persistent.stack, &projection,
+          persistent.recovery_target_inflight) !=
       private_state_384::kStatusOk) {
     return false;
   }
@@ -202,6 +203,113 @@ bool make_instance_enter_sparse_deltas(
   return true;
 }
 
+bool make_cross_as_return_sparse_deltas(
+    const operation_entry_v0 &entry,
+    private_state_384::live_bridge::sparse_chunk_delta_v1
+        deltas[private_state_384::kChunkCount],
+    uint8_t *delta_count) {
+  if (deltas == NULL || delta_count == NULL ||
+      entry.private_state_384_cross_as_operands_valid != 1 ||
+      entry.return_instance_projection_valid != 1 ||
+      entry.input.operation_kind != kOperationResumeTransition ||
+      !short_stack_shared::validate_persistent_state(
+          entry.transition.persistent_state) ||
+      entry.transition.persistent_state.stack.active_domain !=
+          short_stack::kDomainTlas ||
+      entry.transition.persistent_state.blas_build_generation != 0) {
+    return false;
+  }
+  private_state_384::state_v1 state = {};
+  copy_codec_ray(
+      entry.private_state_384_cross_as_operands.parent.ray,
+      &state.ray);
+  const uint8_t cull_mask =
+      entry.private_state_384_cross_as_operands
+          .parent.ray_policy.cull_mask;
+  if (!copy_codec_as(
+          entry.private_state_384_cross_as_operands
+              .parent.tlas_decode_context,
+          cull_mask, &state.active_as)) {
+    return false;
+  }
+  state.current_instance.instance_metadata_ref =
+      entry.return_instance_projection.instance_metadata_ref;
+  state.current_instance.instance_index =
+      entry.return_instance_projection.instance_index;
+  state.current_instance.instance_custom_index =
+      entry.return_instance_projection.instance_custom_index;
+  state.current_instance.instance_sbt_contribution =
+      entry.return_instance_projection
+          .instance_sbt_contribution;
+  state.current_instance.instance_policy_flags =
+      entry.return_instance_projection.instance_policy_flags;
+  state.ray_flags =
+      entry.private_state_384_cross_as_operands
+          .base.ray_policy.ray_flags;
+  state.tlas_build_generation =
+      entry.transition.persistent_state.tlas_build_generation;
+  state.blas_build_generation = 0;
+  state.stack = entry.transition.persistent_state.stack;
+  private_state_384::control_tags_v1 control = {};
+  control.recovery_target_inflight =
+      entry.transition.persistent_state.recovery_target_inflight;
+  private_state_384::image_v1 image = {};
+  if (private_state_384::encode_image(
+          private_state_384::kPrivateLayoutProfileId,
+          private_state_384::kGenRtBvhFormatProfileId,
+          state, control, &image) !=
+      private_state_384::kStatusOk) {
+    return false;
+  }
+  std::memset(
+      deltas, 0,
+      sizeof(*deltas) * private_state_384::kChunkCount);
+  static const uint8_t chunks[] = {0, 1, 3, 4, 5, 6, 7};
+  static const uint32_t masks[] = {
+      0xffffffffu, 0xffffffffu, 0xff000000u,
+      0x0ff00fffu, 0xffffffffu, 0xffffffffu,
+      0xffffffffu};
+  static const uint8_t kCrossAsReturnDeltaCount = 7;
+  for (uint8_t index = 0; index < kCrossAsReturnDeltaCount;
+       ++index) {
+    copy_sparse_chunk(
+        chunks[index], masks[index], image, &deltas[index]);
+  }
+  *delta_count = kCrossAsReturnDeltaCount;
+  return true;
+}
+
+bool make_return_instance_projection(
+    const typed_instance::boundary_result_v0 &decoded,
+    const typed_blas::as_decode_context_v0 &tlas,
+    const short_stack::entry_v0 &return_entry,
+    private_frontier::instance_shader_projection_v0 *projection) {
+  if (projection == NULL ||
+      decoded.status != typed_instance::kStatusOk ||
+      tlas.as_object.as_type != typed_instance::kAsTypeTlas ||
+      return_entry.payload_offset >
+          tlas.device_range_bytes ||
+      return_entry.payload_byte_count !=
+          fetch_target::kInstanceRawPayloadBytes ||
+      return_entry.payload_offset >
+          tlas.device_range_bytes -
+              fetch_target::kInstanceRawPayloadBytes) {
+    return false;
+  }
+  *projection =
+      private_frontier::instance_shader_projection_v0();
+  projection->instance_metadata_ref =
+      tlas.device_base + return_entry.payload_offset;
+  projection->instance_index = decoded.instance_index;
+  projection->instance_custom_index =
+      decoded.instance_custom_index;
+  projection->instance_sbt_contribution =
+      decoded.instance_sbt_contribution;
+  projection->instance_policy_flags =
+      decoded.instance_flags;
+  return true;
+}
+
 uint64_t private_slot_base(
     const private_frontier::owner_binding_v0 &owner) {
   return UINT64_C(0xff00000000000000) +
@@ -311,7 +419,11 @@ bool request_matches_entry(
           RTCORE_MEMORY_ACCESS_SHORT_STACK_RETURN_INSTANCE_READ &&
       request.chunk_count == kReturnInstanceReadChunkCount &&
       request.memory_op_seq ==
-          kReadChunkCount + request.chunk_id + 1;
+          (entry.input.private_storage_profile ==
+                   private_storage::kProfileCompressedShared384
+               ? entry.reservation.read_chunk_count
+               : kReadChunkCount) +
+              request.chunk_id + 1;
   return entry.valid != 0 && (state_read || return_instance_read) &&
          request.valid &&
          request.address_space ==
@@ -417,17 +529,30 @@ status_kind begin_transition_commit(
     const bool instance_enter =
         entry->input.operation_kind ==
         kOperationEnterBlasTransition;
+    const bool cross_as_return =
+        entry->input.operation_kind ==
+            kOperationResumeTransition &&
+        entry->private_state_384_cross_as_operands_valid == 1;
     input.producer =
         instance_enter
             ? private_state_384::operand_plan::
                   kProducerInstanceEnter
-            : private_state_384::operand_plan::kProducerStack;
-    if (!(instance_enter
-              ? make_instance_enter_sparse_deltas(
-                    *entry, deltas, &delta_count)
-              : make_stack_sparse_deltas(
-                    entry->transition.persistent_state, deltas,
-                    &delta_count)) ||
+            : cross_as_return
+                  ? private_state_384::operand_plan::
+                        kProducerStackCrossAsReturn
+                  : private_state_384::operand_plan::
+                        kProducerStack;
+    const bool deltas_valid =
+        instance_enter
+            ? make_instance_enter_sparse_deltas(
+                  *entry, deltas, &delta_count)
+            : cross_as_return
+                  ? make_cross_as_return_sparse_deltas(
+                        *entry, deltas, &delta_count)
+                  : make_stack_sparse_deltas(
+                        entry->transition.persistent_state, deltas,
+                        &delta_count);
+    if (!deltas_valid ||
         private_state_384::live_bridge::stage_sparse_commit(
             input, deltas, delta_count,
             &entry->private_state_384_commit) !=
@@ -1091,9 +1216,28 @@ status_kind accept_read_response(
         return kStatusReturnInstanceRejected;
       }
       decode_input.raw_instance = raw_instance;
-      if (typed_instance::execute(decode_input).status !=
-          typed_instance::kStatusOk) {
+      const typed_instance::boundary_result_v0 decoded =
+          typed_instance::execute(decode_input);
+      if (decoded.status != typed_instance::kStatusOk) {
         return kStatusReturnInstanceRejected;
+      }
+      if (entry.input.private_storage_profile ==
+          private_storage::kProfileCompressedShared384) {
+        short_stack::entry_v0 return_entry = {};
+        if (entry.private_state_384_cross_as_operands_valid != 1 ||
+            !short_stack::read_logical_entry(
+                entry.private_state_384_cross_as_operands
+                    .base.stack,
+                0, &return_entry) ||
+            !make_return_instance_projection(
+                decoded,
+                entry.private_state_384_cross_as_operands
+                    .parent.tlas_decode_context,
+                return_entry,
+                &entry.return_instance_projection)) {
+          return kStatusReturnInstanceRejected;
+        }
+        entry.return_instance_projection_valid = 1;
       }
       entry.phase = kPhaseReadyToIssue;
       entry.result_ready_cycle = response_cycle;
@@ -1142,10 +1286,11 @@ status_kind accept_private_state_384_read_response(
           RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL ||
       request.v04_private_state_384_read.storage_profile !=
           private_storage::kProfileCompressedShared384 ||
-      request.v04_private_state_384_read.consumer !=
-          private_state_384::operand_plan::kConsumerStack ||
-      request.v04_private_state_384_read.operation_kind !=
-          private_state_384::operand_plan::kOperationDefault) {
+      (request.v04_private_state_384_read.consumer !=
+           private_state_384::operand_plan::kConsumerStack &&
+       request.v04_private_state_384_read.consumer !=
+           private_state_384::operand_plan::
+               kConsumerCompletionPublisher)) {
     return kStatusInvalidArgument;
   }
   int slot_index = -1;
@@ -1154,6 +1299,12 @@ status_kind accept_private_state_384_read_response(
     if (entry.valid != 0 && entry.phase == kPhaseReading &&
         entry.input.private_storage_profile ==
             private_storage::kProfileCompressedShared384 &&
+        request.v04_private_state_384_read.consumer ==
+            entry.private_state_384_collector.consumer &&
+        request.v04_private_state_384_read.operation_kind ==
+            entry.private_state_384_collector.operation &&
+        request.v04_private_state_384_read.completion_reason ==
+            entry.private_state_384_collector.completion_reason &&
         entry.reservation.operation_seq ==
             request.v04_private_state_384_read.operation_sequence &&
         entry.reservation.slot_generation ==
@@ -1196,15 +1347,75 @@ status_kind accept_private_state_384_read_response(
       entry.private_state_384_collector.received_chunk_mask;
   if (private_state_384::operand_materializer::responses_complete(
           entry.private_state_384_collector)) {
+    if (entry.private_state_384_collector.consumer ==
+        private_state_384::operand_plan::
+            kConsumerCompletionPublisher) {
+      if (private_state_384::operand_materializer::
+              materialize_final_completion(
+                  entry.private_state_384_collector,
+                  &entry.private_state_384_completion_operands) !=
+              private_state_384::operand_materializer::kStatusOk ||
+          entry.private_state_384_completion_operands
+                  .completion_reason !=
+              entry.private_state_384_completion_reason) {
+        return kStatusSharedPlanRejected;
+      }
+      entry.private_state_384_completion_operands_valid = 1;
+      entry.phase = kPhaseResultReady;
+      entry.result_ready_cycle = response_cycle;
+      *state = staged_state;
+      *timing_state = staged_timing;
+      return kStatusOk;
+    }
+    if (entry.private_state_384_collector.consumer !=
+        private_state_384::operand_plan::kConsumerStack) {
+      return kStatusSharedPlanRejected;
+    }
     private_state_384::operand_materializer::materialize_context_v1
         context = {};
     context.bvh_format_profile_id =
         private_state_384::kGenRtBvhFormatProfileId;
-    if (private_state_384::operand_materializer::
-            materialize_stack_base(
-                entry.private_state_384_collector, context,
-                &entry.private_state_384_stack_operands) !=
-        private_state_384::operand_materializer::kStatusOk) {
+    context.recovery_target_inflight =
+        entry.input.recovery_target_inflight;
+    const uint8_t selected_operation =
+        entry.private_state_384_collector.operation;
+    if (selected_operation ==
+        private_state_384::operand_plan::kOperationDefault) {
+      if (private_state_384::operand_materializer::
+              materialize_stack_base(
+                  entry.private_state_384_collector, context,
+                  &entry.private_state_384_stack_operands) !=
+          private_state_384::operand_materializer::kStatusOk) {
+        return kStatusSharedPlanRejected;
+      }
+    } else if (
+        selected_operation ==
+        private_state_384::operand_plan::kOperationStackTerminal) {
+      if (private_state_384::operand_materializer::
+              materialize_stack_terminal(
+                  entry.private_state_384_collector, context,
+                  &entry.private_state_384_terminal_operands) !=
+          private_state_384::operand_materializer::kStatusOk) {
+        return kStatusSharedPlanRejected;
+      }
+      entry.private_state_384_stack_operands =
+          entry.private_state_384_terminal_operands.base;
+      entry.private_state_384_terminal_operands_valid = 1;
+    } else if (
+        selected_operation ==
+        private_state_384::operand_plan::
+            kOperationStackCrossAsReturn) {
+      if (private_state_384::operand_materializer::
+              materialize_stack_cross_as(
+                  entry.private_state_384_collector, context,
+                  &entry.private_state_384_cross_as_operands) !=
+          private_state_384::operand_materializer::kStatusOk) {
+        return kStatusSharedPlanRejected;
+      }
+      entry.private_state_384_stack_operands =
+          entry.private_state_384_cross_as_operands.base;
+      entry.private_state_384_cross_as_operands_valid = 1;
+    } else {
       return kStatusSharedPlanRejected;
     }
     short_stack_shared::persistent_state_v0 persistent = {};
@@ -1230,9 +1441,193 @@ status_kind accept_private_state_384_read_response(
         entry.private_state_384_stack_operands
             .active_decode_context;
     entry.private_state_384_operands_valid = 1;
-    entry.phase = kPhaseReadyToIssue;
+    if (selected_operation ==
+        private_state_384::operand_plan::kOperationDefault) {
+      const bool terminal_followup =
+          entry.input.operation_kind ==
+              kOperationResumeTransition &&
+          persistent.stack.stack_count == 0;
+      const bool cross_as_followup =
+          entry.input.operation_kind ==
+              kOperationResumeTransition &&
+          persistent.stack.cross_as != 0 &&
+          persistent.stack.stack_count == 1;
+      if (terminal_followup || cross_as_followup) {
+        entry.private_state_384_selected_operation =
+            terminal_followup
+                ? private_state_384::operand_plan::
+                      kOperationStackTerminal
+                : private_state_384::operand_plan::
+                      kOperationStackCrossAsReturn;
+        entry.phase = kPhasePrivate384FollowupPlanReady;
+      } else {
+        entry.phase = kPhaseReadyToIssue;
+      }
+    } else if (
+        selected_operation ==
+        private_state_384::operand_plan::
+            kOperationStackCrossAsReturn) {
+      entry.phase = kPhaseReturnInstancePlanReady;
+    } else {
+      entry.phase = kPhaseReadyToIssue;
+    }
     entry.result_ready_cycle = response_cycle;
   }
+  *state = staged_state;
+  *timing_state = staged_timing;
+  return kStatusOk;
+}
+
+status_kind take_private_state_384_followup_read_plan(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    uint64_t issue_cycle, request_plan_v0 *requests) {
+  if (state == NULL || timing_state == NULL || requests == NULL ||
+      state->initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  *requests = request_plan_v0();
+  const int stack_followup_index = find_oldest_phase(
+      *state, kPhasePrivate384FollowupPlanReady, 0, false);
+  const int completion_followup_index = find_oldest_phase(
+      *state, kPhasePrivate384CompletionPlanReady, 0, false);
+  const bool completion_followup =
+      completion_followup_index >= 0 &&
+      (stack_followup_index < 0 ||
+       state->slots[completion_followup_index].issue_age <
+           state->slots[stack_followup_index].issue_age);
+  const int slot_index = completion_followup
+                             ? completion_followup_index
+                             : stack_followup_index;
+  if (slot_index < 0) return kStatusNoFollowupRead;
+
+  engine_state_v0 staged_state = *state;
+  timing_driver::state_v0 staged_timing = *timing_state;
+  operation_entry_v0 &entry = staged_state.slots[slot_index];
+  if (entry.input.private_storage_profile !=
+          private_storage::kProfileCompressedShared384 ||
+      entry.private_state_384_operands_valid != 1) {
+    return kStatusSharedPlanRejected;
+  }
+  if (completion_followup) {
+    const uint8_t expected_reason =
+        entry.private_state_384_stack_operands.committed_valid != 0
+            ? private_state_384::operand_plan::
+                  kCompletionReasonClosestHitReady
+            : private_state_384::operand_plan::
+                  kCompletionReasonMiss;
+    if (entry.transition.terminal != 1 ||
+        entry.transition.selected_valid != 0 ||
+        entry.commit_epoch == 0 ||
+        entry.private_state_384_completion_operands_valid != 0 ||
+        entry.private_state_384_completion_reason !=
+            expected_reason) {
+      return kStatusSharedPlanRejected;
+    }
+  } else if (
+      entry.private_state_384_selected_operation !=
+          private_state_384::operand_plan::
+              kOperationStackTerminal &&
+      entry.private_state_384_selected_operation !=
+          private_state_384::operand_plan::
+              kOperationStackCrossAsReturn) {
+    return kStatusSharedPlanRejected;
+  }
+
+  private_state_384::live_bridge::read_input_v1 read_input = {};
+  read_input.owner = entry.input.owner;
+  read_input.issue_cycle = issue_cycle;
+  read_input.operation_sequence =
+      entry.reservation.operation_seq;
+  read_input.bvh_format_profile_id =
+      private_state_384::kGenRtBvhFormatProfileId;
+  read_input.reservation_generation =
+      entry.reservation.slot_generation;
+  read_input.storage_profile =
+      private_storage::kProfileCompressedShared384;
+  read_input.consumer =
+      completion_followup
+          ? private_state_384::operand_plan::
+                kConsumerCompletionPublisher
+          : private_state_384::operand_plan::kConsumerStack;
+  if (completion_followup) {
+    read_input.operation =
+        private_state_384::operand_plan::kOperationDefault;
+    read_input.completion_reason =
+        entry.private_state_384_completion_reason;
+  } else {
+    read_input.operation =
+        entry.private_state_384_selected_operation;
+    read_input.completion_reason =
+        private_state_384::operand_plan::kCompletionReasonNone;
+  }
+  read_input.destination =
+      RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL;
+  read_input.memory_op_seq_base =
+      completion_followup ? 24 : 16;
+  private_state_384::live_bridge::read_request_plan_v1 full_plan = {};
+  private_state_384::operand_materializer::response_collector_v1
+      promoted = {};
+  if (private_state_384::live_bridge::prepare_read_requests(
+          read_input, &full_plan) !=
+      private_state_384::live_bridge::kStatusOk) {
+    return kStatusSharedPlanRejected;
+  }
+  if (completion_followup) {
+    if (private_state_384::live_bridge::initialize_collector(
+            full_plan, &promoted) !=
+        private_state_384::live_bridge::kStatusOk) {
+      return kStatusSharedPlanRejected;
+    }
+  } else if (
+      private_state_384::operand_materializer::
+          promote_stack_collector(
+              entry.private_state_384_collector,
+              entry.private_state_384_selected_operation,
+              &promoted) !=
+      private_state_384::operand_materializer::kStatusOk) {
+    return kStatusSharedPlanRejected;
+  }
+
+  request_owner::lane_binding_v0 request_binding = {};
+  if (!make_request_owner(entry.input.owner, &request_binding)) {
+    return kStatusOwnerMismatch;
+  }
+  for (uint8_t index = 0; index < full_plan.request_count; ++index) {
+    const uint8_t chunk_index =
+        full_plan.operand_plan.reads[index].chunk_index;
+    const uint16_t chunk_bit = static_cast<uint16_t>(
+        uint16_t{1} << chunk_index);
+    if (!completion_followup &&
+        (promoted.received_chunk_mask & chunk_bit) != 0) {
+      continue;
+    }
+    if (requests->request_count >= kMaxReadChunkCount ||
+        timing_driver::begin_memory_transaction(
+            &staged_timing, request_binding,
+            entry.reservation.operation_seq) !=
+            timing_driver::kStatusOk) {
+      return kStatusTimingControlRejected;
+    }
+    requests->requests[requests->request_count++] =
+        full_plan.requests[index];
+  }
+  const uint8_t expected_missing =
+      completion_followup
+          ? 2
+          : entry.private_state_384_selected_operation ==
+                    private_state_384::operand_plan::
+                        kOperationStackTerminal
+          ? 1
+          : 2;
+  if (requests->request_count != expected_missing) {
+    return kStatusSharedPlanRejected;
+  }
+  requests->valid = 1;
+  entry.private_state_384_collector = promoted;
+  entry.received_read_mask = promoted.received_chunk_mask;
+  entry.reservation.read_chunk_count =
+      full_plan.request_count;
+  entry.phase = kPhaseReading;
   *state = staged_state;
   *timing_state = staged_timing;
   return kStatusOk;
@@ -1255,11 +1650,33 @@ status_kind take_return_instance_read_plan(
   operation_entry_v0 &entry = staged_state.slots[slot_index];
   short_stack_shared::persistent_state_v0 persistent = {};
   short_stack::entry_v0 return_entry = {};
-  const typed_blas::as_decode_context_v0 &tlas =
-      entry.input.immutable_trace_input.decode_context;
-  if (short_stack_shared::decode_persistent_state(
-          entry.read_slot, entry.input.owner, &persistent) !=
-          short_stack_shared::kStatusOk ||
+  typed_blas::as_decode_context_v0 tlas = {};
+  if (entry.input.private_storage_profile ==
+      private_storage::kProfileCompressedShared384) {
+    if (entry.private_state_384_cross_as_operands_valid != 1) {
+      return kStatusSharedPlanRejected;
+    }
+    persistent.tlas_build_generation =
+        entry.private_state_384_cross_as_operands
+            .base.tlas_build_generation;
+    persistent.blas_build_generation =
+        entry.private_state_384_cross_as_operands
+            .base.blas_build_generation;
+    persistent.stack =
+        entry.private_state_384_cross_as_operands.base.stack;
+    persistent.recovery_target_inflight =
+        entry.input.recovery_target_inflight;
+    tlas = entry.private_state_384_cross_as_operands
+               .parent.tlas_decode_context;
+  } else {
+    if (short_stack_shared::decode_persistent_state(
+            entry.read_slot, entry.input.owner, &persistent) !=
+        short_stack_shared::kStatusOk) {
+      return kStatusSharedPlanRejected;
+    }
+    tlas = entry.input.immutable_trace_input.decode_context;
+  }
+  if (!short_stack_shared::validate_persistent_state(persistent) ||
       persistent.stack.cross_as == 0 ||
       persistent.stack.stack_count != 1 ||
       !short_stack::read_logical_entry(
@@ -1302,6 +1719,11 @@ status_kind take_return_instance_read_plan(
     request.private_slot_id =
         entry.input.owner.private_slot_id;
     request.memory_op_seq = kReadChunkCount + index + 1;
+    if (entry.input.private_storage_profile ==
+        private_storage::kProfileCompressedShared384) {
+      request.memory_op_seq =
+          entry.reservation.read_chunk_count + index + 1;
+    }
     request.chunk_id = index;
     request.chunk_count = kReturnInstanceReadChunkCount;
     request.access_kind =
@@ -1512,6 +1934,20 @@ status_kind service_cycle(
         transition_input.active_decode_context =
             entry.private_state_384_stack_operands
                 .active_decode_context;
+        if (entry.private_state_384_cross_as_operands_valid != 0) {
+          if (entry.return_instance_projection_valid != 1) {
+            return kStatusSharedPlanRejected;
+          }
+          transition_input.parent_ray =
+              entry.private_state_384_cross_as_operands
+                  .parent.ray;
+          transition_input.parent_decode_context =
+              entry.private_state_384_cross_as_operands
+                  .parent.tlas_decode_context;
+          transition_input.parent_instance =
+              entry.return_instance_projection;
+          transition_input.parent_restore_valid = 1;
+        }
         transition_input.parent_edge = entry.parent_edge;
         transition_input.parent_edge_valid =
             entry.parent_edge_valid;
@@ -1593,7 +2029,19 @@ status_kind service_cycle(
         short_stack_transition::kStatusReturnInstanceRequired) {
       entry.transition = transition;
       entry.input.operation_kind = kOperationResumeTransition;
-      entry.phase = kPhaseReturnInstancePlanReady;
+      if (entry.input.private_storage_profile ==
+          private_storage::kProfileCompressedShared384) {
+        if (entry.private_state_384_operands_valid != 1 ||
+            entry.private_state_384_cross_as_operands_valid != 0) {
+          return kStatusSharedPlanRejected;
+        }
+        entry.private_state_384_selected_operation =
+            private_state_384::operand_plan::
+                kOperationStackCrossAsReturn;
+        entry.phase = kPhasePrivate384FollowupPlanReady;
+      } else {
+        entry.phase = kPhaseReturnInstancePlanReady;
+      }
       entry.result_ready_cycle = service_cycle;
       ++result->return_instance_requested;
     } else if (transition_status !=
@@ -1804,7 +2252,22 @@ status_kind accept_write_ack_with_private_state_384(
             timing_driver::kStatusOk) {
       return kStatusAckRejected;
     }
-    entry.phase = kPhaseResultReady;
+    if (entry.transition.terminal != 0) {
+      if (entry.transition.selected_valid != 0 ||
+          entry.private_state_384_operands_valid != 1) {
+        return kStatusAckRejected;
+      }
+      entry.private_state_384_completion_reason =
+          entry.private_state_384_stack_operands
+                      .committed_valid != 0
+              ? private_state_384::operand_plan::
+                    kCompletionReasonClosestHitReady
+              : private_state_384::operand_plan::
+                    kCompletionReasonMiss;
+      entry.phase = kPhasePrivate384CompletionPlanReady;
+    } else {
+      entry.phase = kPhaseResultReady;
+    }
   } else if (canonical_committed) {
     return kStatusAckRejected;
   }
@@ -1836,6 +2299,16 @@ status_kind peek_ready_result(const engine_state_v0 &state,
   result->slot_index = entry.reservation.slot_index;
   result->slot_generation =
       entry.reservation.slot_generation;
+  result->private_storage_profile =
+      entry.input.private_storage_profile;
+  if (entry.input.private_storage_profile ==
+          private_storage::kProfileCompressedShared384 &&
+      entry.transition.terminal != 0 &&
+      entry.private_state_384_completion_operands_valid != 0) {
+    result->terminal_committed_hit =
+        entry.private_state_384_completion_operands.committed_hit;
+    result->terminal_committed_hit_valid = 1;
+  }
   result->valid = 1;
   return kStatusOk;
 }

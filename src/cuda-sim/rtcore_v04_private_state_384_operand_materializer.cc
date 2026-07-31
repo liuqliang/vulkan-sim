@@ -200,8 +200,12 @@ static status_kind validate_materialize_context(
   if (context.bvh_format_profile_id != kGenRtBvhFormatProfileId) {
     return kStatusUnsupportedBvhProfile;
   }
-  return context.reserved_zero == 0 ? kStatusOk
-                                    : kStatusInvalidEncoding;
+  return context.reserved_zero == 0 &&
+                 context.recovery_target_inflight <= 1 &&
+                 bytes_are_zero(context.reserved_zero1,
+                                sizeof(context.reserved_zero1))
+             ? kStatusOk
+             : kStatusInvalidEncoding;
 }
 
 static status_kind decode_ray(const uint8_t *bytes, ray_v1 *ray) {
@@ -480,9 +484,11 @@ static void decode_entry(const uint8_t *bytes,
 static status_kind decode_stack(
     const uint8_t *chunk4, const uint8_t *chunk5,
     const uint8_t *chunk6, const uint8_t *chunk7,
+    uint8_t recovery_target_inflight,
     short_stack::state_v0 *stack) {
   if (chunk4 == NULL || chunk5 == NULL || chunk6 == NULL ||
-      chunk7 == NULL || stack == NULL) {
+      chunk7 == NULL || stack == NULL ||
+      recovery_target_inflight > 1) {
     return kStatusInvalidArgument;
   }
   short_stack::state_v0 decoded = {};
@@ -511,7 +517,13 @@ static status_kind decode_stack(
     decode_entry(encoded_entries + physical * 16,
                  &decoded.entries[physical]);
   }
-  if (!short_stack::validate_state(decoded)) {
+  const bool stable =
+      recovery_target_inflight == 0 &&
+      short_stack::validate_state(decoded);
+  const bool recovery =
+      recovery_target_inflight == 1 &&
+      short_stack::validate_drained_recovery_state(decoded);
+  if (!stable && !recovery) {
     return kStatusInvalidEncoding;
   }
   *stack = decoded;
@@ -697,6 +709,7 @@ static status_kind materialize_stack_common(
   status = decode_stack(
       find_chunk(collector, 4), find_chunk(collector, 5),
       find_chunk(collector, 6), find_chunk(collector, 7),
+      context.recovery_target_inflight,
       &decoded.stack);
   if (status != kStatusOk) return status;
   const uint8_t *chunk4 = find_chunk(collector, 4);
@@ -737,6 +750,7 @@ static status_kind materialize_stack_common(
     }
   }
   decoded.effective_traversal_bound = effective_bound(ray, hot);
+  decoded.committed_valid = hot.valid;
   *operands = decoded;
   return kStatusOk;
 }
@@ -856,6 +870,65 @@ bool responses_complete(const response_collector_v1 &collector) {
          collector.received_count == collector.required_count &&
          collector.received_chunk_mask ==
              collector.required_chunk_mask;
+}
+
+status_kind promote_stack_collector(
+    const response_collector_v1 &base_collector,
+    uint8_t selected_operation,
+    response_collector_v1 *selected_collector) {
+  if (selected_collector == NULL) return kStatusInvalidArgument;
+  *selected_collector = response_collector_v1();
+  if (selected_operation !=
+          operand_plan::kOperationStackTerminal &&
+      selected_operation !=
+          operand_plan::kOperationStackCrossAsReturn) {
+    return kStatusInvalidConsumerOperation;
+  }
+  status_kind status = require_collector(
+      base_collector, operand_plan::kConsumerStack,
+      operand_plan::kOperationDefault,
+      operand_plan::kCompletionReasonNone);
+  if (status != kStatusOk) return status;
+
+  operand_plan::read_request_v1 request = {};
+  request.private_layout_profile_id =
+      base_collector.private_layout_profile_id;
+  request.consumer = operand_plan::kConsumerStack;
+  request.operation = selected_operation;
+  request.completion_reason =
+      operand_plan::kCompletionReasonNone;
+  operand_plan::read_plan_v1 plan = {};
+  if (operand_plan::make_read_plan(request, &plan) !=
+      operand_plan::kStatusOk) {
+    return kStatusInvalidPlan;
+  }
+  response_collector_v1 promoted = {};
+  status = initialize_collector(
+      plan, base_collector.identity, &promoted);
+  if (status != kStatusOk) return status;
+
+  for (uint8_t index = 0;
+       index < base_collector.received_count; ++index) {
+    const collected_chunk_v1 &source =
+        base_collector.chunks[index];
+    chunk_response_v1 response = {};
+    response.identity = base_collector.identity;
+    response.private_layout_profile_id =
+        base_collector.private_layout_profile_id;
+    response.consumer = operand_plan::kConsumerStack;
+    response.operation = selected_operation;
+    response.completion_reason =
+        operand_plan::kCompletionReasonNone;
+    response.chunk_index = source.chunk_index;
+    response.slot_byte_offset = static_cast<uint16_t>(
+        source.chunk_index * kChunkBytes);
+    response.byte_count = kChunkBytes;
+    std::memcpy(response.payload, source.payload, kChunkBytes);
+    status = accept_response(response, &promoted);
+    if (status != kStatusOk) return status;
+  }
+  *selected_collector = promoted;
+  return kStatusOk;
 }
 
 status_kind materialize_node(

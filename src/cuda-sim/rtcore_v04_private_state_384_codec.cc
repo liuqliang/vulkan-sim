@@ -91,7 +91,8 @@ static status_kind validate_control(const control_tags_v1 &control) {
       control.union_arm > kUnionArmTransition ||
       control.boundary_reason > kBoundaryReasonProceduralIntersection ||
       control.pending_parent_resume_valid > 1 ||
-      control.parent_restore_valid > 1) {
+      control.parent_restore_valid > 1 ||
+      control.recovery_target_inflight > 1) {
     return kStatusInvalidControl;
   }
   if (control.union_arm == kUnionArmBoundary) {
@@ -339,7 +340,13 @@ static void decode_entry(const uint8_t *bytes,
 
 static status_kind validate_stack(const state_v1 &state,
                                   const control_tags_v1 &control) {
-  if (!short_stack::validate_state(state.stack)) {
+  const bool stable =
+      control.recovery_target_inflight == 0 &&
+      short_stack::validate_state(state.stack);
+  const bool recovery_target_inflight =
+      control.recovery_target_inflight == 1 &&
+      short_stack::validate_drained_recovery_state(state.stack);
+  if (!stable && !recovery_target_inflight) {
     return kStatusInvalidStack;
   }
   for (uint8_t logical = 0; logical < state.stack.stack_count;
@@ -847,10 +854,19 @@ status_kind initialize_new_launch_image(
 
 status_kind encode_stack_sparse_projection(
     const short_stack::state_v0 &stack,
-    stack_sparse_projection_v1 *projection) {
-  if (projection == NULL) return kStatusInvalidArgument;
+    stack_sparse_projection_v1 *projection,
+    uint8_t recovery_target_inflight) {
+  if (projection == NULL || recovery_target_inflight > 1) {
+    return kStatusInvalidArgument;
+  }
   *projection = stack_sparse_projection_v1();
-  if (!short_stack::validate_state(stack)) {
+  const bool stable =
+      recovery_target_inflight == 0 &&
+      short_stack::validate_state(stack);
+  const bool recovery =
+      recovery_target_inflight == 1 &&
+      short_stack::validate_drained_recovery_state(stack);
+  if (!stable && !recovery) {
     return kStatusInvalidStack;
   }
   projection->metadata[0] = stack.stack_count;

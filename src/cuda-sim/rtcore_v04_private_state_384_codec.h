@@ -130,7 +130,8 @@ struct control_tags_v1 {
   uint8_t boundary_reason;
   uint8_t pending_parent_resume_valid;
   uint8_t parent_restore_valid;
-  uint8_t reserved_zero[4];
+  uint8_t recovery_target_inflight;
+  uint8_t reserved_zero[3];
 };
 
 struct state_v1 {
@@ -194,7 +195,8 @@ status_kind initialize_new_launch_image(
 
 status_kind encode_stack_sparse_projection(
     const short_stack::state_v0 &stack,
-    stack_sparse_projection_v1 *projection);
+    stack_sparse_projection_v1 *projection,
+    uint8_t recovery_target_inflight = 0);
 
 status_kind encode_committed_hit_sparse_projection(
     const typed_stack::committed_hit_projection_v0 &hit,

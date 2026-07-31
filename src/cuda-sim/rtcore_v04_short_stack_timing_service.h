@@ -50,6 +50,8 @@ enum status_kind : uint8_t {
 enum phase_kind : uint8_t {
   kPhaseInvalid = 0,
   kPhaseReading,
+  kPhasePrivate384FollowupPlanReady,
+  kPhasePrivate384CompletionPlanReady,
   kPhaseReturnInstancePlanReady,
   kPhaseReturnInstanceReading,
   kPhaseReadyToIssue,
@@ -132,10 +134,18 @@ struct operation_entry_v0 {
       private_state_384_collector;
   private_state_384::operand_materializer::stack_operands_v1
       private_state_384_stack_operands;
+  private_state_384::operand_materializer::stack_terminal_operands_v1
+      private_state_384_terminal_operands;
+  private_state_384::operand_materializer::stack_cross_as_operands_v1
+      private_state_384_cross_as_operands;
+  private_state_384::operand_materializer::final_completion_operands_v1
+      private_state_384_completion_operands;
   private_state_384::live_bridge::pending_sparse_commit_v1
       private_state_384_commit;
   short_stack_transition::result_v0 transition;
   short_stack::parent_edge_v0 parent_edge;
+  private_frontier::instance_shader_projection_v0
+      return_instance_projection;
   uint8_t return_instance_payload[
       fetch_target::kInstanceRawPayloadBytes];
   uint64_t issue_age;
@@ -150,6 +160,12 @@ struct operation_entry_v0 {
   uint8_t phase;
   uint8_t parent_edge_valid;
   uint8_t private_state_384_operands_valid;
+  uint8_t private_state_384_selected_operation;
+  uint8_t private_state_384_terminal_operands_valid;
+  uint8_t private_state_384_cross_as_operands_valid;
+  uint8_t private_state_384_completion_operands_valid;
+  uint8_t private_state_384_completion_reason;
+  uint8_t return_instance_projection_valid;
   uint8_t valid;
 };
 
@@ -191,8 +207,11 @@ struct ready_result_v0 {
   uint32_t commit_epoch;
   uint32_t slot_generation;
   uint8_t slot_index;
+  uint8_t private_storage_profile;
+  uint8_t terminal_committed_hit_valid;
   uint8_t valid;
-  uint8_t reserved_zero[2];
+  private_frontier::committed_hit_projection_v0
+      terminal_committed_hit;
 };
 
 typedef bool (*parent_resolver_fn)(
@@ -241,6 +260,10 @@ status_kind accept_private_state_384_read_response(
     const private_state_384::backing::state_v1 &private_backing,
     const rtcore_memory_unit_request_snapshot &request,
     uint64_t response_cycle);
+
+status_kind take_private_state_384_followup_read_plan(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    uint64_t issue_cycle, request_plan_v0 *requests);
 
 status_kind take_return_instance_read_plan(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,

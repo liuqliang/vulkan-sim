@@ -437,6 +437,7 @@ static status_kind prepare_resume_transition_impl(
     root.ray = input.parent_ray;
     root.current_decode_context =
         input.parent_decode_context;
+    root.current_instance = input.parent_instance;
     private_frontier::shadow_slot_v0 restored_slot =
         write_seed;
     private_frontier::access_plan_v0 restore_plan = {};
