@@ -1368,7 +1368,8 @@ struct rtcore_resident_rt_warp_record {
         : valid(false), owner_hw_sid(0), warp_id(0), current_warp_uid(0),
           current_static_inst_uid(0), active_mask(0), bound_lane_mask(0),
           admitted_lane_mask(0), retired_lane_mask(0), resident_generation(0),
-          resubmit_count(0), v04_request_owner_binding_valid(false),
+          resubmit_count(0), v04_global384_preissued(false),
+          v04_request_owner_binding_valid(false),
           v04_resident_warp_slot(0), v04_request_owner_active_mask(0),
           v04_private_frontier_live_init_valid(false),
           v04_private_frontier_init_committed(false),
@@ -1396,6 +1397,7 @@ struct rtcore_resident_rt_warp_record {
     unsigned retired_lane_mask;
     unsigned resident_generation;
     unsigned resubmit_count;
+    bool v04_global384_preissued;
     bool v04_request_owner_binding_valid;
     unsigned v04_resident_warp_slot;
     unsigned v04_request_owner_active_mask;
@@ -12919,6 +12921,93 @@ extern "C" bool rtcore_query_resident_rt_warp_record(
         *resident_generation = it->second.resident_generation;
     }
     return true;
+}
+
+extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned static_inst_uid,
+    unsigned *resident_generation)
+{
+    if (resident_generation == NULL ||
+        !rtcore_continuation_model_enabled() || active_mask == 0) {
+        return false;
+    }
+    const rtcore_resident_rt_warp_record_key key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator existing =
+        g_rtcore_resident_rt_warp_records.find(key);
+    if (existing != g_rtcore_resident_rt_warp_records.end() &&
+        existing->second.valid) {
+        const rtcore_resident_rt_warp_record &record = existing->second;
+        const bool matches =
+            record.v04_global384_preissued &&
+            record.owner_hw_sid == owner_hw_sid &&
+            record.current_warp_uid == warp_uid &&
+            record.warp_id == warp_id &&
+            record.current_static_inst_uid == static_inst_uid &&
+            record.active_mask == active_mask &&
+            record.resident_generation != 0;
+        if (matches) *resident_generation = record.resident_generation;
+        return matches;
+    }
+    if (rtcore_resident_rt_warp_record_occupancy() >=
+            rtcore::v04::request_owner::kResidentWarpCapacity ||
+        g_rtcore_next_resident_rt_warp_generation == 0) {
+        return false;
+    }
+
+    rtcore_resident_rt_warp_record record;
+    record.valid = true;
+    record.owner_hw_sid = owner_hw_sid;
+    record.warp_id = warp_id;
+    record.current_warp_uid = warp_uid;
+    record.current_static_inst_uid = static_inst_uid;
+    record.active_mask = active_mask;
+    record.resident_generation =
+        g_rtcore_next_resident_rt_warp_generation++;
+    record.v04_global384_preissued = true;
+    std::pair<std::map<rtcore_resident_rt_warp_record_key,
+                       rtcore_resident_rt_warp_record>::iterator,
+              bool> inserted = g_rtcore_resident_rt_warp_records.insert(
+        std::make_pair(key, record));
+    if (!inserted.second) return false;
+    *resident_generation = record.resident_generation;
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_RESIDENT_SHELL "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+           "static_inst_uid=%u resident_generation=%u "
+           "resident_occupancy=%u result=allocated\n",
+           owner_hw_sid, warp_uid, warp_id, active_mask, static_inst_uid,
+           record.resident_generation,
+           rtcore_resident_rt_warp_record_occupancy());
+    fflush(stdout);
+    return true;
+}
+
+extern "C" bool rtcore_validate_v04_global384_resident_warp_shell(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned static_inst_uid,
+    unsigned resident_generation)
+{
+    if (!rtcore_continuation_model_enabled() || active_mask == 0 ||
+        resident_generation == 0) {
+        return false;
+    }
+    const rtcore_resident_rt_warp_record_key key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::const_iterator found =
+        g_rtcore_resident_rt_warp_records.find(key);
+    if (found == g_rtcore_resident_rt_warp_records.end()) return false;
+    const rtcore_resident_rt_warp_record &record = found->second;
+    return record.valid && record.v04_global384_preissued &&
+           record.owner_hw_sid == owner_hw_sid &&
+           record.current_warp_uid == warp_uid &&
+           record.warp_id == warp_id &&
+           record.current_static_inst_uid == static_inst_uid &&
+           record.active_mask == active_mask &&
+           record.resident_generation == resident_generation &&
+           record.bound_lane_mask == 0 && record.admitted_lane_mask == 0;
 }
 
 extern "C" bool rtcore_bind_resident_rt_warp_lane_identity(

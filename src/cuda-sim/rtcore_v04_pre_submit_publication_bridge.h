@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <utility>
+#include <vector>
 
 #include "rtcore_v04_address_range_registry.h"
 #include "rtcore_v04_allocation_identity_authority.h"
@@ -95,6 +96,44 @@ struct provisional_group_drain_v0 {
   uint8_t reserved_zero[4];
 };
 
+struct first_submit_bind_request_v0 {
+  allocation_identity::allocation_slot_v0 slot;
+  allocation_identity::owner_v0 owner;
+  allocation_identity::allocation_ranges_v0 allocation_ranges;
+  uint32_t active_mask;
+  uint32_t capacity_lane_slots;
+  uint32_t context_lane_stride_bytes;
+  uint32_t handoff_lane_stride_bytes;
+  const uint32_t *handoff_allowed_publication_masks;
+  size_t handoff_allowed_publication_mask_count;
+};
+
+struct first_submit_bind_ticket_v0 {
+  uint64_t allocation_record_id;
+  uint32_t owner_hw_sid;
+  uint32_t dynamic_warp_id;
+  uint32_t warp_id;
+  uint32_t active_mask;
+  uint32_t launch_allocation_generation;
+  uint32_t window_generation;
+  uint8_t valid;
+  uint8_t reserved_zero[7];
+};
+
+struct first_submit_bind_result_v0 {
+  allocation_identity::status_kind authority_status;
+  address_range_registry::status_kind registry_status;
+  allocation_identity::allocation_identity_v0 identity;
+  first_submit_bind_ticket_v0 ticket;
+  uint64_t preaccept_pending;
+  uint64_t outstanding_transactions;
+  uint32_t resident_warp_generation;
+  uint8_t bind_started;
+  uint8_t wait_required;
+  uint8_t live_bound;
+  uint8_t reserved_zero[5];
+};
+
 class bridge_v0 {
  public:
   bridge_v0();
@@ -136,14 +175,38 @@ class bridge_v0 {
       uint32_t owner_hw_sid, uint32_t dynamic_warp_id,
       uint32_t warp_id, provisional_group_drain_v0 *drain);
 
+  status_kind begin_or_poll_first_submit_live_bind(
+      const first_submit_bind_request_v0 &request,
+      first_submit_bind_result_v0 *result);
+
+  status_kind commit_first_submit_live_bind(
+      const first_submit_bind_ticket_v0 &ticket,
+      uint32_t resident_warp_generation,
+      first_submit_bind_result_v0 *result);
+
+  status_kind validate_first_submit_live_bind(
+      const first_submit_bind_request_v0 &request,
+      uint32_t resident_warp_generation,
+      first_submit_bind_result_v0 *result) const;
+
   bridge_snapshot_v0 snapshot() const;
 
  private:
   struct registered_group_v0 {
     address_range_registry::provisional_owner_v0 provisional_owner;
     allocation_identity::owner_v0 execution_owner;
+    allocation_identity::allocation_slot_v0 slot;
+    allocation_identity::allocation_ranges_v0 allocation_ranges;
+    uint32_t active_mask;
+    uint32_t capacity_lane_slots;
+    uint32_t context_lane_stride_bytes;
+    uint32_t handoff_lane_stride_bytes;
+    std::vector<uint32_t> handoff_allowed_publication_masks;
     uint64_t preaccept_pending;
+    uint32_t resident_warp_generation;
     uint8_t fence_armed;
+    uint8_t bind_started;
+    uint8_t live_bound;
   };
 
   struct publication_identity_observation_v0 {
@@ -157,6 +220,11 @@ class bridge_v0 {
            publication_identity_observation_v0>
       publication_identity_observations_;
   std::map<uint64_t, registered_group_v0> registered_groups_;
+
+  status_kind make_registered_group_ranges(
+      const registered_group_v0 &group,
+      std::vector<std::vector<uint32_t> > *owned_masks,
+      std::vector<address_range_registry::range_spec_v0> *ranges) const;
 
   bridge_v0(const bridge_v0 &);
   bridge_v0 &operator=(const bridge_v0 &);

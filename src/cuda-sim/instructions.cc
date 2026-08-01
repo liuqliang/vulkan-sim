@@ -125,11 +125,13 @@ static bool rtcore_validate_v04_shadow_trace_input(
     unsigned lane_slot_index,
     const struct rtcore_v03_compact_context_decoded &context,
     std::array<uint32_t, rtcore::abi_v04::kWordCount> *words);
-static bool rtcore_v04_register_global384_provisional_publication(
+namespace {
+bool rtcore_v04_register_global384_provisional_publication(
     const ptx_instruction *pI, ptx_thread_info *thread,
     unsigned long long context_ptr, unsigned long long handoff_window_base,
     unsigned lane_slot_index, bool v04_publication_contract,
     unsigned handoff_lane_bytes);
+}
 
 const char *g_opcode_string[NUM_OPCODES] = {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) STR,
@@ -7956,8 +7958,6 @@ typedef std::pair<unsigned, unsigned> rtcore_v04_functional_only_warp_key;
 
 static std::map<unsigned, request_owner::allocator_state_v0>
     g_rtcore_v04_functional_only_owner_allocators;
-static std::map<unsigned, unsigned>
-    g_rtcore_v04_functional_only_next_resident_generations;
 static std::map<rtcore_v04_functional_only_warp_key,
                 rtcore_v04_functional_only_warp_record>
     g_rtcore_v04_functional_only_live_warps;
@@ -8035,16 +8035,6 @@ static request_owner::allocator_state_v0 &rtcore_v04_functional_only_allocator(
     request_owner::initialize_allocator(&allocator);
   }
   return allocator;
-}
-
-static unsigned rtcore_v04_functional_only_allocate_resident_generation(
-    unsigned owner_hw_sid) {
-  unsigned &next =
-      g_rtcore_v04_functional_only_next_resident_generations[owner_hw_sid];
-  if (next == 0) next = 1;
-  const unsigned generation = next++;
-  if (next == 0) next = 1;
-  return generation;
 }
 
 static private_frontier::region_binding_v0
@@ -8406,6 +8396,12 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
           owner_hw_sid, warp_id, &previous_warp_uid,
           &previous_active_mask, &resident_generation,
           &resident_occupancy);
+  const bool global384_preissued_initial =
+      resident_live && functional_only &&
+      warp_uid == previous_warp_uid && active_mask == previous_active_mask &&
+      rtcore_validate_v04_global384_resident_warp_shell(
+          owner_hw_sid, warp_uid, warp_id, active_mask,
+          instruction->uid(), resident_generation);
   if (resident_live && !functional_only) {
     const bool retained_resubmit =
         warp_uid != previous_warp_uid &&
@@ -8423,10 +8419,24 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     fflush(stdout);
     return retained_resubmit;
   }
-  if (resident_live &&
+  if (resident_live && !global384_preissued_initial &&
       (warp_uid == previous_warp_uid ||
        (active_mask & ~previous_active_mask) != 0)) {
     return false;
+  }
+  if (global384_preissued_initial &&
+      !rtcore_validate_v04_global384_first_submit_live_bind_before_functional(
+          instruction, lane_threads, owner_hw_sid, warp_uid, warp_id,
+          active_mask)) {
+    return false;
+  }
+  if (global384_preissued_initial) {
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_PREFUNCTIONAL "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+           "resident_generation=%u live_bind=validated result=ready\n",
+           owner_hw_sid, warp_uid, warp_id, active_mask,
+           resident_generation);
+    fflush(stdout);
   }
 
   root_packet::warp_input_v0 input = {};
@@ -8577,7 +8587,7 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
   }
 
   if (functional_only) {
-    return resident_live
+    return resident_live && !global384_preissued_initial
                ? rtcore_v04_functional_only_prepare_resubmit(
                      input, lane_threads, previous_warp_uid,
                      previous_active_mask)
@@ -15951,7 +15961,7 @@ static bool rtcore_v04_checked_allocation_base(
   return true;
 }
 
-static bool rtcore_v04_register_global384_provisional_publication(
+bool rtcore_v04_register_global384_provisional_publication(
     const ptx_instruction *pI, ptx_thread_info *thread,
     unsigned long long context_ptr, unsigned long long handoff_window_base,
     unsigned lane_slot_index, bool v04_publication_contract,
@@ -16093,6 +16103,327 @@ static bool rtcore_v04_register_global384_provisional_publication(
   fflush(stdout);
   return bridge_status ==
          rtcore::v04::pre_submit_publication::kStatusOk;
+}
+
+namespace {
+
+struct rtcore_v04_global384_bind_material {
+  rtcore::v04::pre_submit_publication::first_submit_bind_request_v0 request;
+  std::array<uint32_t,
+             rtcore::abi_v04::kLaneSlotBytes /
+                 rtcore::v04::address_range_registry::kAddressChunkBytes>
+      handoff_masks;
+  unsigned dynamic_warp_id;
+
+  rtcore_v04_global384_bind_material()
+      : request(), handoff_masks(), dynamic_warp_id(0) {}
+};
+
+struct rtcore_v04_global384_pending_bind_owner {
+  unsigned dynamic_warp_id;
+  unsigned warp_id;
+  unsigned active_mask;
+
+  rtcore_v04_global384_pending_bind_owner()
+      : dynamic_warp_id(0), warp_id(0), active_mask(0) {}
+};
+
+static std::map<unsigned, rtcore_v04_global384_pending_bind_owner>
+    g_rtcore_v04_global384_pending_bind_by_sm;
+
+static bool rtcore_v04_global384_profile_selected(bool *selected) {
+  if (selected == NULL) return false;
+  rtcore::v04::private_storage::profile_kind profile =
+      rtcore::v04::private_storage::kProfileLegacyShared832;
+  const rtcore::v04::private_storage::status_kind status =
+      rtcore::v04::private_storage::parse_profile(
+          getenv(rtcore::v04::private_storage::kSelectorEnvironmentName),
+          &profile);
+  if (status != rtcore::v04::private_storage::kStatusOk) return false;
+  *selected = profile == rtcore::v04::private_storage::kProfileGlobal384;
+  return true;
+}
+
+static bool rtcore_v04_make_global384_bind_material(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned expected_dynamic_warp_id, unsigned warp_id,
+    unsigned active_mask, rtcore_v04_global384_bind_material *material) {
+  if (instruction == NULL || lane_threads == NULL || material == NULL ||
+      active_mask == 0 || instruction->op != RT_CORE_OP ||
+      instruction->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+      instruction->get_num_operands() != 3) {
+    return false;
+  }
+  *material = rtcore_v04_global384_bind_material();
+  const operand_info &context_operand = instruction->operand_lookup(1);
+  const operand_info &handoff_operand = instruction->operand_lookup(2);
+  bool have_common = false;
+  unsigned long long common_context_allocation_base = 0;
+  rtcore_runtime_context_window_allocation_record common;
+  for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+    if ((active_mask & (1u << lane)) == 0) continue;
+    ptx_thread_info *thread = lane_threads[lane];
+    if (thread == NULL) return false;
+    const ptx_reg_t context_value = thread->get_operand_value(
+        context_operand, context_operand, B64_TYPE, thread, 1);
+    const ptx_reg_t handoff_value = thread->get_operand_value(
+        handoff_operand, handoff_operand, B64_TYPE, thread, 1);
+    const rtcore_runtime_context_window_allocation_record allocation =
+        rtcore_make_runtime_context_window_allocation_record(
+            context_value.u64, handoff_value.u64, lane);
+    unsigned long long context_allocation_base = 0;
+    if (!allocation.enabled || !allocation.valid ||
+        allocation.context_window_index >
+            std::numeric_limits<uint32_t>::max() ||
+        !rtcore_v04_checked_allocation_base(
+            allocation.context_base, allocation.context_window_index,
+            allocation.context_allocation_bytes,
+            &context_allocation_base)) {
+      return false;
+    }
+    if (!have_common) {
+      common = allocation;
+      common_context_allocation_base = context_allocation_base;
+      have_common = true;
+    } else if (context_allocation_base != common_context_allocation_base ||
+               allocation.context_window_index !=
+                   common.context_window_index ||
+               allocation.handoff_window_base !=
+                   common.handoff_window_base ||
+               allocation.context_allocation_bytes !=
+                   common.context_allocation_bytes ||
+               allocation.handoff_allocation_bytes !=
+                   common.handoff_allocation_bytes ||
+               allocation.context_lane_stride_bytes !=
+                   common.context_lane_stride_bytes ||
+               allocation.handoff_lane_slot_stride_bytes !=
+                   common.handoff_lane_slot_stride_bytes ||
+               allocation.capacity_lane_slots !=
+                   common.capacity_lane_slots ||
+               allocation.owner_generation != common.owner_generation) {
+      return false;
+    }
+  }
+  if (!have_common) return false;
+
+  const uint32_t owned_words =
+      rtcore::abi_v04::shadow::trace_input_owned_word_mask();
+  for (size_t word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+    if ((owned_words & (uint32_t{1} << word)) == 0) continue;
+    const size_t byte_offset = word * sizeof(uint32_t);
+    const size_t chunk =
+        byte_offset /
+        rtcore::v04::address_range_registry::kAddressChunkBytes;
+    const size_t byte_in_chunk =
+        byte_offset %
+        rtcore::v04::address_range_registry::kAddressChunkBytes;
+    material->handoff_masks[chunk] |= uint32_t{0xf} << byte_in_chunk;
+  }
+  static const uint64_t kRuntimeAllocationDomainId = UINT64_C(1);
+  material->request.slot.allocation_domain_id =
+      kRuntimeAllocationDomainId;
+  material->request.slot.allocation_slot_id =
+      static_cast<uint32_t>(common.context_window_index);
+  material->request.owner.owner_hw_sid = owner_hw_sid;
+  material->request.owner.dynamic_warp_id = expected_dynamic_warp_id;
+  material->request.owner.warp_id = warp_id;
+  material->request.allocation_ranges.context_base =
+      common_context_allocation_base;
+  material->request.allocation_ranges.context_byte_count =
+      common.context_allocation_bytes;
+  material->request.allocation_ranges.handoff_base =
+      common.handoff_window_base;
+  material->request.allocation_ranges.handoff_byte_count =
+      common.handoff_allocation_bytes;
+  material->request.active_mask = active_mask;
+  material->request.capacity_lane_slots = common.capacity_lane_slots;
+  material->request.context_lane_stride_bytes =
+      common.context_lane_stride_bytes;
+  material->request.handoff_lane_stride_bytes =
+      common.handoff_lane_slot_stride_bytes;
+  material->request.handoff_allowed_publication_masks =
+      material->handoff_masks.data();
+  material->request.handoff_allowed_publication_mask_count =
+      material->handoff_masks.size();
+  material->dynamic_warp_id = expected_dynamic_warp_id;
+  return true;
+}
+
+static bool rtcore_v04_global384_pending_owner_matches(
+    const rtcore_v04_global384_pending_bind_owner &owner,
+    unsigned dynamic_warp_id, unsigned warp_id, unsigned active_mask) {
+  return owner.dynamic_warp_id == dynamic_warp_id &&
+         owner.warp_id == warp_id && owner.active_mask == active_mask;
+}
+
+}  // namespace
+
+static rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_service_v04_global384_first_submit_live_bind_internal(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned dynamic_warp_id, unsigned expected_warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned long long issue_cycle) {
+  bool global384 = false;
+  if (!rtcore_v04_global384_profile_selected(&global384)) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  }
+  if (!global384) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE;
+  }
+  if (!rtcore_v04_functional_only_engine_gate_active() ||
+      !rtcore_v04_root_node_input_gate_active()) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  }
+
+  unsigned previous_warp_uid = 0;
+  unsigned previous_active_mask = 0;
+  unsigned previous_generation = 0;
+  unsigned resident_occupancy = 0;
+  const bool resident_live = rtcore_query_resident_rt_warp_record(
+      owner_hw_sid, warp_id, &previous_warp_uid,
+      &previous_active_mask, &previous_generation,
+      &resident_occupancy);
+  if (resident_live &&
+      !rtcore_validate_v04_global384_resident_warp_shell(
+          owner_hw_sid, expected_warp_uid, warp_id, active_mask,
+          instruction != NULL ? instruction->uid() : 0,
+          previous_generation)) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE;
+  }
+
+  rtcore_v04_global384_bind_material material;
+  if (!rtcore_v04_make_global384_bind_material(
+          instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
+          warp_id, active_mask, &material)) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  }
+  std::map<unsigned, rtcore_v04_global384_pending_bind_owner>::iterator
+      pending = g_rtcore_v04_global384_pending_bind_by_sm.find(owner_hw_sid);
+  if (pending != g_rtcore_v04_global384_pending_bind_by_sm.end() &&
+      !rtcore_v04_global384_pending_owner_matches(
+          pending->second, dynamic_warp_id, warp_id, active_mask)) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
+  }
+
+  request_owner::allocator_state_v0 &allocator =
+      rtcore_v04_functional_only_allocator(owner_hw_sid);
+  request_owner::warp_identity_v0 identity = {};
+  identity.owner_hw_sid = owner_hw_sid;
+  identity.warp_uid = expected_warp_uid;
+  identity.warp_id = warp_id;
+  identity.active_mask = active_mask;
+  request_owner::new_warp_plan_v0 resource_plan = {};
+  const request_owner::status_kind resource_status =
+      request_owner::prepare_new_warp(allocator, identity,
+                                      &resource_plan);
+  if (resource_status != request_owner::kStatusOk) {
+    return resource_status == request_owner::kStatusResidentCapacityExceeded ||
+                   resource_status ==
+                       request_owner::kStatusRequestCapacityExceeded
+               ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT
+               : RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  }
+
+  rtcore::v04::pre_submit_publication::first_submit_bind_result_v0 begin = {};
+  const rtcore::v04::pre_submit_publication::status_kind begin_status =
+      rtcore::v04::pre_submit_publication::shared_bridge()
+          .begin_or_poll_first_submit_live_bind(material.request, &begin);
+  if (begin_status != rtcore::v04::pre_submit_publication::kStatusOk) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  }
+  rtcore_v04_global384_pending_bind_owner owner;
+  owner.dynamic_warp_id = dynamic_warp_id;
+  owner.warp_id = warp_id;
+  owner.active_mask = active_mask;
+  g_rtcore_v04_global384_pending_bind_by_sm[owner_hw_sid] = owner;
+  if (begin.wait_required) {
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND "
+           "owner_hw_sid=%u dynamic_warp_id=%u warp_id=%u "
+           "active_mask=0x%08x issue_cycle=%llu resource_plan=prepared "
+           "bind_started=%u preaccept_pending=%llu outstanding=%llu "
+           "result=wait\n",
+           owner_hw_sid, dynamic_warp_id, warp_id, active_mask,
+           issue_cycle, begin.bind_started,
+           static_cast<unsigned long long>(begin.preaccept_pending),
+           static_cast<unsigned long long>(begin.outstanding_transactions));
+    fflush(stdout);
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
+  }
+
+  unsigned resident_generation = 0;
+  if (!rtcore_prepare_v04_global384_resident_warp_shell(
+          owner_hw_sid, expected_warp_uid, warp_id, active_mask,
+          instruction->uid(), &resident_generation)) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  }
+  rtcore::v04::pre_submit_publication::first_submit_bind_result_v0 commit = {};
+  const rtcore::v04::pre_submit_publication::status_kind commit_status =
+      rtcore::v04::pre_submit_publication::shared_bridge()
+          .commit_first_submit_live_bind(begin.ticket,
+                                         resident_generation, &commit);
+  if (commit_status != rtcore::v04::pre_submit_publication::kStatusOk ||
+      commit.wait_required || !commit.live_bound ||
+      commit.resident_warp_generation != resident_generation) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  }
+  g_rtcore_v04_global384_pending_bind_by_sm.erase(owner_hw_sid);
+  printf("GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND "
+         "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+         "active_mask=0x%08x issue_cycle=%llu resource_plan=prepared "
+         "resident_generation=%u exact_ranges=validated "
+         "result=live_ready\n",
+         owner_hw_sid, dynamic_warp_id, expected_warp_uid, warp_id,
+         active_mask, issue_cycle, resident_generation);
+  fflush(stdout);
+  return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY;
+}
+
+static bool
+rtcore_validate_v04_global384_first_submit_live_bind_internal(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned warp_uid, unsigned warp_id, unsigned active_mask) {
+  bool global384 = false;
+  if (!rtcore_v04_global384_profile_selected(&global384)) return false;
+  if (!global384) return true;
+  unsigned dynamic_warp_id = 0;
+  for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+    if ((active_mask & (1u << lane)) == 0) continue;
+    if (lane_threads == NULL || lane_threads[lane] == NULL) return false;
+    ptx_thread_info::rtcore_current_warp_metadata metadata;
+    lane_threads[lane]->get_rtcore_current_warp_metadata(&metadata);
+    dynamic_warp_id = metadata.dynamic_warp_id;
+    break;
+  }
+  rtcore_v04_global384_bind_material material;
+  if (!rtcore_v04_make_global384_bind_material(
+          instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
+          warp_id, active_mask, &material)) {
+    return false;
+  }
+  unsigned current_warp_uid = 0;
+  unsigned current_active_mask = 0;
+  unsigned resident_generation = 0;
+  unsigned resident_occupancy = 0;
+  if (!rtcore_query_resident_rt_warp_record(
+          owner_hw_sid, warp_id, &current_warp_uid,
+          &current_active_mask, &resident_generation,
+          &resident_occupancy) || current_warp_uid != warp_uid ||
+      current_active_mask != active_mask || resident_occupancy == 0 ||
+      !rtcore_validate_v04_global384_resident_warp_shell(
+          owner_hw_sid, warp_uid, warp_id, active_mask,
+          instruction->uid(), resident_generation)) {
+    return false;
+  }
+  rtcore::v04::pre_submit_publication::first_submit_bind_result_v0 result = {};
+  return rtcore::v04::pre_submit_publication::shared_bridge()
+                 .validate_first_submit_live_bind(
+                     material.request, resident_generation, &result) ==
+             rtcore::v04::pre_submit_publication::kStatusOk &&
+         result.live_bound && !result.wait_required;
 }
 
 enum rtcore_traversal_source_provider {
@@ -18580,9 +18911,7 @@ static bool rtcore_v04_functional_only_finalize_initial_lane_completion(
       request_owner::kStatusOk) {
     return false;
   }
-  warp->resident_generation =
-      rtcore_v04_functional_only_allocate_resident_generation(
-          metadata.owner_hw_sid);
+  warp->resident_generation = compatibility_generation;
   std::pair<std::map<rtcore_v04_functional_only_warp_key,
                      rtcore_v04_functional_only_warp_record>::iterator,
             bool>
@@ -35747,6 +36076,28 @@ void rtcore_traversal_completion_adapter_publish(
 }
 
 }  // namespace
+
+extern "C" rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_service_v04_global384_first_submit_live_bind_before_issue(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned dynamic_warp_id, unsigned expected_warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned long long issue_cycle) {
+  return rtcore_service_v04_global384_first_submit_live_bind_internal(
+      instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
+      expected_warp_uid, warp_id, active_mask, issue_cycle);
+}
+
+extern "C" bool
+rtcore_validate_v04_global384_first_submit_live_bind_before_functional(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned warp_uid, unsigned warp_id, unsigned active_mask) {
+  return rtcore_validate_v04_global384_first_submit_live_bind_internal(
+      instruction, lane_threads, owner_hw_sid, warp_uid, warp_id,
+      active_mask);
+}
 
 void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (rtcore_fail_closed_on_invalid_path_mode(pI)) {

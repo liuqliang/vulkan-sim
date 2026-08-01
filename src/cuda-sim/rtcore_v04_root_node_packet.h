@@ -101,6 +101,37 @@ extern "C" bool rtcore_v04_live_node_timing_gate_active();
 extern "C" bool rtcore_v04_root_node_input_gate_active();
 extern "C" bool rtcore_v04_functional_node_driver_configuration_valid();
 
+enum rtcore_v04_first_submit_live_bind_preissue_status {
+  RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE = 0,
+  RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY = 1,
+  RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT = 2,
+  RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT = 3,
+};
+
+extern "C" rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_service_v04_global384_first_submit_live_bind_before_issue(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned dynamic_warp_id, unsigned expected_warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned long long issue_cycle);
+
+extern "C" bool
+rtcore_validate_v04_global384_first_submit_live_bind_before_functional(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned warp_uid, unsigned warp_id, unsigned active_mask);
+
+extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned static_inst_uid,
+    unsigned *resident_generation);
+
+extern "C" bool rtcore_validate_v04_global384_resident_warp_shell(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned static_inst_uid,
+    unsigned resident_generation);
+
 extern "C" bool rtcore_admit_v04_root_node_packet(
     const rtcore::v04::root_node_packet::warp_input_v0 *input,
     unsigned long long issue_cycle, const char **failure_reason);

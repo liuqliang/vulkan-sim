@@ -9524,6 +9524,50 @@ void scheduler_unit::cycle() {
                 }
 
                 if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT) {
+                  ptx_thread_info *lane_threads[32] = {};
+                  assert(m_shader->m_config->warp_size == 32);
+                  for (unsigned lane = 0; lane < 32; ++lane) {
+                    lane_threads[lane] =
+                        m_shader->m_thread[warp_id * 32 + lane];
+                  }
+                  const ptx_instruction *source_instruction =
+                      static_cast<const ptx_instruction *>(
+                          m_shader->get_next_inst(warp_id, pI->pc));
+                  const unsigned expected_warp_uid =
+                      m_shader->m_config->gpgpu_ctx
+                          ->warp_inst_sm_next_uid +
+                      1;
+                  const rtcore_v04_first_submit_live_bind_preissue_status
+                      live_bind_status =
+                          rtcore_service_v04_global384_first_submit_live_bind_before_issue(
+                              source_instruction, lane_threads,
+                              m_shader->get_sid(),
+                              (*iter)->get_dynamic_warp_id(),
+                              expected_warp_uid, warp_id,
+                              rtcore_active_mask,
+                              rtcore_warp_admission_issue_cycle);
+                  if (live_bind_status ==
+                      RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT) {
+                    rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
+                        "scheduler_bridge_rollback_after_global384_live_bind_wait");
+                    break;
+                  }
+                  if (live_bind_status ==
+                      RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT) {
+                    fprintf(stderr,
+                            "GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND_FAULT "
+                            "owner_hw_sid=%u dynamic_warp_id=%u warp_id=%u "
+                            "active_mask=0x%08x static_inst_pc=0x%llx\n",
+                            m_shader->get_sid(),
+                            (*iter)->get_dynamic_warp_id(), warp_id,
+                            rtcore_active_mask,
+                            static_cast<unsigned long long>(pI->pc));
+                    fflush(stderr);
+                    abort();
+                  }
+                }
+
+                if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT) {
                   m_shader->rtcore_submit_warp_admission_budget_consume(
                       *pI, warp_id, rtcore_warp_admission_issue_cycle);
                 }
