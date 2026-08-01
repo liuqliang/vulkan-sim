@@ -81,11 +81,15 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   memset(&m_rtcore_v04_publication_preaccept, 0,
          sizeof(m_rtcore_v04_publication_preaccept));
   m_rtcore_v04_publication_preaccept_valid = false;
+  memset(&m_rtcore_v04_live_access_preaccept, 0,
+         sizeof(m_rtcore_v04_live_access_preaccept));
+  m_rtcore_v04_live_access_preaccept_valid = false;
 }
 
 mem_fetch::~mem_fetch() {
   if (m_rtcore_v04_publication_ticket_valid ||
-      m_rtcore_v04_publication_preaccept_valid) {
+      m_rtcore_v04_publication_preaccept_valid ||
+      m_rtcore_v04_live_access_preaccept_valid) {
     fprintf(stderr,
             "GPGPU-Sim: deleting mem_fetch with live Global384 "
             "publication metadata, request_uid=%u\n",
@@ -154,6 +158,8 @@ bool mem_fetch::attach_rtcore_v04_publication_ticket(
     const rtcore::v04::pre_submit_publication::
         publication_ticket_v0 &token) {
   if (m_rtcore_v04_publication_ticket_valid ||
+      m_rtcore_v04_publication_preaccept_valid ||
+      m_rtcore_v04_live_access_preaccept_valid ||
       token.transaction_id == 0 || token.record_id == 0) {
     return false;
   }
@@ -179,6 +185,7 @@ bool mem_fetch::attach_rtcore_v04_publication_preaccept(
     const rtcore::v04::pre_submit_publication::
         publication_store_v0 &store) {
   if (m_rtcore_v04_publication_preaccept_valid ||
+      m_rtcore_v04_live_access_preaccept_valid ||
       m_rtcore_v04_publication_ticket_valid ||
       store.aligned_32b_address == 0 || store.byte_mask == 0) {
     return false;
@@ -198,6 +205,31 @@ bool mem_fetch::take_rtcore_v04_publication_preaccept(
   memset(&m_rtcore_v04_publication_preaccept, 0,
          sizeof(m_rtcore_v04_publication_preaccept));
   m_rtcore_v04_publication_preaccept_valid = false;
+  return true;
+}
+
+bool mem_fetch::attach_rtcore_v04_live_access_preaccept(
+    const rtcore::v04::pre_submit_publication::live_access_v0 &access) {
+  if (m_rtcore_v04_live_access_preaccept_valid ||
+      m_rtcore_v04_publication_preaccept_valid ||
+      m_rtcore_v04_publication_ticket_valid ||
+      access.aligned_32b_address == 0 || access.byte_mask == 0) {
+    return false;
+  }
+  m_rtcore_v04_live_access_preaccept = access;
+  m_rtcore_v04_live_access_preaccept_valid = true;
+  return true;
+}
+
+bool mem_fetch::take_rtcore_v04_live_access_preaccept(
+    rtcore::v04::pre_submit_publication::live_access_v0 *access) {
+  if (!m_rtcore_v04_live_access_preaccept_valid || access == NULL) {
+    return false;
+  }
+  *access = m_rtcore_v04_live_access_preaccept;
+  memset(&m_rtcore_v04_live_access_preaccept, 0,
+         sizeof(m_rtcore_v04_live_access_preaccept));
+  m_rtcore_v04_live_access_preaccept_valid = false;
   return true;
 }
 

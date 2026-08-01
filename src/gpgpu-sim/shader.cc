@@ -3624,6 +3624,126 @@ static void rtcore_record_v04_memory_conservation_or_abort(
   abort();
 }
 
+static bool rtcore_v04_live_handoff_acquire_request(
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  return snapshot.valid && !snapshot.is_write &&
+         snapshot.access_kind == RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE &&
+         snapshot.v04_live_handoff_acquire.valid == 1;
+}
+
+static rtcore::v04::address_range_registry::live_access_v0
+rtcore_v04_live_handoff_acquire_access(
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  namespace registry = rtcore::v04::address_range_registry;
+  registry::live_access_v0 access = {};
+  access.owner.owner_hw_sid = snapshot.owner_hw_sid;
+  access.owner.resident_warp_generation =
+      snapshot.v04_live_handoff_acquire.resident_warp_generation;
+  access.owner.window_generation =
+      snapshot.v04_live_handoff_acquire.window_generation;
+  access.lane_id = static_cast<uint8_t>(snapshot.lane_id);
+  access.object = registry::kObjectHandoff;
+  access.access = registry::kAccessHandoffRtcoreAcquire;
+  access.aligned_32b_address = snapshot.aligned_32b_addr;
+  access.byte_mask = snapshot.byte_mask;
+  return access;
+}
+
+static void rtcore_v04_live_handoff_acquire_fail_closed(
+    const char *phase,
+    rtcore::v04::pre_submit_publication::status_kind bridge_status,
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  fprintf(stderr,
+          "GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_ACQUIRE_FAULT "
+          "phase=%s bridge_status=%s owner_hw_sid=%u request_id=%u "
+          "lane_id=%u resident_generation=%u window_generation=%u "
+          "address=0x%llx chunk_id=%u\n",
+          phase,
+          rtcore::v04::pre_submit_publication::status_name(bridge_status),
+          snapshot.owner_hw_sid, snapshot.rt_request_id, snapshot.lane_id,
+          snapshot.v04_live_handoff_acquire.resident_warp_generation,
+          snapshot.v04_live_handoff_acquire.window_generation,
+          snapshot.aligned_32b_addr, snapshot.chunk_id);
+  fflush(stderr);
+  abort();
+}
+
+static void rtcore_accept_v04_live_handoff_acquire_or_abort(
+    rtcore_memory_unit_request_snapshot *snapshot) {
+  namespace bridge = rtcore::v04::pre_submit_publication;
+  namespace registry = rtcore::v04::address_range_registry;
+  if (snapshot == NULL ||
+      !rtcore_v04_live_handoff_acquire_request(*snapshot)) {
+    return;
+  }
+  if (snapshot->v04_live_handoff_acquire.preaccepted != 1 ||
+      snapshot->v04_live_transaction.valid != 0) {
+    rtcore_v04_live_handoff_acquire_fail_closed(
+        "accept-state", bridge::kStatusGroupConflict, *snapshot);
+  }
+  registry::transaction_token_v0 token = {};
+  const bridge::status_kind status =
+      bridge::shared_bridge().accept_preaccepted_live_access(
+          rtcore_v04_live_handoff_acquire_access(*snapshot), &token);
+  if (status != bridge::kStatusOk) {
+    rtcore_v04_live_handoff_acquire_fail_closed(
+        "accept-preaccepted", status, *snapshot);
+  }
+  snapshot->v04_live_handoff_acquire.preaccepted = 0;
+  snapshot->v04_live_transaction.transaction_id = token.transaction_id;
+  snapshot->v04_live_transaction.record_id = token.record_id;
+  snapshot->v04_live_transaction.owner_hw_sid = token.owner_hw_sid;
+  snapshot->v04_live_transaction.owner_generation = token.owner_generation;
+  snapshot->v04_live_transaction.window_generation = token.window_generation;
+  snapshot->v04_live_transaction.lane_id = token.lane_id;
+  snapshot->v04_live_transaction.object =
+      static_cast<uint8_t>(token.object);
+  snapshot->v04_live_transaction.access =
+      static_cast<uint8_t>(token.access);
+  snapshot->v04_live_transaction.valid = 1;
+}
+
+static void rtcore_complete_v04_live_handoff_acquire_or_abort(
+    const rtcore_memory_unit_request_snapshot &snapshot,
+    unsigned long long completion_cycle) {
+  namespace bridge = rtcore::v04::pre_submit_publication;
+  namespace registry = rtcore::v04::address_range_registry;
+  if (!rtcore_v04_live_handoff_acquire_request(snapshot)) return;
+  if (snapshot.v04_live_handoff_acquire.preaccepted != 0 ||
+      snapshot.v04_live_transaction.valid != 1) {
+    rtcore_v04_live_handoff_acquire_fail_closed(
+        "complete-state", bridge::kStatusGroupConflict, snapshot);
+  }
+  registry::transaction_token_v0 token = {};
+  token.transaction_id = snapshot.v04_live_transaction.transaction_id;
+  token.record_id = snapshot.v04_live_transaction.record_id;
+  token.owner_hw_sid = snapshot.v04_live_transaction.owner_hw_sid;
+  token.owner_generation = snapshot.v04_live_transaction.owner_generation;
+  token.window_generation = snapshot.v04_live_transaction.window_generation;
+  token.lane_id = snapshot.v04_live_transaction.lane_id;
+  token.object = static_cast<registry::object_kind>(
+      snapshot.v04_live_transaction.object);
+  token.access = static_cast<registry::access_kind>(
+      snapshot.v04_live_transaction.access);
+  const registry::status_kind status =
+      bridge::shared_bridge().complete_live_access(token);
+  if (status != registry::kStatusOk) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_ACQUIRE_FAULT "
+            "phase=complete registry_status=%s transaction_id=%llu\n",
+            registry::status_name(status),
+            static_cast<unsigned long long>(token.transaction_id));
+    fflush(stderr);
+    abort();
+  }
+  if (!rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
+          &snapshot, completion_cycle)) {
+    rtcore_v04_live_handoff_acquire_fail_closed(
+        "resubmit-tracker-complete", bridge::kStatusGroupConflict,
+        snapshot);
+  }
+}
+
 static void rtcore_record_v02_lsu_sideband_response_completion(
     const rtcore_memory_unit_request_snapshot &snapshot,
     unsigned long long response_cycle, memory_space *global_memory,
@@ -3912,6 +4032,8 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
                                                        response_cycle,
                                                        global_memory,
                                                        mf->get_addr());
+    rtcore_complete_v04_live_handoff_acquire_or_abort(*waiter_it,
+                                                       response_cycle);
   }
   const unsigned completed_count = it->second.size();
   if (completed_count > 1) {
@@ -3985,7 +4107,8 @@ static void rtcore_memory_unit_refresh_same_cycle_32b_merge_map(
 }
 
 static bool rtcore_try_merge_memory_unit_same_cycle_32b(
-    const rtcore_replay_cycle_hook_result &result, new_addr_type addr) {
+    const rtcore_replay_cycle_hook_result &result, new_addr_type addr,
+    rtcore_memory_unit_request_snapshot *snapshot) {
   if (!rtcore_memory_unit_same_cycle_32b_merge_enabled()) {
     return false;
   }
@@ -4008,8 +4131,9 @@ static bool rtcore_try_merge_memory_unit_same_cycle_32b(
     g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key.erase(key_it);
     return false;
   }
-  pending_it->second.push_back(
-      rtcore_v02_lsu_sideband_snapshot_from_result(result));
+  if (snapshot == NULL) return false;
+  rtcore_accept_v04_live_handoff_acquire_or_abort(snapshot);
+  pending_it->second.push_back(*snapshot);
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_accepted_count++;
   g_rtcore_replay_cycle_hook_consumer_stats
@@ -4186,7 +4310,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
       fflush(stderr);
       abort();
     }
-    if (snapshot.destination ==
+    if (rtcore_v04_live_handoff_acquire_request(snapshot) ||
+        snapshot.destination ==
             RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL ||
         snapshot.destination ==
             RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL ||
@@ -4208,9 +4333,9 @@ rtcore_maybe_accept_memory_unit_l1d_client(
 
   const new_addr_type addr = rtcore_memory_unit_effective_addr(result);
   const bool is_write = result.lsu_sideband_is_write;
-  const rtcore_memory_unit_request_snapshot snapshot =
+  rtcore_memory_unit_request_snapshot snapshot =
       rtcore_v02_lsu_sideband_snapshot_from_result(result);
-  if (rtcore_try_merge_memory_unit_same_cycle_32b(result, addr)) {
+  if (rtcore_try_merge_memory_unit_same_cycle_32b(result, addr, &snapshot)) {
     rtcore_record_v04_memory_conservation_or_abort(
         snapshot, false, result.cycle);
     if (supported_shader_continuation_access) {
@@ -4372,6 +4497,7 @@ rtcore_maybe_accept_memory_unit_l1d_client(
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_real_mem_fetch_count++;
   if (status == HIT && !is_write) {
+    rtcore_accept_v04_live_handoff_acquire_or_abort(&snapshot);
     if (supported_shader_continuation_access) {
       printf("GPGPU-Sim "
              "RTCORE_SHADER_CONTINUATION_SBT_METADATA_L1D_ACCEPT "
@@ -4400,6 +4526,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     rtcore_record_v02_lsu_sideband_response_completion(
         snapshot, result.cycle, core->get_gpu()->get_global_memory(),
         mf->get_addr());
+    rtcore_complete_v04_live_handoff_acquire_or_abort(snapshot,
+                                                       result.cycle);
     delete mf;
     return RTCORE_MEMORY_UNIT_OFFER_L1D_ACCESS_PROGRESS;
   }
@@ -4461,6 +4589,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     delete mf;
     return RTCORE_MEMORY_UNIT_OFFER_L1D_RESERVATION_BLOCKED;
   }
+
+  rtcore_accept_v04_live_handoff_acquire_or_abort(&snapshot);
 
   if (supported_shader_continuation_access) {
     printf("GPGPU-Sim "
@@ -10615,6 +10745,25 @@ void rtcore_v04_arm_publication_preaccept(
     mem_fetch *mf,
     const rtcore_v04_publication_preflight &preflight) {
   if (!preflight.candidate) return;
+  if (preflight.live_candidate) {
+    if (!mf->attach_rtcore_v04_live_access_preaccept(
+            preflight.live_access)) {
+      rtcore_v04_publication_ticket_fail_closed(
+          "live-preaccept-carriage", rtcore::v04::
+              pre_submit_publication::kStatusGroupConflict,
+          preflight.registry_status, mf);
+    }
+    const rtcore::v04::pre_submit_publication::status_kind status =
+        rtcore::v04::pre_submit_publication::shared_bridge()
+            .begin_live_access_preaccept(preflight.live_access);
+    if (status !=
+        rtcore::v04::pre_submit_publication::kStatusOk) {
+      rtcore_v04_publication_ticket_fail_closed(
+          "live-preaccept-begin", status,
+          preflight.registry_status, mf);
+    }
+    return;
+  }
   if (!mf->attach_rtcore_v04_publication_preaccept(
           preflight.store)) {
     rtcore_v04_publication_ticket_fail_closed(
@@ -10633,13 +10782,55 @@ void rtcore_v04_arm_publication_preaccept(
   }
 }
 
+void rtcore_v04_cancel_publication_preaccept(
+    mem_fetch *mf,
+    const rtcore_v04_publication_preflight &preflight) {
+  rtcore::v04::address_range_registry::provisional_store_v0 store = {};
+  rtcore::v04::address_range_registry::live_access_v0 live_access = {};
+  const bool provisional =
+      mf != NULL && mf->has_rtcore_v04_publication_preaccept();
+  const bool live =
+      mf != NULL && mf->has_rtcore_v04_live_access_preaccept();
+  if (provisional == live) {
+    rtcore_v04_publication_ticket_fail_closed(
+        "preaccept-cancel-state", rtcore::v04::
+            pre_submit_publication::kStatusGroupConflict,
+        preflight.registry_status, mf);
+  }
+  if (provisional &&
+      !mf->take_rtcore_v04_publication_preaccept(&store)) {
+    rtcore_v04_publication_ticket_fail_closed(
+        "preaccept-cancel-take", rtcore::v04::
+            pre_submit_publication::kStatusGroupConflict,
+        preflight.registry_status, mf);
+  }
+  if (live &&
+      !mf->take_rtcore_v04_live_access_preaccept(&live_access)) {
+    rtcore_v04_publication_ticket_fail_closed(
+        "live-preaccept-cancel-take", rtcore::v04::
+            pre_submit_publication::kStatusGroupConflict,
+        preflight.registry_status, mf);
+  }
+  const rtcore::v04::pre_submit_publication::status_kind status =
+      live ? rtcore::v04::pre_submit_publication::shared_bridge()
+                 .cancel_live_access_preaccept(live_access)
+           : rtcore::v04::pre_submit_publication::shared_bridge()
+                 .cancel_publication_store_preaccept(store);
+  if (status != rtcore::v04::pre_submit_publication::kStatusOk) {
+    rtcore_v04_publication_ticket_fail_closed(
+        live ? "live-preaccept-cancel" : "preaccept-cancel", status,
+        preflight.registry_status, mf);
+  }
+}
+
 void rtcore_v04_validate_accepted_publication_topology(
     const mem_fetch *mf,
     const rtcore_v04_publication_preflight &preflight,
     enum cache_request_status status,
     const std::list<cache_event> &events) {
   if (!preflight.candidate &&
-      !mf->has_rtcore_v04_publication_preaccept()) {
+      !mf->has_rtcore_v04_publication_preaccept() &&
+      !mf->has_rtcore_v04_live_access_preaccept()) {
     return;
   }
   const bool write_sent = was_write_sent(events);
@@ -10665,9 +10856,19 @@ void rtcore_v04_attach_accepted_publication_ticket(
     const rtcore_v04_publication_preflight &preflight) {
   const bool preaccepted =
       mf->has_rtcore_v04_publication_preaccept();
-  if (!preflight.candidate && !preaccepted) return;
+  const bool live_preaccepted =
+      mf->has_rtcore_v04_live_access_preaccept();
+  if (!preflight.candidate && !preaccepted && !live_preaccepted) return;
+  if (preaccepted && live_preaccepted) {
+    rtcore_v04_publication_ticket_fail_closed(
+        "preaccept-kind-conflict", rtcore::v04::
+            pre_submit_publication::kStatusGroupConflict,
+        preflight.registry_status, mf);
+  }
   rtcore::v04::address_range_registry::provisional_store_v0
       store = preflight.store;
+  rtcore::v04::address_range_registry::live_access_v0
+      live_access = preflight.live_access;
   if (preaccepted &&
       !mf->take_rtcore_v04_publication_preaccept(&store)) {
     rtcore_v04_publication_ticket_fail_closed(
@@ -10675,11 +10876,23 @@ void rtcore_v04_attach_accepted_publication_ticket(
             pre_submit_publication::kStatusGroupConflict,
         preflight.registry_status, mf);
   }
+  if (live_preaccepted &&
+      !mf->take_rtcore_v04_live_access_preaccept(&live_access)) {
+    rtcore_v04_publication_ticket_fail_closed(
+        "live-preaccept-take", rtcore::v04::
+            pre_submit_publication::kStatusGroupConflict,
+        preflight.registry_status, mf);
+  }
   rtcore::v04::address_range_registry::transaction_token_v0
       token = {};
   const rtcore::v04::pre_submit_publication::status_kind
       preaccepted_status =
-          preaccepted
+          live_preaccepted
+              ? rtcore::v04::pre_submit_publication::
+                    shared_bridge()
+                        .accept_preaccepted_live_access(
+                            live_access, &token)
+              : preaccepted
               ? rtcore::v04::pre_submit_publication::
                     shared_bridge()
                         .accept_preaccepted_publication_store(
@@ -10687,20 +10900,25 @@ void rtcore_v04_attach_accepted_publication_ticket(
               : rtcore::v04::pre_submit_publication::kStatusOk;
   const rtcore::v04::address_range_registry::status_kind
       direct_status =
-          preaccepted
+          preaccepted || live_preaccepted
               ? rtcore::v04::address_range_registry::kStatusOk
-              : rtcore::v04::pre_submit_publication::
-                    shared_bridge()
-                        .accept_publication_store(store, &token);
+              : preflight.live_candidate
+                    ? rtcore::v04::pre_submit_publication::
+                          shared_bridge()
+                              .accept_live_access(live_access, &token)
+                    : rtcore::v04::pre_submit_publication::
+                          shared_bridge()
+                              .accept_publication_store(store, &token);
   if (preaccepted_status !=
           rtcore::v04::pre_submit_publication::kStatusOk ||
       direct_status !=
           rtcore::v04::address_range_registry::kStatusOk) {
     rtcore_v04_publication_ticket_fail_closed(
         "accepted-store-ticket",
-        preaccepted ? preaccepted_status
-                    : rtcore::v04::pre_submit_publication::
-                          kStatusRegistryRejected,
+        (preaccepted || live_preaccepted)
+            ? preaccepted_status
+            : rtcore::v04::pre_submit_publication::
+                  kStatusRegistryRejected,
         direct_status, mf);
   }
   if (!mf->attach_rtcore_v04_publication_ticket(token)) {
@@ -10712,6 +10930,20 @@ void rtcore_v04_attach_accepted_publication_ticket(
         "ticket-carriage", rtcore::v04::
             pre_submit_publication::kStatusRegistryRejected,
         rollback_status, mf);
+  }
+  if (token.access == rtcore::v04::address_range_registry::
+                          kAccessHandoffShaderReturn) {
+    printf("GPGPU-Sim RTCORE_V04_LIVE_SHADER_RETURN_TICKET_ACCEPT "
+           "owner_hw_sid=%u warp_id=%u dynamic_warp_id=%u "
+           "transaction_id=%llu resident_generation=%u "
+           "window_generation=%u lane_id=%u address=0x%llx\n",
+           mf->get_sid(), mf->get_wid(),
+           mf->get_inst().dynamic_warp_id(),
+           static_cast<unsigned long long>(token.transaction_id),
+           token.owner_generation, token.window_generation,
+           token.lane_id,
+           static_cast<unsigned long long>(mf->get_addr()));
+    fflush(stdout);
   }
 }
 
@@ -10730,6 +10962,19 @@ void rtcore_v04_complete_publication_ticket(mem_fetch *mf) {
         "store-ack", rtcore::v04::
             pre_submit_publication::kStatusRegistryRejected,
         status, mf);
+  }
+  if (token.access == rtcore::v04::address_range_registry::
+                          kAccessHandoffShaderReturn) {
+    printf("GPGPU-Sim RTCORE_V04_LIVE_SHADER_RETURN_TICKET_COMPLETE "
+           "owner_hw_sid=%u warp_id=%u transaction_id=%llu "
+           "resident_generation=%u window_generation=%u lane_id=%u "
+           "address=0x%llx\n",
+           mf->get_sid(), mf->get_wid(),
+           static_cast<unsigned long long>(token.transaction_id),
+           token.owner_generation, token.window_generation,
+           token.lane_id,
+           static_cast<unsigned long long>(mf->get_addr()));
+    fflush(stdout);
   }
 }
 
@@ -10886,6 +11131,7 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
                                   m_core->get_gpu()->gpu_tot_sim_cycle);
     const rtcore_v04_publication_preflight preflight =
         rtcore_v04_preflight_ordinary_publication_store(mf);
+    rtcore_v04_arm_publication_preaccept(mf, preflight);
     std::list<cache_event> events;
     m_core->record_rtcore_shared_l1d_cache_access(
         RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU);
@@ -10893,6 +11139,9 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
         mf->get_addr(), mf,
         m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
         events);
+    if (status == RESERVATION_FAIL && preflight.candidate) {
+      rtcore_v04_cancel_publication_preaccept(mf, preflight);
+    }
     if (status != RESERVATION_FAIL) {
       rtcore_v04_validate_accepted_publication_topology(
           mf, preflight, status, events);
@@ -11071,9 +11320,9 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
                                     m_core->get_gpu()->gpu_tot_sim_cycle);
       const rtcore_v04_publication_preflight preflight =
           rtcore_v04_preflight_ordinary_publication_store(mf);
-      m_icnt->push(mf);
       rtcore_v04_attach_accepted_publication_ticket(
           mf, preflight);
+      m_icnt->push(mf);
       inst.accessq_pop_back();
       // inst.clear_active( access.get_warp_mask() );
       if (inst.is_load()) {

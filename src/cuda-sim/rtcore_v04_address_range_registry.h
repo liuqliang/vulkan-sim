@@ -95,6 +95,9 @@ struct provisional_store_v0 {
 
 struct provisional_range_observation_v0 {
   provisional_owner_v0 owner;
+  live_owner_v0 live_owner;
+  uint64_t range_base;
+  uint64_t range_byte_count;
   uint8_t lane_id;
   object_kind object;
   phase_kind phase;
@@ -179,6 +182,8 @@ class registry_v0 {
       const live_owner_v0 &owner, uint32_t active_mask,
       const range_spec_v0 *expected_ranges,
       size_t expected_range_count) const;
+
+  status_kind validate_live_access(const live_access_v0 &access) const;
 
   status_kind accept_live_access(
       const live_access_v0 &access,

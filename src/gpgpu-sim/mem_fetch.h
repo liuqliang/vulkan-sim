@@ -153,6 +153,13 @@ class mem_fetch {
   bool has_rtcore_v04_publication_preaccept() const {
     return m_rtcore_v04_publication_preaccept_valid;
   }
+  bool attach_rtcore_v04_live_access_preaccept(
+      const rtcore::v04::pre_submit_publication::live_access_v0 &access);
+  bool take_rtcore_v04_live_access_preaccept(
+      rtcore::v04::pre_submit_publication::live_access_v0 *access);
+  bool has_rtcore_v04_live_access_preaccept() const {
+    return m_rtcore_v04_live_access_preaccept_valid;
+  }
 
  private:
   // request source information
@@ -209,6 +216,9 @@ class mem_fetch {
   rtcore::v04::pre_submit_publication::publication_store_v0
       m_rtcore_v04_publication_preaccept;
   bool m_rtcore_v04_publication_preaccept_valid;
+  rtcore::v04::pre_submit_publication::live_access_v0
+      m_rtcore_v04_live_access_preaccept;
+  bool m_rtcore_v04_live_access_preaccept_valid;
 };
 
 #endif

@@ -138,6 +138,13 @@ rtcore_validate_v04_global384_resubmit_live_before_functional(
     unsigned warp_uid, unsigned warp_id, unsigned previous_active_mask,
     unsigned active_mask, unsigned resident_warp_generation);
 
+extern "C" bool
+rtcore_consume_v04_global384_resubmit_handoff_acquire_before_functional(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id,
+    unsigned previous_warp_uid, unsigned warp_id,
+    unsigned previous_active_mask, unsigned active_mask,
+    unsigned resident_warp_generation, unsigned warp_uid);
+
 extern "C" rtcore_v04_retire_live_release_status
 rtcore_service_v04_global384_retire_live_release(
     unsigned owner_hw_sid, unsigned retire_warp_uid,

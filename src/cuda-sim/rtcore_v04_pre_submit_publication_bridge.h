@@ -18,6 +18,7 @@ typedef address_range_registry::provisional_store_v0
     publication_store_v0;
 typedef address_range_registry::transaction_token_v0
     publication_ticket_v0;
+typedef address_range_registry::live_access_v0 live_access_v0;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -81,8 +82,10 @@ struct ordinary_store_request_v0 {
 struct ordinary_store_preflight_v0 {
   address_range_registry::status_kind registry_status;
   address_range_registry::provisional_store_v0 store;
+  address_range_registry::live_access_v0 live_access;
   uint8_t candidate;
-  uint8_t reserved_zero[7];
+  uint8_t live_candidate;
+  uint8_t reserved_zero[6];
 };
 
 struct provisional_group_drain_v0 {
@@ -191,9 +194,35 @@ class bridge_v0 {
   status_kind begin_publication_store_preaccept(
       const address_range_registry::provisional_store_v0 &store);
 
+  status_kind cancel_publication_store_preaccept(
+      const address_range_registry::provisional_store_v0 &store);
+
   status_kind accept_preaccepted_publication_store(
       const address_range_registry::provisional_store_v0 &store,
       address_range_registry::transaction_token_v0 *token);
+
+  address_range_registry::status_kind accept_live_access(
+      const address_range_registry::live_access_v0 &access,
+      address_range_registry::transaction_token_v0 *token);
+
+  status_kind preflight_live_handoff_access(
+      uint32_t owner_hw_sid, uint32_t resident_warp_generation,
+      uint8_t lane_id, address_range_registry::access_kind access_kind,
+      uint64_t aligned_32b_address, uint32_t byte_mask,
+      address_range_registry::live_access_v0 *access) const;
+
+  status_kind begin_live_access_preaccept(
+      const address_range_registry::live_access_v0 &access);
+
+  status_kind cancel_live_access_preaccept(
+      const address_range_registry::live_access_v0 &access);
+
+  status_kind accept_preaccepted_live_access(
+      const address_range_registry::live_access_v0 &access,
+      address_range_registry::transaction_token_v0 *token);
+
+  address_range_registry::status_kind complete_live_access(
+      const address_range_registry::transaction_token_v0 &token);
 
   status_kind preflight_ordinary_publication_store(
       const ordinary_store_request_v0 &request,

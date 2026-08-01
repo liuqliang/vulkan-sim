@@ -226,6 +226,29 @@ struct rtcore_v04_handoff_publication_transport_snapshot {
   uint8_t reserved_zero[2];
 };
 
+struct rtcore_v04_live_handoff_acquire_transport_snapshot {
+  uint32_t resident_warp_generation;
+  uint32_t window_generation;
+  uint32_t dynamic_warp_id;
+  uint32_t resubmit_active_mask;
+  uint8_t valid;
+  uint8_t preaccepted;
+  uint8_t tracked_resubmit;
+  uint8_t reserved_zero;
+};
+
+struct rtcore_v04_live_transaction_transport_snapshot {
+  uint64_t transaction_id;
+  uint64_t record_id;
+  uint32_t owner_hw_sid;
+  uint32_t owner_generation;
+  uint32_t window_generation;
+  uint8_t lane_id;
+  uint8_t object;
+  uint8_t access;
+  uint8_t valid;
+};
+
 struct rtcore_memory_unit_request_snapshot {
   bool valid;
   unsigned address_space;
@@ -254,11 +277,19 @@ struct rtcore_memory_unit_request_snapshot {
       v04_private_state_384_read;
   rtcore_v04_handoff_publication_transport_snapshot
       v04_handoff_publication;
+  rtcore_v04_live_handoff_acquire_transport_snapshot
+      v04_live_handoff_acquire;
+  rtcore_v04_live_transaction_transport_snapshot v04_live_transaction;
 };
 
 extern "C" bool rtcore_record_v04_memory_conservation_event(
     const rtcore_memory_unit_request_snapshot *snapshot,
     bool response, unsigned long long cycle);
+
+extern "C" bool
+rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    unsigned long long completion_cycle);
 
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_SHARED = 1u;
@@ -323,7 +354,8 @@ inline bool rtcore_v04_native_publication_requires_exact_address(
   return request.destination ==
              RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK ||
          request.access_kind ==
-             RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE;
+             RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE ||
+         request.v04_live_handoff_acquire.valid == 1;
 }
 
 extern "C" {

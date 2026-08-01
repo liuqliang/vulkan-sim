@@ -398,6 +398,9 @@ status_kind registry_v0::observe_provisional_range(
       return kStatusInvalidRange;
     }
     observation->owner = record.provisional_owner;
+    observation->live_owner = record.live_owner;
+    observation->range_base = record.base;
+    observation->range_byte_count = record.byte_count;
     observation->lane_id = lane;
     observation->object = record.object;
     observation->phase = record.phase;
@@ -601,11 +604,8 @@ status_kind registry_v0::validate_live_group(
   return kStatusOk;
 }
 
-status_kind registry_v0::accept_live_access(
-    const live_access_v0 &access,
-    transaction_token_v0 *token) {
-  if (token == NULL) return kStatusInvalidArgument;
-  std::memset(token, 0, sizeof(*token));
+status_kind registry_v0::validate_live_access(
+    const live_access_v0 &access) const {
   if (!valid_live_owner(access.owner) ||
       access.lane_id >= kLaneCapacity ||
       !access_matches_object(access.access, access.object) ||
@@ -615,11 +615,11 @@ status_kind registry_v0::accept_live_access(
     return kStatusInvalidArgument;
   }
 
-  range_record_v0 *match = NULL;
-  for (std::map<uint64_t, range_record_v0>::iterator it =
+  const range_record_v0 *match = NULL;
+  for (std::map<uint64_t, range_record_v0>::const_iterator it =
            records_.begin();
        it != records_.end(); ++it) {
-    range_record_v0 &record = it->second;
+    const range_record_v0 &record = it->second;
     uint64_t end = 0;
     if (!checked_range_end(record.base, record.byte_count, &end)) {
       return kStatusAddressOverflow;
@@ -640,6 +640,36 @@ status_kind registry_v0::accept_live_access(
     if (record.phase != kPhaseLive) return kStatusWrongPhase;
     match = &record;
     break;
+  }
+  if (match == NULL) return kStatusRecordNotFound;
+  return kStatusOk;
+}
+
+status_kind registry_v0::accept_live_access(
+    const live_access_v0 &access,
+    transaction_token_v0 *token) {
+  if (token == NULL) return kStatusInvalidArgument;
+  std::memset(token, 0, sizeof(*token));
+  const status_kind validation = validate_live_access(access);
+  if (validation != kStatusOk) return validation;
+
+  range_record_v0 *match = NULL;
+  for (std::map<uint64_t, range_record_v0>::iterator it =
+           records_.begin();
+       it != records_.end(); ++it) {
+    range_record_v0 &record = it->second;
+    uint64_t end = 0;
+    if (!checked_range_end(record.base, record.byte_count, &end)) {
+      return kStatusAddressOverflow;
+    }
+    if (access.aligned_32b_address >= record.base &&
+        access.aligned_32b_address < end &&
+        same_live_owner(record.live_owner, access.owner) &&
+        (record.lane_mask & lane_bit(access.lane_id)) != 0 &&
+        record.object == access.object && record.phase == kPhaseLive) {
+      match = &record;
+      break;
+    }
   }
   if (match == NULL) return kStatusRecordNotFound;
   if (match->outstanding_transactions ==
