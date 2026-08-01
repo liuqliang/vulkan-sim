@@ -39,6 +39,8 @@ bool keys_equal(
     const private_state_384::live_bridge::live_operation_key_v1 &left,
     const private_state_384::live_bridge::live_operation_key_v1 &right) {
   return identities_equal(left.identity, right.identity) &&
+         left.private_slot_base_address ==
+             right.private_slot_base_address &&
          left.private_layout_profile_id ==
              right.private_layout_profile_id &&
          left.bvh_format_profile_id ==
@@ -66,12 +68,16 @@ fetch_target::target_kind target_for_consumer(uint8_t consumer) {
 
 bool plan_is_canonical(
     const private_state_384::live_bridge::read_request_plan_v1 &plan) {
+  const bool compressed =
+      plan.key.storage_profile ==
+      private_storage::kProfileCompressedShared384;
+  const bool global =
+      plan.key.storage_profile == private_storage::kProfileGlobal384;
   if (plan.valid != 1 || plan.request_count == 0 ||
       plan.request_count != plan.operand_plan.read_count ||
       !bytes_are_zero(plan.reserved_zero,
                       sizeof(plan.reserved_zero)) ||
-      plan.key.storage_profile !=
-          private_storage::kProfileCompressedShared384 ||
+      (!compressed && !global) ||
       plan.key.private_layout_profile_id !=
           private_state_384::kPrivateLayoutProfileId ||
       plan.key.bvh_format_profile_id !=
@@ -114,7 +120,9 @@ bool plan_is_canonical(
     owner.private_slot_id = plan.identity.private_slot_id;
     owner.lane_id = plan.identity.lane_id;
     if (!memory.valid ||
-        memory.address_space != RTCORE_MEMORY_ADDRESS_SPACE_SHARED ||
+        memory.address_space !=
+            (compressed ? RTCORE_MEMORY_ADDRESS_SPACE_SHARED
+                        : RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL) ||
         memory.operation != RTCORE_MEMORY_OPERATION_READ ||
         memory.destination !=
             RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL ||
@@ -146,8 +154,12 @@ bool plan_is_canonical(
                 .v04_private_state_384_read.memory_op_seq_base ||
         memory.memory_op_seq !=
             static_cast<unsigned>(transport.memory_op_seq_base) + index ||
+        transport.private_slot_base_address == 0 ||
+        (compressed &&
+         transport.private_slot_base_address !=
+             private_state_384::live_bridge::private_slot_base(owner)) ||
         memory.aligned_32b_addr !=
-            private_state_384::live_bridge::private_slot_base(owner) +
+            transport.private_slot_base_address +
                 canonical.reads[index].slot_byte_offset ||
         transport.operation_sequence !=
             plan.identity.operation_sequence ||
@@ -222,6 +234,8 @@ key_from_request(const rtcore_memory_unit_request_snapshot &request) {
   key.identity.operation_sequence =
       request.v04_private_state_384_read.operation_sequence;
   key.identity.lane_id = static_cast<uint8_t>(request.lane_id);
+  key.private_slot_base_address =
+      request.v04_private_state_384_read.private_slot_base_address;
   key.private_layout_profile_id =
       request.v04_private_state_384_read.private_layout_profile_id;
   key.bvh_format_profile_id =
@@ -359,7 +373,9 @@ status_kind accept_response(
   if (state == NULL || state->initialized != 1 || !request.valid ||
       request.destination !=
           RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL ||
-      request.v04_private_state_384_read.valid != 1) {
+      request.v04_private_state_384_read.valid != 1 ||
+      request.v04_private_state_384_read.storage_profile !=
+          private_storage::kProfileCompressedShared384) {
     return kStatusInvalidArgument;
   }
   fetch_target::engine_state_v0 staged = *state;
@@ -382,6 +398,62 @@ status_kind accept_response(
   metadata->private_state_384_collector = collector;
   metadata->received_private_chunk_mask =
       collector.received_chunk_mask;
+  metadata->pending_private_response_count = static_cast<uint8_t>(
+      collector.required_count - collector.received_count);
+  if (!private_state_384::operand_materializer::responses_complete(
+          collector)) {
+    *state = staged;
+    return kStatusOk;
+  }
+  typed_node::ray_policy_v0 ray_policy = {};
+  private_frontier::root_private_operands_v0 root = {};
+  private_frontier::instance_shader_projection_v0 current_instance = {};
+  if (materialize_projection(
+          key, collector, &ray_policy, &root, &current_instance) !=
+      kStatusOk) {
+    return kStatusMaterializeRejected;
+  }
+  if (fetch_target::publish_private_state_384_projection(
+          &staged, key, collector, ray_policy, root,
+          current_instance) != fetch_target::kStatusOk) {
+    return kStatusTargetRejected;
+  }
+  *state = staged;
+  return kStatusOk;
+}
+
+status_kind accept_response_bytes(
+    fetch_target::engine_state_v0 *state,
+    const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *payload, size_t payload_byte_count) {
+  if (state == NULL || state->initialized != 1 || payload == NULL ||
+      payload_byte_count != private_state_384::kChunkBytes ||
+      !request.valid ||
+      request.destination !=
+          RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL ||
+      request.v04_private_state_384_read.valid != 1 ||
+      request.v04_private_state_384_read.storage_profile !=
+          private_storage::kProfileGlobal384) {
+    return kStatusInvalidArgument;
+  }
+  fetch_target::engine_state_v0 staged = *state;
+  const private_state_384::live_bridge::live_operation_key_v1 key =
+      key_from_request(request);
+  fetch_target::slot_metadata_v0 *metadata = find_metadata(&staged, key);
+  if (metadata == NULL ||
+      metadata->pending_private_response_count == 0 ||
+      metadata->private_state_384_projection_valid != 0) {
+    return kStatusResponseRejected;
+  }
+  private_state_384::operand_materializer::response_collector_v1 collector =
+      metadata->private_state_384_collector;
+  if (private_state_384::live_bridge::accept_read_response_bytes(
+          request, payload, payload_byte_count, &collector) !=
+      private_state_384::live_bridge::kStatusOk) {
+    return kStatusResponseRejected;
+  }
+  metadata->private_state_384_collector = collector;
+  metadata->received_private_chunk_mask = collector.received_chunk_mask;
   metadata->pending_private_response_count = static_cast<uint8_t>(
       collector.required_count - collector.received_count);
   if (!private_state_384::operand_materializer::responses_complete(

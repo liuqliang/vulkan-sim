@@ -63,8 +63,10 @@ bool valid_reservation_shape(
             private_storage::kProfileLegacyShared832 &&
         reservation.private_layout_profile_id ==
             private_frontier::kLayoutProfileId) ||
-       (reservation.private_storage_profile ==
-            private_storage::kProfileCompressedShared384 &&
+       ((reservation.private_storage_profile ==
+             private_storage::kProfileCompressedShared384 ||
+         reservation.private_storage_profile ==
+             private_storage::kProfileGlobal384) &&
         reservation.private_layout_profile_id ==
             private_state_384::kPrivateLayoutProfileId));
   return reservation.valid == 1 && reservation.reservation_id != 0 &&

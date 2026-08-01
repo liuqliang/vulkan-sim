@@ -26,6 +26,7 @@ enum status_kind : uint8_t {
 
 struct direct_transition_input_v0 {
   private_frontier::owner_binding_v0 owner;
+  uint64_t private_slot_base_address;
   typed_node::selected_child_fetch_work_item_v0 selected_fetch;
   typed_node::ray_policy_v0 ray_policy;
   typed_node::replay_cursor_v0 replay_cursor;

@@ -37,6 +37,7 @@ enum status_kind : uint8_t {
 
 struct live_operation_key_v1 {
   operand_materializer::operation_identity_v1 identity;
+  uint64_t private_slot_base_address;
   uint32_t private_layout_profile_id;
   uint32_t bvh_format_profile_id;
   uint32_t reservation_generation;
@@ -48,6 +49,7 @@ struct live_operation_key_v1 {
 
 struct read_input_v1 {
   private_frontier::owner_binding_v0 owner;
+  uint64_t private_slot_base_address;
   uint64_t issue_cycle;
   uint32_t operation_sequence;
   uint32_t bvh_format_profile_id;
@@ -118,6 +120,11 @@ status_kind initialize_collector(
 status_kind accept_read_response(
     const backing::state_v1 &state,
     const rtcore_memory_unit_request_snapshot &request,
+    operand_materializer::response_collector_v1 *collector);
+
+status_kind accept_read_response_bytes(
+    const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *payload, size_t payload_byte_count,
     operand_materializer::response_collector_v1 *collector);
 
 status_kind stage_sparse_commit(

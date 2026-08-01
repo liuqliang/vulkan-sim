@@ -19,8 +19,10 @@ bool bytes_are_zero(const uint8_t *bytes, size_t count) {
 }
 
 bool operation_key_valid(const live_operation_key_v1 &key) {
-  return key.storage_profile ==
-             private_storage::kProfileCompressedShared384 &&
+  return (key.storage_profile ==
+              private_storage::kProfileCompressedShared384 ||
+          key.storage_profile ==
+              private_storage::kProfileGlobal384) &&
          key.private_layout_profile_id == kPrivateLayoutProfileId &&
          key.bvh_format_profile_id == kGenRtBvhFormatProfileId &&
          key.reservation_generation != 0 &&
@@ -97,6 +99,11 @@ bool request_shape_valid(
   *identity = operand_materializer::operation_identity_v1();
   const rtcore_v04_private_state_384_read_transport_snapshot &transport =
       request.v04_private_state_384_read;
+  const bool compressed =
+      transport.storage_profile ==
+      private_storage::kProfileCompressedShared384;
+  const bool global =
+      transport.storage_profile == private_storage::kProfileGlobal384;
   operand_plan::read_request_v1 read_request = {};
   read_request.private_layout_profile_id =
       transport.private_layout_profile_id;
@@ -108,7 +115,10 @@ bool request_shape_valid(
     return false;
   }
   if (!request.valid ||
-      request.address_space != RTCORE_MEMORY_ADDRESS_SPACE_SHARED ||
+      (!compressed && !global) ||
+      request.address_space !=
+          (compressed ? RTCORE_MEMORY_ADDRESS_SPACE_SHARED
+                      : RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL) ||
       request.operation != RTCORE_MEMORY_OPERATION_READ ||
       !destination_valid(static_cast<uint8_t>(request.destination)) ||
       request.response_target != kResponseTargetRtcore ||
@@ -122,8 +132,6 @@ bool request_shape_valid(
       request.is_write || request.byte_mask != backing::kFullChunkByteMask ||
       transport.valid != 1 ||
       transport.operation_sequence == 0 ||
-      transport.storage_profile !=
-          private_storage::kProfileCompressedShared384 ||
       transport.bvh_format_profile_id !=
           kGenRtBvhFormatProfileId ||
       transport.reservation_generation == 0 ||
@@ -148,8 +156,12 @@ bool request_shape_valid(
   owner.private_slot_id = request.private_slot_id;
   owner.lane_id = static_cast<uint8_t>(request.lane_id);
   if (!owner_valid(owner) ||
-      request.aligned_32b_addr != private_slot_base(owner) +
-                                         read.slot_byte_offset) {
+      transport.private_slot_base_address == 0 ||
+      transport.private_slot_base_address % kChunkBytes != 0 ||
+      (compressed &&
+       transport.private_slot_base_address != private_slot_base(owner)) ||
+      request.aligned_32b_addr !=
+          transport.private_slot_base_address + read.slot_byte_offset) {
     return false;
   }
   *identity = make_identity(owner, transport.operation_sequence);
@@ -175,10 +187,20 @@ status_kind prepare_read_requests(const read_input_v1 &input,
                       sizeof(input.reserved_zero))) {
     return kStatusInvalidOwner;
   }
-  if (input.storage_profile !=
-          private_storage::kProfileCompressedShared384 ||
+  const bool compressed =
+      input.storage_profile ==
+      private_storage::kProfileCompressedShared384;
+  const bool global =
+      input.storage_profile == private_storage::kProfileGlobal384;
+  const uint64_t slot_base =
+      compressed && input.private_slot_base_address == 0
+          ? private_slot_base(input.owner)
+          : input.private_slot_base_address;
+  if ((!compressed && !global) ||
       input.bvh_format_profile_id != kGenRtBvhFormatProfileId ||
-      input.reservation_generation == 0) {
+      input.reservation_generation == 0 || slot_base == 0 ||
+      slot_base % kChunkBytes != 0 ||
+      (compressed && slot_base != private_slot_base(input.owner))) {
     return kStatusInvalidProfile;
   }
   if (input.operation_sequence == 0) return kStatusInvalidOperation;
@@ -204,6 +226,7 @@ status_kind prepare_read_requests(const read_input_v1 &input,
   prepared.identity =
       make_identity(input.owner, input.operation_sequence);
   prepared.key.identity = prepared.identity;
+  prepared.key.private_slot_base_address = slot_base;
   prepared.key.private_layout_profile_id = kPrivateLayoutProfileId;
   prepared.key.bvh_format_profile_id = input.bvh_format_profile_id;
   prepared.key.reservation_generation = input.reservation_generation;
@@ -221,7 +244,9 @@ status_kind prepare_read_requests(const read_input_v1 &input,
     rtcore_memory_unit_request_snapshot &memory =
         prepared.requests[index];
     memory.valid = true;
-    memory.address_space = RTCORE_MEMORY_ADDRESS_SPACE_SHARED;
+    memory.address_space =
+        compressed ? RTCORE_MEMORY_ADDRESS_SPACE_SHARED
+                   : RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL;
     memory.operation = RTCORE_MEMORY_OPERATION_READ;
     memory.destination = input.destination;
     memory.response_target = kResponseTargetRtcore;
@@ -237,13 +262,13 @@ status_kind prepare_read_requests(const read_input_v1 &input,
     memory.chunk_count = prepared.operand_plan.read_count;
     memory.access_kind =
         RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ;
-    memory.aligned_32b_addr =
-        private_slot_base(input.owner) + read.slot_byte_offset;
+    memory.aligned_32b_addr = slot_base + read.slot_byte_offset;
     memory.byte_mask = backing::kFullChunkByteMask;
     memory.is_write = false;
     memory.issue_cycle = input.issue_cycle;
     rtcore_v04_private_state_384_read_transport_snapshot &transport =
         memory.v04_private_state_384_read;
+    transport.private_slot_base_address = slot_base;
     transport.operation_sequence = input.operation_sequence;
     transport.private_layout_profile_id = kPrivateLayoutProfileId;
     transport.bvh_format_profile_id = input.bvh_format_profile_id;
@@ -306,6 +331,41 @@ status_kind accept_read_response(
           &response) != backing::kStatusOk) {
     return kStatusBackingRejected;
   }
+  return operand_materializer::accept_response(response, collector) ==
+             operand_materializer::kStatusOk
+         ? kStatusOk
+         : kStatusCollectorRejected;
+}
+
+status_kind accept_read_response_bytes(
+    const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *payload, size_t payload_byte_count,
+    operand_materializer::response_collector_v1 *collector) {
+  if (collector == NULL || payload == NULL ||
+      payload_byte_count != kChunkBytes) {
+    return kStatusInvalidArgument;
+  }
+  operand_plan::read_plan_v1 plan = {};
+  operand_materializer::operation_identity_v1 identity = {};
+  if (!request_shape_valid(request, &plan, &identity) ||
+      request.v04_private_state_384_read.storage_profile !=
+          private_storage::kProfileGlobal384) {
+    return kStatusMalformedTransport;
+  }
+  const uint8_t read_index =
+      request.v04_private_state_384_read.read_index;
+  if (read_index >= plan.read_count) return kStatusMalformedTransport;
+  const operand_plan::chunk_read_v1 &read = plan.reads[read_index];
+  operand_materializer::chunk_response_v1 response = {};
+  response.identity = identity;
+  response.private_layout_profile_id = plan.private_layout_profile_id;
+  response.consumer = plan.consumer;
+  response.operation = plan.operation;
+  response.completion_reason = plan.completion_reason;
+  response.chunk_index = read.chunk_index;
+  response.slot_byte_offset = read.slot_byte_offset;
+  response.byte_count = read.byte_count;
+  std::memcpy(response.payload, payload, kChunkBytes);
   return operand_materializer::accept_response(response, collector) ==
              operand_materializer::kStatusOk
          ? kStatusOk

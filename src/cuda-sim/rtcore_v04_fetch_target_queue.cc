@@ -817,20 +817,27 @@ uint8_t consumer_for_target(target_kind target) {
   return private_state_384::operand_plan::kConsumerInvalid;
 }
 
+bool is_private_state_384_profile(uint8_t profile) {
+  return profile == private_storage::kProfileCompressedShared384 ||
+         profile == private_storage::kProfileGlobal384;
+}
+
 bool operation_key_matches_metadata(
     const private_state_384::live_bridge::live_operation_key_v1 &key,
     const slot_metadata_v0 &metadata) {
   const private_state_384::operand_materializer::operation_identity_v1
       &identity = key.identity;
-  return key.private_layout_profile_id ==
+  return key.private_slot_base_address != 0 &&
+         key.private_slot_base_address % private_state_384::kChunkBytes == 0 &&
+         key.private_layout_profile_id ==
              private_state_384::kPrivateLayoutProfileId &&
          key.private_layout_profile_id ==
              metadata.private_layout_profile_id &&
          key.bvh_format_profile_id ==
              metadata.bvh_format_profile_id &&
          key.reservation_generation == metadata.slot_generation &&
-         key.storage_profile ==
-             private_storage::kProfileCompressedShared384 &&
+         is_private_state_384_profile(key.storage_profile) &&
+         key.storage_profile == metadata.private_storage_profile &&
          key.consumer ==
              consumer_for_target(
                  static_cast<target_kind>(metadata.target_kind)) &&
@@ -953,8 +960,8 @@ status_kind publish_private_state_384_projection_in_queue(
   for (uint8_t index = 0; index < capacity; ++index) {
     const slot_metadata_v0 &metadata = slots[index].metadata;
     if (metadata.state == kSlotFree ||
-        metadata.private_storage_profile !=
-            private_storage::kProfileCompressedShared384 ||
+        !is_private_state_384_profile(
+            metadata.private_storage_profile) ||
         !operation_key_matches_metadata(key, metadata)) {
       continue;
     }
@@ -1246,8 +1253,8 @@ status_kind build_operation_packet(const Slot &slot, target_kind target,
       kOperandCommittedHitValid);
   private_frontier::root_private_operands_v0 private_operands =
       slot.metadata.private_state_384_root_projection;
-  if (slot.metadata.private_storage_profile ==
-          private_storage::kProfileCompressedShared384) {
+  if (is_private_state_384_profile(
+          slot.metadata.private_storage_profile)) {
     if (slot.metadata.private_state_384_projection_valid != 1) {
       return kStatusPrivate384MaterializeRejected;
     }
@@ -1275,8 +1282,8 @@ status_kind build_operation_packet(const Slot &slot, target_kind target,
   }
   private_frontier::instance_shader_projection_v0 current_instance =
       slot.metadata.private_state_384_current_instance_projection;
-  if (slot.metadata.private_storage_profile ==
-          private_storage::kProfileCompressedShared384) {
+  if (is_private_state_384_profile(
+          slot.metadata.private_storage_profile)) {
     if (slot.metadata.private_state_384_projection_valid != 1) {
       return kStatusPrivate384MaterializeRejected;
     }
@@ -2411,8 +2418,8 @@ status_kind find_private_state_384_reservation_in_queue(
   for (uint8_t index = 0; index < capacity; ++index) {
     const slot_metadata_v0 &metadata = slots[index].metadata;
     if (metadata.state == kSlotFree ||
-        metadata.private_storage_profile !=
-            private_storage::kProfileCompressedShared384 ||
+        !is_private_state_384_profile(
+            metadata.private_storage_profile) ||
         !operation_key_matches_metadata(key, metadata)) {
       continue;
     }

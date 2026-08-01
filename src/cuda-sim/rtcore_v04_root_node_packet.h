@@ -7,6 +7,7 @@
 #include "rtcore_abi_v04_generated.h"
 #include "rtcore_v04_fetch_target_queue.h"
 #include "rtcore_v04_private_global_region.h"
+#include "rtcore_v04_request_owner_binding.h"
 
 class ptx_instruction;
 class ptx_thread_info;
@@ -193,10 +194,38 @@ rtcore_service_v04_global384_retire_live_release(
     unsigned warp_id, unsigned resident_warp_generation,
     unsigned active_mask, unsigned long long service_cycle);
 
+enum rtcore_v04_global384_timing_owner_status {
+  RTCORE_V04_GLOBAL384_TIMING_OWNER_FAULT = 0,
+  RTCORE_V04_GLOBAL384_TIMING_OWNER_READY = 1,
+  RTCORE_V04_GLOBAL384_TIMING_OWNER_WAIT = 2,
+};
+
+extern "C" rtcore_v04_global384_timing_owner_status
+rtcore_prepare_commit_v04_global384_timing_owner_plan(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask,
+    rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan);
+
+extern "C" bool rtcore_validate_v04_global384_timing_owner_plan(
+    unsigned owner_hw_sid,
+    const rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan);
+
+extern "C" bool rtcore_rollback_v04_global384_timing_preissue(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask,
+    const rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan);
+
 extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask, unsigned static_inst_uid,
+    const rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan,
+    bool timing_driver_owned,
     unsigned *resident_generation);
+
+extern "C" bool rtcore_bind_v04_global384_resident_layout(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    const rtcore::v04::private_global_region::region_layout_v0 *layout);
 
 extern "C" bool rtcore_validate_v04_global384_resident_warp_shell(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,

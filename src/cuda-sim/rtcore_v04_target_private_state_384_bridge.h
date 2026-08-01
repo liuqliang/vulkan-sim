@@ -1,6 +1,7 @@
 #ifndef RTCORE_V04_TARGET_PRIVATE_STATE_384_BRIDGE_H
 #define RTCORE_V04_TARGET_PRIVATE_STATE_384_BRIDGE_H
 
+#include <cstddef>
 #include <cstdint>
 
 #include "rtcore_v04_fetch_target_queue.h"
@@ -28,6 +29,11 @@ status_kind accept_response(
     fetch_target::engine_state_v0 *state,
     const private_state_384::backing::state_v1 &backing,
     const rtcore_memory_unit_request_snapshot &request);
+
+status_kind accept_response_bytes(
+    fetch_target::engine_state_v0 *state,
+    const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *payload, size_t payload_byte_count);
 
 const char *status_name(status_kind status);
 

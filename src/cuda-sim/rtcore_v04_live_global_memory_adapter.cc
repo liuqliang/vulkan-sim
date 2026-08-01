@@ -60,7 +60,7 @@ bool common_transport_shape_valid(
          extension.bvh_format_profile_id ==
              typed_node::kGenRtDerivedProfileId &&
          extension.private_storage_profile <=
-             private_storage::kProfileCompressedShared384 &&
+             private_storage::kProfileGlobal384 &&
          extension.producer_commit_required <= 1 &&
          extension.operand_kind ==
              RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL &&

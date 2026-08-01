@@ -1370,6 +1370,10 @@ struct rtcore_resident_rt_warp_record {
           current_static_inst_uid(0), active_mask(0), bound_lane_mask(0),
           admitted_lane_mask(0), retired_lane_mask(0), resident_generation(0),
           resubmit_count(0), v04_global384_preissued(false),
+          v04_global384_timing_driver_owned(false),
+          v04_global384_owner_plan_valid(false),
+          v04_global384_layout_valid(false),
+          v04_global384_owner_plan(), v04_global384_layout(),
           v04_request_owner_binding_valid(false),
           v04_resident_warp_slot(0), v04_request_owner_active_mask(0),
           v04_private_frontier_live_init_valid(false),
@@ -1399,6 +1403,13 @@ struct rtcore_resident_rt_warp_record {
     unsigned resident_generation;
     unsigned resubmit_count;
     bool v04_global384_preissued;
+    bool v04_global384_timing_driver_owned;
+    bool v04_global384_owner_plan_valid;
+    bool v04_global384_layout_valid;
+    rtcore::v04::request_owner::new_warp_plan_v0
+        v04_global384_owner_plan;
+    rtcore::v04::private_global_region::region_layout_v0
+        v04_global384_layout;
     bool v04_request_owner_binding_valid;
     unsigned v04_resident_warp_slot;
     unsigned v04_request_owner_active_mask;
@@ -1557,6 +1568,132 @@ rtcore_v04_request_owner_allocator_for(unsigned owner_hw_sid)
             &rtcore_v04_timing_driver_for(owner_hw_sid));
     assert(allocator != NULL);
     return *allocator;
+}
+
+static bool rtcore_v04_live_global_memory_adapter_configuration_valid();
+static bool rtcore_v04_live_timing_driver_control_enabled();
+static bool rtcore_v04_root_node_ready_packet_enabled();
+static bool rtcore_v04_live_timing_driver_control_prerequisites_enabled();
+
+extern "C" rtcore_v04_global384_timing_owner_status
+rtcore_prepare_commit_v04_global384_timing_owner_plan(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask,
+    rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan)
+{
+    namespace request_owner = rtcore::v04::request_owner;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (owner_plan == NULL || active_mask == 0 ||
+        !rtcore_v04_root_node_ready_packet_enabled() ||
+        !rtcore_v04_live_timing_driver_control_enabled() ||
+        !rtcore_v04_live_timing_driver_control_prerequisites_enabled() ||
+        !rtcore_v04_live_global_memory_adapter_configuration_valid()) {
+        return RTCORE_V04_GLOBAL384_TIMING_OWNER_FAULT;
+    }
+    *owner_plan = request_owner::new_warp_plan_v0();
+    timing_driver::state_v0 staged =
+        rtcore_v04_timing_driver_for(owner_hw_sid);
+    request_owner::warp_identity_v0 identity = {};
+    identity.owner_hw_sid = owner_hw_sid;
+    identity.warp_uid = warp_uid;
+    identity.warp_id = warp_id;
+    identity.active_mask = active_mask;
+    timing_driver::new_submit_plan_v0 timing_plan = {};
+    const timing_driver::status_kind prepare_status =
+        timing_driver::prepare_new_submit(staged, identity, &timing_plan);
+    if (prepare_status == timing_driver::kStatusResidentCapacityExceeded ||
+        prepare_status == timing_driver::kStatusRequestCapacityExceeded) {
+        return RTCORE_V04_GLOBAL384_TIMING_OWNER_WAIT;
+    }
+    if (prepare_status != timing_driver::kStatusOk ||
+        timing_driver::commit_new_submit(&staged, timing_plan) !=
+            timing_driver::kStatusOk) {
+        return RTCORE_V04_GLOBAL384_TIMING_OWNER_FAULT;
+    }
+    rtcore_v04_timing_driver_for(owner_hw_sid) = staged;
+    *owner_plan = timing_plan.owner_plan;
+    return RTCORE_V04_GLOBAL384_TIMING_OWNER_READY;
+}
+
+extern "C" bool rtcore_validate_v04_global384_timing_owner_plan(
+    unsigned owner_hw_sid,
+    const rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan)
+{
+    namespace request_owner = rtcore::v04::request_owner;
+    if (owner_plan == NULL || !owner_plan->valid ||
+        owner_plan->identity.owner_hw_sid != owner_hw_sid ||
+        owner_plan->identity.active_mask == 0 ||
+        owner_plan->resident_warp_slot >=
+            request_owner::kResidentWarpCapacity) {
+        return false;
+    }
+    const request_owner::allocator_state_v0 &allocator =
+        rtcore_v04_request_owner_allocator_for(owner_hw_sid);
+    for (unsigned lane = 0; lane < request_owner::kLaneCapacity; ++lane) {
+        const unsigned lane_mask = 1u << lane;
+        if ((owner_plan->identity.active_mask & lane_mask) == 0) continue;
+        if (!request_owner::validate_live_binding(
+                allocator, owner_plan->lane_bindings[lane],
+                owner_plan->identity.warp_uid,
+                owner_plan->identity.active_mask)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+extern "C" bool rtcore_rollback_v04_global384_timing_preissue(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask,
+    const rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan)
+{
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (owner_plan == NULL || !owner_plan->valid || active_mask == 0 ||
+        owner_plan->identity.owner_hw_sid != owner_hw_sid ||
+        owner_plan->identity.warp_uid != warp_uid ||
+        owner_plan->identity.warp_id != warp_id ||
+        owner_plan->identity.active_mask != active_mask) {
+        return false;
+    }
+
+    rtcore_resident_rt_warp_record_key record_key = {};
+    record_key.owner_hw_sid = owner_hw_sid;
+    record_key.warp_id = warp_id;
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator record =
+        g_rtcore_resident_rt_warp_records.find(record_key);
+    const bool shell_present =
+        record != g_rtcore_resident_rt_warp_records.end();
+    if (shell_present &&
+        (!record->second.valid || !record->second.v04_global384_preissued ||
+         record->second.v04_root_packet_valid ||
+         !record->second.v04_global384_timing_driver_owned ||
+         record->second.current_warp_uid != warp_uid ||
+         record->second.active_mask != active_mask ||
+         record->second.v04_global384_owner_plan.identity.warp_uid !=
+             warp_uid)) {
+        return false;
+    }
+
+    timing_driver::state_v0 staged =
+        rtcore_v04_timing_driver_for(owner_hw_sid);
+    timing_driver::retire_plan_v0 retire = {};
+    if (timing_driver::prepare_retire(
+            staged, owner_plan->resident_warp_slot, owner_hw_sid,
+            warp_uid, warp_id, &retire) != timing_driver::kStatusOk ||
+        timing_driver::commit_retire(&staged, retire) !=
+            timing_driver::kStatusOk) {
+        return false;
+    }
+    rtcore_v04_timing_driver_for(owner_hw_sid) = staged;
+    if (shell_present) g_rtcore_resident_rt_warp_records.erase(record);
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_TIMING_PREISSUE_ROLLBACK "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
+           "resident_slot=%u resident_shell_released=%u result=released\n",
+           owner_hw_sid, warp_uid, warp_id, active_mask,
+           owner_plan->resident_warp_slot, shell_present ? 1u : 0u);
+    fflush(stdout);
+    return true;
 }
 
 struct rtcore_replay_issue_budget {
@@ -14266,12 +14403,27 @@ extern "C" bool rtcore_query_resident_rt_warp_record(
 extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask, unsigned static_inst_uid,
+    const rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan,
+    bool timing_driver_owned,
     unsigned *resident_generation)
 {
-    if (resident_generation == NULL ||
+    namespace request_owner = rtcore::v04::request_owner;
+    if (resident_generation == NULL || owner_plan == NULL ||
         !rtcore_continuation_model_enabled() || active_mask == 0) {
         return false;
     }
+    const bool owner_plan_matches =
+        owner_plan->valid &&
+        owner_plan->identity.owner_hw_sid == owner_hw_sid &&
+        owner_plan->identity.warp_uid == warp_uid &&
+        owner_plan->identity.warp_id == warp_id &&
+        owner_plan->identity.active_mask == active_mask &&
+        owner_plan->resident_warp_slot <
+            request_owner::kResidentWarpCapacity &&
+        (!timing_driver_owned ||
+         rtcore_validate_v04_global384_timing_owner_plan(
+             owner_hw_sid, owner_plan));
+    if (!owner_plan_matches) return false;
     const rtcore_resident_rt_warp_record_key key =
         rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
     std::map<rtcore_resident_rt_warp_record_key,
@@ -14287,7 +14439,12 @@ extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
             record.warp_id == warp_id &&
             record.current_static_inst_uid == static_inst_uid &&
             record.active_mask == active_mask &&
-            record.resident_generation != 0;
+            record.resident_generation != 0 &&
+            record.v04_global384_timing_driver_owned ==
+                timing_driver_owned &&
+            record.v04_global384_owner_plan_valid &&
+            std::memcmp(&record.v04_global384_owner_plan, owner_plan,
+                        sizeof(*owner_plan)) == 0;
         if (matches) *resident_generation = record.resident_generation;
         return matches;
     }
@@ -14307,6 +14464,9 @@ extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
     record.resident_generation =
         g_rtcore_next_resident_rt_warp_generation++;
     record.v04_global384_preissued = true;
+    record.v04_global384_timing_driver_owned = timing_driver_owned;
+    record.v04_global384_owner_plan_valid = true;
+    record.v04_global384_owner_plan = *owner_plan;
     std::pair<std::map<rtcore_resident_rt_warp_record_key,
                        rtcore_resident_rt_warp_record>::iterator,
               bool> inserted = g_rtcore_resident_rt_warp_records.insert(
@@ -14316,11 +14476,53 @@ extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
     printf("GPGPU-Sim RTCORE_V04_GLOBAL384_RESIDENT_SHELL "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
            "static_inst_uid=%u resident_generation=%u "
-           "resident_occupancy=%u result=allocated\n",
+           "resident_occupancy=%u timing_driver_owned=%u "
+           "resident_slot=%u result=allocated\n",
            owner_hw_sid, warp_uid, warp_id, active_mask, static_inst_uid,
            record.resident_generation,
-           rtcore_resident_rt_warp_record_occupancy());
+           rtcore_resident_rt_warp_record_occupancy(),
+           timing_driver_owned ? 1u : 0u,
+           owner_plan->resident_warp_slot);
     fflush(stdout);
+    return true;
+}
+
+extern "C" bool rtcore_bind_v04_global384_resident_layout(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_generation,
+    const rtcore::v04::private_global_region::region_layout_v0 *layout)
+{
+    namespace global_region = rtcore::v04::private_global_region;
+    if (layout == NULL || active_mask == 0 || resident_generation == 0) {
+        return false;
+    }
+    uint64_t first_slot_address = 0;
+    if (global_region::slot_address(
+            *layout, owner_hw_sid, 0, &first_slot_address) !=
+            global_region::kStatusOk ||
+        first_slot_address == 0) {
+        return false;
+    }
+    const rtcore_resident_rt_warp_record_key key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator found =
+        g_rtcore_resident_rt_warp_records.find(key);
+    if (found == g_rtcore_resident_rt_warp_records.end()) return false;
+    rtcore_resident_rt_warp_record &record = found->second;
+    const bool identity_matches =
+        record.valid && record.v04_global384_preissued &&
+        record.owner_hw_sid == owner_hw_sid &&
+        record.current_warp_uid == warp_uid &&
+        record.warp_id == warp_id && record.active_mask == active_mask &&
+        record.resident_generation == resident_generation;
+    if (!identity_matches) return false;
+    if (record.v04_global384_layout_valid) {
+        return std::memcmp(&record.v04_global384_layout, layout,
+                           sizeof(*layout)) == 0;
+    }
+    record.v04_global384_layout = *layout;
+    record.v04_global384_layout_valid = true;
     return true;
 }
 
@@ -14347,6 +14549,7 @@ extern "C" bool rtcore_validate_v04_global384_resident_warp_shell(
            record.current_static_inst_uid == static_inst_uid &&
            record.active_mask == active_mask &&
            record.resident_generation == resident_generation &&
+           record.v04_global384_owner_plan_valid &&
            record.bound_lane_mask == 0 && record.admitted_lane_mask == 0;
 }
 
@@ -17848,7 +18051,8 @@ static uint8_t rtcore_v04_private_state_384_consumer_for_target(
 
 static bool rtcore_prepare_v04_target_private_state_384_read_plan(
     const rtcore::v04::fetch_target::reservation_receipt_v0 &reservation,
-    unsigned long long issue_cycle,
+    unsigned long long issue_cycle, uint8_t storage_profile,
+    uint64_t private_slot_base_address,
     rtcore::v04::private_state_384::live_bridge::read_request_plan_v1 *plan)
 {
     namespace live_bridge =
@@ -17859,7 +18063,7 @@ static bool rtcore_prepare_v04_target_private_state_384_read_plan(
         rtcore::v04::private_frontier;
     namespace private_storage = rtcore::v04::private_storage;
     namespace target = rtcore::v04::fetch_target;
-    const bool transition_profile_valid =
+    const bool source_profile_valid =
         (reservation.private_layout_profile_id ==
              private_frontier::kLayoutProfileId &&
          reservation.private_storage_profile ==
@@ -17867,11 +18071,17 @@ static bool rtcore_prepare_v04_target_private_state_384_read_plan(
         (reservation.private_layout_profile_id ==
              rtcore::v04::private_state_384::
                  kPrivateLayoutProfileId &&
-         reservation.private_storage_profile ==
-             private_storage::kProfileCompressedShared384);
+         (reservation.private_storage_profile ==
+              private_storage::kProfileCompressedShared384 ||
+          reservation.private_storage_profile ==
+              private_storage::kProfileGlobal384));
+    const bool requested_profile_valid =
+        storage_profile ==
+            private_storage::kProfileCompressedShared384 ||
+        storage_profile == private_storage::kProfileGlobal384;
     if (plan == NULL || !reservation.valid ||
         reservation.operation_kind != target::kOperationFetchTarget ||
-        !transition_profile_valid ||
+        !source_profile_valid || !requested_profile_valid ||
         reservation.bvh_format_profile_id !=
             rtcore::v04::typed_node::kGenRtDerivedProfileId) {
         return false;
@@ -17884,12 +18094,12 @@ static bool rtcore_prepare_v04_target_private_state_384_read_plan(
     }
     live_bridge::read_input_v1 input = {};
     input.owner = reservation.owner;
+    input.private_slot_base_address = private_slot_base_address;
     input.issue_cycle = issue_cycle;
     input.operation_sequence = reservation.target_operation_seq;
     input.bvh_format_profile_id = reservation.bvh_format_profile_id;
     input.reservation_generation = reservation.slot_generation;
-    input.storage_profile =
-        private_storage::kProfileCompressedShared384;
+    input.storage_profile = storage_profile;
     input.consumer = consumer;
     input.operation = operand_plan::kOperationDefault;
     input.completion_reason =
@@ -17939,7 +18149,9 @@ static bool rtcore_enqueue_v04_root_private_operand_reads(
             private_state_384::live_bridge::read_request_plan_v1
                 request_plan = {};
             if (!rtcore_prepare_v04_target_private_state_384_read_plan(
-                    reservation, service_cycle, &request_plan) ||
+                    reservation, service_cycle,
+                    private_storage::kProfileCompressedShared384, 0,
+                    &request_plan) ||
                 request_plan.request_count !=
                     reservation.private_chunk_count) {
                 failure = "ROOT_PRIVATE_384_READ_PLAN_INVALID";
@@ -19442,15 +19654,53 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
         return false;
     }
 
+    private_storage::profile_kind selected_profile =
+        private_storage::kProfileLegacyShared832;
+    if (private_storage::parse_profile(
+            getenv(private_storage::kSelectorEnvironmentName),
+            &selected_profile) != private_storage::kStatusOk) {
+        failure = "ROOT_PACKET_PRIVATE_STORAGE_SELECTOR_INVALID";
+        if (failure_reason != NULL) *failure_reason = failure;
+        return false;
+    }
+    const bool global384 =
+        selected_profile == private_storage::kProfileGlobal384;
+
     const rtcore_resident_rt_warp_record_key record_key =
         rtcore_make_resident_rt_warp_record_key(
             input->owner_hw_sid, input->warp_id);
     std::map<rtcore_resident_rt_warp_record_key,
              rtcore_resident_rt_warp_record>::const_iterator existing =
         g_rtcore_resident_rt_warp_records.find(record_key);
+    const rtcore_resident_rt_warp_record *preissued_record = NULL;
     if (existing != g_rtcore_resident_rt_warp_records.end() &&
         existing->second.valid) {
-        failure = "ROOT_PACKET_RESIDENT_WARP_COLLISION";
+        const rtcore_resident_rt_warp_record &candidate =
+            existing->second;
+        const bool preissued_matches =
+            global384 && candidate.v04_global384_preissued &&
+            candidate.v04_global384_timing_driver_owned &&
+            candidate.v04_global384_owner_plan_valid &&
+            candidate.v04_global384_layout_valid &&
+            !candidate.v04_request_owner_binding_valid &&
+            !candidate.v04_root_packet_valid &&
+            candidate.owner_hw_sid == input->owner_hw_sid &&
+            candidate.current_warp_uid == input->warp_uid &&
+            candidate.warp_id == input->warp_id &&
+            candidate.current_static_inst_uid == input->static_inst_uid &&
+            candidate.active_mask == input->active_mask &&
+            candidate.resident_generation != 0 &&
+            rtcore_validate_v04_global384_timing_owner_plan(
+                input->owner_hw_sid,
+                &candidate.v04_global384_owner_plan);
+        if (!preissued_matches) {
+            failure = "ROOT_PACKET_RESIDENT_WARP_COLLISION";
+            if (failure_reason != NULL) *failure_reason = failure;
+            return false;
+        }
+        preissued_record = &candidate;
+    } else if (global384) {
+        failure = "ROOT_PACKET_GLOBAL384_PREISSUED_STATE_MISSING";
         if (failure_reason != NULL) *failure_reason = failure;
         return false;
     }
@@ -19463,20 +19713,24 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
     timing_driver::state_v0 staged_driver =
         rtcore_v04_timing_driver_for(input->owner_hw_sid);
     timing_driver::new_submit_plan_v0 timing_plan = {};
-    timing_driver::status_kind timing_status =
-        timing_driver::prepare_new_submit(
+    timing_driver::status_kind timing_status = timing_driver::kStatusOk;
+    if (global384) {
+        timing_plan.valid = true;
+        timing_plan.owner_plan =
+            preissued_record->v04_global384_owner_plan;
+    } else {
+        timing_status = timing_driver::prepare_new_submit(
             staged_driver, identity, &timing_plan);
-    if (timing_status != timing_driver::kStatusOk) {
-        failure = timing_driver::status_name(timing_status);
-        if (failure_reason != NULL) *failure_reason = failure;
-        return false;
-    }
-    timing_status =
-        timing_driver::commit_new_submit(&staged_driver, timing_plan);
-    if (timing_status != timing_driver::kStatusOk) {
-        failure = timing_driver::status_name(timing_status);
-        if (failure_reason != NULL) *failure_reason = failure;
-        return false;
+        if (timing_status == timing_driver::kStatusOk) {
+            timing_status =
+                timing_driver::commit_new_submit(&staged_driver,
+                                                 timing_plan);
+        }
+        if (timing_status != timing_driver::kStatusOk) {
+            failure = timing_driver::status_name(timing_status);
+            if (failure_reason != NULL) *failure_reason = failure;
+            return false;
+        }
     }
 
     private_frontier::owner_binding_v0 private_owners[32] = {};
@@ -19508,14 +19762,30 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
     private_storage::admission_candidate_plan_v0 candidate_plan = {};
     private_shared::status_kind legacy_failure_status =
         private_shared::kStatusOk;
-    const private_storage::status_kind candidate_status =
-        private_storage::prepare_new_warp_from_selector(
-            staged_backing, input->warp_uid, input->warp_id,
-            input->active_mask, private_owners, private_operands,
-            ray_policies, root_build_generations,
-            getenv(private_storage::kSelectorEnvironmentName),
-            rtcore_v04_genrt_short_stack_replay_enabled(),
-            &legacy_failure_status, &candidate_plan);
+    private_storage::status_kind candidate_status =
+        private_storage::kStatusOk;
+    if (global384) {
+        candidate_plan.valid = true;
+        candidate_plan.profile =
+            private_storage::kProfileGlobal384;
+        candidate_plan.active_mask = input->active_mask;
+        candidate_plan.resident_charge_bytes_per_lane = 0;
+        for (unsigned lane = 0; lane < root_packet::kLaneCapacity;
+             ++lane) {
+            if ((input->active_mask & (1u << lane)) != 0) {
+                ++candidate_plan.active_lane_count;
+            }
+        }
+    } else {
+        candidate_status =
+            private_storage::prepare_new_warp_from_selector(
+                staged_backing, input->warp_uid, input->warp_id,
+                input->active_mask, private_owners, private_operands,
+                ray_policies, root_build_generations,
+                getenv(private_storage::kSelectorEnvironmentName),
+                rtcore_v04_genrt_short_stack_replay_enabled(),
+                &legacy_failure_status, &candidate_plan);
+    }
     if (candidate_status != private_storage::kStatusOk) {
         failure =
             candidate_status ==
@@ -19559,18 +19829,22 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
         }
         staged_compressed_backing_valid = true;
     }
-    private_shared::status_kind private_status =
-        private_shared::commit_new_warp(
-            &staged_backing, candidate_plan.legacy_live_plan);
-    if (private_status != private_shared::kStatusOk) {
-        failure = private_shared::status_name(private_status);
-        if (failure_reason != NULL) *failure_reason = failure;
-        return false;
+    if (!global384) {
+        const private_shared::status_kind private_status =
+            private_shared::commit_new_warp(
+                &staged_backing, candidate_plan.legacy_live_plan);
+        if (private_status != private_shared::kStatusOk) {
+            failure = private_shared::status_name(private_status);
+            if (failure_reason != NULL) *failure_reason = failure;
+            return false;
+        }
     }
     fetch_target::engine_state_v0 staged_target =
         rtcore_v04_live_target_engine_for(input->owner_hw_sid);
     fetch_target::reservation_receipt_v0 reservations[32] = {};
-    std::deque<rtcore_memory_unit_request_snapshot> raw_requests;
+    std::deque<rtcore_memory_unit_request_snapshot> memory_requests;
+    unsigned raw_request_count = 0;
+    unsigned private_read_request_count = 0;
     unsigned lane_ordinal = 0;
     for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
         const unsigned lane_mask = 1u << lane;
@@ -19622,13 +19896,27 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
             break;
         }
         if (candidate_plan.profile ==
-            private_storage::kProfileCompressedShared384) {
+                private_storage::kProfileCompressedShared384 ||
+            candidate_plan.profile ==
+                private_storage::kProfileGlobal384) {
             rtcore::v04::private_state_384::live_bridge::
                 read_request_plan_v1 private_read_plan = {};
             fetch_target::reservation_receipt_v0
                 updated_reservation = {};
+            uint64_t private_slot_base_address = 0;
+            if (global384 &&
+                rtcore::v04::private_global_region::slot_address(
+                    preissued_record->v04_global384_layout,
+                    input->owner_hw_sid, owner.private_slot_id,
+                    &private_slot_base_address) !=
+                    rtcore::v04::private_global_region::kStatusOk) {
+                failure = "ROOT_PACKET_GLOBAL384_SLOT_ADDRESS_INVALID";
+                break;
+            }
             if (!rtcore_prepare_v04_target_private_state_384_read_plan(
                     reservations[lane], modeled_reservation_cycle,
+                    candidate_plan.profile,
+                    private_slot_base_address,
                     &private_read_plan) ||
                 rtcore::v04::target_private_state_384::configure_read(
                     &staged_target, reservations[lane],
@@ -19638,6 +19926,25 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
                 break;
             }
             reservations[lane] = updated_reservation;
+            if (global384) {
+                for (unsigned request_index = 0;
+                     request_index < private_read_plan.request_count;
+                     ++request_index) {
+                    timing_status =
+                        timing_driver::begin_memory_transaction(
+                            &staged_driver, owner,
+                            target_operation_seq);
+                    if (timing_status != timing_driver::kStatusOk) {
+                        failure = timing_driver::status_name(
+                            timing_status);
+                        break;
+                    }
+                    memory_requests.push_back(
+                        private_read_plan.requests[request_index]);
+                    ++private_read_request_count;
+                }
+                if (strcmp(failure, "accepted") != 0) break;
+            }
         }
 
         target_memory::raw_read_plan_v0 raw_plan = {};
@@ -19659,7 +19966,9 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
                 failure = timing_driver::status_name(timing_status);
                 break;
             }
-            raw_requests.push_back(request_plan.requests[request_index]);
+            memory_requests.push_back(
+                request_plan.requests[request_index]);
+            ++raw_request_count;
         }
         if (strcmp(failure, "accepted") != 0) break;
         ++lane_ordinal;
@@ -19670,26 +19979,34 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
     }
 
     rtcore_resident_rt_warp_record record;
+    if (global384) {
+        record = *preissued_record;
+    }
     record.valid = true;
     record.owner_hw_sid = input->owner_hw_sid;
     record.warp_id = input->warp_id;
     record.current_warp_uid = input->warp_uid;
     record.current_static_inst_uid = input->static_inst_uid;
     record.active_mask = input->active_mask;
-    record.resident_generation =
-        g_rtcore_next_resident_rt_warp_generation;
+    if (!global384) {
+        record.resident_generation =
+            g_rtcore_next_resident_rt_warp_generation;
+    }
     record.v04_request_owner_binding_valid = true;
     record.v04_resident_warp_slot =
         timing_plan.owner_plan.resident_warp_slot;
     record.v04_request_owner_active_mask = input->active_mask;
     record.v04_private_frontier_live_init_valid = true;
-    record.v04_private_frontier_init_committed = false;
+    record.v04_private_frontier_init_committed = global384;
     record.v04_private_frontier_init_active_mask =
         input->active_mask;
     record.v04_private_storage_profile = candidate_plan.profile;
     record.v04_private_storage_charge_bytes_per_lane =
         candidate_plan.resident_charge_bytes_per_lane;
     record.v04_root_packet_valid = true;
+    record.v04_root_private_reads_enqueued_mask =
+        global384 ? input->active_mask : 0;
+    record.admitted_lane_mask = global384 ? input->active_mask : 0;
     if (rtcore_v04_native_boundary_completion_enabled() &&
         rtcore::v04::boundary_publication::initialize(
             &record.v04_boundary_completion, input->owner_hw_sid,
@@ -19740,9 +20057,10 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
     std::deque<rtcore_memory_unit_request_snapshot> &live_request_queue =
         g_rtcore_memory_unit_request_snapshots_by_owner[input->owner_hw_sid];
     live_request_queue.insert(live_request_queue.end(),
-                              raw_requests.begin(), raw_requests.end());
+                              memory_requests.begin(),
+                              memory_requests.end());
     g_rtcore_resident_rt_warp_records[record_key] = record;
-    ++g_rtcore_next_resident_rt_warp_generation;
+    if (!global384) ++g_rtcore_next_resident_rt_warp_generation;
     for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
         if ((input->active_mask & (1u << lane)) == 0) continue;
         rtcore_record_v04_lane_conservation_or_abort(
@@ -19759,25 +20077,32 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
             .completion_transaction_generation,
         record.active_mask, record.active_mask, issue_cycle);
     unsigned private_init_chunks_per_lane = 0;
-    for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
-        if ((input->active_mask & (1u << lane)) == 0) continue;
+    if (global384) {
         private_init_chunks_per_lane =
-            candidate_plan.legacy_live_plan.init_plans[lane]
-                .access_count;
-        break;
+            rtcore::v04::private_global_region::kLaunchWriteCount;
+    } else {
+        for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
+            if ((input->active_mask & (1u << lane)) == 0) continue;
+            private_init_chunks_per_lane =
+                candidate_plan.legacy_live_plan.init_plans[lane]
+                    .access_count;
+            break;
+        }
     }
     printf("GPGPU-Sim RTCORE_V04_ROOT_PACKET_ADMITTED "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
-           "resident_slot=%u lanes=%u raw_global_requests=%zu "
+           "resident_slot=%u lanes=%u raw_global_requests=%u "
+           "private_global_requests=%u "
            "private_init_chunks_per_lane=%u producer_commit_required=0 "
            "private_storage_profile=%s "
            "private_charge_bytes_per_lane=%u "
            "resident_private_charge_bytes=%u "
            "compressed_backing_committed=%u "
+           "preissued_owner_adopted=%u "
            "compatibility_proxy=1 pre_functional=1\n",
            input->owner_hw_sid, input->warp_uid, input->warp_id,
            input->active_mask, timing_plan.owner_plan.resident_warp_slot,
-           lane_ordinal, raw_requests.size(),
+           lane_ordinal, raw_request_count, private_read_request_count,
            private_init_chunks_per_lane,
            private_storage::profile_name(
                static_cast<private_storage::profile_kind>(
@@ -19787,7 +20112,8 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
            candidate_plan.profile ==
                    private_storage::kProfileCompressedShared384
                ? 1u
-               : 0u);
+               : 0u,
+           global384 ? 1u : 0u);
     fflush(stdout);
     if (failure_reason != NULL) *failure_reason = "accepted";
     return true;
@@ -20240,8 +20566,9 @@ extern "C" bool rtcore_accept_v04_target_private_shared_read(
     return true;
 }
 
-extern "C" bool rtcore_accept_v04_target_private_state_384_read(
+static bool rtcore_accept_v04_target_private_state_384_read_internal(
     const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
     unsigned long long response_cycle)
 {
     namespace private_384 =
@@ -20266,11 +20593,20 @@ extern "C" bool rtcore_accept_v04_target_private_state_384_read(
     target::engine_state_v0 staged_target = it->second;
     rtcore::v04::timing_driver::state_v0 staged_driver =
         rtcore_v04_timing_driver_for(request->owner_hw_sid);
-    if (private_384::accept_response(
-            &staged_target,
-            rtcore_v04_private_state_384_backing_for(
-                request->owner_hw_sid),
-            *request) != private_384::kStatusOk ||
+    const bool global384 =
+        request->v04_private_state_384_read.storage_profile ==
+        rtcore::v04::private_storage::kProfileGlobal384;
+    const private_384::status_kind response_status =
+        global384
+            ? private_384::accept_response_bytes(
+                  &staged_target, *request, response_bytes,
+                  response_byte_count)
+            : private_384::accept_response(
+                  &staged_target,
+                  rtcore_v04_private_state_384_backing_for(
+                      request->owner_hw_sid),
+                  *request);
+    if (response_status != private_384::kStatusOk ||
         rtcore::v04::timing_driver::complete_memory_transaction(
             &staged_driver, owner,
             request->v04_private_state_384_read.operation_sequence) !=
@@ -20289,6 +20625,9 @@ extern "C" bool rtcore_accept_v04_target_private_state_384_read(
         request->v04_private_state_384_read.operation_sequence;
     key.identity.lane_id =
         static_cast<uint8_t>(request->lane_id);
+    key.private_slot_base_address =
+        request->v04_private_state_384_read
+            .private_slot_base_address;
     key.private_layout_profile_id =
         request->v04_private_state_384_read
             .private_layout_profile_id;
@@ -20319,6 +20658,36 @@ extern "C" bool rtcore_accept_v04_target_private_state_384_read(
     rtcore_maybe_publish_v04_selected_fetch_ready(
         reservation, response_cycle);
     return true;
+}
+
+extern "C" bool rtcore_accept_v04_target_private_state_384_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle)
+{
+    if (request == NULL ||
+        request->v04_private_state_384_read.storage_profile ==
+            rtcore::v04::private_storage::kProfileGlobal384) {
+        return false;
+    }
+    return rtcore_accept_v04_target_private_state_384_read_internal(
+        request, NULL, 0, response_cycle);
+}
+
+extern "C" bool
+rtcore_accept_v04_target_private_state_384_read_response(
+    const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long response_cycle)
+{
+    if (request == NULL || response_bytes == NULL ||
+        response_byte_count !=
+            rtcore::v04::private_state_384::kChunkBytes ||
+        request->v04_private_state_384_read.storage_profile !=
+            rtcore::v04::private_storage::kProfileGlobal384) {
+        return false;
+    }
+    return rtcore_accept_v04_target_private_state_384_read_internal(
+        request, response_bytes, response_byte_count, response_cycle);
 }
 
 extern "C" bool rtcore_accept_v04_stack_spill_recovery_shared_read(
@@ -21065,7 +21434,9 @@ static bool rtcore_v04_private_storage_profile_for_owner(
         if (record.v04_private_storage_profile !=
                 private_storage::kProfileLegacyShared832 &&
             record.v04_private_storage_profile !=
-                private_storage::kProfileCompressedShared384) {
+                private_storage::kProfileCompressedShared384 &&
+            record.v04_private_storage_profile !=
+                private_storage::kProfileGlobal384) {
             return false;
         }
         if (found) return false;
@@ -21076,6 +21447,45 @@ static bool rtcore_v04_private_storage_profile_for_owner(
     if (!found) return false;
     *profile = selected;
     return true;
+}
+
+static bool rtcore_v04_private_slot_base_for_owner(
+    const rtcore::v04::private_frontier::owner_binding_v0 &owner,
+    uint8_t profile, uint64_t *private_slot_base_address)
+{
+    namespace global_region = rtcore::v04::private_global_region;
+    namespace live_bridge =
+        rtcore::v04::private_state_384::live_bridge;
+    namespace private_storage = rtcore::v04::private_storage;
+    if (private_slot_base_address == NULL) return false;
+    *private_slot_base_address = 0;
+    if (profile == private_storage::kProfileCompressedShared384) {
+        *private_slot_base_address = live_bridge::private_slot_base(owner);
+        return *private_slot_base_address != 0;
+    }
+    if (profile != private_storage::kProfileGlobal384) return false;
+    const rtcore_resident_rt_warp_record *match = NULL;
+    for (std::map<rtcore_resident_rt_warp_record_key,
+                  rtcore_resident_rt_warp_record>::const_iterator it =
+             g_rtcore_resident_rt_warp_records.begin();
+         it != g_rtcore_resident_rt_warp_records.end(); ++it) {
+        const rtcore_resident_rt_warp_record &record = it->second;
+        if (!record.valid || !record.v04_global384_preissued ||
+            !record.v04_global384_layout_valid ||
+            !record.v04_request_owner_binding_valid ||
+            record.owner_hw_sid != owner.owner_hw_sid ||
+            record.v04_resident_warp_slot != owner.resident_warp_id ||
+            record.v04_private_storage_profile != profile) {
+            continue;
+        }
+        if (match != NULL) return false;
+        match = &record;
+    }
+    return match != NULL &&
+           global_region::slot_address(
+               match->v04_global384_layout, owner.owner_hw_sid,
+               owner.private_slot_id, private_slot_base_address) ==
+               global_region::kStatusOk;
 }
 
 static rtcore::v04::private_frontier::region_binding_v0
@@ -21136,6 +21546,10 @@ rtcore_accept_v04_short_stack_node_route(
     }
     input.private_storage_profile =
         resident_private_storage_profile;
+    if (resident_private_storage_profile ==
+            rtcore::v04::private_storage::kProfileGlobal384) {
+        return node_timing::kRouteSinkBackpressure;
+    }
     const rtcore::v04::timing_driver::lane_control_state_v0 *control =
         rtcore::v04::timing_driver::find_live_lane_control(
             *staged_timing_state, request_owner);
@@ -21293,6 +21707,13 @@ rtcore_accept_v04_direct_selected_fetch_route(
     }
     input.private_storage_profile =
         resident_private_storage_profile;
+    if (resident_private_storage_profile !=
+            rtcore::v04::private_storage::kProfileLegacyShared832 &&
+        !rtcore_v04_private_slot_base_for_owner(
+            input.owner, resident_private_storage_profile,
+            &input.private_slot_base_address)) {
+        return node_timing::kRouteSinkRejected;
+    }
     transition::accepted_transition_v0 accepted = {};
     const transition::status_kind status =
         transition::try_accept_direct(
@@ -21400,9 +21821,11 @@ rtcore_accept_v04_direct_selected_fetch_route(
            (unsigned long long)accepted.reservation.reservation_id,
            accepted.reservation.slot_generation,
            raw_request_plan.request_count,
-           accepted.private_storage_profile ==
-                   rtcore::v04::private_storage::
-                       kProfileCompressedShared384
+           (accepted.private_storage_profile ==
+                    rtcore::v04::private_storage::
+                        kProfileCompressedShared384 ||
+            accepted.private_storage_profile ==
+                    rtcore::v04::private_storage::kProfileGlobal384)
                ? accepted.private_state_384_request_plan.request_count
                : accepted.private_request_plan.request_count,
            rtcore::v04::private_storage::profile_name(
@@ -22172,6 +22595,21 @@ static bool rtcore_service_v04_live_short_stack_timing(
             }
             input.private_storage_profile =
                 resident_private_storage_profile;
+            if (resident_private_storage_profile !=
+                    rtcore::v04::private_storage::
+                        kProfileLegacyShared832 &&
+                !rtcore_v04_private_slot_base_for_owner(
+                    input.owner, resident_private_storage_profile,
+                    &input.private_slot_base_address)) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
+                        "owner_hw_sid=%u lane_id=%u service_cycle=%llu "
+                        "fault=private_slot_base_missing\n",
+                        owner_hw_sid, ready.owner.lane_id,
+                        service_cycle);
+                fflush(stderr);
+                abort();
+            }
             selected_transition::accepted_transition_v0 accepted = {};
             const selected_transition::status_kind transition_status =
                 selected_transition::try_accept_direct(
@@ -24138,12 +24576,37 @@ rtcore_prepare_v04_live_instance_enter_input(
             rtcore::v04::typed_node::kLevelTlas ||
         packet->private_operands.decode_context.as_object.as_type !=
             typed_instance::kAsTypeTlas) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_ENTER_INPUT_REJECTED "
+                "packet_valid=%u input_valid=%u context_valid=%u "
+                "owner_hw_sid=%u expected_owner_hw_sid=%u "
+                "operation_kind=%u target_kind=%u raw_payload_bytes=%u "
+                "payload_kind=%u level=%u as_type=%u\n",
+                packet != NULL ? 1u : 0u, input != NULL ? 1u : 0u,
+                context != NULL ? 1u : 0u,
+                packet != NULL ? packet->owner.owner_hw_sid : 0u,
+                context != NULL ? context->owner_hw_sid : 0u,
+                packet != NULL ? packet->operation_kind : 0u,
+                packet != NULL ? packet->target_kind : 0u,
+                packet != NULL ? packet->raw_payload_bytes : 0u,
+                packet != NULL ? packet->target_reference.payload_kind : 0u,
+                packet != NULL ? packet->target_reference.level : 0u,
+                packet != NULL
+                    ? packet->private_operands.decode_context.as_object.as_type
+                    : 0u);
+        fflush(stderr);
         return instance_timing::kResultSinkRejected;
     }
 
     const char *failure = "unvalidated";
     if (!VulkanRayTracing::buildV04TypedInstanceEnterInput(
             *packet, input, &failure)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_ENTER_BUILD_REJECTED "
+                "owner_hw_sid=%u target_operation_seq=%u reason=%s\n",
+                packet->owner.owner_hw_sid,
+                packet->target_operation_seq, failure);
+        fflush(stderr);
         return instance_timing::kResultSinkRejected;
     }
     return instance_timing::kResultSinkAccepted;

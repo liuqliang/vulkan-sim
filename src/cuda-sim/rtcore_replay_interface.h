@@ -205,6 +205,7 @@ struct rtcore_v04_private_write_transport_snapshot {
 };
 
 struct rtcore_v04_private_state_384_read_transport_snapshot {
+  uint64_t private_slot_base_address;
   uint32_t operation_sequence;
   uint32_t private_layout_profile_id;
   uint32_t bvh_format_profile_id;
@@ -433,6 +434,11 @@ bool rtcore_accept_v04_target_private_shared_read(
 
 bool rtcore_accept_v04_target_private_state_384_read(
     const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle);
+
+bool rtcore_accept_v04_target_private_state_384_read_response(
+    const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
     unsigned long long response_cycle);
 
 bool rtcore_accept_v04_stack_spill_recovery_shared_read(

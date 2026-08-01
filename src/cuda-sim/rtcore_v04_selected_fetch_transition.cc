@@ -95,10 +95,15 @@ status_kind try_accept_direct(
   const bool compressed_profile =
       input.private_storage_profile ==
       private_storage::kProfileCompressedShared384;
+  const bool global_profile =
+      input.private_storage_profile ==
+      private_storage::kProfileGlobal384;
+  const bool private_state_384_profile =
+      compressed_profile || global_profile;
   if (timing_state == NULL || target_state == NULL || accepted == NULL ||
       !timing_state->initialized || target_state->initialized != 1 ||
       input.producer_operation_seq == 0 ||
-      (!legacy_profile && !compressed_profile) ||
+      (!legacy_profile && !private_state_384_profile) ||
       !bytes_are_zero(input.reserved_zero,
                       sizeof(input.reserved_zero))) {
     return kStatusInvalidArgument;
@@ -116,7 +121,8 @@ status_kind try_accept_direct(
            private_backing, input.owner) == NULL) ||
       (compressed_profile &&
        private_state_384::backing::find_live_lane(
-           private_state_384_backing, input.owner) == NULL)) {
+           private_state_384_backing, input.owner) == NULL) ||
+      (global_profile && input.private_slot_base_address == 0)) {
     return kStatusOwnerMismatch;
   }
 
@@ -176,7 +182,7 @@ status_kind try_accept_direct(
   target_shared_memory::request_plan_v0 private_request_plan = {};
   private_state_384::live_bridge::read_request_plan_v1
       private_state_384_request_plan = {};
-  if (compressed_profile) {
+  if (private_state_384_profile) {
     const fetch_target::target_kind target =
         static_cast<fetch_target::target_kind>(
             reservation.target_kind);
@@ -187,6 +193,8 @@ status_kind try_accept_direct(
     }
     private_state_384::live_bridge::read_input_v1 read_input = {};
     read_input.owner = input.owner;
+    read_input.private_slot_base_address =
+        input.private_slot_base_address;
     read_input.issue_cycle = input.reservation_cycle;
     read_input.operation_sequence =
         reservation.target_operation_seq;
@@ -194,8 +202,7 @@ status_kind try_accept_direct(
         reservation.bvh_format_profile_id;
     read_input.reservation_generation =
         reservation.slot_generation;
-    read_input.storage_profile =
-        private_storage::kProfileCompressedShared384;
+    read_input.storage_profile = input.private_storage_profile;
     read_input.consumer = consumer;
     read_input.operation =
         private_state_384::operand_plan::kOperationDefault;
@@ -238,7 +245,7 @@ status_kind try_accept_direct(
   }
 
   const unsigned private_request_count =
-      compressed_profile
+      private_state_384_profile
           ? private_state_384_request_plan.request_count
           : private_request_plan.request_count;
   const unsigned transaction_count =

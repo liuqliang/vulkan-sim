@@ -49,6 +49,7 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include "../cuda-sim/rtcore_v04_conservation_recorder.h"
 #include "../cuda-sim/rtcore_v04_live_global_memory_adapter.h"
 #include "../cuda-sim/rtcore_v04_pre_submit_publication_bridge.h"
+#include "../cuda-sim/rtcore_v04_private_storage_profile.h"
 #include "../cuda-sim/rtcore_v04_request_owner_binding.h"
 #include "../cuda-sim/rtcore_v04_root_node_packet.h"
 #include "../cuda-sim/rtcore_v04_shadow_shader_return.h"
@@ -2190,6 +2191,28 @@ static rtcore_replay_cycle_hook_consumer_stats
     g_rtcore_replay_cycle_hook_consumer_stats = {};
 static std::map<unsigned, std::vector<rtcore_memory_unit_request_snapshot> >
     g_rtcore_v02_lsu_pending_memory_requests;
+struct rtcore_memory_unit_read_payload_snapshot {
+  bool valid;
+  unsigned long long aligned_32b_addr;
+  std::array<uint8_t, RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES> bytes;
+};
+static std::map<unsigned, rtcore_memory_unit_read_payload_snapshot>
+    g_rtcore_v02_lsu_read_payload_by_mem_fetch_uid;
+
+static bool rtcore_capture_memory_unit_read_payload(
+    memory_space *global_memory, unsigned long long aligned_32b_addr,
+    rtcore_memory_unit_read_payload_snapshot *payload) {
+  if (global_memory == NULL || payload == NULL || aligned_32b_addr == 0 ||
+      aligned_32b_addr % RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES != 0) {
+    return false;
+  }
+  *payload = rtcore_memory_unit_read_payload_snapshot();
+  global_memory->read(aligned_32b_addr, payload->bytes.size(),
+                      payload->bytes.data());
+  payload->valid = true;
+  payload->aligned_32b_addr = aligned_32b_addr;
+  return true;
+}
 struct rtcore_memory_unit_same_cycle_32b_merge_key {
   unsigned owner_hw_sid;
   unsigned long long cycle;
@@ -3836,7 +3859,8 @@ static void rtcore_complete_v04_live_handoff_acquire_or_abort(
 static void rtcore_record_v02_lsu_sideband_response_completion(
     const rtcore_memory_unit_request_snapshot &snapshot,
     unsigned long long response_cycle, memory_space *global_memory,
-    unsigned long long response_address) {
+    unsigned long long response_address,
+    const uint8_t *bound_read_payload, unsigned bound_read_payload_bytes) {
   if (!snapshot.valid) {
     return;
   }
@@ -3895,6 +3919,53 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
       fflush(stderr);
       abort();
     }
+    rtcore_record_v04_memory_conservation_or_abort(
+        snapshot, true, response_cycle);
+    return;
+  }
+  if (snapshot.destination ==
+          RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
+      snapshot.access_kind ==
+          RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ) {
+    const bool response_valid =
+        snapshot.address_space == RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
+        snapshot.operation == RTCORE_MEMORY_OPERATION_READ &&
+        !snapshot.is_write &&
+        snapshot.v04_private_state_384_read.storage_profile ==
+            rtcore::v04::private_storage::kProfileGlobal384 &&
+        response_address == snapshot.aligned_32b_addr &&
+        bound_read_payload != NULL &&
+        bound_read_payload_bytes ==
+            rtcore::v04::private_state_384::kChunkBytes;
+    if (!response_valid ||
+        !rtcore_accept_v04_target_private_state_384_read_response(
+            &snapshot, bound_read_payload, bound_read_payload_bytes,
+            response_cycle)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_GLOBAL384_TARGET_READ_FAULT "
+              "owner_hw_sid=%u request_key=0x%08x generation=%u "
+              "operation_seq=%u chunk_id=%u chunk_count=%u "
+              "response_addr=0x%llx expected_addr=0x%llx\n",
+              snapshot.owner_hw_sid, snapshot.rt_request_id,
+              snapshot.request_generation,
+              snapshot.v04_private_state_384_read.operation_sequence,
+              snapshot.chunk_id, snapshot.chunk_count,
+              response_address, snapshot.aligned_32b_addr);
+      fflush(stderr);
+      abort();
+    }
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_TARGET_PRIVATE_RESPONSE_ACCEPTED "
+           "owner_hw_sid=%u request_key=0x%08x generation=%u "
+           "operation_seq=%u reservation_generation=%u "
+           "chunk_id=%u chunk_count=%u response_addr=0x%llx "
+           "source=l1d_completion_bytes "
+           "payload_capture=cache_accept_snapshot\n",
+           snapshot.owner_hw_sid, snapshot.rt_request_id,
+           snapshot.request_generation,
+           snapshot.v04_private_state_384_read.operation_sequence,
+           snapshot.v04_private_state_384_read.reservation_generation,
+           snapshot.chunk_id, snapshot.chunk_count, response_address);
+    fflush(stdout);
     rtcore_record_v04_memory_conservation_or_abort(
         snapshot, true, response_cycle);
     return;
@@ -4121,9 +4192,26 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
     return 0;
   }
   if (it->second.empty()) {
+    g_rtcore_v02_lsu_read_payload_by_mem_fetch_uid.erase(
+        mf->get_request_uid());
     g_rtcore_v02_lsu_pending_memory_requests.erase(it);
     return 0;
   }
+
+  const std::map<unsigned,
+                 rtcore_memory_unit_read_payload_snapshot>::const_iterator
+      payload = g_rtcore_v02_lsu_read_payload_by_mem_fetch_uid.find(
+          mf->get_request_uid());
+  const uint8_t *bound_read_payload =
+      payload != g_rtcore_v02_lsu_read_payload_by_mem_fetch_uid.end() &&
+              payload->second.valid &&
+              payload->second.aligned_32b_addr == mf->get_addr()
+          ? payload->second.bytes.data()
+          : NULL;
+  const unsigned bound_read_payload_bytes =
+      bound_read_payload != NULL
+          ? RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES
+          : 0;
 
   if (last_owner_hw_sid != NULL) {
     *last_owner_hw_sid = it->second.front().owner_hw_sid;
@@ -4137,7 +4225,9 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
     rtcore_record_v02_lsu_sideband_response_completion(*waiter_it,
                                                        response_cycle,
                                                        global_memory,
-                                                       mf->get_addr());
+                                                       mf->get_addr(),
+                                                       bound_read_payload,
+                                                       bound_read_payload_bytes);
     rtcore_complete_v04_live_handoff_acquire_or_abort(
         *waiter_it, response_cycle, global_memory, mf->get_addr());
   }
@@ -4146,6 +4236,8 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_same_cycle_fanout_wake_count += completed_count;
   }
+  g_rtcore_v02_lsu_read_payload_by_mem_fetch_uid.erase(
+      mf->get_request_uid());
   g_rtcore_v02_lsu_pending_memory_requests.erase(it);
   return completed_count;
 }
@@ -4393,6 +4485,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
       result.lsu_sideband_access_kind ==
           RTCORE_MEMORY_ACCESS_TARGET_RAW_READ ||
       result.lsu_sideband_access_kind ==
+          RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ ||
+      result.lsu_sideband_access_kind ==
           RTCORE_MEMORY_ACCESS_SHORT_STACK_RETURN_INSTANCE_READ;
   const bool supported_shader_continuation_access =
       result.lsu_sideband_response_target ==
@@ -4613,6 +4707,19 @@ rtcore_maybe_accept_memory_unit_l1d_client(
   g_rtcore_replay_cycle_hook_consumer_stats
       .v02_lsu_sideband_real_mem_fetch_count++;
   if (status == HIT && !is_write) {
+    rtcore_memory_unit_read_payload_snapshot read_payload = {};
+    if (!rtcore_capture_memory_unit_read_payload(
+            core->get_gpu()->get_global_memory(), mf->get_addr(),
+            &read_payload)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_MEMORY_UNIT_READ_PAYLOAD_FAULT "
+              "owner_hw_sid=%u request_key=%u address=0x%llx "
+              "phase=cache_hit_capture\n",
+              snapshot.owner_hw_sid, snapshot.rt_request_id,
+              static_cast<unsigned long long>(mf->get_addr()));
+      fflush(stderr);
+      abort();
+    }
     rtcore_accept_v04_live_handoff_acquire_or_abort(&snapshot);
     if (supported_shader_continuation_access) {
       printf("GPGPU-Sim "
@@ -4641,7 +4748,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
         snapshot, false, result.cycle);
     rtcore_record_v02_lsu_sideband_response_completion(
         snapshot, result.cycle, core->get_gpu()->get_global_memory(),
-        mf->get_addr());
+        mf->get_addr(), read_payload.bytes.data(),
+        read_payload.bytes.size());
     rtcore_complete_v04_live_handoff_acquire_or_abort(
         snapshot, result.cycle, core->get_gpu()->get_global_memory(),
         mf->get_addr());
@@ -4663,7 +4771,7 @@ rtcore_maybe_accept_memory_unit_l1d_client(
           snapshot, false, result.cycle);
       rtcore_record_v02_lsu_sideband_response_completion(
           snapshot, result.cycle, core->get_gpu()->get_global_memory(),
-          mf->get_addr());
+          mf->get_addr(), NULL, 0);
       delete mf;
       return RTCORE_MEMORY_UNIT_OFFER_L1D_ACCESS_PROGRESS;
     }
@@ -4723,6 +4831,21 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     return RTCORE_MEMORY_UNIT_OFFER_L1D_RESERVATION_BLOCKED;
   }
 
+  rtcore_memory_unit_read_payload_snapshot read_payload = {};
+  if (!is_write &&
+      !rtcore_capture_memory_unit_read_payload(
+          core->get_gpu()->get_global_memory(), mf->get_addr(),
+          &read_payload)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_MEMORY_UNIT_READ_PAYLOAD_FAULT "
+            "owner_hw_sid=%u request_key=%u address=0x%llx "
+            "phase=cache_miss_capture\n",
+            snapshot.owner_hw_sid, snapshot.rt_request_id,
+            static_cast<unsigned long long>(mf->get_addr()));
+    fflush(stderr);
+    abort();
+  }
+
   rtcore_accept_v04_live_handoff_acquire_or_abort(&snapshot);
   rtcore_accept_v04_global384_private_init_or_abort(&snapshot,
                                                     result.cycle);
@@ -4751,6 +4874,10 @@ rtcore_maybe_accept_memory_unit_l1d_client(
   }
   g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()].push_back(
       snapshot);
+  if (!is_write) {
+    g_rtcore_v02_lsu_read_payload_by_mem_fetch_uid[mf->get_request_uid()] =
+        read_payload;
+  }
   rtcore_record_v04_memory_conservation_or_abort(
       snapshot, false, result.cycle);
   rtcore_register_memory_unit_same_cycle_32b_merge_source(result, addr, mf);
@@ -4982,6 +5109,8 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
     return false;
   }
   if (it->second.empty()) {
+    g_rtcore_v02_lsu_read_payload_by_mem_fetch_uid.erase(
+        mf->get_request_uid());
     g_rtcore_v02_lsu_pending_memory_requests.erase(it);
     rtcore_v02_lsu_update_sideband_pending_count();
     return true;
