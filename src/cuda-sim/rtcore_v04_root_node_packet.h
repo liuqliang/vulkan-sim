@@ -6,6 +6,7 @@
 
 #include "rtcore_abi_v04_generated.h"
 #include "rtcore_v04_fetch_target_queue.h"
+#include "rtcore_v04_private_global_region.h"
 
 class ptx_instruction;
 class ptx_thread_info;
@@ -106,6 +107,7 @@ enum rtcore_v04_first_submit_live_bind_preissue_status {
   RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY = 1,
   RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT = 2,
   RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT = 3,
+  RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_HANDOFF_READY = 4,
 };
 
 enum rtcore_v04_retire_live_release_status {
@@ -137,6 +139,17 @@ rtcore_poll_v04_global384_initial_handoff_acquire_before_issue(
     unsigned warp_id, unsigned active_mask,
     unsigned resident_warp_generation, unsigned long long handoff_base,
     unsigned handoff_lane_stride_bytes, unsigned long long issue_cycle);
+
+extern "C" rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_service_v04_global384_private_init_before_issue(
+    unsigned dynamic_warp_id, unsigned resident_warp_generation,
+    const rtcore::v04::private_global_region::whole_mask_launch_plan_v0 *plan,
+    unsigned long long issue_cycle);
+
+extern "C" bool
+rtcore_validate_v04_global384_private_init_before_functional(
+    unsigned dynamic_warp_id, unsigned resident_warp_generation,
+    const rtcore::v04::private_global_region::whole_mask_launch_plan_v0 *plan);
 
 extern "C" bool
 rtcore_validate_v04_global384_first_submit_live_bind_before_functional(

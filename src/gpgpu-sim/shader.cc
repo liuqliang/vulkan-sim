@@ -3631,6 +3631,38 @@ static bool rtcore_v04_live_handoff_acquire_request(
          snapshot.v04_live_handoff_acquire.valid == 1;
 }
 
+static bool rtcore_v04_global384_private_init_request(
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  return snapshot.valid && snapshot.is_write &&
+         snapshot.address_space == RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
+         snapshot.operation == RTCORE_MEMORY_OPERATION_WRITE &&
+         snapshot.destination ==
+             RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK &&
+         snapshot.access_kind == RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT &&
+         snapshot.v04_global384_private_init.valid == 1;
+}
+
+static void rtcore_accept_v04_global384_private_init_or_abort(
+    rtcore_memory_unit_request_snapshot *snapshot,
+    unsigned long long accept_cycle) {
+  if (snapshot == NULL ||
+      !rtcore_v04_global384_private_init_request(*snapshot)) {
+    return;
+  }
+  if (!rtcore_accept_v04_global384_private_init_write(snapshot,
+                                                       accept_cycle)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_FAULT "
+            "phase=accept owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+            "chunk_id=%u address=0x%llx\n",
+            snapshot->owner_hw_sid, snapshot->rt_request_id,
+            snapshot->lane_id, snapshot->chunk_id,
+            snapshot->aligned_32b_addr);
+    fflush(stderr);
+    abort();
+  }
+}
+
 static rtcore::v04::address_range_registry::live_access_v0
 rtcore_v04_live_handoff_acquire_access(
     const rtcore_memory_unit_request_snapshot &snapshot) {
@@ -3806,6 +3838,23 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
     unsigned long long response_cycle, memory_space *global_memory,
     unsigned long long response_address) {
   if (!snapshot.valid) {
+    return;
+  }
+  if (rtcore_v04_global384_private_init_request(snapshot)) {
+    if (!rtcore_complete_v04_global384_private_init_write(
+            &snapshot, global_memory, response_address, response_cycle)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_FAULT "
+              "phase=ack owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+              "chunk_id=%u response_address=0x%llx expected_address=0x%llx\n",
+              snapshot.owner_hw_sid, snapshot.rt_request_id,
+              snapshot.lane_id, snapshot.chunk_id, response_address,
+              snapshot.aligned_32b_addr);
+      fflush(stderr);
+      abort();
+    }
+    rtcore_record_v04_memory_conservation_or_abort(
+        snapshot, true, response_cycle);
     return;
   }
   if (snapshot.destination ==
@@ -4169,6 +4218,10 @@ static bool rtcore_try_merge_memory_unit_same_cycle_32b(
   if (!rtcore_memory_unit_same_cycle_32b_merge_enabled()) {
     return false;
   }
+  if (snapshot != NULL &&
+      rtcore_v04_global384_private_init_request(*snapshot)) {
+    return false;
+  }
   rtcore_memory_unit_refresh_same_cycle_32b_merge_map(result.cycle);
   rtcore_memory_unit_same_cycle_32b_merge_key key = {};
   key.owner_hw_sid = result.lsu_sideband_owner_hw_sid;
@@ -4209,6 +4262,9 @@ static void rtcore_register_memory_unit_same_cycle_32b_merge_source(
   if (!rtcore_memory_unit_same_cycle_32b_merge_enabled() || mf == NULL) {
     return;
   }
+  const rtcore_memory_unit_request_snapshot snapshot =
+      rtcore_v02_lsu_sideband_snapshot_from_result(result);
+  if (rtcore_v04_global384_private_init_request(snapshot)) return;
   rtcore_memory_unit_refresh_same_cycle_32b_merge_map(result.cycle);
   rtcore_memory_unit_same_cycle_32b_merge_key key = {};
   key.owner_hw_sid = result.lsu_sideband_owner_hw_sid;
@@ -4331,6 +4387,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
           RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
       result.lsu_sideband_access_kind ==
           RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE ||
+      result.lsu_sideband_access_kind ==
+          RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT ||
       result.lsu_sideband_access_kind == RTCORE_V02_LSU_ACCESS_RESULT_STORE ||
       result.lsu_sideband_access_kind ==
           RTCORE_MEMORY_ACCESS_TARGET_RAW_READ ||
@@ -4373,7 +4431,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
         snapshot.destination ==
             RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL ||
         snapshot.destination ==
-            RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK) {
+            RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK ||
+        rtcore_v04_global384_private_init_request(snapshot)) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_MEMORY_UNIT_L1D_CLIENT_FAULT "
               "owner_hw_sid=%u request_key=%u lane_id=%u generation=%u "
@@ -4590,8 +4649,24 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     return RTCORE_MEMORY_UNIT_OFFER_L1D_ACCESS_PROGRESS;
   }
   if (status == HIT && is_write) {
+    rtcore_accept_v04_global384_private_init_or_abort(&snapshot,
+                                                      result.cycle);
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_cache_hit_count++;
+    if (rtcore_v04_global384_private_init_request(snapshot) &&
+        !lower_memory_any_request_sent) {
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_immediate_completion_count++;
+      rtcore_record_v02_lsu_sideband_immediate_completion_kind(
+          result.lsu_sideband_access_kind);
+      rtcore_record_v04_memory_conservation_or_abort(
+          snapshot, false, result.cycle);
+      rtcore_record_v02_lsu_sideband_response_completion(
+          snapshot, result.cycle, core->get_gpu()->get_global_memory(),
+          mf->get_addr());
+      delete mf;
+      return RTCORE_MEMORY_UNIT_OFFER_L1D_ACCESS_PROGRESS;
+    }
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_cache_write_hit_pending_count++;
     g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()].push_back(
@@ -4649,6 +4724,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
   }
 
   rtcore_accept_v04_live_handoff_acquire_or_abort(&snapshot);
+  rtcore_accept_v04_global384_private_init_or_abort(&snapshot,
+                                                    result.cycle);
 
   if (supported_shader_continuation_access) {
     printf("GPGPU-Sim "

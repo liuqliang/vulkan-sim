@@ -9,6 +9,7 @@
 
 class ptx_instruction;
 class ptx_thread_info;
+class memory_space;
 
 enum rtcore_candidate_gate_state {
   RTCORE_CANDIDATE_GATE_DISABLED = 0,
@@ -238,6 +239,18 @@ struct rtcore_v04_live_handoff_acquire_transport_snapshot {
   uint8_t reserved_zero[1];
 };
 
+struct rtcore_v04_global384_private_init_transport_snapshot {
+  uint32_t resident_warp_generation;
+  uint32_t dynamic_warp_id;
+  uint32_t submit_warp_uid;
+  uint32_t submit_active_mask;
+  uint32_t warp_id;
+  uint8_t resident_warp_slot;
+  uint8_t field_kind;
+  uint8_t valid;
+  uint8_t accepted;
+};
+
 struct rtcore_v04_live_transaction_transport_snapshot {
   uint64_t transaction_id;
   uint64_t record_id;
@@ -280,6 +293,8 @@ struct rtcore_memory_unit_request_snapshot {
       v04_handoff_publication;
   rtcore_v04_live_handoff_acquire_transport_snapshot
       v04_live_handoff_acquire;
+  rtcore_v04_global384_private_init_transport_snapshot
+      v04_global384_private_init;
   rtcore_v04_live_transaction_transport_snapshot v04_live_transaction;
 };
 
@@ -296,6 +311,15 @@ extern "C" bool
 rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
     const rtcore_memory_unit_request_snapshot *snapshot,
     const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long completion_cycle);
+
+extern "C" bool rtcore_accept_v04_global384_private_init_write(
+    rtcore_memory_unit_request_snapshot *snapshot,
+    unsigned long long accept_cycle);
+
+extern "C" bool rtcore_complete_v04_global384_private_init_write(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    memory_space *global_memory, unsigned long long response_address,
     unsigned long long completion_cycle);
 
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
@@ -365,7 +389,8 @@ inline bool rtcore_v04_native_publication_requires_exact_address(
              RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK ||
          request.access_kind ==
              RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE ||
-         request.v04_live_handoff_acquire.valid == 1;
+         request.v04_live_handoff_acquire.valid == 1 ||
+         request.v04_global384_private_init.valid == 1;
 }
 
 extern "C" {

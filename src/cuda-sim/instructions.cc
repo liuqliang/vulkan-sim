@@ -7950,12 +7950,14 @@ struct rtcore_v04_functional_only_resubmit_stage {
 
 struct rtcore_v04_functional_only_initial_stage {
   bool valid;
+  bool owner_plan_precommitted;
   unsigned finalized_lane_mask;
   request_owner::new_warp_plan_v0 owner_plan;
   rtcore_v04_functional_only_warp_record record;
 
   rtcore_v04_functional_only_initial_stage()
-      : valid(false), finalized_lane_mask(0), owner_plan(), record() {}
+      : valid(false), owner_plan_precommitted(false), finalized_lane_mask(0),
+        owner_plan(), record() {}
 };
 
 typedef std::pair<unsigned, unsigned> rtcore_v04_functional_only_warp_key;
@@ -8150,6 +8152,13 @@ static functional_engine::root_input_v0 rtcore_v04_functional_only_root_input(
   return root;
 }
 
+static bool rtcore_v04_global384_profile_selected(bool *selected);
+static bool rtcore_v04_global384_validate_preissued_owner_plan(
+    const root_node_packet::warp_input_v0 &input,
+    request_owner::new_warp_plan_v0 *plan);
+static bool rtcore_v04_global384_consume_preissued_owner_plan(
+    const root_node_packet::warp_input_v0 &input);
+
 static bool rtcore_v04_functional_only_prepare_initial(
     const root_node_packet::warp_input_v0 &input,
     ptx_thread_info *const *lane_threads) {
@@ -8162,21 +8171,32 @@ static bool rtcore_v04_functional_only_prepare_initial(
     return false;
   }
 
-  request_owner::allocator_state_v0 &allocator =
-      rtcore_v04_functional_only_allocator(input.owner_hw_sid);
-  request_owner::warp_identity_v0 identity = {};
-  identity.owner_hw_sid = input.owner_hw_sid;
-  identity.warp_uid = input.warp_uid;
-  identity.warp_id = input.warp_id;
-  identity.active_mask = input.active_mask;
   request_owner::new_warp_plan_v0 plan = {};
-  if (request_owner::prepare_new_warp(allocator, identity, &plan) !=
-      request_owner::kStatusOk) {
+  bool global384 = false;
+  if (!rtcore_v04_global384_profile_selected(&global384)) {
     return false;
+  }
+  if (global384) {
+    if (!rtcore_v04_global384_validate_preissued_owner_plan(input, &plan)) {
+      return false;
+    }
+  } else {
+    request_owner::allocator_state_v0 &allocator =
+        rtcore_v04_functional_only_allocator(input.owner_hw_sid);
+    request_owner::warp_identity_v0 identity = {};
+    identity.owner_hw_sid = input.owner_hw_sid;
+    identity.warp_uid = input.warp_uid;
+    identity.warp_id = input.warp_id;
+    identity.active_mask = input.active_mask;
+    if (request_owner::prepare_new_warp(allocator, identity, &plan) !=
+        request_owner::kStatusOk) {
+      return false;
+    }
   }
 
   rtcore_v04_functional_only_initial_stage stage;
   stage.valid = true;
+  stage.owner_plan_precommitted = global384;
   stage.owner_plan = plan;
   rtcore_v04_functional_only_warp_record &record = stage.record;
   record.valid = true;
@@ -8230,13 +8250,18 @@ static bool rtcore_v04_functional_only_prepare_initial(
   }
   g_rtcore_v04_functional_only_initial_stages.insert(
       std::make_pair(input.warp_uid, stage));
+  if (global384 &&
+      !rtcore_v04_global384_consume_preissued_owner_plan(input)) {
+    g_rtcore_v04_functional_only_initial_stages.erase(input.warp_uid);
+    return false;
+  }
   printf(
       "GPGPU-Sim RTCORE_V04_FUNCTIONAL_ONLY_INITIAL_STAGE "
       "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
-      "resident_warp_slot=%u owner_state_committed=0 "
+      "resident_warp_slot=%u owner_state_committed=%u "
       "timing_state_mutated=0\n",
       input.owner_hw_sid, input.warp_uid, input.warp_id, input.active_mask,
-      record.resident_warp_slot);
+      record.resident_warp_slot, stage.owner_plan_precommitted ? 1u : 0u);
   fflush(stdout);
   return true;
 }
@@ -16281,8 +16306,6 @@ bool rtcore_v04_register_global384_provisional_publication(
          rtcore::v04::pre_submit_publication::kStatusOk;
 }
 
-namespace {
-
 struct rtcore_v04_global384_bind_material {
   rtcore::v04::pre_submit_publication::first_submit_bind_request_v0 request;
   std::array<uint32_t,
@@ -16300,10 +16323,17 @@ struct rtcore_v04_global384_pending_bind_owner {
   unsigned reserved_warp_uid;
   unsigned warp_id;
   unsigned active_mask;
+  bool owner_plan_valid;
+  bool owner_plan_committed;
+  bool private_init_plan_valid;
+  rtcore::v04::request_owner::new_warp_plan_v0 owner_plan;
+  rtcore::v04::private_global_region::whole_mask_launch_plan_v0
+      private_init_plan;
 
   rtcore_v04_global384_pending_bind_owner()
       : dynamic_warp_id(0), reserved_warp_uid(0), warp_id(0),
-        active_mask(0) {}
+        active_mask(0), owner_plan_valid(false), owner_plan_committed(false),
+        private_init_plan_valid(false), owner_plan(), private_init_plan() {}
 };
 
 static std::map<unsigned, rtcore_v04_global384_pending_bind_owner>
@@ -16529,7 +16559,317 @@ static bool rtcore_v04_global384_pending_logical_submit_matches(
          owner.warp_id == warp_id && owner.active_mask == active_mask;
 }
 
-}  // namespace
+static bool rtcore_v04_global384_owner_plan_is_live(
+    const request_owner::allocator_state_v0 &allocator,
+    const request_owner::new_warp_plan_v0 &plan) {
+  if (!plan.valid || plan.identity.active_mask == 0) return false;
+  for (unsigned lane = 0; lane < request_owner::kLaneCapacity; ++lane) {
+    if ((plan.identity.active_mask & (1u << lane)) == 0) continue;
+    if (!request_owner::validate_live_binding(
+            allocator, plan.lane_bindings[lane], plan.identity.warp_uid,
+            plan.identity.active_mask)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool rtcore_v04_global384_build_private_init_plan(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned dynamic_warp_id, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_warp_generation,
+    const request_owner::new_warp_plan_v0 &owner_plan,
+    const rtcore_v04_global384_bind_material &material,
+    rtcore::v04::private_global_region::whole_mask_launch_plan_v0 *plan) {
+  namespace global_region = rtcore::v04::private_global_region;
+  namespace private_state = rtcore::v04::private_state_384;
+  namespace storage = rtcore::v04::private_storage;
+  namespace typed_blas = rtcore::v04::typed_blas;
+  if (instruction == NULL || lane_threads == NULL || plan == NULL ||
+      owner_hw_sid == UINT32_MAX ||
+      !owner_plan.valid || owner_plan.identity.owner_hw_sid != owner_hw_sid ||
+      owner_plan.identity.warp_uid != warp_uid ||
+      owner_plan.identity.warp_id != warp_id ||
+      owner_plan.identity.active_mask != active_mask ||
+      owner_plan.resident_warp_slot >= global_region::kResidentWarpCapacity ||
+      resident_warp_generation == 0 || active_mask == 0) {
+    return false;
+  }
+
+  const operand_info &context_operand = instruction->operand_lookup(1);
+  const operand_info &handoff_operand = instruction->operand_lookup(2);
+  rtcore::v04::private_frontier::owner_binding_v0
+      owners[global_region::kLaneCapacity] = {};
+  private_state::sparse_write_plan_v1
+      launch_plans[global_region::kLaneCapacity] = {};
+  for (unsigned lane = 0; lane < global_region::kLaneCapacity; ++lane) {
+    if ((active_mask & (1u << lane)) == 0) continue;
+    ptx_thread_info *thread = lane_threads[lane];
+    if (thread == NULL || thread->get_uid() == 0) return false;
+    const ptx_reg_t context_value = thread->get_operand_value(
+        context_operand, context_operand, B64_TYPE, thread, 1);
+    const ptx_reg_t handoff_value = thread->get_operand_value(
+        handoff_operand, handoff_operand, B64_TYPE, thread, 1);
+    rtcore_v03_compact_context_decoded context;
+    if (context_value.u64 == 0 || handoff_value.u64 == 0 ||
+        (context_value.u64 & 63u) != 0 ||
+        (handoff_value.u64 & 127u) != 0 ||
+        !rtcore_decode_v03_compact_context_image(
+            instruction, thread, context_value.u64, &context)) {
+      return false;
+    }
+    std::array<uint8_t, rtcore::abi_v04::kLaneSlotBytes> handoff_image = {};
+    if (!rtcore_copy_v04_global384_initial_handoff_acquire_lane_before_functional(
+            owner_hw_sid, dynamic_warp_id, warp_uid, warp_id, active_mask,
+            resident_warp_generation, lane, handoff_image.data(),
+            handoff_image.size())) {
+      return false;
+    }
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> trace_words = {};
+    if (!rtcore_validate_v04_shadow_trace_input(
+            instruction, thread, context_value.u64, handoff_value.u64, lane,
+            context, owner_hw_sid, dynamic_warp_id, warp_uid, warp_id,
+            resident_warp_generation, handoff_image.data(),
+            handoff_image.size(), &trace_words)) {
+      return false;
+    }
+    rtcore::abi_v04::shadow::trace_input_values trace = {};
+    if (!rtcore::abi_v04::shadow::unpack_trace_input_words(trace_words,
+                                                           &trace)) {
+      return false;
+    }
+    rtcore_tlas_binding_snapshot tlas = {};
+    const char *capture_failure = "unvalidated";
+    if (!VulkanRayTracing::captureTlasBinding(
+            trace.traversable_reference, &tlas, &capture_failure) ||
+        !tlas.valid || !tlas.live || !tlas.root_descriptor_valid ||
+        tlas.root_build_generation == 0 ||
+        tlas.root_bvh_profile_id != typed_blas::kGenRtDerivedProfileId ||
+        tlas.root_payload_format_id != typed_blas::kGenRtPayloadFormatId ||
+        tlas.root_payload_kind != typed_blas::kInternalPayloadKind ||
+        tlas.root_payload_offset > tlas.size_bytes ||
+        uint64_t{64} > tlas.size_bytes - tlas.root_payload_offset ||
+        tlas.device_base_address > UINT64_MAX - tlas.root_payload_offset) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_FAULT "
+              "phase=materialize reason=%s owner_hw_sid=%u warp_uid=%u "
+              "warp_id=%u lane_id=%u\n",
+              capture_failure, owner_hw_sid, warp_uid, warp_id, lane);
+      fflush(stderr);
+      return false;
+    }
+
+    private_state::launch_input_v1 launch = {};
+    for (unsigned component = 0; component < 3; ++component) {
+      launch.ray.origin[component] = rtcore_context_u32_to_float(
+          trace.world_ray_origin_fp32[component]);
+      launch.ray.direction[component] = rtcore_context_u32_to_float(
+          trace.world_ray_direction_fp32[component]);
+    }
+    launch.ray.t_min = rtcore_context_u32_to_float(trace.ray_tmin_fp32);
+    launch.ray.t_max =
+        rtcore_context_u32_to_float(trace.launch_ray_tmax_fp32);
+    launch.tlas_context.as_object_id = tlas.object_id;
+    launch.tlas_context.device_base = tlas.device_base_address;
+    launch.tlas_context.device_range_bytes = tlas.size_bytes;
+    launch.tlas_context.as_object_generation = tlas.generation;
+    launch.tlas_context.as_type = 1;
+    launch.tlas_context.cull_mask = static_cast<uint8_t>(trace.cull_mask);
+    launch.ray_flags = trace.ray_flags;
+    launch.tlas_build_generation = tlas.root_build_generation;
+    private_state::image_v1 transient_image = {};
+    if (private_state::initialize_new_launch_image(
+            private_state::kPrivateLayoutProfileId,
+            private_state::kGenRtBvhFormatProfileId, launch,
+            &transient_image, &launch_plans[lane]) !=
+            private_state::kStatusOk ||
+        launch_plans[lane].write_count != private_state::kLaunchWriteCount) {
+      return false;
+    }
+    owners[lane] = request_owner::make_private_frontier_owner(
+        owner_plan.lane_bindings[lane]);
+  }
+
+  global_region::region_config_v0 config = {};
+  config.hidden_base = UINT64_C(0x7c00000000000000);
+  config.sm_region_stride = UINT64_C(0x20000);
+  config.sm_count = owner_hw_sid + 1;
+  config.configured_l1_line_bytes = 128;
+  config.base_color = 0;
+  global_region::address_range_v0 visible_ranges[2] = {};
+  visible_ranges[0].base = material.request.allocation_ranges.context_base;
+  visible_ranges[0].byte_count =
+      material.request.allocation_ranges.context_byte_count;
+  visible_ranges[1].base = material.request.allocation_ranges.handoff_base;
+  visible_ranges[1].byte_count =
+      material.request.allocation_ranges.handoff_byte_count;
+  global_region::status_kind global_status = global_region::kStatusOk;
+  const storage::status_kind status =
+      storage::prepare_global384_launch_candidate_from_selector(
+          getenv(storage::kSelectorEnvironmentName), config, visible_ranges,
+          2, owner_hw_sid, warp_uid, warp_id,
+          owner_plan.resident_warp_slot, active_mask, owners, launch_plans,
+          &global_status, plan);
+  if (status != storage::kStatusOk ||
+      global_status != global_region::kStatusOk || !plan->valid) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_FAULT "
+            "phase=plan storage_status=%s global_status=%s owner_hw_sid=%u "
+            "warp_uid=%u warp_id=%u\n",
+            storage::status_name(status),
+            global_region::status_name(global_status), owner_hw_sid, warp_uid,
+            warp_id);
+    fflush(stderr);
+    return false;
+  }
+  return true;
+}
+
+static bool rtcore_v04_global384_validate_preissued_owner_plan(
+    const root_node_packet::warp_input_v0 &input,
+    request_owner::new_warp_plan_v0 *plan) {
+  if (plan == NULL) return false;
+  std::map<unsigned, rtcore_v04_global384_pending_bind_owner>::iterator pending =
+      g_rtcore_v04_global384_pending_bind_by_sm.find(input.owner_hw_sid);
+  if (pending == g_rtcore_v04_global384_pending_bind_by_sm.end() ||
+      !pending->second.owner_plan_valid ||
+      !pending->second.private_init_plan_valid ||
+      pending->second.reserved_warp_uid != input.warp_uid ||
+      pending->second.warp_id != input.warp_id ||
+      pending->second.active_mask != input.active_mask) {
+    return false;
+  }
+  request_owner::allocator_state_v0 &allocator =
+      rtcore_v04_functional_only_allocator(input.owner_hw_sid);
+  if (!pending->second.owner_plan_committed ||
+      !rtcore_v04_global384_owner_plan_is_live(
+          allocator, pending->second.owner_plan)) {
+    return false;
+  }
+  const rtcore::v04::private_global_region::whole_mask_launch_plan_v0 &global =
+      pending->second.private_init_plan;
+  for (unsigned lane = 0; lane < root_node_packet::kLaneCapacity; ++lane) {
+    if ((input.active_mask & (1u << lane)) == 0) continue;
+    const root_node_packet::lane_input_v0 &lane_input = input.lanes[lane];
+    rtcore::v04::private_state_384::launch_input_v1 launch = {};
+    for (unsigned component = 0; component < 3; ++component) {
+      launch.ray.origin[component] =
+          lane_input.private_operands.mutable_ray.origin[component];
+      launch.ray.direction[component] =
+          lane_input.private_operands.mutable_ray.direction[component];
+    }
+    launch.ray.t_min = lane_input.private_operands.mutable_ray.t_min;
+    launch.ray.t_max = lane_input.private_operands.mutable_ray.t_max;
+    launch.tlas_context.as_object_id =
+        lane_input.private_operands.decode_context.as_object.object_id;
+    launch.tlas_context.device_base =
+        lane_input.private_operands.decode_context.device_base;
+    launch.tlas_context.device_range_bytes =
+        lane_input.private_operands.decode_context.device_range_bytes;
+    launch.tlas_context.as_object_generation =
+        lane_input.private_operands.decode_context.as_object.generation;
+    launch.tlas_context.as_type =
+        lane_input.private_operands.decode_context.as_object.as_type;
+    launch.tlas_context.cull_mask = lane_input.ray_policy.cull_mask;
+    launch.ray_flags = lane_input.ray_policy.ray_flags;
+    launch.tlas_build_generation = lane_input.root_build_generation;
+    rtcore::v04::private_state_384::image_v1 image = {};
+    rtcore::v04::private_state_384::sparse_write_plan_v1 sparse = {};
+    if (rtcore::v04::private_state_384::initialize_new_launch_image(
+            rtcore::v04::private_state_384::kPrivateLayoutProfileId,
+            rtcore::v04::private_state_384::kGenRtBvhFormatProfileId, launch,
+            &image, &sparse) != rtcore::v04::private_state_384::kStatusOk ||
+        sparse.write_count !=
+            rtcore::v04::private_state_384::kLaunchWriteCount) {
+      return false;
+    }
+    for (unsigned chunk = 0;
+         chunk < rtcore::v04::private_state_384::kLaunchWriteCount; ++chunk) {
+      const rtcore::v04::private_state_384::chunk_write_v1 &expected =
+          sparse.writes[chunk];
+      const rtcore::v04::private_global_region::global_chunk_write_v0 &actual =
+          global.lanes[lane].writes[chunk];
+      if (expected.slot_byte_offset != actual.slot_byte_offset ||
+          expected.byte_count != actual.byte_count ||
+          expected.byte_mask != actual.byte_mask ||
+          std::memcmp(expected.payload, actual.payload,
+                      sizeof(expected.payload)) != 0) {
+        return false;
+      }
+    }
+  }
+  unsigned current_warp_uid = 0;
+  unsigned current_active_mask = 0;
+  unsigned resident_generation = 0;
+  unsigned resident_occupancy = 0;
+  if (!rtcore_query_resident_rt_warp_record(
+          input.owner_hw_sid, input.warp_id, &current_warp_uid,
+          &current_active_mask, &resident_generation, &resident_occupancy) ||
+      current_warp_uid != input.warp_uid ||
+      current_active_mask != input.active_mask || resident_generation == 0 ||
+      resident_occupancy == 0) {
+    return false;
+  }
+  if (!rtcore_validate_v04_global384_private_init_before_functional(
+          pending->second.dynamic_warp_id,
+          resident_generation,
+          &pending->second.private_init_plan)) {
+    return false;
+  }
+  *plan = pending->second.owner_plan;
+  return true;
+}
+
+static bool rtcore_v04_global384_consume_preissued_owner_plan(
+    const root_node_packet::warp_input_v0 &input) {
+  std::map<unsigned, rtcore_v04_global384_pending_bind_owner>::iterator pending =
+      g_rtcore_v04_global384_pending_bind_by_sm.find(input.owner_hw_sid);
+  if (pending == g_rtcore_v04_global384_pending_bind_by_sm.end() ||
+      pending->second.reserved_warp_uid != input.warp_uid ||
+      pending->second.warp_id != input.warp_id ||
+      pending->second.active_mask != input.active_mask) {
+    return false;
+  }
+  g_rtcore_v04_global384_pending_bind_by_sm.erase(pending);
+  return true;
+}
+
+static rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_v04_global384_advance_private_init_after_handoff(
+    rtcore_v04_first_submit_live_bind_preissue_status handoff_status,
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned dynamic_warp_id, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask, unsigned resident_warp_generation,
+    const rtcore_v04_global384_bind_material &material,
+    unsigned long long issue_cycle) {
+  if (handoff_status != RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_HANDOFF_READY) {
+    return handoff_status;
+  }
+  std::map<unsigned, rtcore_v04_global384_pending_bind_owner>::iterator pending =
+      g_rtcore_v04_global384_pending_bind_by_sm.find(owner_hw_sid);
+  if (pending == g_rtcore_v04_global384_pending_bind_by_sm.end() ||
+      !pending->second.owner_plan_valid ||
+      !rtcore_v04_global384_pending_owner_matches(
+          pending->second, dynamic_warp_id, warp_uid, warp_id, active_mask)) {
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  }
+  if (!pending->second.private_init_plan_valid) {
+    rtcore::v04::private_global_region::whole_mask_launch_plan_v0 plan = {};
+    if (!rtcore_v04_global384_build_private_init_plan(
+            instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
+            warp_uid, warp_id, active_mask, resident_warp_generation,
+            pending->second.owner_plan, material, &plan)) {
+      return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    pending->second.private_init_plan = plan;
+    pending->second.private_init_plan_valid = true;
+  }
+  return rtcore_service_v04_global384_private_init_before_issue(
+      dynamic_warp_id, resident_warp_generation,
+      &pending->second.private_init_plan, issue_cycle);
+}
 
 static bool rtcore_validate_v04_global384_resubmit_live_internal(
     const ptx_instruction *instruction,
@@ -16596,12 +16936,13 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
             active_mask, previous_generation,
             material.request.allocation_ranges.handoff_base,
             material.request.handoff_lane_stride_bytes, issue_cycle);
-    if (poll_status == RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY) {
-      g_rtcore_v04_global384_pending_bind_by_sm.erase(owner_hw_sid);
+    if (poll_status == RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE) {
+      return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
     }
-    return poll_status == RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE
-               ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT
-               : poll_status;
+    return rtcore_v04_global384_advance_private_init_after_handoff(
+        poll_status, instruction, lane_threads, owner_hw_sid,
+        dynamic_warp_id, expected_warp_uid, warp_id, active_mask,
+        previous_generation, material, issue_cycle);
   }
   if (resident_live && expected_warp_uid != previous_warp_uid &&
       active_mask != 0 &&
@@ -16646,21 +16987,36 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
   }
   request_owner::allocator_state_v0 &allocator =
       rtcore_v04_functional_only_allocator(owner_hw_sid);
-  request_owner::warp_identity_v0 identity = {};
-  identity.owner_hw_sid = owner_hw_sid;
-  identity.warp_uid = expected_warp_uid;
-  identity.warp_id = warp_id;
-  identity.active_mask = active_mask;
   request_owner::new_warp_plan_v0 resource_plan = {};
-  const request_owner::status_kind resource_status =
-      request_owner::prepare_new_warp(allocator, identity,
-                                      &resource_plan);
-  if (resource_status != request_owner::kStatusOk) {
-    return resource_status == request_owner::kStatusResidentCapacityExceeded ||
-                   resource_status ==
-                       request_owner::kStatusRequestCapacityExceeded
-               ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT
-               : RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  const bool create_pending =
+      pending == g_rtcore_v04_global384_pending_bind_by_sm.end();
+  if (create_pending) {
+    request_owner::warp_identity_v0 identity = {};
+    identity.owner_hw_sid = owner_hw_sid;
+    identity.warp_uid = expected_warp_uid;
+    identity.warp_id = warp_id;
+    identity.active_mask = active_mask;
+    const request_owner::status_kind resource_status =
+        request_owner::prepare_new_warp(allocator, identity, &resource_plan);
+    if (resource_status != request_owner::kStatusOk) {
+      return resource_status ==
+                         request_owner::kStatusResidentCapacityExceeded ||
+                     resource_status ==
+                         request_owner::kStatusRequestCapacityExceeded
+                 ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT
+                 : RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+  } else {
+    if (!pending->second.owner_plan_valid ||
+        !pending->second.owner_plan_committed ||
+        !rtcore_v04_global384_pending_owner_matches(
+            pending->second, dynamic_warp_id, expected_warp_uid,
+            warp_id, active_mask) ||
+        !rtcore_v04_global384_owner_plan_is_live(
+            allocator, pending->second.owner_plan)) {
+      return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    resource_plan = pending->second.owner_plan;
   }
 
   rtcore::v04::pre_submit_publication::first_submit_bind_result_v0 begin = {};
@@ -16670,12 +17026,21 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
   if (begin_status != rtcore::v04::pre_submit_publication::kStatusOk) {
     return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
   }
-  rtcore_v04_global384_pending_bind_owner owner;
-  owner.dynamic_warp_id = dynamic_warp_id;
-  owner.reserved_warp_uid = expected_warp_uid;
-  owner.warp_id = warp_id;
-  owner.active_mask = active_mask;
-  g_rtcore_v04_global384_pending_bind_by_sm[owner_hw_sid] = owner;
+  if (create_pending) {
+    if (request_owner::commit_new_warp(&allocator, resource_plan) !=
+        request_owner::kStatusOk) {
+      return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    rtcore_v04_global384_pending_bind_owner owner;
+    owner.dynamic_warp_id = dynamic_warp_id;
+    owner.reserved_warp_uid = expected_warp_uid;
+    owner.warp_id = warp_id;
+    owner.active_mask = active_mask;
+    owner.owner_plan_valid = true;
+    owner.owner_plan_committed = true;
+    owner.owner_plan = resource_plan;
+    g_rtcore_v04_global384_pending_bind_by_sm[owner_hw_sid] = owner;
+  }
   if (begin.wait_required) {
     printf("GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND "
            "owner_hw_sid=%u dynamic_warp_id=%u warp_id=%u "
@@ -16728,10 +17093,10 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
       resident_generation, material.request.allocation_ranges.handoff_base,
       material.request.handoff_lane_stride_bytes, lane_request_ids,
       issue_cycle);
-  if (acquire_status == RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY) {
-    g_rtcore_v04_global384_pending_bind_by_sm.erase(owner_hw_sid);
-  }
-  return acquire_status;
+  return rtcore_v04_global384_advance_private_init_after_handoff(
+      acquire_status, instruction, lane_threads, owner_hw_sid,
+      dynamic_warp_id, expected_warp_uid, warp_id, active_mask,
+      resident_generation, material, issue_cycle);
 }
 
 static bool
@@ -19321,8 +19686,12 @@ static bool rtcore_v04_functional_only_finalize_initial_lane_completion(
 
   request_owner::allocator_state_v0 &allocator =
       rtcore_v04_functional_only_allocator(metadata.owner_hw_sid);
-  if (request_owner::commit_new_warp(&allocator, stage->second.owner_plan) !=
-      request_owner::kStatusOk) {
+  if (stage->second.owner_plan_precommitted
+          ? !rtcore_v04_global384_owner_plan_is_live(
+                allocator, stage->second.owner_plan)
+          : request_owner::commit_new_warp(
+                &allocator, stage->second.owner_plan) !=
+                request_owner::kStatusOk) {
     return false;
   }
   warp->resident_generation = compatibility_generation;

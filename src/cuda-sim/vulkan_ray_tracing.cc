@@ -2100,6 +2100,7 @@ extern "C" bool rtcore_record_v04_memory_conservation_event(
     uint32_t operation_seq = 0;
     uint32_t commit_epoch = 0;
     bool result_commit = false;
+    bool private_init = false;
     if (snapshot->v04_target_raw_read.valid) {
         operation_seq =
             snapshot->v04_target_raw_read.target_operation_seq;
@@ -2109,6 +2110,11 @@ extern "C" bool rtcore_record_v04_memory_conservation_event(
     } else if (snapshot->v04_stack_private_read.valid) {
         operation_seq =
             snapshot->v04_stack_private_read.target_operation_seq;
+    } else if (snapshot->v04_global384_private_init.valid) {
+        // C0-C4 can issue out of chunk order. Give each write a reserved
+        // pre-traversal operation identity and pair it independently.
+        operation_seq = UINT32_MAX - snapshot->chunk_id;
+        private_init = true;
     } else if (snapshot->v04_private_write.valid) {
         operation_seq =
             snapshot->v04_private_write.producer_operation_seq;
@@ -2148,9 +2154,12 @@ extern "C" bool rtcore_record_v04_memory_conservation_event(
     record.operation_seq = operation_seq;
     record.commit_epoch = commit_epoch;
     record.transport_id = snapshot->memory_op_seq;
-    record.item_id = static_cast<uint16_t>(snapshot->chunk_id);
-    record.item_count =
-        static_cast<uint16_t>(snapshot->chunk_count);
+    record.item_id = private_init
+                         ? 0
+                         : static_cast<uint16_t>(snapshot->chunk_id);
+    record.item_count = private_init
+                            ? 1
+                            : static_cast<uint16_t>(snapshot->chunk_count);
     record.event = response ? conservation::kEventMemoryResponse
                             : conservation::kEventMemoryRequest;
     record.detail_kind =
@@ -5893,19 +5902,36 @@ struct rtcore_v04_initial_handoff_acquire_state {
     unsigned handoff_lane_stride_bytes;
     unsigned expected_chunks;
     unsigned completed_chunks;
+    unsigned expected_private_init_writes;
+    unsigned accepted_private_init_writes;
+    unsigned completed_private_init_writes;
     unsigned consumed_lane_mask;
     bool ready_reported;
+    bool private_init_started;
+    bool private_init_ready_reported;
     unsigned lane_request_ids[32];
     unsigned char completed_chunk_mask[32];
+    unsigned char accepted_private_init_mask[32];
+    unsigned char completed_private_init_mask[32];
     unsigned char lane_bytes[32][rtcore::abi_v04::kLaneSlotBytes];
+    rtcore::v04::private_global_region::whole_mask_launch_plan_v0
+        private_init_plan;
 
     rtcore_v04_initial_handoff_acquire_state()
         : warp_uid(0), active_mask(0), window_generation(0), handoff_base(0),
           handoff_lane_stride_bytes(0), expected_chunks(0),
-          completed_chunks(0), consumed_lane_mask(0), ready_reported(false)
+          completed_chunks(0), expected_private_init_writes(0),
+          accepted_private_init_writes(0),
+          completed_private_init_writes(0), consumed_lane_mask(0),
+          ready_reported(false), private_init_started(false),
+          private_init_ready_reported(false), private_init_plan()
     {
         memset(lane_request_ids, 0, sizeof(lane_request_ids));
         memset(completed_chunk_mask, 0, sizeof(completed_chunk_mask));
+        memset(accepted_private_init_mask, 0,
+               sizeof(accepted_private_init_mask));
+        memset(completed_private_init_mask, 0,
+               sizeof(completed_private_init_mask));
         memset(lane_bytes, 0, sizeof(lane_bytes));
     }
 };
@@ -6226,6 +6252,59 @@ rtcore_poll_v04_global384_initial_handoff_acquire_before_issue(
         fflush(stdout);
         pending->second.ready_reported = true;
     }
+    if (!state.private_init_started) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_HANDOFF_READY;
+    }
+    const unsigned expected_private_init_writes =
+        __builtin_popcount(active_mask) *
+        rtcore::v04::private_state_384::kLaunchWriteCount;
+    if (!state.private_init_plan.valid ||
+        state.private_init_plan.owner_hw_sid != owner_hw_sid ||
+        state.private_init_plan.warp_uid != warp_uid ||
+        state.private_init_plan.warp_id != warp_id ||
+        state.private_init_plan.active_mask != active_mask ||
+        state.expected_private_init_writes != expected_private_init_writes ||
+        state.accepted_private_init_writes >
+            state.expected_private_init_writes ||
+        state.completed_private_init_writes >
+            state.accepted_private_init_writes) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    if (state.completed_private_init_writes !=
+        state.expected_private_init_writes) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
+    }
+    const unsigned char expected_private_mask =
+        static_cast<unsigned char>(
+            (1u << rtcore::v04::private_state_384::kLaunchWriteCount) - 1u);
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        const bool active = (active_mask & (1u << lane)) != 0;
+        if ((active &&
+             (state.accepted_private_init_mask[lane] !=
+                  expected_private_mask ||
+              state.completed_private_init_mask[lane] !=
+                  expected_private_mask)) ||
+            (!active &&
+             (state.accepted_private_init_mask[lane] != 0 ||
+              state.completed_private_init_mask[lane] != 0))) {
+            return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+        }
+    }
+    if (!pending->second.private_init_ready_reported) {
+        printf("GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_READY "
+               "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+               "active_mask=0x%08x resident_generation=%u "
+               "resident_warp_slot=%u accepted_writes=%u "
+               "completed_writes=%u ready_cycle=%llu "
+               "result=scheduler_ready\n",
+               owner_hw_sid, dynamic_warp_id, warp_uid, warp_id, active_mask,
+               resident_warp_generation,
+               state.private_init_plan.resident_warp_slot,
+               state.accepted_private_init_writes,
+               state.completed_private_init_writes, issue_cycle);
+        fflush(stdout);
+        pending->second.private_init_ready_reported = true;
+    }
     return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY;
 }
 
@@ -6438,6 +6517,357 @@ rtcore_service_v04_global384_initial_handoff_acquire_before_issue(
            handoff_lane_stride_bytes, staged.size(), staged.size());
     fflush(stdout);
     return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
+}
+
+static bool rtcore_v04_global384_private_init_snapshot_matches(
+    const rtcore_v04_resubmit_handoff_acquire_key &key,
+    const rtcore_v04_initial_handoff_acquire_state &state,
+    const rtcore_memory_unit_request_snapshot &snapshot)
+{
+    namespace global_region = rtcore::v04::private_global_region;
+    if (!snapshot.valid ||
+        snapshot.address_space != RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL ||
+        snapshot.operation != RTCORE_MEMORY_OPERATION_WRITE ||
+        !snapshot.is_write ||
+        snapshot.destination !=
+            RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK ||
+        snapshot.response_target != RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE ||
+        snapshot.access_kind != RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT ||
+        snapshot.byte_mask != 0xffffffffu || snapshot.lane_id >= 32 ||
+        snapshot.chunk_count != global_region::kLaunchWriteCount ||
+        snapshot.chunk_id >= snapshot.chunk_count ||
+        snapshot.v04_global384_private_init.valid != 1 ||
+        snapshot.owner_hw_sid != key.owner_hw_sid ||
+        snapshot.v04_global384_private_init.dynamic_warp_id !=
+            key.dynamic_warp_id ||
+        snapshot.v04_global384_private_init.warp_id != key.warp_id ||
+        snapshot.v04_global384_private_init.resident_warp_generation !=
+            key.resident_warp_generation ||
+        snapshot.v04_global384_private_init.submit_warp_uid != state.warp_uid ||
+        snapshot.v04_global384_private_init.submit_active_mask !=
+            state.active_mask ||
+        (state.active_mask & (1u << snapshot.lane_id)) == 0 ||
+        !state.private_init_started || !state.private_init_plan.valid) {
+        return false;
+    }
+    const global_region::whole_mask_launch_plan_v0 &plan =
+        state.private_init_plan;
+    const global_region::lane_launch_plan_v0 &lane =
+        plan.lanes[snapshot.lane_id];
+    const global_region::global_chunk_write_v0 &write =
+        lane.writes[snapshot.chunk_id];
+    return plan.owner_hw_sid == key.owner_hw_sid &&
+           plan.warp_uid == state.warp_uid &&
+           plan.warp_id == key.warp_id &&
+           plan.active_mask == state.active_mask && lane.valid == 1 &&
+           lane.lane_id == snapshot.lane_id &&
+           lane.write_count == global_region::kLaunchWriteCount &&
+           snapshot.resident_warp_id == plan.resident_warp_slot &&
+           snapshot.v04_global384_private_init.resident_warp_slot ==
+               plan.resident_warp_slot &&
+           snapshot.rt_request_id == lane.owner.request_identity &&
+           snapshot.request_generation == lane.owner.generation &&
+           snapshot.private_slot_id == lane.owner.private_slot_id &&
+           snapshot.aligned_32b_addr == write.aligned_32b_address &&
+           snapshot.byte_mask == write.byte_mask &&
+           snapshot.v04_global384_private_init.field_kind == write.field_kind &&
+           memcmp(snapshot.payload, write.payload, sizeof(snapshot.payload)) == 0;
+}
+
+extern "C" rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_service_v04_global384_private_init_before_issue(
+    unsigned dynamic_warp_id, unsigned resident_warp_generation,
+    const rtcore::v04::private_global_region::whole_mask_launch_plan_v0 *plan,
+    unsigned long long issue_cycle)
+{
+    namespace global_region = rtcore::v04::private_global_region;
+    if (plan == NULL || !plan->valid || plan->active_mask == 0 ||
+        plan->owner_hw_sid == UINT32_MAX || plan->warp_uid == 0 ||
+        resident_warp_generation == 0 ||
+        plan->resident_warp_slot >= global_region::kResidentWarpCapacity) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            plan->owner_hw_sid, dynamic_warp_id, plan->warp_id,
+            resident_warp_generation);
+    std::map<rtcore_v04_resubmit_handoff_acquire_key,
+             rtcore_v04_initial_handoff_acquire_state>::iterator pending =
+        g_rtcore_v04_initial_handoff_acquires.find(key);
+    if (pending == g_rtcore_v04_initial_handoff_acquires.end() ||
+        pending->second.warp_uid != plan->warp_uid ||
+        pending->second.active_mask != plan->active_mask ||
+        !pending->second.ready_reported ||
+        pending->second.completed_chunks != pending->second.expected_chunks) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    if (pending->second.private_init_started) {
+        return memcmp(&pending->second.private_init_plan, plan,
+                      sizeof(*plan)) == 0
+                   ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT
+                   : RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+
+    std::vector<rtcore_memory_unit_request_snapshot> staged;
+    staged.reserve(__builtin_popcount(plan->active_mask) *
+                   global_region::kLaunchWriteCount);
+    for (unsigned lane_id = 0; lane_id < global_region::kLaneCapacity;
+         ++lane_id) {
+        const bool active = (plan->active_mask & (1u << lane_id)) != 0;
+        const global_region::lane_launch_plan_v0 &lane = plan->lanes[lane_id];
+        if (!active) {
+            global_region::lane_launch_plan_v0 zero = {};
+            if (memcmp(&lane, &zero, sizeof(lane)) != 0) {
+                return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+            }
+            continue;
+        }
+        if (lane.valid != 1 || lane.lane_id != lane_id ||
+            lane.write_count != global_region::kLaunchWriteCount ||
+            lane.owner.owner_hw_sid != plan->owner_hw_sid ||
+            lane.owner.resident_warp_id != plan->resident_warp_slot ||
+            lane.owner.lane_id != lane_id || lane.owner.request_identity == 0 ||
+            lane.owner.generation == 0) {
+            return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+        }
+        for (unsigned chunk = 0; chunk < global_region::kLaunchWriteCount;
+             ++chunk) {
+            const global_region::global_chunk_write_v0 &write =
+                lane.writes[chunk];
+            if (write.address_space != global_region::kAddressSpaceGlobal ||
+                write.slot_byte_offset !=
+                    chunk * rtcore::v04::private_state_384::kChunkBytes ||
+                write.byte_count !=
+                    rtcore::v04::private_state_384::kChunkBytes ||
+                write.byte_mask != 0xffffffffu ||
+                write.aligned_32b_address %
+                        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES !=
+                    0) {
+                return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+            }
+            rtcore_memory_unit_request_snapshot snapshot = {};
+            snapshot.valid = true;
+            snapshot.address_space = RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL;
+            snapshot.operation = RTCORE_MEMORY_OPERATION_WRITE;
+            snapshot.destination =
+                RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK;
+            snapshot.response_target = RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE;
+            snapshot.owner_hw_sid = plan->owner_hw_sid;
+            snapshot.rt_request_id = lane.owner.request_identity;
+            snapshot.lane_id = lane_id;
+            snapshot.resident_warp_id = plan->resident_warp_slot;
+            snapshot.request_generation = lane.owner.generation;
+            snapshot.private_slot_id = lane.owner.private_slot_id;
+            snapshot.memory_op_seq = chunk + 1;
+            snapshot.chunk_id = chunk;
+            snapshot.chunk_count = global_region::kLaunchWriteCount;
+            snapshot.access_kind = RTCORE_MEMORY_ACCESS_PRIVATE_FRONTIER_INIT;
+            snapshot.aligned_32b_addr = write.aligned_32b_address;
+            snapshot.byte_mask = write.byte_mask;
+            memcpy(snapshot.payload, write.payload, sizeof(snapshot.payload));
+            snapshot.is_write = true;
+            snapshot.issue_cycle = issue_cycle;
+            snapshot.v04_global384_private_init.resident_warp_generation =
+                resident_warp_generation;
+            snapshot.v04_global384_private_init.dynamic_warp_id =
+                dynamic_warp_id;
+            snapshot.v04_global384_private_init.submit_warp_uid =
+                plan->warp_uid;
+            snapshot.v04_global384_private_init.submit_active_mask =
+                plan->active_mask;
+            snapshot.v04_global384_private_init.warp_id = plan->warp_id;
+            snapshot.v04_global384_private_init.resident_warp_slot =
+                plan->resident_warp_slot;
+            snapshot.v04_global384_private_init.field_kind = write.field_kind;
+            snapshot.v04_global384_private_init.valid = 1;
+            staged.push_back(snapshot);
+        }
+    }
+    const unsigned expected = __builtin_popcount(plan->active_mask) *
+                              global_region::kLaunchWriteCount;
+    if (staged.size() != expected || expected == 0) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    pending->second.private_init_plan = *plan;
+    pending->second.expected_private_init_writes = expected;
+    pending->second.private_init_started = true;
+    const char *mutation = getenv(
+        "VULKAN_SIM_RTCORE_TEST_V04_PRIVATE_INIT_MUTATION");
+    const bool no_mutation = mutation == NULL || mutation[0] == '\0' ||
+                             strcmp(mutation, "none") == 0;
+    if (!no_mutation) {
+        if (strcmp(mutation, "payload") != 0 || staged.empty()) {
+            return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+        }
+        staged.front().payload[0] ^= 1u;
+    }
+    std::deque<rtcore_memory_unit_request_snapshot> &queue =
+        g_rtcore_memory_unit_request_snapshots_by_owner[plan->owner_hw_sid];
+    queue.insert(queue.end(), staged.begin(), staged.end());
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_ENQUEUE "
+           "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+           "resident_warp_slot=%u active_mask=0x%08x "
+           "resident_generation=%u write_count=%u c0_c4_only=1 "
+           "mutation=%s issue_cycle=%llu result=wait\n",
+           plan->owner_hw_sid, dynamic_warp_id, plan->warp_uid, plan->warp_id,
+           plan->resident_warp_slot, plan->active_mask,
+           resident_warp_generation, expected,
+           no_mutation ? "none" : mutation, issue_cycle);
+    fflush(stdout);
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
+}
+
+extern "C" bool
+rtcore_validate_v04_global384_private_init_before_functional(
+    unsigned dynamic_warp_id, unsigned resident_warp_generation,
+    const rtcore::v04::private_global_region::whole_mask_launch_plan_v0 *plan)
+{
+    if (plan == NULL || !plan->valid) return false;
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            plan->owner_hw_sid, dynamic_warp_id, plan->warp_id,
+            resident_warp_generation);
+    std::map<rtcore_v04_resubmit_handoff_acquire_key,
+             rtcore_v04_initial_handoff_acquire_state>::const_iterator pending =
+        g_rtcore_v04_initial_handoff_acquires.find(key);
+    return pending != g_rtcore_v04_initial_handoff_acquires.end() &&
+           pending->second.private_init_started &&
+           pending->second.private_init_ready_reported &&
+           pending->second.accepted_private_init_writes ==
+               pending->second.expected_private_init_writes &&
+           pending->second.completed_private_init_writes ==
+               pending->second.expected_private_init_writes &&
+           memcmp(&pending->second.private_init_plan, plan, sizeof(*plan)) == 0;
+}
+
+extern "C" bool rtcore_accept_v04_global384_private_init_write(
+    rtcore_memory_unit_request_snapshot *snapshot,
+    unsigned long long accept_cycle)
+{
+    if (snapshot == NULL ||
+        snapshot->v04_global384_private_init.valid != 1) {
+        return snapshot != NULL;
+    }
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            snapshot->owner_hw_sid,
+            snapshot->v04_global384_private_init.dynamic_warp_id,
+            snapshot->v04_global384_private_init.warp_id,
+            snapshot->v04_global384_private_init.resident_warp_generation);
+    std::map<rtcore_v04_resubmit_handoff_acquire_key,
+             rtcore_v04_initial_handoff_acquire_state>::iterator pending =
+        g_rtcore_v04_initial_handoff_acquires.find(key);
+    if (pending == g_rtcore_v04_initial_handoff_acquires.end() ||
+        snapshot->v04_global384_private_init.accepted != 0 ||
+        !rtcore_v04_global384_private_init_snapshot_matches(
+            key, pending->second, *snapshot)) {
+        return false;
+    }
+    const unsigned char chunk_bit =
+        static_cast<unsigned char>(1u << snapshot->chunk_id);
+    if ((pending->second.accepted_private_init_mask[snapshot->lane_id] &
+         chunk_bit) != 0) {
+        return false;
+    }
+    pending->second.accepted_private_init_mask[snapshot->lane_id] |= chunk_bit;
+    pending->second.accepted_private_init_writes++;
+    snapshot->v04_global384_private_init.accepted = 1;
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_ACCEPT "
+           "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x resident_generation=%u "
+           "resident_warp_slot=%u lane_id=%u chunk_id=%u field_kind=%u "
+           "request_identity=%u request_generation=%u private_slot_id=%u "
+           "address=0x%llx accepted=%u expected=%u "
+           "accept_cycle=%llu\n",
+           snapshot->owner_hw_sid,
+           snapshot->v04_global384_private_init.dynamic_warp_id,
+           snapshot->v04_global384_private_init.submit_warp_uid,
+           snapshot->v04_global384_private_init.warp_id,
+           snapshot->v04_global384_private_init.submit_active_mask,
+           snapshot->v04_global384_private_init.resident_warp_generation,
+           snapshot->v04_global384_private_init.resident_warp_slot,
+           snapshot->lane_id,
+           snapshot->chunk_id,
+           snapshot->v04_global384_private_init.field_kind,
+           snapshot->rt_request_id, snapshot->request_generation,
+           snapshot->private_slot_id,
+           snapshot->aligned_32b_addr,
+           pending->second.accepted_private_init_writes,
+           pending->second.expected_private_init_writes, accept_cycle);
+    fflush(stdout);
+    return pending->second.accepted_private_init_writes <=
+           pending->second.expected_private_init_writes;
+}
+
+extern "C" bool rtcore_complete_v04_global384_private_init_write(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    memory_space *global_memory, unsigned long long response_address,
+    unsigned long long completion_cycle)
+{
+    if (snapshot == NULL ||
+        snapshot->v04_global384_private_init.valid != 1) {
+        return snapshot != NULL;
+    }
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            snapshot->owner_hw_sid,
+            snapshot->v04_global384_private_init.dynamic_warp_id,
+            snapshot->v04_global384_private_init.warp_id,
+            snapshot->v04_global384_private_init.resident_warp_generation);
+    std::map<rtcore_v04_resubmit_handoff_acquire_key,
+             rtcore_v04_initial_handoff_acquire_state>::iterator pending =
+        g_rtcore_v04_initial_handoff_acquires.find(key);
+    if (pending == g_rtcore_v04_initial_handoff_acquires.end() ||
+        global_memory == NULL || response_address != snapshot->aligned_32b_addr ||
+        snapshot->v04_global384_private_init.accepted != 1 ||
+        !rtcore_v04_global384_private_init_snapshot_matches(
+            key, pending->second, *snapshot)) {
+        return false;
+    }
+    const unsigned char chunk_bit =
+        static_cast<unsigned char>(1u << snapshot->chunk_id);
+    if ((pending->second.accepted_private_init_mask[snapshot->lane_id] &
+         chunk_bit) == 0 ||
+        (pending->second.completed_private_init_mask[snapshot->lane_id] &
+         chunk_bit) != 0) {
+        return false;
+    }
+    global_memory->write_simulator_backing(
+        snapshot->aligned_32b_addr, sizeof(snapshot->payload),
+        snapshot->payload);
+    unsigned char postimage[sizeof(snapshot->payload)] = {};
+    global_memory->read_simulator_backing(
+        snapshot->aligned_32b_addr, sizeof(postimage), postimage);
+    if (memcmp(postimage, snapshot->payload, sizeof(postimage)) != 0) {
+        return false;
+    }
+    pending->second.completed_private_init_mask[snapshot->lane_id] |= chunk_bit;
+    pending->second.completed_private_init_writes++;
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_ACK "
+           "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x resident_generation=%u "
+           "resident_warp_slot=%u lane_id=%u chunk_id=%u field_kind=%u "
+           "request_identity=%u request_generation=%u private_slot_id=%u "
+           "address=0x%llx completed=%u expected=%u "
+           "completion_cycle=%llu functional_backing=committed\n",
+           snapshot->owner_hw_sid,
+           snapshot->v04_global384_private_init.dynamic_warp_id,
+           snapshot->v04_global384_private_init.submit_warp_uid,
+           snapshot->v04_global384_private_init.warp_id,
+           snapshot->v04_global384_private_init.submit_active_mask,
+           snapshot->v04_global384_private_init.resident_warp_generation,
+           snapshot->v04_global384_private_init.resident_warp_slot,
+           snapshot->lane_id,
+           snapshot->chunk_id,
+           snapshot->v04_global384_private_init.field_kind,
+           snapshot->rt_request_id, snapshot->request_generation,
+           snapshot->private_slot_id,
+           snapshot->aligned_32b_addr,
+           pending->second.completed_private_init_writes,
+           pending->second.expected_private_init_writes, completion_cycle);
+    fflush(stdout);
+    return pending->second.completed_private_init_writes <=
+           pending->second.accepted_private_init_writes;
 }
 
 extern "C" bool
@@ -6654,8 +7084,12 @@ rtcore_consume_v04_global384_initial_handoff_acquire_lane_before_functional(
         pending->second.lane_request_ids[lane_id] != thread_uid ||
         (pending->second.consumed_lane_mask & (1u << lane_id)) != 0 ||
         !pending->second.ready_reported ||
+        !pending->second.private_init_ready_reported ||
         pending->second.expected_chunks == 0 ||
-        pending->second.completed_chunks != pending->second.expected_chunks) {
+        pending->second.completed_chunks != pending->second.expected_chunks ||
+        pending->second.expected_private_init_writes == 0 ||
+        pending->second.completed_private_init_writes !=
+            pending->second.expected_private_init_writes) {
         return false;
     }
     pending->second.consumed_lane_mask |= 1u << lane_id;
