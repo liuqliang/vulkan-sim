@@ -134,6 +134,18 @@ struct first_submit_bind_result_v0 {
   uint8_t reserved_zero[5];
 };
 
+struct resubmit_live_validation_result_v0 {
+  allocation_identity::status_kind authority_status;
+  address_range_registry::status_kind registry_status;
+  allocation_identity::allocation_identity_v0 identity;
+  uint32_t public_active_mask;
+  uint32_t previous_active_mask;
+  uint32_t selected_active_mask;
+  uint32_t resident_warp_generation;
+  uint8_t live_bound;
+  uint8_t reserved_zero[7];
+};
+
 struct retire_live_release_result_v0 {
   allocation_identity::status_kind authority_status;
   address_range_registry::status_kind registry_status;
@@ -204,6 +216,11 @@ class bridge_v0 {
       const first_submit_bind_request_v0 &request,
       uint32_t resident_warp_generation,
       first_submit_bind_result_v0 *result) const;
+
+  status_kind validate_resubmit_live_subset(
+      const first_submit_bind_request_v0 &selected_request,
+      uint32_t previous_active_mask, uint32_t resident_warp_generation,
+      resubmit_live_validation_result_v0 *result) const;
 
   status_kind begin_or_poll_retire_live_release(
       const first_submit_bind_request_v0 &request,

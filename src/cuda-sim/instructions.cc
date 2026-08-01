@@ -8361,10 +8361,14 @@ static bool rtcore_v04_functional_only_prepare_resubmit(
 
 }  // namespace
 
+namespace {
+static bool rtcore_v04_global384_profile_selected(bool *selected);
+}
+
 extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     const ptx_instruction *instruction, ptx_thread_info *const *lane_threads,
-    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
-    unsigned active_mask, unsigned long long issue_cycle) {
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned dynamic_warp_id,
+    unsigned warp_id, unsigned active_mask, unsigned long long issue_cycle) {
   namespace root_packet = rtcore::v04::root_node_packet;
   namespace private_frontier = rtcore::v04::private_frontier;
   namespace fetch_target = rtcore::v04::fetch_target;
@@ -8402,6 +8406,10 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
       rtcore_validate_v04_global384_resident_warp_shell(
           owner_hw_sid, warp_uid, warp_id, active_mask,
           instruction->uid(), resident_generation);
+  bool global384_profile = false;
+  if (!rtcore_v04_global384_profile_selected(&global384_profile)) {
+    return false;
+  }
   if (resident_live && !functional_only) {
     const bool retained_resubmit =
         warp_uid != previous_warp_uid &&
@@ -8424,10 +8432,21 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
        (active_mask & ~previous_active_mask) != 0)) {
     return false;
   }
+  const bool global384_resubmit =
+      global384_profile && resident_live && functional_only &&
+      !global384_preissued_initial && warp_uid != previous_warp_uid &&
+      active_mask != 0 && (active_mask & ~previous_active_mask) == 0;
+  if (global384_resubmit &&
+      !rtcore_validate_v04_global384_resubmit_live_before_functional(
+          instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
+          previous_warp_uid, warp_uid, warp_id, previous_active_mask,
+          active_mask, resident_generation)) {
+    return false;
+  }
   if (global384_preissued_initial &&
       !rtcore_validate_v04_global384_first_submit_live_bind_before_functional(
-          instruction, lane_threads, owner_hw_sid, warp_uid, warp_id,
-          active_mask)) {
+          instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
+          warp_uid, warp_id, active_mask)) {
     return false;
   }
   if (global384_preissued_initial) {
@@ -16485,19 +16504,11 @@ static bool
 rtcore_validate_v04_global384_first_submit_live_bind_internal(
     const ptx_instruction *instruction,
     ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
-    unsigned warp_uid, unsigned warp_id, unsigned active_mask) {
+    unsigned dynamic_warp_id, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask) {
   bool global384 = false;
   if (!rtcore_v04_global384_profile_selected(&global384)) return false;
   if (!global384) return true;
-  unsigned dynamic_warp_id = 0;
-  for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
-    if ((active_mask & (1u << lane)) == 0) continue;
-    if (lane_threads == NULL || lane_threads[lane] == NULL) return false;
-    ptx_thread_info::rtcore_current_warp_metadata metadata;
-    lane_threads[lane]->get_rtcore_current_warp_metadata(&metadata);
-    dynamic_warp_id = metadata.dynamic_warp_id;
-    break;
-  }
   rtcore_v04_global384_bind_material material;
   if (!rtcore_v04_make_global384_bind_material(
           instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
@@ -16524,6 +16535,75 @@ rtcore_validate_v04_global384_first_submit_live_bind_internal(
                      material.request, resident_generation, &result) ==
              rtcore::v04::pre_submit_publication::kStatusOk &&
          result.live_bound && !result.wait_required;
+}
+
+static bool rtcore_validate_v04_global384_resubmit_live_internal(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned dynamic_warp_id, unsigned previous_warp_uid,
+    unsigned warp_uid, unsigned warp_id, unsigned previous_active_mask,
+    unsigned active_mask, unsigned resident_warp_generation) {
+  bool global384 = false;
+  if (!rtcore_v04_global384_profile_selected(&global384)) return false;
+  if (!global384) return true;
+  if (!rtcore_v04_functional_only_engine_gate_active() ||
+      !rtcore_v04_root_node_input_gate_active() || instruction == NULL ||
+      lane_threads == NULL || previous_warp_uid == 0 || warp_uid == 0 ||
+      previous_warp_uid == warp_uid || previous_active_mask == 0 ||
+      active_mask == 0 || (active_mask & ~previous_active_mask) != 0 ||
+      resident_warp_generation == 0) {
+    return false;
+  }
+
+  for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+    if ((active_mask & (1u << lane)) == 0) continue;
+    if (lane_threads[lane] == NULL) return false;
+  }
+
+  rtcore_v04_global384_bind_material material;
+  if (!rtcore_v04_make_global384_bind_material(
+          instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
+          warp_id, active_mask, &material)) {
+    return false;
+  }
+  rtcore::v04::pre_submit_publication::resubmit_live_validation_result_v0
+      result = {};
+  const rtcore::v04::pre_submit_publication::status_kind status =
+      rtcore::v04::pre_submit_publication::shared_bridge()
+          .validate_resubmit_live_subset(
+              material.request, previous_active_mask,
+              resident_warp_generation, &result);
+  const bool valid =
+      status == rtcore::v04::pre_submit_publication::kStatusOk &&
+      result.live_bound && result.public_active_mask != 0 &&
+      result.previous_active_mask == previous_active_mask &&
+      result.selected_active_mask == active_mask &&
+      result.resident_warp_generation == resident_warp_generation &&
+      result.identity.owner.owner_hw_sid == owner_hw_sid &&
+      result.identity.owner.dynamic_warp_id == dynamic_warp_id &&
+      result.identity.owner.warp_id == warp_id;
+  printf("GPGPU-Sim RTCORE_V04_GLOBAL384_RESUBMIT_LIVE_VALIDATION "
+         "owner_hw_sid=%u dynamic_warp_id=%u previous_warp_uid=%u "
+         "warp_uid=%u warp_id=%u public_active_mask=0x%08x "
+         "previous_active_mask=0x%08x next_active_mask=0x%08x "
+         "resident_generation=%u allocation_record_id=%llu "
+         "launch_generation=%u window_generation=%u "
+         "bridge_status=%s authority_status=%s registry_status=%s "
+         "functional_reads_started=0 memory_traffic_started=0 result=%s\n",
+         owner_hw_sid, dynamic_warp_id, previous_warp_uid, warp_uid,
+         warp_id, result.public_active_mask, previous_active_mask,
+         active_mask, resident_warp_generation,
+         static_cast<unsigned long long>(result.identity.record_id),
+         result.identity.launch_allocation_generation,
+         result.identity.window_generation,
+         rtcore::v04::pre_submit_publication::status_name(status),
+         rtcore::v04::allocation_identity::status_name(
+             result.authority_status),
+         rtcore::v04::address_range_registry::status_name(
+             result.registry_status),
+         valid ? "validated" : "fault");
+  fflush(stdout);
+  return valid;
 }
 
 enum rtcore_traversal_source_provider {
@@ -36193,10 +36273,24 @@ extern "C" bool
 rtcore_validate_v04_global384_first_submit_live_bind_before_functional(
     const ptx_instruction *instruction,
     ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
-    unsigned warp_uid, unsigned warp_id, unsigned active_mask) {
+    unsigned dynamic_warp_id, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask) {
   return rtcore_validate_v04_global384_first_submit_live_bind_internal(
-      instruction, lane_threads, owner_hw_sid, warp_uid, warp_id,
-      active_mask);
+      instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
+      warp_uid, warp_id, active_mask);
+}
+
+extern "C" bool
+rtcore_validate_v04_global384_resubmit_live_before_functional(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned dynamic_warp_id, unsigned previous_warp_uid,
+    unsigned warp_uid, unsigned warp_id, unsigned previous_active_mask,
+    unsigned active_mask, unsigned resident_warp_generation) {
+  return rtcore_validate_v04_global384_resubmit_live_internal(
+      instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
+      previous_warp_uid, warp_uid, warp_id, previous_active_mask,
+      active_mask, resident_warp_generation);
 }
 
 extern "C" rtcore_v04_retire_live_release_status

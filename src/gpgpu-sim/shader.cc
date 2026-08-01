@@ -7334,7 +7334,8 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
     const ptx_instruction *instruction = static_cast<const ptx_instruction *>(
         get_next_inst(inst.warp_id(), inst.pc));
     if (!rtcore_prepare_v04_root_node_packet_before_functional(
-            instruction, lane_threads, m_sid, inst.get_uid(), inst.warp_id(),
+            instruction, lane_threads, m_sid, inst.get_uid(),
+            inst.dynamic_warp_id(), inst.warp_id(),
             static_cast<unsigned>(inst.get_warp_active_mask().to_ulong()),
             m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle)) {
       fprintf(stderr,

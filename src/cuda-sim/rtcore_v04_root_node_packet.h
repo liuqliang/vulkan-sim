@@ -127,7 +127,16 @@ extern "C" bool
 rtcore_validate_v04_global384_first_submit_live_bind_before_functional(
     const ptx_instruction *instruction,
     ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
-    unsigned warp_uid, unsigned warp_id, unsigned active_mask);
+    unsigned dynamic_warp_id, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask);
+
+extern "C" bool
+rtcore_validate_v04_global384_resubmit_live_before_functional(
+    const ptx_instruction *instruction,
+    ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
+    unsigned dynamic_warp_id, unsigned previous_warp_uid,
+    unsigned warp_uid, unsigned warp_id, unsigned previous_active_mask,
+    unsigned active_mask, unsigned resident_warp_generation);
 
 extern "C" rtcore_v04_retire_live_release_status
 rtcore_service_v04_global384_retire_live_release(
@@ -151,8 +160,8 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
 
 extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     const ptx_instruction *instruction, ptx_thread_info *const *lane_threads,
-    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
-    unsigned active_mask, unsigned long long issue_cycle);
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned dynamic_warp_id,
+    unsigned warp_id, unsigned active_mask, unsigned long long issue_cycle);
 
 extern "C" bool rtcore_finalize_v04_root_node_packet_after_functional(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
