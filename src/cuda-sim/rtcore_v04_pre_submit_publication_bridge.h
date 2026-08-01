@@ -13,6 +13,11 @@ namespace rtcore {
 namespace v04 {
 namespace pre_submit_publication {
 
+typedef address_range_registry::provisional_store_v0
+    publication_store_v0;
+typedef address_range_registry::transaction_token_v0
+    publication_ticket_v0;
+
 enum status_kind : uint8_t {
   kStatusOk = 0,
   kStatusInvalidArgument,
@@ -57,6 +62,39 @@ struct bridge_snapshot_v0 {
   size_t registered_group_count;
 };
 
+struct ordinary_store_request_v0 {
+  uint32_t owner_hw_sid;
+  uint32_t dynamic_warp_id;
+  uint32_t warp_id;
+  uint32_t active_lane_mask;
+  uint32_t data_size_bytes;
+  uint32_t sector_count;
+  uint64_t aligned_32b_address;
+  uint32_t byte_mask;
+  uint8_t is_global_write;
+  uint8_t byte_mask_single_chunk;
+  uint8_t sector_mask_matches_address;
+  uint8_t reserved_zero[5];
+};
+
+struct ordinary_store_preflight_v0 {
+  address_range_registry::status_kind registry_status;
+  address_range_registry::provisional_store_v0 store;
+  uint8_t candidate;
+  uint8_t reserved_zero[7];
+};
+
+struct provisional_group_drain_v0 {
+  address_range_registry::status_kind registry_status;
+  uint64_t preaccept_pending;
+  uint64_t outstanding_transactions;
+  uint8_t registered;
+  uint8_t fence_armed;
+  uint8_t wait_required;
+  uint8_t fence_consumed;
+  uint8_t reserved_zero[4];
+};
+
 class bridge_v0 {
  public:
   bridge_v0();
@@ -83,11 +121,29 @@ class bridge_v0 {
   address_range_registry::status_kind complete_publication_store(
       const address_range_registry::transaction_token_v0 &token);
 
+  status_kind begin_publication_store_preaccept(
+      const address_range_registry::provisional_store_v0 &store);
+
+  status_kind accept_preaccepted_publication_store(
+      const address_range_registry::provisional_store_v0 &store,
+      address_range_registry::transaction_token_v0 *token);
+
+  status_kind preflight_ordinary_publication_store(
+      const ordinary_store_request_v0 &request,
+      ordinary_store_preflight_v0 *preflight) const;
+
+  status_kind service_provisional_publication_fence(
+      uint32_t owner_hw_sid, uint32_t dynamic_warp_id,
+      uint32_t warp_id, provisional_group_drain_v0 *drain);
+
   bridge_snapshot_v0 snapshot() const;
 
  private:
   struct registered_group_v0 {
     address_range_registry::provisional_owner_v0 provisional_owner;
+    allocation_identity::owner_v0 execution_owner;
+    uint64_t preaccept_pending;
+    uint8_t fence_armed;
   };
 
   struct publication_identity_observation_v0 {
@@ -107,6 +163,8 @@ class bridge_v0 {
 };
 
 const char *status_name(status_kind status);
+
+bridge_v0 &shared_bridge();
 
 }  // namespace pre_submit_publication
 }  // namespace v04

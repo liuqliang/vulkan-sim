@@ -44,6 +44,25 @@ static uint32_t count_lanes(uint32_t mask) {
   return count;
 }
 
+static bool same_provisional_owner(
+    const address_range_registry::provisional_owner_v0 &lhs,
+    const address_range_registry::provisional_owner_v0 &rhs) {
+  return lhs.owner_hw_sid == rhs.owner_hw_sid &&
+         lhs.warp_uid == rhs.warp_uid &&
+         lhs.dynamic_warp_id == rhs.dynamic_warp_id &&
+         lhs.launch_allocation_generation ==
+             rhs.launch_allocation_generation &&
+         lhs.window_generation == rhs.window_generation;
+}
+
+static bool same_execution_owner(
+    const allocation_identity::owner_v0 &lhs,
+    const allocation_identity::owner_v0 &rhs) {
+  return lhs.owner_hw_sid == rhs.owner_hw_sid &&
+         lhs.dynamic_warp_id == rhs.dynamic_warp_id &&
+         lhs.warp_id == rhs.warp_id;
+}
+
 static status_kind validate_geometry(
     const lane_publication_request_v0 &request) {
   if (request.publication_warp_uid == 0 || request.active_mask == 0 ||
@@ -267,6 +286,8 @@ status_kind bridge_v0::observe_initial_publication(
 
   registered_group_v0 group = {};
   group.provisional_owner = provisional_owner;
+  group.execution_owner = request.owner;
+  group.fence_armed = 1;
   registered_groups_[observation.identity.record_id] = group;
   result->provisional_group_registered = 1;
   return kStatusOk;
@@ -305,12 +326,214 @@ address_range_registry::status_kind bridge_v0::complete_publication_store(
   return registry_.complete_transaction(token);
 }
 
+status_kind bridge_v0::begin_publication_store_preaccept(
+    const address_range_registry::provisional_store_v0 &store) {
+  const address_range_registry::status_kind validation =
+      registry_.validate_provisional_publication_store(store);
+  if (validation != address_range_registry::kStatusOk) {
+    return kStatusRegistryRejected;
+  }
+  registered_group_v0 *group = NULL;
+  for (std::map<uint64_t, registered_group_v0>::iterator it =
+           registered_groups_.begin();
+       it != registered_groups_.end(); ++it) {
+    if (!same_provisional_owner(it->second.provisional_owner,
+                                store.owner)) {
+      continue;
+    }
+    if (group != NULL) return kStatusGroupConflict;
+    group = &it->second;
+  }
+  if (group == NULL) return kStatusGroupNotRegistered;
+  if (group->preaccept_pending ==
+      std::numeric_limits<uint64_t>::max()) {
+    return kStatusRegistryRejected;
+  }
+  ++group->preaccept_pending;
+  return kStatusOk;
+}
+
+status_kind bridge_v0::accept_preaccepted_publication_store(
+    const address_range_registry::provisional_store_v0 &store,
+    address_range_registry::transaction_token_v0 *token) {
+  if (token == NULL) return kStatusInvalidArgument;
+  registered_group_v0 *group = NULL;
+  for (std::map<uint64_t, registered_group_v0>::iterator it =
+           registered_groups_.begin();
+       it != registered_groups_.end(); ++it) {
+    if (!same_provisional_owner(it->second.provisional_owner,
+                                store.owner)) {
+      continue;
+    }
+    if (group != NULL) return kStatusGroupConflict;
+    group = &it->second;
+  }
+  if (group == NULL) return kStatusGroupNotRegistered;
+  if (group->preaccept_pending == 0) {
+    return kStatusGroupConflict;
+  }
+  const address_range_registry::status_kind status =
+      registry_.accept_provisional_publication_store(store, token);
+  if (status != address_range_registry::kStatusOk) {
+    return kStatusRegistryRejected;
+  }
+  --group->preaccept_pending;
+  return kStatusOk;
+}
+
+status_kind bridge_v0::preflight_ordinary_publication_store(
+    const ordinary_store_request_v0 &request,
+    ordinary_store_preflight_v0 *preflight) const {
+  if (preflight == NULL) return kStatusInvalidArgument;
+  std::memset(preflight, 0, sizeof(*preflight));
+  preflight->registry_status =
+      address_range_registry::kStatusOk;
+  if (!request.is_global_write) return kStatusOk;
+  if (request.aligned_32b_address %
+          address_range_registry::kAddressChunkBytes !=
+      0) {
+    return kStatusInvalidGeometry;
+  }
+
+  address_range_registry::provisional_range_observation_v0
+      range = {};
+  preflight->registry_status = registry_.observe_provisional_range(
+      request.aligned_32b_address, &range);
+  if (preflight->registry_status ==
+      address_range_registry::kStatusRecordNotFound) {
+    preflight->registry_status =
+        address_range_registry::kStatusOk;
+    return kStatusOk;
+  }
+  if (preflight->registry_status !=
+      address_range_registry::kStatusOk) {
+    return kStatusRegistryRejected;
+  }
+
+  const registered_group_v0 *group = NULL;
+  for (std::map<uint64_t, registered_group_v0>::const_iterator it =
+           registered_groups_.begin();
+       it != registered_groups_.end(); ++it) {
+    if (!same_provisional_owner(it->second.provisional_owner,
+                                range.owner)) {
+      continue;
+    }
+    if (group != NULL) return kStatusGroupConflict;
+    group = &it->second;
+  }
+  if (group == NULL) return kStatusGroupNotRegistered;
+
+  allocation_identity::owner_v0 execution_owner = {};
+  execution_owner.owner_hw_sid = request.owner_hw_sid;
+  execution_owner.dynamic_warp_id = request.dynamic_warp_id;
+  execution_owner.warp_id = request.warp_id;
+  if (!same_execution_owner(group->execution_owner,
+                            execution_owner)) {
+    preflight->registry_status =
+        address_range_registry::kStatusOwnerMismatch;
+    return kStatusRegistryRejected;
+  }
+  if (request.data_size_bytes !=
+          address_range_registry::kAddressChunkBytes ||
+      request.sector_count != 1 ||
+      !request.byte_mask_single_chunk ||
+      !request.sector_mask_matches_address) {
+    preflight->registry_status =
+        address_range_registry::kStatusInvalidRange;
+    return kStatusRegistryRejected;
+  }
+  if (request.active_lane_mask == 0 ||
+      (request.active_lane_mask &
+       (request.active_lane_mask - 1u)) != 0 ||
+      request.active_lane_mask !=
+          (uint32_t{1} << range.lane_id)) {
+    preflight->registry_status =
+        address_range_registry::kStatusLaneMismatch;
+    return kStatusRegistryRejected;
+  }
+  if (range.object != address_range_registry::kObjectHandoff) {
+    preflight->registry_status =
+        address_range_registry::kStatusObjectKindMismatch;
+    return kStatusRegistryRejected;
+  }
+  if (range.phase != address_range_registry::kPhaseProvisional) {
+    preflight->registry_status =
+        address_range_registry::kStatusWrongPhase;
+    return kStatusRegistryRejected;
+  }
+
+  preflight->store.owner = range.owner;
+  preflight->store.lane_id = range.lane_id;
+  preflight->store.object = range.object;
+  preflight->store.aligned_32b_address =
+      request.aligned_32b_address;
+  preflight->store.byte_mask = request.byte_mask;
+  preflight->registry_status =
+      registry_.validate_provisional_publication_store(
+          preflight->store);
+  if (preflight->registry_status !=
+      address_range_registry::kStatusOk) {
+    return kStatusRegistryRejected;
+  }
+  preflight->candidate = 1;
+  return kStatusOk;
+}
+
+status_kind bridge_v0::service_provisional_publication_fence(
+    uint32_t owner_hw_sid, uint32_t dynamic_warp_id,
+    uint32_t warp_id, provisional_group_drain_v0 *drain) {
+  if (drain == NULL) return kStatusInvalidArgument;
+  std::memset(drain, 0, sizeof(*drain));
+  drain->registry_status =
+      address_range_registry::kStatusOk;
+  registered_group_v0 *group = NULL;
+  for (std::map<uint64_t, registered_group_v0>::iterator it =
+           registered_groups_.begin();
+       it != registered_groups_.end(); ++it) {
+    const allocation_identity::owner_v0 &owner =
+        it->second.execution_owner;
+    if (owner.owner_hw_sid != owner_hw_sid ||
+        owner.dynamic_warp_id != dynamic_warp_id ||
+        owner.warp_id != warp_id) {
+      continue;
+    }
+    if (group != NULL) return kStatusGroupConflict;
+    group = &it->second;
+  }
+  if (group == NULL) return kStatusOk;
+  drain->registered = 1;
+  drain->fence_armed = group->fence_armed;
+  drain->preaccept_pending = group->preaccept_pending;
+  if (!group->fence_armed) return kStatusOk;
+  drain->registry_status =
+      registry_.provisional_group_outstanding(
+          group->provisional_owner,
+          &drain->outstanding_transactions);
+  if (drain->registry_status !=
+      address_range_registry::kStatusOk) {
+    return kStatusRegistryRejected;
+  }
+  drain->wait_required =
+      drain->preaccept_pending != 0 ||
+      drain->outstanding_transactions != 0;
+  if (!drain->wait_required) {
+    group->fence_armed = 0;
+    drain->fence_consumed = 1;
+  }
+  return kStatusOk;
+}
+
 bridge_snapshot_v0 bridge_v0::snapshot() const {
   bridge_snapshot_v0 result = {};
   result.authority = authority_.snapshot();
   result.registry = registry_.snapshot();
   result.registered_group_count = registered_groups_.size();
   return result;
+}
+
+bridge_v0 &shared_bridge() {
+  static bridge_v0 bridge;
+  return bridge;
 }
 
 const char *status_name(status_kind status) {

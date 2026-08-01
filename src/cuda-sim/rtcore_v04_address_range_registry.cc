@@ -266,6 +266,56 @@ status_kind registry_v0::accept_provisional_publication_store(
     transaction_token_v0 *token) {
   if (token == NULL) return kStatusInvalidArgument;
   std::memset(token, 0, sizeof(*token));
+  const status_kind validation =
+      validate_provisional_publication_store(store);
+  if (validation != kStatusOk) return validation;
+
+  range_record_v0 *match = NULL;
+  for (std::map<uint64_t, range_record_v0>::iterator it =
+           records_.begin();
+       it != records_.end(); ++it) {
+    range_record_v0 &record = it->second;
+    uint64_t end = 0;
+    if (!checked_range_end(record.base, record.byte_count, &end)) {
+      return kStatusAddressOverflow;
+    }
+    if (store.aligned_32b_address >= record.base &&
+        store.aligned_32b_address < end) {
+      match = &record;
+      break;
+    }
+  }
+  if (match == NULL) return kStatusRecordNotFound;
+  if (match->outstanding_transactions ==
+      std::numeric_limits<uint32_t>::max()) {
+    return kStatusOutstandingTransactions;
+  }
+  if (next_transaction_id_ == 0 ||
+      next_transaction_id_ ==
+          std::numeric_limits<uint64_t>::max()) {
+    return kStatusTransactionIdExhausted;
+  }
+
+  transaction_token_v0 prepared = {};
+  prepared.transaction_id = next_transaction_id_++;
+  prepared.record_id = match->record_id;
+  prepared.owner_hw_sid = store.owner.owner_hw_sid;
+  prepared.owner_generation =
+      store.owner.launch_allocation_generation;
+  prepared.window_generation = store.owner.window_generation;
+  prepared.lane_id = store.lane_id;
+  prepared.object = store.object;
+  prepared.access = kAccessHandoffShaderTraceInputPublish;
+  transaction_record_v0 transaction = {};
+  transaction.token = prepared;
+  transactions_[prepared.transaction_id] = transaction;
+  ++match->outstanding_transactions;
+  *token = prepared;
+  return kStatusOk;
+}
+
+status_kind registry_v0::validate_provisional_publication_store(
+    const provisional_store_v0 &store) const {
   if (!valid_provisional_owner(store.owner) ||
       store.lane_id >= kLaneCapacity ||
       store.object != kObjectHandoff ||
@@ -274,11 +324,11 @@ status_kind registry_v0::accept_provisional_publication_store(
     return kStatusInvalidArgument;
   }
 
-  range_record_v0 *match = NULL;
-  for (std::map<uint64_t, range_record_v0>::iterator it =
+  const range_record_v0 *match = NULL;
+  for (std::map<uint64_t, range_record_v0>::const_iterator it =
            records_.begin();
        it != records_.end(); ++it) {
-    range_record_v0 &record = it->second;
+    const range_record_v0 &record = it->second;
     uint64_t end = 0;
     if (!checked_range_end(record.base, record.byte_count, &end)) {
       return kStatusAddressOverflow;
@@ -312,32 +362,83 @@ status_kind registry_v0::accept_provisional_publication_store(
     break;
   }
   if (match == NULL) return kStatusRecordNotFound;
-  if (match->outstanding_transactions ==
-      std::numeric_limits<uint32_t>::max()) {
-    return kStatusOutstandingTransactions;
-  }
-  if (next_transaction_id_ == 0 ||
-      next_transaction_id_ ==
-          std::numeric_limits<uint64_t>::max()) {
-    return kStatusTransactionIdExhausted;
-  }
-
-  transaction_token_v0 prepared = {};
-  prepared.transaction_id = next_transaction_id_++;
-  prepared.record_id = match->record_id;
-  prepared.owner_hw_sid = store.owner.owner_hw_sid;
-  prepared.owner_generation =
-      store.owner.launch_allocation_generation;
-  prepared.window_generation = store.owner.window_generation;
-  prepared.lane_id = store.lane_id;
-  prepared.object = store.object;
-  prepared.access = kAccessHandoffShaderTraceInputPublish;
-  transaction_record_v0 transaction = {};
-  transaction.token = prepared;
-  transactions_[prepared.transaction_id] = transaction;
-  ++match->outstanding_transactions;
-  *token = prepared;
   return kStatusOk;
+}
+
+status_kind registry_v0::observe_provisional_range(
+    uint64_t aligned_32b_address,
+    provisional_range_observation_v0 *observation) const {
+  if (observation == NULL ||
+      aligned_32b_address % kAddressChunkBytes != 0) {
+    return kStatusInvalidArgument;
+  }
+  std::memset(observation, 0, sizeof(*observation));
+  for (std::map<uint64_t, range_record_v0>::const_iterator it =
+           records_.begin();
+       it != records_.end(); ++it) {
+    const range_record_v0 &record = it->second;
+    uint64_t end = 0;
+    if (!checked_range_end(record.base, record.byte_count, &end)) {
+      return kStatusAddressOverflow;
+    }
+    if (aligned_32b_address < record.base ||
+        aligned_32b_address >= end) {
+      continue;
+    }
+    uint8_t lane = 0;
+    while (lane < kLaneCapacity &&
+           record.lane_mask != lane_bit(lane)) {
+      ++lane;
+    }
+    if (lane == kLaneCapacity) return kStatusLaneMismatch;
+    const size_t chunk = static_cast<size_t>(
+        (aligned_32b_address - record.base) /
+        kAddressChunkBytes);
+    if (chunk >= record.allowed_publication_masks.size()) {
+      return kStatusInvalidRange;
+    }
+    observation->owner = record.provisional_owner;
+    observation->lane_id = lane;
+    observation->object = record.object;
+    observation->phase = record.phase;
+    observation->allowed_publication_mask =
+        record.allowed_publication_masks[chunk];
+    return kStatusOk;
+  }
+  return kStatusRecordNotFound;
+}
+
+status_kind registry_v0::provisional_group_outstanding(
+    const provisional_owner_v0 &owner,
+    uint64_t *outstanding_transactions) const {
+  if (!valid_provisional_owner(owner) ||
+      outstanding_transactions == NULL) {
+    return kStatusInvalidArgument;
+  }
+  *outstanding_transactions = 0;
+  bool found = false;
+  for (std::map<uint64_t, range_record_v0>::const_iterator it =
+           records_.begin();
+       it != records_.end(); ++it) {
+    const range_record_v0 &record = it->second;
+    if (!same_provisional_owner(record.provisional_owner, owner)) {
+      continue;
+    }
+    if (record.phase != kPhaseProvisional &&
+        record.phase != kPhasePendingBind &&
+        record.phase != kPhaseCancelPending) {
+      return kStatusWrongPhase;
+    }
+    if (record.outstanding_transactions >
+        std::numeric_limits<uint64_t>::max() -
+            *outstanding_transactions) {
+      return kStatusOutstandingTransactions;
+    }
+    *outstanding_transactions +=
+        record.outstanding_transactions;
+    found = true;
+  }
+  return found ? kStatusOk : kStatusRecordNotFound;
 }
 
 status_kind registry_v0::begin_live_bind(

@@ -93,6 +93,15 @@ struct provisional_store_v0 {
   uint32_t byte_mask;
 };
 
+struct provisional_range_observation_v0 {
+  provisional_owner_v0 owner;
+  uint8_t lane_id;
+  object_kind object;
+  phase_kind phase;
+  uint8_t reserved_zero;
+  uint32_t allowed_publication_mask;
+};
+
 struct live_access_v0 {
   live_owner_v0 owner;
   uint8_t lane_id;
@@ -137,6 +146,17 @@ class registry_v0 {
   status_kind accept_provisional_publication_store(
       const provisional_store_v0 &store,
       transaction_token_v0 *token);
+
+  status_kind validate_provisional_publication_store(
+      const provisional_store_v0 &store) const;
+
+  status_kind observe_provisional_range(
+      uint64_t aligned_32b_address,
+      provisional_range_observation_v0 *observation) const;
+
+  status_kind provisional_group_outstanding(
+      const provisional_owner_v0 &owner,
+      uint64_t *outstanding_transactions) const;
 
   status_kind begin_live_bind(
       const provisional_owner_v0 &owner, uint32_t active_mask,

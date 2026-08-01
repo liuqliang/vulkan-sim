@@ -27,6 +27,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "mem_fetch.h"
+#include <cstring>
 #include "gpu-sim.h"
 #include "mem_latency_stat.h"
 #include "shader.h"
@@ -74,9 +75,24 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     m_raw_addr.sub_partition = m_original_mf->get_tlx_addr().sub_partition;
   }
   m_israytrace = false;
+  memset(&m_rtcore_v04_publication_ticket, 0,
+         sizeof(m_rtcore_v04_publication_ticket));
+  m_rtcore_v04_publication_ticket_valid = false;
+  memset(&m_rtcore_v04_publication_preaccept, 0,
+         sizeof(m_rtcore_v04_publication_preaccept));
+  m_rtcore_v04_publication_preaccept_valid = false;
 }
 
-mem_fetch::~mem_fetch() { 
+mem_fetch::~mem_fetch() {
+  if (m_rtcore_v04_publication_ticket_valid ||
+      m_rtcore_v04_publication_preaccept_valid) {
+    fprintf(stderr,
+            "GPGPU-Sim: deleting mem_fetch with live Global384 "
+            "publication metadata, request_uid=%u\n",
+            m_request_uid);
+    fflush(stderr);
+    abort();
+  }
   m_status = MEM_FETCH_DELETED; 
   // allocated_mf_set.erase(m_request_uid);
 }
@@ -132,6 +148,57 @@ bool mem_fetch::isconst() const {
   if (m_inst.empty()) return false;
   return (m_inst.space.get_type() == const_space) ||
          (m_inst.space.get_type() == param_space_kernel);
+}
+
+bool mem_fetch::attach_rtcore_v04_publication_ticket(
+    const rtcore::v04::pre_submit_publication::
+        publication_ticket_v0 &token) {
+  if (m_rtcore_v04_publication_ticket_valid ||
+      token.transaction_id == 0 || token.record_id == 0) {
+    return false;
+  }
+  m_rtcore_v04_publication_ticket = token;
+  m_rtcore_v04_publication_ticket_valid = true;
+  return true;
+}
+
+bool mem_fetch::take_rtcore_v04_publication_ticket(
+    rtcore::v04::pre_submit_publication::
+        publication_ticket_v0 *token) {
+  if (!m_rtcore_v04_publication_ticket_valid || token == NULL) {
+    return false;
+  }
+  *token = m_rtcore_v04_publication_ticket;
+  memset(&m_rtcore_v04_publication_ticket, 0,
+         sizeof(m_rtcore_v04_publication_ticket));
+  m_rtcore_v04_publication_ticket_valid = false;
+  return true;
+}
+
+bool mem_fetch::attach_rtcore_v04_publication_preaccept(
+    const rtcore::v04::pre_submit_publication::
+        publication_store_v0 &store) {
+  if (m_rtcore_v04_publication_preaccept_valid ||
+      m_rtcore_v04_publication_ticket_valid ||
+      store.aligned_32b_address == 0 || store.byte_mask == 0) {
+    return false;
+  }
+  m_rtcore_v04_publication_preaccept = store;
+  m_rtcore_v04_publication_preaccept_valid = true;
+  return true;
+}
+
+bool mem_fetch::take_rtcore_v04_publication_preaccept(
+    rtcore::v04::pre_submit_publication::
+        publication_store_v0 *store) {
+  if (!m_rtcore_v04_publication_preaccept_valid || store == NULL) {
+    return false;
+  }
+  *store = m_rtcore_v04_publication_preaccept;
+  memset(&m_rtcore_v04_publication_preaccept, 0,
+         sizeof(m_rtcore_v04_publication_preaccept));
+  m_rtcore_v04_publication_preaccept_valid = false;
+  return true;
 }
 
 /// Returns number of flits traversing interconnect. simt_to_mem specifies the

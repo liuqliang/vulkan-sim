@@ -31,6 +31,7 @@
 
 #include <bitset>
 #include "../abstract_hardware_model.h"
+#include "../cuda-sim/rtcore_v04_pre_submit_publication_bridge.h"
 #include "addrdec.h"
 
 enum mf_type {
@@ -124,7 +125,7 @@ class mem_fetch {
   }
 
   address_type get_pc() const { return m_inst.empty() ? -1 : m_inst.pc; }
-  const warp_inst_t &get_inst() { return m_inst; }
+  const warp_inst_t &get_inst() const { return m_inst; }
   enum mem_fetch_status get_status() const { return m_status; }
 
   const memory_config *get_mem_config() { return m_mem_config; }
@@ -133,6 +134,25 @@ class mem_fetch {
 
   mem_fetch *get_original_mf() { return original_mf; }
   mem_fetch *get_original_wr_mf() { return original_wr_mf; }
+
+  bool attach_rtcore_v04_publication_ticket(
+      const rtcore::v04::pre_submit_publication::
+          publication_ticket_v0 &token);
+  bool take_rtcore_v04_publication_ticket(
+      rtcore::v04::pre_submit_publication::
+          publication_ticket_v0 *token);
+  bool has_rtcore_v04_publication_ticket() const {
+    return m_rtcore_v04_publication_ticket_valid;
+  }
+  bool attach_rtcore_v04_publication_preaccept(
+      const rtcore::v04::pre_submit_publication::
+          publication_store_v0 &store);
+  bool take_rtcore_v04_publication_preaccept(
+      rtcore::v04::pre_submit_publication::
+          publication_store_v0 *store);
+  bool has_rtcore_v04_publication_preaccept() const {
+    return m_rtcore_v04_publication_preaccept_valid;
+  }
 
  private:
   // request source information
@@ -182,6 +202,13 @@ class mem_fetch {
                      // size), so the pointer refers to the original request
   mem_fetch *original_wr_mf;  // this pointer refers to the original write req,
                               // when fetch-on-write policy is used
+
+  rtcore::v04::pre_submit_publication::publication_ticket_v0
+      m_rtcore_v04_publication_ticket;
+  bool m_rtcore_v04_publication_ticket_valid;
+  rtcore::v04::pre_submit_publication::publication_store_v0
+      m_rtcore_v04_publication_preaccept;
+  bool m_rtcore_v04_publication_preaccept_valid;
 };
 
 #endif

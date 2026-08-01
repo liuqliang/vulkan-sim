@@ -15938,9 +15938,6 @@ bool rtcore_current_warp_metadata_is_valid(
   return accepted;
 }
 
-static rtcore::v04::pre_submit_publication::bridge_v0
-    g_rtcore_v04_pre_submit_publication_bridge;
-
 static bool rtcore_v04_checked_allocation_base(
     unsigned long long pool_base, unsigned long long allocation_index,
     unsigned allocation_bytes, unsigned long long *allocation_base) {
@@ -16069,8 +16066,8 @@ static bool rtcore_v04_register_global384_provisional_publication(
 
   rtcore::v04::pre_submit_publication::lane_publication_result_v0 result = {};
   const rtcore::v04::pre_submit_publication::status_kind bridge_status =
-      g_rtcore_v04_pre_submit_publication_bridge.observe_initial_publication(
-          request, &result);
+      rtcore::v04::pre_submit_publication::shared_bridge()
+          .observe_initial_publication(request, &result);
   printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT "
          "global384-provisional-publication (%s:%u), "
          "bridge_status=%s, authority_status=%s, registry_status=%s, "
