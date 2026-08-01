@@ -134,6 +134,22 @@ struct first_submit_bind_result_v0 {
   uint8_t reserved_zero[5];
 };
 
+struct retire_live_release_result_v0 {
+  allocation_identity::status_kind authority_status;
+  address_range_registry::status_kind registry_status;
+  allocation_identity::allocation_identity_v0 identity;
+  uint64_t outstanding_transactions;
+  uint32_t resident_warp_generation;
+  uint8_t release_started;
+  uint8_t wait_required;
+  uint8_t released;
+  uint8_t reserved_zero[5];
+};
+
+#ifdef RTCORE_V04_PRE_SUBMIT_PUBLICATION_BRIDGE_TESTING
+struct bridge_test_access_v0;
+#endif
+
 class bridge_v0 {
  public:
   bridge_v0();
@@ -189,6 +205,11 @@ class bridge_v0 {
       uint32_t resident_warp_generation,
       first_submit_bind_result_v0 *result) const;
 
+  status_kind begin_or_poll_retire_live_release(
+      const first_submit_bind_request_v0 &request,
+      uint32_t resident_warp_generation,
+      retire_live_release_result_v0 *result);
+
   bridge_snapshot_v0 snapshot() const;
 
  private:
@@ -207,6 +228,7 @@ class bridge_v0 {
     uint8_t fence_armed;
     uint8_t bind_started;
     uint8_t live_bound;
+    uint8_t release_started;
   };
 
   struct publication_identity_observation_v0 {
@@ -228,6 +250,10 @@ class bridge_v0 {
 
   bridge_v0(const bridge_v0 &);
   bridge_v0 &operator=(const bridge_v0 &);
+
+#ifdef RTCORE_V04_PRE_SUBMIT_PUBLICATION_BRIDGE_TESTING
+  friend struct bridge_test_access_v0;
+#endif
 };
 
 const char *status_name(status_kind status);

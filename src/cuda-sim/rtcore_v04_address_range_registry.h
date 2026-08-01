@@ -133,6 +133,14 @@ struct registry_snapshot_v0 {
   size_t release_pending_count;
 };
 
+struct live_release_observation_v0 {
+  uint64_t outstanding_transactions;
+  uint8_t records_present;
+  uint8_t release_pending;
+  uint8_t released;
+  uint8_t reserved_zero[5];
+};
+
 class registry_v0 {
  public:
   registry_v0();
@@ -183,6 +191,10 @@ class registry_v0 {
       const provisional_owner_v0 &owner);
 
   status_kind release_live_group(const live_owner_v0 &owner);
+
+  status_kind poll_live_group_release(
+      const live_owner_v0 &owner,
+      live_release_observation_v0 *observation) const;
 
   bool range_available(uint64_t base, uint64_t byte_count) const;
 

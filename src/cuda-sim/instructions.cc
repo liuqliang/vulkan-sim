@@ -12786,7 +12786,8 @@ struct rtcore_symbolic_retire_lane_intent {
 struct rtcore_symbolic_retire_transaction {
   rtcore_symbolic_retire_transaction()
       : valid(false), claimed(false), instruction(NULL), owner_hw_sid(0),
-        warp_uid(0), warp_id(0), static_inst_uid(0), active_mask(0),
+        warp_uid(0), dynamic_warp_id(0), warp_id(0), static_inst_uid(0),
+        active_mask(0),
         seen_lane_mask(0), validated_lane_mask(0), claim_cycle(0) {}
 
   bool valid;
@@ -12794,6 +12795,7 @@ struct rtcore_symbolic_retire_transaction {
   const ptx_instruction *instruction;
   unsigned owner_hw_sid;
   unsigned warp_uid;
+  unsigned dynamic_warp_id;
   unsigned warp_id;
   unsigned static_inst_uid;
   unsigned active_mask;
@@ -16247,6 +16249,104 @@ static bool rtcore_v04_make_global384_bind_material(
   material->request.handoff_allowed_publication_mask_count =
       material->handoff_masks.size();
   material->dynamic_warp_id = expected_dynamic_warp_id;
+  return true;
+}
+
+static bool rtcore_v04_make_global384_retire_release_material(
+    const rtcore_symbolic_retire_transaction &transaction,
+    rtcore_v04_global384_bind_material *material) {
+  if (material == NULL || !transaction.valid || !transaction.claimed ||
+      transaction.active_mask == 0 ||
+      transaction.seen_lane_mask != transaction.active_mask ||
+      transaction.validated_lane_mask != transaction.active_mask) {
+    return false;
+  }
+  *material = rtcore_v04_global384_bind_material();
+  bool have_common = false;
+  unsigned long long common_context_allocation_base = 0;
+  rtcore_runtime_context_window_allocation_record common;
+  for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+    if ((transaction.active_mask & (1u << lane)) == 0) continue;
+    const rtcore_symbolic_retire_lane_intent &intent = transaction.lane[lane];
+    const rtcore_runtime_context_window_allocation_record &allocation =
+        intent.allocation_record;
+    unsigned long long context_allocation_base = 0;
+    if (!intent.valid || !allocation.enabled || !allocation.valid ||
+        allocation.lane_slot_index != lane ||
+        allocation.context_ptr != intent.context_ptr ||
+        allocation.handoff_window_base != intent.handoff_window_base ||
+        allocation.context_window_index >
+            std::numeric_limits<uint32_t>::max() ||
+        !rtcore_v04_checked_allocation_base(
+            allocation.context_base, allocation.context_window_index,
+            allocation.context_allocation_bytes,
+            &context_allocation_base)) {
+      return false;
+    }
+    if (!have_common) {
+      common = allocation;
+      common_context_allocation_base = context_allocation_base;
+      have_common = true;
+    } else if (context_allocation_base != common_context_allocation_base ||
+               allocation.context_window_index !=
+                   common.context_window_index ||
+               allocation.handoff_window_base !=
+                   common.handoff_window_base ||
+               allocation.context_allocation_bytes !=
+                   common.context_allocation_bytes ||
+               allocation.handoff_allocation_bytes !=
+                   common.handoff_allocation_bytes ||
+               allocation.context_lane_stride_bytes !=
+                   common.context_lane_stride_bytes ||
+               allocation.handoff_lane_slot_stride_bytes !=
+                   common.handoff_lane_slot_stride_bytes ||
+               allocation.capacity_lane_slots !=
+                   common.capacity_lane_slots ||
+               allocation.owner_generation != common.owner_generation) {
+      return false;
+    }
+  }
+  if (!have_common) return false;
+
+  const uint32_t owned_words =
+      rtcore::abi_v04::shadow::trace_input_owned_word_mask();
+  for (size_t word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
+    if ((owned_words & (uint32_t{1} << word)) == 0) continue;
+    const size_t byte_offset = word * sizeof(uint32_t);
+    const size_t chunk =
+        byte_offset /
+        rtcore::v04::address_range_registry::kAddressChunkBytes;
+    const size_t byte_in_chunk =
+        byte_offset %
+        rtcore::v04::address_range_registry::kAddressChunkBytes;
+    material->handoff_masks[chunk] |= uint32_t{0xf} << byte_in_chunk;
+  }
+  static const uint64_t kRuntimeAllocationDomainId = UINT64_C(1);
+  material->request.slot.allocation_domain_id = kRuntimeAllocationDomainId;
+  material->request.slot.allocation_slot_id =
+      static_cast<uint32_t>(common.context_window_index);
+  material->request.owner.owner_hw_sid = transaction.owner_hw_sid;
+  material->request.owner.dynamic_warp_id = transaction.dynamic_warp_id;
+  material->request.owner.warp_id = transaction.warp_id;
+  material->request.allocation_ranges.context_base =
+      common_context_allocation_base;
+  material->request.allocation_ranges.context_byte_count =
+      common.context_allocation_bytes;
+  material->request.allocation_ranges.handoff_base =
+      common.handoff_window_base;
+  material->request.allocation_ranges.handoff_byte_count =
+      common.handoff_allocation_bytes;
+  material->request.active_mask = transaction.active_mask;
+  material->request.capacity_lane_slots = common.capacity_lane_slots;
+  material->request.context_lane_stride_bytes =
+      common.context_lane_stride_bytes;
+  material->request.handoff_lane_stride_bytes =
+      common.handoff_lane_slot_stride_bytes;
+  material->request.handoff_allowed_publication_masks =
+      material->handoff_masks.data();
+  material->request.handoff_allowed_publication_mask_count =
+      material->handoff_masks.size();
+  material->dynamic_warp_id = transaction.dynamic_warp_id;
   return true;
 }
 
@@ -36099,6 +36199,98 @@ rtcore_validate_v04_global384_first_submit_live_bind_before_functional(
       active_mask);
 }
 
+extern "C" rtcore_v04_retire_live_release_status
+rtcore_service_v04_global384_retire_live_release(
+    unsigned owner_hw_sid, unsigned retire_warp_uid,
+    unsigned warp_id, unsigned resident_warp_generation,
+    unsigned active_mask, unsigned long long service_cycle) {
+  bool global384 = false;
+  if (!rtcore_v04_global384_profile_selected(&global384)) {
+    return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
+  }
+  if (!global384) return RTCORE_V04_RETIRE_LIVE_RELEASE_NOT_APPLICABLE;
+  if (!rtcore_v04_functional_only_engine_gate_active() ||
+      !rtcore_v04_root_node_input_gate_active() ||
+      resident_warp_generation == 0 || active_mask == 0) {
+    return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
+  }
+
+  std::map<unsigned, rtcore_symbolic_retire_transaction>::const_iterator
+      transaction =
+          g_rtcore_symbolic_retire_transactions.find(retire_warp_uid);
+  if (transaction == g_rtcore_symbolic_retire_transactions.end() ||
+      !transaction->second.valid || !transaction->second.claimed ||
+      transaction->second.owner_hw_sid != owner_hw_sid ||
+      transaction->second.warp_uid != retire_warp_uid ||
+      transaction->second.warp_id != warp_id ||
+      transaction->second.active_mask != active_mask) {
+    return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
+  }
+
+  rtcore_v04_global384_bind_material material;
+  if (!rtcore_v04_make_global384_retire_release_material(
+          transaction->second, &material)) {
+    return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
+  }
+  rtcore::v04::pre_submit_publication::retire_live_release_result_v0 result =
+      {};
+  const rtcore::v04::pre_submit_publication::status_kind status =
+      rtcore::v04::pre_submit_publication::shared_bridge()
+          .begin_or_poll_retire_live_release(
+              material.request, resident_warp_generation, &result);
+  if (status != rtcore::v04::pre_submit_publication::kStatusOk) {
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_RETIRE_LIVE_RELEASE "
+           "owner_hw_sid=%u dynamic_warp_id=%u retire_warp_uid=%u "
+           "warp_id=%u active_mask=0x%08x resident_generation=%u "
+           "service_cycle=%llu bridge_status=%s authority_status=%s "
+           "registry_status=%s result=fault\n",
+           owner_hw_sid, material.dynamic_warp_id, retire_warp_uid,
+           warp_id, active_mask, resident_warp_generation, service_cycle,
+           rtcore::v04::pre_submit_publication::status_name(status),
+           rtcore::v04::allocation_identity::status_name(
+               result.authority_status),
+           rtcore::v04::address_range_registry::status_name(
+               result.registry_status));
+    fflush(stdout);
+    return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
+  }
+  if (result.wait_required) {
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_RETIRE_LIVE_RELEASE "
+           "owner_hw_sid=%u dynamic_warp_id=%u retire_warp_uid=%u "
+           "warp_id=%u active_mask=0x%08x resident_generation=%u "
+           "service_cycle=%llu release_started=%u outstanding=%llu "
+           "result=wait\n",
+           owner_hw_sid, material.dynamic_warp_id, retire_warp_uid,
+           warp_id, active_mask, resident_warp_generation, service_cycle,
+           result.release_started,
+           static_cast<unsigned long long>(result.outstanding_transactions));
+    fflush(stdout);
+    return RTCORE_V04_RETIRE_LIVE_RELEASE_WAIT;
+  }
+  if (!result.released) return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
+  const rtcore::v04::pre_submit_publication::bridge_snapshot_v0 snapshot =
+      rtcore::v04::pre_submit_publication::shared_bridge().snapshot();
+  printf("GPGPU-Sim RTCORE_V04_GLOBAL384_RETIRE_LIVE_RELEASE "
+         "owner_hw_sid=%u dynamic_warp_id=%u retire_warp_uid=%u "
+         "warp_id=%u active_mask=0x%08x resident_generation=%u "
+         "service_cycle=%llu release_started=%u exact_ranges=validated "
+         "released_record_id=%llu launch_generation=%u "
+         "window_generation=%u owner_group_released=1 "
+         "remaining_registered_groups=%zu remaining_live_ranges=%zu "
+         "remaining_active_allocations=%zu result=released\n",
+         owner_hw_sid, material.dynamic_warp_id, retire_warp_uid,
+         warp_id, active_mask, resident_warp_generation, service_cycle,
+         result.release_started,
+         static_cast<unsigned long long>(result.identity.record_id),
+         result.identity.launch_allocation_generation,
+         result.identity.window_generation,
+         snapshot.registered_group_count,
+         snapshot.registry.live_count,
+         snapshot.authority.active_record_count);
+  fflush(stdout);
+  return RTCORE_V04_RETIRE_LIVE_RELEASE_READY;
+}
+
 void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (rtcore_fail_closed_on_invalid_path_mode(pI)) {
     return;
@@ -36380,12 +36572,14 @@ static bool rtcore_publish_symbolic_retire_intent(
     transaction.instruction = pI;
     transaction.owner_hw_sid = metadata.owner_hw_sid;
     transaction.warp_uid = metadata.warp_uid;
+    transaction.dynamic_warp_id = metadata.dynamic_warp_id;
     transaction.warp_id = metadata.warp_id;
     transaction.static_inst_uid = metadata.static_inst_uid;
   } else if (transaction.valid &&
              (transaction.claimed ||
               transaction.owner_hw_sid != metadata.owner_hw_sid ||
               transaction.warp_uid != metadata.warp_uid ||
+              transaction.dynamic_warp_id != metadata.dynamic_warp_id ||
               transaction.warp_id != metadata.warp_id ||
               transaction.static_inst_uid != metadata.static_inst_uid)) {
     reason = "RETIRE_INTENT_TRANSACTION_IDENTITY_MISMATCH";

@@ -854,6 +854,28 @@ status_kind registry_v0::release_live_group(
   return kStatusOutstandingTransactions;
 }
 
+status_kind registry_v0::poll_live_group_release(
+    const live_owner_v0 &owner,
+    live_release_observation_v0 *observation) const {
+  if (!valid_live_owner(owner) || observation == NULL) {
+    return kStatusInvalidArgument;
+  }
+  std::memset(observation, 0, sizeof(*observation));
+  for (std::map<uint64_t, range_record_v0>::const_iterator it =
+           records_.begin();
+       it != records_.end(); ++it) {
+    const range_record_v0 &record = it->second;
+    if (!same_live_owner(record.live_owner, owner)) continue;
+    if (record.phase != kPhaseReleasePending) return kStatusWrongPhase;
+    observation->records_present = 1;
+    observation->release_pending = 1;
+    observation->outstanding_transactions +=
+        record.outstanding_transactions;
+  }
+  observation->released = observation->records_present == 0;
+  return kStatusOk;
+}
+
 bool registry_v0::range_available(uint64_t base,
                                   uint64_t byte_count) const {
   uint64_t end = 0;

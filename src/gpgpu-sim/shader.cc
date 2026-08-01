@@ -14351,6 +14351,26 @@ void rt_unit::service_retire_transaction(unsigned long long current_cycle) {
       abort();
     }
 
+    const rtcore_v04_retire_live_release_status live_release_status =
+        rtcore_service_v04_global384_retire_live_release(
+            transaction.owner_hw_sid, transaction.warp_uid,
+            transaction.warp_id, transaction.resident_generation,
+            transaction.active_mask, current_cycle);
+    if (live_release_status == RTCORE_V04_RETIRE_LIVE_RELEASE_WAIT) {
+      return;
+    }
+    if (live_release_status == RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_RETIRE_TRANSACTION_INVARIANT "
+              "reason=GLOBAL384_LIVE_RELEASE_FAULT "
+              "phase=live_bridge_release owner_hw_sid=%u "
+              "warp_uid=%u warp_id=%u active_mask=0x%08x\n",
+              transaction.owner_hw_sid, transaction.warp_uid,
+              transaction.warp_id, transaction.active_mask);
+      fflush(stderr);
+      abort();
+    }
+
     unsigned released_lane_mask = 0;
     const char *external_commit_failure = "accepted";
     if (!rtcore_commit_symbolic_retire_transaction(

@@ -108,6 +108,13 @@ enum rtcore_v04_first_submit_live_bind_preissue_status {
   RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT = 3,
 };
 
+enum rtcore_v04_retire_live_release_status {
+  RTCORE_V04_RETIRE_LIVE_RELEASE_NOT_APPLICABLE = 0,
+  RTCORE_V04_RETIRE_LIVE_RELEASE_READY = 1,
+  RTCORE_V04_RETIRE_LIVE_RELEASE_WAIT = 2,
+  RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT = 3,
+};
+
 extern "C" rtcore_v04_first_submit_live_bind_preissue_status
 rtcore_service_v04_global384_first_submit_live_bind_before_issue(
     const ptx_instruction *instruction,
@@ -121,6 +128,12 @@ rtcore_validate_v04_global384_first_submit_live_bind_before_functional(
     const ptx_instruction *instruction,
     ptx_thread_info *const *lane_threads, unsigned owner_hw_sid,
     unsigned warp_uid, unsigned warp_id, unsigned active_mask);
+
+extern "C" rtcore_v04_retire_live_release_status
+rtcore_service_v04_global384_retire_live_release(
+    unsigned owner_hw_sid, unsigned retire_warp_uid,
+    unsigned warp_id, unsigned resident_warp_generation,
+    unsigned active_mask, unsigned long long service_cycle);
 
 extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
