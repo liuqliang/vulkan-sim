@@ -408,6 +408,14 @@ status_kind capture_matured(
       return kStatusOk;
     }
     if (sink_status != kResultSinkAccepted) {
+      record_packet_failure(
+          result, kFailurePointCaptureKind,
+          pipeline.operation_packet,
+          pipeline.operator_invocation_count,
+          restore_operation ? pipeline.typed_result.status
+                            : pipeline.enter_result.status,
+          restore_operation ? pipeline.typed_result.result_kind
+                            : pipeline.enter_result.result_kind);
       return kStatusResultSinkRejected;
     }
 

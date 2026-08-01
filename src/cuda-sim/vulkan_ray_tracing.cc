@@ -1306,6 +1306,9 @@ static bool rtcore_resolve_v04_handoff_authority(
 static bool rtcore_v04_request_owner_from_private_owner(
     const rtcore::v04::private_frontier::owner_binding_v0 &private_owner,
     rtcore::v04::request_owner::lane_binding_v0 *request_owner);
+static bool rtcore_v04_private_shared_operation_from_snapshot(
+    const rtcore_memory_unit_request_snapshot &snapshot,
+    rtcore::v04::private_shared::shared_write_v0 *operation);
 
 struct rtcore_resident_rt_warp_record;
 static rtcore::v04::private_shared::backing_state_v0 &
@@ -7005,6 +7008,132 @@ extern "C" bool rtcore_complete_v04_global384_private_init_write(
     fflush(stdout);
     return pending->second.completed_private_init_writes <=
            pending->second.accepted_private_init_writes;
+}
+
+extern "C" bool rtcore_complete_v04_global384_private_runtime_write(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    memory_space *global_memory, unsigned long long response_address,
+    unsigned long long completion_cycle)
+{
+    namespace primitive_shared = rtcore::v04::primitive_shared;
+    namespace private_shared = rtcore::v04::private_shared;
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (snapshot == NULL || global_memory == NULL || !snapshot->valid ||
+        snapshot->address_space != RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL ||
+        snapshot->operation != RTCORE_MEMORY_OPERATION_WRITE ||
+        snapshot->destination !=
+            RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK ||
+        snapshot->access_kind !=
+            RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE ||
+        response_address != snapshot->aligned_32b_addr ||
+        snapshot->byte_mask == 0 ||
+        snapshot->v04_private_write.valid != 1) {
+        return false;
+    }
+    private_shared::shared_write_v0 write = {};
+    if (!rtcore_v04_private_shared_operation_from_snapshot(
+            *snapshot, &write) ||
+        write.address_space != private_shared::kAddressSpaceGlobal) {
+        return false;
+    }
+    private_shared::runtime_write_ack_v0 ack = {};
+    ack.valid = true;
+    ack.field_kind = write.field_kind;
+    ack.memory_operation_seq =
+        static_cast<uint16_t>(write.memory_op_seq);
+    ack.owner = write.owner;
+    ack.operation_seq = write.operation_seq;
+    ack.commit_epoch = write.commit_epoch;
+
+    std::map<unsigned, short_timing::engine_state_v0>::iterator short_it =
+        g_rtcore_v04_live_short_stack_timing_by_owner.find(
+            snapshot->owner_hw_sid);
+    std::map<unsigned, primitive_shared::engine_state_v0>::iterator
+        primitive_it =
+            g_rtcore_v04_live_primitive_shared_by_owner.find(
+                snapshot->owner_hw_sid);
+    const bool short_owns =
+        short_it !=
+            g_rtcore_v04_live_short_stack_timing_by_owner.end() &&
+        short_timing::owns_ack(short_it->second, ack);
+    uint8_t primitive_profile = 0;
+    const bool primitive_owns =
+        primitive_it != g_rtcore_v04_live_primitive_shared_by_owner.end() &&
+        primitive_shared::owns_ack(primitive_it->second, ack) &&
+        primitive_shared::profile_for_write(
+            primitive_it->second, write, &primitive_profile) &&
+        primitive_profile ==
+            rtcore::v04::private_storage::kProfileGlobal384;
+    if (short_owns == primitive_owns) return false;
+
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(snapshot->owner_hw_sid);
+    short_timing::engine_state_v0 staged_short = {};
+    primitive_shared::engine_state_v0 staged_primitive = {};
+    if (short_owns) {
+        staged_short = short_it->second;
+        if (short_timing::accept_global_write_ack(
+                &staged_short, &staged_timing, write, ack) !=
+            short_timing::kStatusOk) {
+            return false;
+        }
+    } else {
+        staged_primitive = primitive_it->second;
+        rtcore::v04::request_owner::lane_binding_v0 owner = {};
+        if (primitive_shared::accept_global_write_ack(
+                &staged_primitive, write, ack) !=
+                primitive_shared::kStatusOk ||
+            !rtcore_v04_request_owner_from_private_owner(
+                write.owner, &owner) ||
+            timing_driver::complete_memory_transaction(
+                &staged_timing, owner, write.operation_seq) !=
+                timing_driver::kStatusOk) {
+            return false;
+        }
+    }
+
+    unsigned char postimage[sizeof(snapshot->payload)] = {};
+    global_memory->read_simulator_backing(
+        snapshot->aligned_32b_addr, sizeof(postimage), postimage);
+    for (unsigned byte = 0; byte < sizeof(postimage); ++byte) {
+        if ((snapshot->byte_mask & (uint32_t{1} << byte)) != 0) {
+            postimage[byte] = snapshot->payload[byte];
+        }
+    }
+    global_memory->write_simulator_backing(
+        snapshot->aligned_32b_addr, sizeof(postimage), postimage);
+    unsigned char observed[sizeof(snapshot->payload)] = {};
+    global_memory->read_simulator_backing(
+        snapshot->aligned_32b_addr, sizeof(observed), observed);
+    if (memcmp(observed, postimage, sizeof(observed)) != 0) {
+        return false;
+    }
+
+    if (short_owns) {
+        short_it->second = staged_short;
+    } else {
+        primitive_it->second = staged_primitive;
+    }
+    rtcore_v04_timing_driver_for(snapshot->owner_hw_sid) =
+        staged_timing;
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_RUNTIME_WRITE_ACK "
+           "owner_hw_sid=%u request_identity=%u request_generation=%u "
+           "resident_warp_slot=%u lane_id=%u private_slot_id=%u "
+           "producer_operation_seq=%u commit_epoch=%u memory_op_seq=%u "
+           "chunk_id=%u chunk_count=%u field_kind=%u address=0x%llx "
+           "byte_mask=0x%08x owner=%s completion_cycle=%llu "
+           "functional_backing=committed\n",
+           snapshot->owner_hw_sid, snapshot->rt_request_id,
+           snapshot->request_generation, snapshot->resident_warp_id,
+           snapshot->lane_id, snapshot->private_slot_id,
+           write.operation_seq, write.commit_epoch, write.memory_op_seq,
+           write.chunk_id, write.chunk_count, write.field_kind,
+           snapshot->aligned_32b_addr, snapshot->byte_mask,
+           short_owns ? "short_stack" : "primitive",
+           completion_cycle);
+    fflush(stdout);
+    return true;
 }
 
 extern "C" bool
@@ -19429,7 +19558,11 @@ rtcore_v04_private_shared_snapshot(
         operation.operation_seq != 0 && operation.commit_epoch != 0;
     rtcore_memory_unit_request_snapshot snapshot = {};
     snapshot.valid = operation.valid;
-    snapshot.address_space = RTCORE_MEMORY_ADDRESS_SPACE_SHARED;
+    snapshot.address_space =
+        operation.address_space ==
+                rtcore::v04::private_shared::kAddressSpaceGlobal
+            ? RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL
+            : RTCORE_MEMORY_ADDRESS_SPACE_SHARED;
     snapshot.operation = RTCORE_MEMORY_OPERATION_WRITE;
     snapshot.destination =
         RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK;
@@ -19474,8 +19607,15 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
         rtcore::v04::instance_semantic::kMaxWriteFragmentCount >=
             rtcore::v04::stack_commit::kMaxWritesPerTransaction,
         "private Shared runtime-write envelope must cover Stack writes");
+    const bool runtime_write =
+        snapshot.access_kind ==
+        RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE;
+    const bool global_runtime_write =
+        runtime_write &&
+        snapshot.address_space == RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL;
     if (operation == NULL || !snapshot.valid ||
-        snapshot.address_space != RTCORE_MEMORY_ADDRESS_SPACE_SHARED ||
+        (snapshot.address_space != RTCORE_MEMORY_ADDRESS_SPACE_SHARED &&
+         !global_runtime_write) ||
         snapshot.operation != RTCORE_MEMORY_OPERATION_WRITE ||
         snapshot.destination !=
             RTCORE_MEMORY_DESTINATION_PRIVATE_COMMIT_ACK ||
@@ -19491,8 +19631,7 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
             rtcore::v04::private_shared::kLaneCapacity ||
         snapshot.private_slot_id >= 256 ||
         snapshot.chunk_count == 0 ||
-        snapshot.chunk_count >
-            rtcore::v04::instance_semantic::kMaxWriteFragmentCount ||
+        snapshot.chunk_count > 16 ||
         snapshot.chunk_id >= snapshot.chunk_count ||
         (snapshot.access_kind ==
                  RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE
@@ -19507,9 +19646,6 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
         !snapshot.is_write) {
         return false;
     }
-    const bool runtime_write =
-        snapshot.access_kind ==
-        RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE;
     const rtcore_v04_private_write_transport_snapshot
         zero_private_write = {};
     const rtcore_v04_target_raw_read_transport_snapshot
@@ -19535,7 +19671,9 @@ static bool rtcore_v04_private_shared_operation_from_snapshot(
     *operation = rtcore::v04::private_shared::shared_write_v0();
     operation->valid = true;
     operation->address_space =
-        rtcore::v04::private_shared::kAddressSpaceShared;
+        global_runtime_write
+            ? rtcore::v04::private_shared::kAddressSpaceGlobal
+            : rtcore::v04::private_shared::kAddressSpaceShared;
     operation->address_mode =
         rtcore::v04::private_shared::kAddressModePrivateField;
     operation->access_operation =
@@ -21143,6 +21281,61 @@ extern "C" bool rtcore_accept_v04_short_stack_private_shared_read(
     return true;
 }
 
+extern "C" bool
+rtcore_accept_v04_short_stack_private_state_384_read_response(
+    const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long response_cycle)
+{
+    namespace short_timing = rtcore::v04::short_stack_timing;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (request == NULL || response_bytes == NULL ||
+        response_byte_count !=
+            rtcore::v04::private_state_384::kChunkBytes ||
+        !rtcore_v04_live_short_stack_timing_enabled() ||
+        request->address_space != RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL ||
+        request->operation != RTCORE_MEMORY_OPERATION_READ ||
+        request->destination !=
+            RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL ||
+        request->access_kind !=
+            RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ ||
+        request->v04_private_state_384_read.storage_profile !=
+            rtcore::v04::private_storage::kProfileGlobal384) {
+        return false;
+    }
+    std::map<unsigned, short_timing::engine_state_v0>::iterator it =
+        g_rtcore_v04_live_short_stack_timing_by_owner.find(
+            request->owner_hw_sid);
+    if (it == g_rtcore_v04_live_short_stack_timing_by_owner.end()) {
+        return false;
+    }
+    short_timing::engine_state_v0 staged_short = it->second;
+    timing_driver::state_v0 staged_timing =
+        rtcore_v04_timing_driver_for(request->owner_hw_sid);
+    const short_timing::status_kind status =
+        short_timing::accept_private_state_384_read_response_bytes(
+            &staged_short, &staged_timing, *request, response_bytes,
+            response_byte_count, response_cycle);
+    if (status != short_timing::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_GLOBAL384_SHORT_STACK_READ_FAULT "
+                "owner_hw_sid=%u request_identity=0x%08x lane_id=%u "
+                "operation_seq=%u chunk_id=%u response_cycle=%llu "
+                "fault=%s\n",
+                request->owner_hw_sid, request->rt_request_id,
+                request->lane_id,
+                request->v04_private_state_384_read.operation_sequence,
+                request->chunk_id, response_cycle,
+                short_timing::status_name(status));
+        fflush(stderr);
+        return false;
+    }
+    it->second = staged_short;
+    rtcore_v04_timing_driver_for(request->owner_hw_sid) =
+        staged_timing;
+    return true;
+}
+
 extern "C" bool rtcore_accept_v04_private_boundary_state_384_read(
     const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle)
@@ -22135,8 +22328,17 @@ rtcore_accept_v04_live_node_route(
     void *opaque_context)
 {
     namespace node_timing = rtcore::v04::node_timing;
+    namespace private_storage = rtcore::v04::private_storage;
     namespace result_semantic = rtcore::v04::result_semantic;
     if (route == NULL) return node_timing::kRouteSinkRejected;
+    if (route->result_identity.private_storage_profile ==
+            private_storage::kProfileGlobal384) {
+        return route->semantic_plan.route_kind ==
+                       result_semantic::kNodeRouteDirectChild
+                   ? rtcore_accept_v04_direct_selected_fetch_route(
+                         route, staged_timing_state, opaque_context)
+                   : node_timing::kRouteSinkBackpressure;
+    }
     if (rtcore_v04_live_short_stack_timing_enabled()) {
         return rtcore_accept_v04_short_stack_node_route(
             route, staged_timing_state, opaque_context);
@@ -22719,9 +22921,12 @@ static bool rtcore_service_v04_live_short_stack_timing(
                        accepted.target_operation_seq,
                        accepted.target_kind,
                        raw_request_plan.request_count,
-                       accepted.private_storage_profile ==
-                               rtcore::v04::private_storage::
-                                   kProfileCompressedShared384
+                       (accepted.private_storage_profile ==
+                                rtcore::v04::private_storage::
+                                    kProfileCompressedShared384 ||
+                        accepted.private_storage_profile ==
+                                rtcore::v04::private_storage::
+                                    kProfileGlobal384)
                            ? accepted.private_state_384_request_plan
                                  .request_count
                            : accepted.private_request_plan.request_count,
@@ -22738,15 +22943,17 @@ static bool rtcore_service_v04_live_short_stack_timing(
                    ready.transition.selected_valid == 0) {
             private_frontier::committed_hit_projection_v0 committed_hit = {};
             if (ready.private_storage_profile ==
-                rtcore::v04::private_storage::
-                    kProfileCompressedShared384) {
+                    rtcore::v04::private_storage::
+                        kProfileCompressedShared384 ||
+                ready.private_storage_profile ==
+                    rtcore::v04::private_storage::kProfileGlobal384) {
                 if (ready.terminal_committed_hit_valid != 1) {
                     fprintf(
                         stderr,
                         "GPGPU-Sim "
                         "RTCORE_V04_SHORT_STACK_TIMING_FAULT "
                         "owner_hw_sid=%u service_cycle=%llu "
-                        "fault=compressed_terminal_hit_missing\n",
+                        "fault=private_state_384_terminal_hit_missing\n",
                         owner_hw_sid, service_cycle);
                     fflush(stderr);
                     abort();
@@ -22773,9 +22980,9 @@ static bool rtcore_service_v04_live_short_stack_timing(
                     abort();
                 }
             }
-            if (ready.private_storage_profile !=
+            if (ready.private_storage_profile ==
                     rtcore::v04::private_storage::
-                        kProfileCompressedShared384 &&
+                        kProfileLegacyShared832 &&
                 ready.terminal_committed_hit_valid != 0) {
                 fprintf(stderr,
                         "GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_FAULT "
@@ -22903,17 +23110,44 @@ static unsigned rtcore_service_v04_live_short_stack_write_transfer(
         rtcore_v04_timing_driver_for(owner_hw_sid);
     private_shared::backing_state_v0 staged_backing =
         rtcore_v04_private_shared_backing_for(owner_hw_sid);
-    uint8_t writes_enqueued = 0;
+    const unsigned bounded_budget = std::min(
+        transfer_budget,
+        static_cast<unsigned>(
+            private_shared::kPrivateWriteEnqueueWidth));
+    unsigned global_writes_enqueued = 0;
+    std::deque<rtcore_memory_unit_request_snapshot> global_requests;
+    while (global_writes_enqueued < bounded_budget) {
+        private_shared::shared_write_v0 global_write = {};
+        const short_timing::status_kind global_status =
+            short_timing::transfer_next_global_write(
+                &staged_short, &staged_timing, service_cycle,
+                &global_write);
+        if (global_status == short_timing::kStatusNoWriteOffer) {
+            break;
+        }
+        if (global_status != short_timing::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_SHORT_STACK_WRITE_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                    owner_hw_sid, service_cycle,
+                    short_timing::status_name(global_status));
+            fflush(stderr);
+            abort();
+        }
+        global_requests.push_back(
+            rtcore_v04_private_shared_snapshot(global_write));
+        ++global_writes_enqueued;
+    }
+    uint8_t shared_writes_enqueued = 0;
     bool shared_queue_blocked = false;
     const short_timing::status_kind status =
         short_timing::service_write_enqueue(
             &staged_short, &staged_timing, &staged_backing,
             service_cycle,
             static_cast<uint8_t>(std::min(
-                transfer_budget,
-                static_cast<unsigned>(
-                    private_shared::kPrivateWriteEnqueueWidth))),
-            &writes_enqueued, &shared_queue_blocked);
+                bounded_budget - global_writes_enqueued,
+                static_cast<unsigned>(UINT8_MAX))),
+            &shared_writes_enqueued, &shared_queue_blocked);
     if (status != short_timing::kStatusOk) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_SHORT_STACK_WRITE_FAULT "
@@ -22928,11 +23162,22 @@ static unsigned rtcore_service_v04_live_short_stack_write_transfer(
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
     rtcore_v04_private_shared_backing_for(owner_hw_sid) =
         staged_backing;
+    if (!global_requests.empty()) {
+        std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
+            g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid];
+        live_queue.insert(live_queue.end(), global_requests.begin(),
+                          global_requests.end());
+    }
+    const unsigned writes_enqueued =
+        global_writes_enqueued + shared_writes_enqueued;
     if (writes_enqueued != 0 || shared_queue_blocked) {
         printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_WRITE_TRANSFER "
                "owner_hw_sid=%u service_cycle=%llu budget=%u "
-               "writes_enqueued=%u shared_queue_blocked=%u\n",
+               "global_writes_enqueued=%u "
+               "shared_writes_enqueued=%u writes_enqueued=%u "
+               "shared_queue_blocked=%u\n",
                owner_hw_sid, service_cycle, transfer_budget,
+               global_writes_enqueued, shared_writes_enqueued,
                writes_enqueued, shared_queue_blocked ? 1u : 0u);
         fflush(stdout);
     }
@@ -24675,12 +24920,23 @@ rtcore_emit_v04_timing_instance_enter_diagnostic(
         return rtcore::v04::instance_timing::kResultSinkAccepted;
     }
     instance_semantic::enter_commit_plan_v0 plan = {};
-    if (instance_semantic::prepare_enter(
-            enter.operation_packet.owner,
-            enter.producer_operation_seq,
-            rtcore_v04_private_region_for(owner_hw_sid),
-            canonical_slot, enter.typed_input, enter.typed_result,
-            &plan, rtcore_v04_live_short_stack_timing_enabled()) !=
+    const bool global =
+        enter.operation_packet.private_storage_profile ==
+        rtcore::v04::private_storage::kProfileGlobal384;
+    const instance_semantic::status_kind semantic_status =
+        global
+            ? instance_semantic::prepare_enter_route(
+                  enter.operation_packet.owner,
+                  enter.producer_operation_seq, enter.typed_input,
+                  enter.typed_result, &plan)
+            : instance_semantic::prepare_enter(
+                  enter.operation_packet.owner,
+                  enter.producer_operation_seq,
+                  rtcore_v04_private_region_for(owner_hw_sid),
+                  canonical_slot, enter.typed_input,
+                  enter.typed_result, &plan,
+                  rtcore_v04_live_short_stack_timing_enabled());
+    if (semantic_status !=
         instance_semantic::kStatusOk) {
         return rtcore::v04::instance_timing::kResultSinkRejected;
     }
@@ -24816,14 +25072,23 @@ rtcore_accept_v04_live_instance_enter_result(
         enter->operator_invocation_count != 1) {
         return instance_timing::kResultSinkRejected;
     }
+    const bool global =
+        enter->operation_packet.private_storage_profile ==
+        rtcore::v04::private_storage::kProfileGlobal384;
     const private_shared::lane_slot_state_v0 *lane_slot =
         private_shared::find_live_lane(
             rtcore_v04_private_shared_backing_for(
                 context->owner_hw_sid),
             enter->operation_packet.owner);
-    if (lane_slot == NULL) {
+    if (!global && lane_slot == NULL) {
         return instance_timing::kResultSinkRejected;
     }
+    const rtcore::v04::private_frontier::shadow_slot_v0
+        empty_canonical_slot = {};
+    const rtcore::v04::private_frontier::shadow_slot_v0
+        &canonical_slot =
+            lane_slot != NULL ? lane_slot->canonical_slot
+                              : empty_canonical_slot;
 
     instance_shared::engine_state_v0 staged_instance =
         rtcore_v04_live_instance_shared_for(
@@ -24835,7 +25100,7 @@ rtcore_accept_v04_live_instance_enter_result(
             enter->producer_operation_seq, enter->commit_epoch,
             enter->target_operation_seq,
             rtcore_v04_private_region_for(context->owner_hw_sid),
-            lane_slot->canonical_slot,
+            canonical_slot,
             enter->operation_packet.target_reference,
             enter->typed_input,
             enter->typed_result, &receipt,
@@ -24848,7 +25113,9 @@ rtcore_accept_v04_live_instance_enter_result(
         return instance_timing::kResultSinkBackpressure;
     }
     const uint16_t expected_writes =
-        enter->typed_result.result_kind ==
+        global
+            ? 0
+            : enter->typed_result.result_kind ==
                 rtcore::v04::typed_instance::kEnterResultCulled
             ? 0
             : rtcore_v04_live_short_stack_timing_enabled()
@@ -24864,10 +25131,29 @@ rtcore_accept_v04_live_instance_enter_result(
         receipt.target_operation_seq !=
             enter->target_operation_seq ||
         receipt.write_count != expected_writes) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_ENTER_CAPTURE_REJECTED "
+                "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
+                "producer_operation_seq=%u commit_epoch=%u "
+                "target_operation_seq=%u storage_profile=%u "
+                "short_stack_mode=%u typed_result_kind=%u "
+                "capture_status=%s receipt_valid=%u "
+                "receipt_write_count=%u expected_write_count=%u\n",
+                context->owner_hw_sid,
+                enter->operation_packet.owner.resident_warp_id,
+                enter->operation_packet.owner.lane_id,
+                enter->producer_operation_seq, enter->commit_epoch,
+                enter->target_operation_seq,
+                enter->operation_packet.private_storage_profile,
+                rtcore_v04_live_short_stack_timing_enabled() ? 1u : 0u,
+                enter->typed_result.result_kind,
+                instance_shared::status_name(capture_status),
+                receipt.valid, receipt.write_count, expected_writes);
+        fflush(stderr);
         return instance_timing::kResultSinkRejected;
     }
     if (rtcore_emit_v04_timing_instance_enter_diagnostic(
-            *enter, lane_slot->canonical_slot,
+            *enter, canonical_slot,
             context->owner_hw_sid) !=
         instance_timing::kResultSinkAccepted) {
         return instance_timing::kResultSinkRejected;
@@ -24942,9 +25228,26 @@ static bool rtcore_service_v04_live_instance_ready(
             event.active_decode_context;
         input.private_storage_profile =
             event.private_storage_profile;
-        if (event.private_storage_profile !=
+        if ((event.private_storage_profile ==
+                 rtcore::v04::private_storage::
+                     kProfileCompressedShared384 ||
+             event.private_storage_profile ==
+                 rtcore::v04::private_storage::kProfileGlobal384) &&
+            !rtcore_v04_private_slot_base_for_owner(
+                event.owner, event.private_storage_profile,
+                &input.private_slot_base_address)) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=private_slot_base_missing profile=%u\n",
+                    owner_hw_sid, service_cycle,
+                    event.private_storage_profile);
+            fflush(stderr);
+            abort();
+        }
+        if (event.private_storage_profile ==
                 rtcore::v04::private_storage::
-                    kProfileCompressedShared384 &&
+                    kProfileLegacyShared832 &&
             !rtcore_v04_immutable_trace_input_for(
                 event.owner, &input.immutable_trace_input)) {
             fprintf(stderr,
@@ -24988,10 +25291,14 @@ static bool rtcore_service_v04_live_instance_ready(
             abort();
         }
         short_timing::reservation_receipt_v0 reservation = {};
-        const short_timing::status_kind short_status =
+        const bool private_state_384 =
             event.private_storage_profile ==
-                    rtcore::v04::private_storage::
-                        kProfileCompressedShared384
+                rtcore::v04::private_storage::
+                    kProfileCompressedShared384 ||
+            event.private_storage_profile ==
+                rtcore::v04::private_storage::kProfileGlobal384;
+        const short_timing::status_kind short_status =
+            private_state_384
                 ? short_timing::reserve_private_state_384(
                       &staged_short_stack, &staged_timing,
                       rtcore_v04_private_state_384_backing_for(
@@ -25502,23 +25809,48 @@ rtcore_accept_v04_live_primitive_result(
         completed->operator_invocation_count != 1) {
         return primitive_timing::kResultSinkRejected;
     }
+    const uint8_t private_storage_profile =
+        completed->operation_packet.private_storage_profile;
+    const bool global =
+        private_storage_profile ==
+        rtcore::v04::private_storage::kProfileGlobal384;
     const private_shared::lane_slot_state_v0 *lane_slot =
         private_shared::find_live_lane(
             rtcore_v04_private_shared_backing_for(
                 context->owner_hw_sid),
             completed->operation_packet.owner);
-    if (lane_slot == NULL) {
+    if (!global && lane_slot == NULL) {
         return primitive_timing::kResultSinkRejected;
     }
+    const rtcore::v04::private_frontier::shadow_slot_v0
+        empty_canonical_slot = {};
+    const rtcore::v04::private_frontier::shadow_slot_v0
+        &canonical_slot =
+            lane_slot != NULL ? lane_slot->canonical_slot
+                              : empty_canonical_slot;
 
     primitive_shared::engine_state_v0 staged_primitive =
         rtcore_v04_live_primitive_shared_for(
             context->owner_hw_sid);
     primitive_shared::capture_receipt_v0 receipt = {};
-    const uint8_t private_storage_profile =
-        completed->operation_packet.private_storage_profile;
+    uint64_t private_slot_base_address = 0;
+    if (global && !rtcore_v04_private_slot_base_for_owner(
+                      completed->operation_packet.owner,
+                      private_storage_profile,
+                      &private_slot_base_address)) {
+        return primitive_timing::kResultSinkRejected;
+    }
     const primitive_shared::status_kind capture_status =
-        private_storage_profile ==
+        global
+            ? primitive_shared::capture_result_global384(
+                  &staged_primitive,
+                  completed->operation_packet.owner,
+                  completed->producer_operation_seq,
+                  completed->commit_epoch,
+                  completed->target_operation_seq,
+                  private_slot_base_address, completed->typed_input,
+                  completed->typed_result, &receipt)
+            : private_storage_profile ==
                 rtcore::v04::private_storage::
                     kProfileCompressedShared384
             ? primitive_shared::capture_result_with_private_state_384(
@@ -25529,7 +25861,7 @@ rtcore_accept_v04_live_primitive_result(
                   completed->target_operation_seq,
                   rtcore_v04_private_region_for(
                       context->owner_hw_sid),
-                  lane_slot->canonical_slot, completed->typed_input,
+                  canonical_slot, completed->typed_input,
                   completed->typed_result, &receipt)
             : primitive_shared::capture_result(
                   &staged_primitive,
@@ -25539,7 +25871,7 @@ rtcore_accept_v04_live_primitive_result(
                   completed->target_operation_seq,
                   rtcore_v04_private_region_for(
                       context->owner_hw_sid),
-                  lane_slot->canonical_slot, completed->typed_input,
+                  canonical_slot, completed->typed_input,
                   completed->typed_result, &receipt);
     if (capture_status ==
             primitive_shared::kStatusResultBackpressure ||
@@ -26398,9 +26730,27 @@ static bool rtcore_service_v04_live_primitive_ready(
                 event.active_decode_context;
             input.private_storage_profile =
                 event.private_storage_profile;
-            if (event.private_storage_profile !=
+            if ((event.private_storage_profile ==
+                     rtcore::v04::private_storage::
+                         kProfileCompressedShared384 ||
+                 event.private_storage_profile ==
+                     rtcore::v04::private_storage::kProfileGlobal384) &&
+                !rtcore_v04_private_slot_base_for_owner(
+                    event.owner, event.private_storage_profile,
+                    &input.private_slot_base_address)) {
+                fprintf(
+                    stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=private_slot_base_missing profile=%u\n",
+                    owner_hw_sid, service_cycle,
+                    event.private_storage_profile);
+                fflush(stderr);
+                abort();
+            }
+            if (event.private_storage_profile ==
                     rtcore::v04::private_storage::
-                        kProfileCompressedShared384 &&
+                        kProfileLegacyShared832 &&
                 !rtcore_v04_immutable_trace_input_for(
                     event.owner, &input.immutable_trace_input)) {
                 fprintf(
@@ -26421,10 +26771,14 @@ static bool rtcore_service_v04_live_primitive_ready(
             input.operation_kind =
                 short_timing::kOperationResumeTransition;
             short_timing::reservation_receipt_v0 reservation = {};
-            const short_timing::status_kind short_status =
+            const bool private_state_384 =
                 event.private_storage_profile ==
-                        rtcore::v04::private_storage::
-                            kProfileCompressedShared384
+                    rtcore::v04::private_storage::
+                        kProfileCompressedShared384 ||
+                event.private_storage_profile ==
+                    rtcore::v04::private_storage::kProfileGlobal384;
+            const short_timing::status_kind short_status =
+                private_state_384
                     ? short_timing::reserve_private_state_384(
                           &staged_short_stack, &staged_timing,
                           rtcore_v04_private_state_384_backing_for(
@@ -26635,6 +26989,44 @@ static unsigned rtcore_service_v04_live_primitive_write_transfer(
             rtcore_v04_private_shared_backing_for(owner_hw_sid);
         timing_driver::state_v0 staged_timing =
             rtcore_v04_timing_driver_for(owner_hw_sid);
+        rtcore::v04::private_shared::shared_write_v0 global_write = {};
+        const primitive_shared::status_kind global_status =
+            primitive_shared::transfer_next_global_write(
+                &staged_primitive, service_cycle, &global_write);
+        if (global_status == primitive_shared::kStatusOk) {
+            rtcore::v04::request_owner::lane_binding_v0 owner = {};
+            if (!rtcore_v04_request_owner_from_private_owner(
+                    global_write.owner, &owner) ||
+                timing_driver::begin_memory_transaction(
+                    &staged_timing, owner,
+                    global_write.operation_seq) !=
+                    timing_driver::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_WRITE_FAULT "
+                        "owner_hw_sid=%u service_cycle=%llu "
+                        "fault=global_timing_begin_rejected\n",
+                        owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+            g_rtcore_memory_unit_request_snapshots_by_owner[
+                owner_hw_sid].push_back(
+                    rtcore_v04_private_shared_snapshot(global_write));
+            rtcore_v04_live_primitive_shared_for(owner_hw_sid) =
+                staged_primitive;
+            rtcore_v04_timing_driver_for(owner_hw_sid) =
+                staged_timing;
+            continue;
+        }
+        if (global_status != primitive_shared::kStatusNoWriteOffer) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_WRITE_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu fault=%s\n",
+                    owner_hw_sid, service_cycle,
+                    primitive_shared::status_name(global_status));
+            fflush(stderr);
+            abort();
+        }
         primitive_shared::transfer_receipt_v0 receipt = {};
         const primitive_shared::status_kind transfer_status =
             primitive_shared::transfer_next_write(

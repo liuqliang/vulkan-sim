@@ -92,6 +92,13 @@ status_kind prepare_enter(
     const typed_instance::enter_result_v0 &result,
     enter_commit_plan_v0 *plan, bool short_stack_mode = false);
 
+status_kind prepare_enter_route(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq,
+    const typed_instance::enter_input_v0 &input,
+    const typed_instance::enter_result_v0 &result,
+    enter_commit_plan_v0 *plan);
+
 const char *status_name(status_kind status);
 
 }  // namespace instance_semantic

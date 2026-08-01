@@ -510,22 +510,30 @@ status_kind begin_transition_commit(
       timing_driver::kStatusOk) {
     return kStatusTimingControlRejected;
   }
-  if (entry->input.private_storage_profile ==
-      private_storage::kProfileCompressedShared384) {
+  const bool private_state_384 =
+      entry->input.private_storage_profile ==
+          private_storage::kProfileCompressedShared384 ||
+      entry->input.private_storage_profile ==
+          private_storage::kProfileGlobal384;
+  if (private_state_384) {
     private_state_384::live_bridge::sparse_chunk_delta_v1
         deltas[private_state_384::kChunkCount] = {};
     uint8_t delta_count = 0;
     private_state_384::live_bridge::write_commit_input_v1 input = {};
     input.owner = entry->input.owner;
+    input.private_slot_base_address =
+        entry->input.private_slot_base_address;
     input.operation_sequence =
         entry->reservation.operation_seq;
     input.commit_epoch = commit_epoch;
     input.bvh_format_profile_id =
         private_state_384::kGenRtBvhFormatProfileId;
     input.expected_write_ack_count =
-        entry->transition.write_plan.access_count;
-    input.storage_profile =
-        private_storage::kProfileCompressedShared384;
+        entry->input.private_storage_profile ==
+                private_storage::kProfileGlobal384
+            ? 0
+            : entry->transition.write_plan.access_count;
+    input.storage_profile = entry->input.private_storage_profile;
     const bool instance_enter =
         entry->input.operation_kind ==
         kOperationEnterBlasTransition;
@@ -651,15 +659,24 @@ status_kind enqueue_transition_write(
   return kStatusOk;
 }
 
-int find_oldest_pending_write(const engine_state_v0 &state) {
+uint8_t modeled_write_count(const operation_entry_v0 &entry) {
+  return entry.input.private_storage_profile ==
+                 private_storage::kProfileGlobal384
+             ? entry.private_state_384_commit.expected_write_ack_count
+             : entry.transition.write_plan.access_count;
+}
+
+int find_oldest_pending_write(const engine_state_v0 &state,
+                              bool global) {
   int selected = -1;
   uint64_t oldest = std::numeric_limits<uint64_t>::max();
   for (unsigned index = 0; index < state.config.capacity; ++index) {
     const operation_entry_v0 &entry = state.slots[index];
     if (entry.valid == 0 || entry.phase != kPhaseWriting ||
+        (entry.input.private_storage_profile ==
+             private_storage::kProfileGlobal384) != global ||
         entry.enqueued_write_mask ==
-            all_write_chunks(
-                entry.transition.write_plan.access_count)) {
+            all_write_chunks(modeled_write_count(entry))) {
       continue;
     }
     if (entry.issue_age < oldest) {
@@ -671,13 +688,13 @@ int find_oldest_pending_write(const engine_state_v0 &state) {
 }
 
 uint8_t first_missing_write_chunk(const operation_entry_v0 &entry) {
-  for (uint8_t index = 0;
-       index < entry.transition.write_plan.access_count; ++index) {
+  const uint8_t count = modeled_write_count(entry);
+  for (uint8_t index = 0; index < count; ++index) {
     if ((entry.enqueued_write_mask & (1u << index)) == 0) {
       return index;
     }
   }
-  return entry.transition.write_plan.access_count;
+  return count;
 }
 
 bool valid_operation_input(const reservation_input_v0 &input,
@@ -689,7 +706,20 @@ bool valid_operation_input(const reservation_input_v0 &input,
       (input.private_storage_profile !=
            private_storage::kProfileLegacyShared832 &&
        input.private_storage_profile !=
-           private_storage::kProfileCompressedShared384)) {
+           private_storage::kProfileCompressedShared384 &&
+       input.private_storage_profile !=
+           private_storage::kProfileGlobal384)) {
+    return false;
+  }
+  const bool global = input.private_storage_profile ==
+                      private_storage::kProfileGlobal384;
+  if (global &&
+      (input.private_slot_base_address == 0 ||
+       input.private_slot_base_address %
+               private_state_384::kChunkBytes !=
+           0 ||
+       (input.operation_kind != kOperationEnterBlasTransition &&
+        input.operation_kind != kOperationResumeTransition))) {
     return false;
   }
   if (existing_target != (input.target_operation_seq != 0) ||
@@ -972,16 +1002,21 @@ status_kind reserve_private_state_384(
       requests == NULL || state->initialized != 1 ||
       !valid_config(state->config) ||
       !valid_operation_input(input, existing_target) ||
-      input.private_storage_profile !=
-          private_storage::kProfileCompressedShared384) {
+      (input.private_storage_profile !=
+           private_storage::kProfileCompressedShared384 &&
+       input.private_storage_profile !=
+           private_storage::kProfileGlobal384)) {
     return kStatusInvalidArgument;
   }
   *reservation = reservation_receipt_v0();
   *requests = request_plan_v0();
   request_owner::lane_binding_v0 request_binding = {};
+  const bool global = input.private_storage_profile ==
+                      private_storage::kProfileGlobal384;
   if (!make_request_owner(input.owner, &request_binding) ||
-      private_state_384::backing::find_live_lane(
-          private_backing, input.owner) == NULL) {
+      (!global &&
+       private_state_384::backing::find_live_lane(
+           private_backing, input.owner) == NULL)) {
     return kStatusOwnerMismatch;
   }
   if (state->reservation_cycle != reservation_cycle) {
@@ -1058,13 +1093,14 @@ status_kind reserve_private_state_384(
 
   private_state_384::live_bridge::read_input_v1 read_input = {};
   read_input.owner = input.owner;
+  read_input.private_slot_base_address =
+      input.private_slot_base_address;
   read_input.issue_cycle = reservation_cycle;
   read_input.operation_sequence = operation_seq;
   read_input.bvh_format_profile_id =
       private_state_384::kGenRtBvhFormatProfileId;
   read_input.reservation_generation = next_generation;
-  read_input.storage_profile =
-      private_storage::kProfileCompressedShared384;
+  read_input.storage_profile = input.private_storage_profile;
   read_input.consumer =
       private_state_384::operand_plan::kConsumerStack;
   read_input.operation =
@@ -1222,7 +1258,9 @@ status_kind accept_read_response(
         return kStatusReturnInstanceRejected;
       }
       if (entry.input.private_storage_profile ==
-          private_storage::kProfileCompressedShared384) {
+              private_storage::kProfileCompressedShared384 ||
+          entry.input.private_storage_profile ==
+              private_storage::kProfileGlobal384) {
         short_stack::entry_v0 return_entry = {};
         if (entry.private_state_384_cross_as_operands_valid != 1 ||
             !short_stack::read_logical_entry(
@@ -1273,19 +1311,31 @@ status_kind accept_read_response(
   return kStatusOk;
 }
 
-status_kind accept_private_state_384_read_response(
+static status_kind accept_private_state_384_read_response_impl(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
-    const private_state_384::backing::state_v1 &private_backing,
+    const private_state_384::backing::state_v1 *private_backing,
     const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *payload, size_t payload_byte_count,
     uint64_t response_cycle) {
+  const bool compressed =
+      request.v04_private_state_384_read.storage_profile ==
+      private_storage::kProfileCompressedShared384;
+  const bool global =
+      request.v04_private_state_384_read.storage_profile ==
+      private_storage::kProfileGlobal384;
   if (state == NULL || timing_state == NULL ||
       state->initialized != 1 ||
       request.access_kind !=
           RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ ||
       request.destination !=
           RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL ||
-      request.v04_private_state_384_read.storage_profile !=
-          private_storage::kProfileCompressedShared384 ||
+      (!compressed && !global) ||
+      (compressed &&
+       (private_backing == NULL || payload != NULL ||
+        payload_byte_count != 0)) ||
+      (global &&
+       (private_backing != NULL || payload == NULL ||
+        payload_byte_count != private_state_384::kChunkBytes)) ||
       (request.v04_private_state_384_read.consumer !=
            private_state_384::operand_plan::kConsumerStack &&
        request.v04_private_state_384_read.consumer !=
@@ -1298,7 +1348,7 @@ status_kind accept_private_state_384_read_response(
     const operation_entry_v0 &entry = state->slots[index];
     if (entry.valid != 0 && entry.phase == kPhaseReading &&
         entry.input.private_storage_profile ==
-            private_storage::kProfileCompressedShared384 &&
+            request.v04_private_state_384_read.storage_profile &&
         request.v04_private_state_384_read.consumer ==
             entry.private_state_384_collector.consumer &&
         request.v04_private_state_384_read.operation_kind ==
@@ -1326,9 +1376,13 @@ status_kind accept_private_state_384_read_response(
   timing_driver::state_v0 staged_timing = *timing_state;
   operation_entry_v0 &entry = staged_state.slots[slot_index];
   const private_state_384::live_bridge::status_kind bridge_status =
-      private_state_384::live_bridge::accept_read_response(
-          private_backing, request,
-          &entry.private_state_384_collector);
+      compressed
+          ? private_state_384::live_bridge::accept_read_response(
+                *private_backing, request,
+                &entry.private_state_384_collector)
+          : private_state_384::live_bridge::accept_read_response_bytes(
+                request, payload, payload_byte_count,
+                &entry.private_state_384_collector);
   if (bridge_status != private_state_384::live_bridge::kStatusOk) {
     return bridge_status ==
                    private_state_384::live_bridge::kStatusCollectorRejected
@@ -1511,6 +1565,26 @@ status_kind accept_private_state_384_read_response(
   return kStatusOk;
 }
 
+status_kind accept_private_state_384_read_response(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_state_384::backing::state_v1 &private_backing,
+    const rtcore_memory_unit_request_snapshot &request,
+    uint64_t response_cycle) {
+  return accept_private_state_384_read_response_impl(
+      state, timing_state, &private_backing, request, NULL, 0,
+      response_cycle);
+}
+
+status_kind accept_private_state_384_read_response_bytes(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *payload, size_t payload_byte_count,
+    uint64_t response_cycle) {
+  return accept_private_state_384_read_response_impl(
+      state, timing_state, NULL, request, payload,
+      payload_byte_count, response_cycle);
+}
+
 status_kind take_private_state_384_followup_read_plan(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
     uint64_t issue_cycle, request_plan_v0 *requests) {
@@ -1541,8 +1615,10 @@ status_kind take_private_state_384_followup_read_plan(
       entry.private_state_384_selected_operation ==
           private_state_384::operand_plan::
               kOperationStackEntries;
-  if (entry.input.private_storage_profile !=
-          private_storage::kProfileCompressedShared384 ||
+  if ((entry.input.private_storage_profile !=
+           private_storage::kProfileCompressedShared384 &&
+       entry.input.private_storage_profile !=
+           private_storage::kProfileGlobal384) ||
       (stack_entries_followup
            ? entry.private_state_384_operands_valid != 0
            : entry.private_state_384_operands_valid != 1)) {
@@ -1578,6 +1654,8 @@ status_kind take_private_state_384_followup_read_plan(
 
   private_state_384::live_bridge::read_input_v1 read_input = {};
   read_input.owner = entry.input.owner;
+  read_input.private_slot_base_address =
+      entry.input.private_slot_base_address;
   read_input.issue_cycle = issue_cycle;
   read_input.operation_sequence =
       entry.reservation.operation_seq;
@@ -1586,7 +1664,7 @@ status_kind take_private_state_384_followup_read_plan(
   read_input.reservation_generation =
       entry.reservation.slot_generation;
   read_input.storage_profile =
-      private_storage::kProfileCompressedShared384;
+      entry.input.private_storage_profile;
   read_input.consumer =
       completion_followup
           ? private_state_384::operand_plan::
@@ -1699,7 +1777,9 @@ status_kind take_return_instance_read_plan(
   short_stack::entry_v0 return_entry = {};
   typed_blas::as_decode_context_v0 tlas = {};
   if (entry.input.private_storage_profile ==
-      private_storage::kProfileCompressedShared384) {
+          private_storage::kProfileCompressedShared384 ||
+      entry.input.private_storage_profile ==
+          private_storage::kProfileGlobal384) {
     if (entry.private_state_384_cross_as_operands_valid != 1) {
       return kStatusSharedPlanRejected;
     }
@@ -1767,7 +1847,9 @@ status_kind take_return_instance_read_plan(
         entry.input.owner.private_slot_id;
     request.memory_op_seq = kReadChunkCount + index + 1;
     if (entry.input.private_storage_profile ==
-        private_storage::kProfileCompressedShared384) {
+            private_storage::kProfileCompressedShared384 ||
+        entry.input.private_storage_profile ==
+            private_storage::kProfileGlobal384) {
       request.memory_op_seq =
           entry.reservation.read_chunk_count + index + 1;
     }
@@ -1959,7 +2041,9 @@ status_kind service_cycle(
     } else if (entry.input.operation_kind ==
                kOperationResumeTransition) {
       if (entry.input.private_storage_profile ==
-          private_storage::kProfileCompressedShared384) {
+              private_storage::kProfileCompressedShared384 ||
+          entry.input.private_storage_profile ==
+              private_storage::kProfileGlobal384) {
         if (entry.private_state_384_operands_valid != 1) {
           return kStatusSharedPlanRejected;
         }
@@ -2021,7 +2105,9 @@ status_kind service_cycle(
     } else if (entry.input.operation_kind ==
                kOperationEnterBlasTransition) {
       if (entry.input.private_storage_profile ==
-          private_storage::kProfileCompressedShared384) {
+              private_storage::kProfileCompressedShared384 ||
+          entry.input.private_storage_profile ==
+              private_storage::kProfileGlobal384) {
         if (entry.private_state_384_operands_valid != 1 ||
             entry.input.deferred_instance_valid != 1) {
           return kStatusSharedPlanRejected;
@@ -2136,7 +2222,7 @@ status_kind service_write_enqueue(
   *writes_enqueued = 0;
   *shared_queue_blocked = false;
   while (*writes_enqueued < write_enqueue_budget) {
-    const int write_index = find_oldest_pending_write(*state);
+    const int write_index = find_oldest_pending_write(*state, false);
     if (write_index < 0) break;
     operation_entry_v0 &entry = state->slots[write_index];
     const uint8_t chunk_index = first_missing_write_chunk(entry);
@@ -2150,6 +2236,46 @@ status_kind service_write_enqueue(
     if (write_status != kStatusOk) return write_status;
     ++*writes_enqueued;
   }
+  return kStatusOk;
+}
+
+status_kind transfer_next_global_write(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    uint64_t service_cycle,
+    private_shared::shared_write_v0 *write) {
+  if (state == NULL || timing_state == NULL || write == NULL ||
+      state->initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  *write = private_shared::shared_write_v0();
+  const int slot_index = find_oldest_pending_write(*state, true);
+  if (slot_index < 0) return kStatusNoWriteOffer;
+
+  engine_state_v0 staged_state = *state;
+  timing_driver::state_v0 staged_timing = *timing_state;
+  operation_entry_v0 &entry = staged_state.slots[slot_index];
+  const uint8_t write_index = first_missing_write_chunk(entry);
+  private_shared::shared_write_v0 prepared = {};
+  request_owner::lane_binding_v0 request_binding = {};
+  if (write_index >= modeled_write_count(entry) ||
+      !make_request_owner(entry.input.owner, &request_binding) ||
+      private_state_384::live_bridge::prepare_global_modeled_write(
+          entry.private_state_384_commit, write_index, service_cycle,
+          &prepared) != private_state_384::live_bridge::kStatusOk ||
+      private_state_384::live_bridge::register_modeled_write(
+          prepared, &entry.private_state_384_commit) !=
+          private_state_384::live_bridge::kStatusOk ||
+      timing_driver::begin_memory_transaction(
+          &staged_timing, request_binding,
+          entry.reservation.operation_seq) !=
+          timing_driver::kStatusOk) {
+    return kStatusSharedWriteRejected;
+  }
+  entry.enqueued_write_mask = static_cast<uint16_t>(
+      entry.enqueued_write_mask | (uint16_t{1} << write_index));
+  *state = staged_state;
+  *timing_state = staged_timing;
+  *write = prepared;
   return kStatusOk;
 }
 
@@ -2168,8 +2294,7 @@ bool owns_ack(const engine_state_v0 &state,
         private_frontier::owners_equal(entry.input.owner, ack.owner) &&
         (entry.enqueued_write_mask &
          (1u << (ack.memory_operation_seq - 1))) != 0 &&
-        ack.memory_operation_seq <=
-            entry.transition.write_plan.access_count &&
+        ack.memory_operation_seq <= modeled_write_count(entry) &&
         (entry.acknowledged_write_mask &
          (1u << (ack.memory_operation_seq - 1))) == 0) {
       return true;
@@ -2325,6 +2450,87 @@ status_kind accept_write_ack_with_private_state_384(
   return kStatusOk;
 }
 
+status_kind accept_global_write_ack(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_shared::shared_write_v0 &write,
+    const private_shared::runtime_write_ack_v0 &ack) {
+  if (state == NULL || timing_state == NULL ||
+      !owns_ack(*state, ack)) {
+    return kStatusNoAckOwned;
+  }
+  int slot_index = -1;
+  for (unsigned index = 0; index < state->config.capacity; ++index) {
+    const operation_entry_v0 &entry = state->slots[index];
+    if (entry.valid != 0 && entry.phase == kPhaseWriting &&
+        entry.input.private_storage_profile ==
+            private_storage::kProfileGlobal384 &&
+        entry.reservation.operation_seq == ack.operation_seq &&
+        entry.commit_epoch == ack.commit_epoch &&
+        private_frontier::owners_equal(
+            entry.input.owner, ack.owner)) {
+      if (slot_index >= 0) return kStatusNoAckOwned;
+      slot_index = static_cast<int>(index);
+    }
+  }
+  if (slot_index < 0) return kStatusNoAckOwned;
+
+  engine_state_v0 staged_state = *state;
+  timing_driver::state_v0 staged_timing = *timing_state;
+  operation_entry_v0 &entry = staged_state.slots[slot_index];
+  request_owner::lane_binding_v0 request_binding = {};
+  bool all_acknowledged = false;
+  if (!make_request_owner(entry.input.owner, &request_binding) ||
+      timing_driver::complete_memory_transaction(
+          &staged_timing, request_binding,
+          entry.reservation.operation_seq) !=
+          timing_driver::kStatusOk ||
+      private_state_384::live_bridge::accept_global_write_ack(
+          write, ack, &entry.private_state_384_commit,
+          &all_acknowledged) !=
+          private_state_384::live_bridge::kStatusOk) {
+    return kStatusAckRejected;
+  }
+  entry.acknowledged_write_mask = static_cast<uint16_t>(
+      entry.acknowledged_write_mask |
+      (uint16_t{1} << (ack.memory_operation_seq - 1)));
+  const uint16_t expected_mask =
+      all_write_chunks(modeled_write_count(entry));
+  if (entry.acknowledged_write_mask == expected_mask) {
+    if (!all_acknowledged || expected_mask == 0 ||
+        timing_driver::commit_private_recovery_target_state(
+            &staged_timing, request_binding,
+            entry.reservation.operation_seq, entry.commit_epoch,
+            entry.transition.persistent_state
+                .recovery_target_inflight) !=
+            timing_driver::kStatusOk) {
+      return kStatusAckRejected;
+    }
+    if (entry.transition.terminal != 0) {
+      if (entry.transition.selected_valid != 0 ||
+          entry.private_state_384_operands_valid != 1) {
+        return kStatusAckRejected;
+      }
+      entry.private_state_384_completion_reason =
+          entry.private_state_384_stack_operands.committed_valid != 0
+              ? private_state_384::operand_plan::
+                    kCompletionReasonClosestHitReady
+              : private_state_384::operand_plan::
+                    kCompletionReasonMiss;
+      entry.phase = kPhasePrivate384CompletionPlanReady;
+    } else {
+      if (entry.transition.selected_valid != 1) {
+        return kStatusAckRejected;
+      }
+      entry.phase = kPhaseResultReady;
+    }
+  } else if (all_acknowledged || expected_mask == 0) {
+    return kStatusAckRejected;
+  }
+  *state = staged_state;
+  *timing_state = staged_timing;
+  return kStatusOk;
+}
+
 status_kind peek_ready_result(const engine_state_v0 &state,
                               ready_result_v0 *result) {
   if (state.initialized != 1 || result == NULL) {
@@ -2348,8 +2554,10 @@ status_kind peek_ready_result(const engine_state_v0 &state,
       entry.reservation.slot_generation;
   result->private_storage_profile =
       entry.input.private_storage_profile;
-  if (entry.input.private_storage_profile ==
-          private_storage::kProfileCompressedShared384 &&
+  if ((entry.input.private_storage_profile ==
+           private_storage::kProfileCompressedShared384 ||
+       entry.input.private_storage_profile ==
+           private_storage::kProfileGlobal384) &&
       entry.transition.terminal != 0 &&
       entry.private_state_384_completion_operands_valid != 0) {
     result->terminal_committed_hit =
@@ -2458,6 +2666,8 @@ const char *status_name(status_kind status) {
       return "ack_rejected";
     case kStatusNoFollowupRead:
       return "no_followup_read";
+    case kStatusNoWriteOffer:
+      return "no_write_offer";
     case kStatusNoReadyResult:
       return "no_ready_result";
   }

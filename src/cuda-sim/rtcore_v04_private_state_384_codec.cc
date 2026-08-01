@@ -721,6 +721,55 @@ static void decode_parent_restore(
 
 }  // namespace
 
+status_kind encode_ray_sparse_projection(
+    const ray_v1 &ray, uint8_t payload[kChunkBytes]) {
+  if (payload == NULL) return kStatusInvalidArgument;
+  const status_kind status = validate_ray(ray);
+  if (status != kStatusOk) return status;
+  std::memset(payload, 0, kChunkBytes);
+  encode_ray(payload, ray);
+  return kStatusOk;
+}
+
+status_kind encode_as_context_sparse_projection(
+    const as_context_v1 &context, bool include_cull_mask,
+    uint8_t payload[kChunkBytes]) {
+  if (payload == NULL) return kStatusInvalidArgument;
+  const status_kind status =
+      validate_as_context(context, include_cull_mask);
+  if (status != kStatusOk) return status;
+  std::memset(payload, 0, kChunkBytes);
+  encode_as_context(payload, context, include_cull_mask);
+  return kStatusOk;
+}
+
+status_kind encode_current_instance_sparse_projection(
+    const current_instance_v1 &instance, uint8_t active_domain,
+    uint8_t payload[kCurrentInstanceProjectionBytes]) {
+  if (payload == NULL) return kStatusInvalidArgument;
+  const status_kind status =
+      validate_current_instance(instance, active_domain);
+  if (status != kStatusOk) return status;
+  std::memset(payload, 0, kCurrentInstanceProjectionBytes);
+  encode_current_instance(payload, instance);
+  return kStatusOk;
+}
+
+status_kind encode_parent_restore_sparse_projection(
+    const parent_restore_state_v1 &parent,
+    uint8_t payload[kParentRestoreProjectionBytes]) {
+  if (payload == NULL) return kStatusInvalidArgument;
+  state_v1 state = {};
+  control_tags_v1 control = {};
+  state.parent_restore = parent;
+  control.parent_restore_valid = 1;
+  const status_kind status = validate_parent_restore(state, control);
+  if (status != kStatusOk) return status;
+  std::memset(payload, 0, kParentRestoreProjectionBytes);
+  encode_parent_restore(payload, parent);
+  return kStatusOk;
+}
+
 status_kind encode_image(uint32_t private_layout_profile_id,
                          uint32_t bvh_format_profile_id,
                          const state_v1 &state,

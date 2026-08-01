@@ -23,6 +23,8 @@ bool operation_key_valid(const live_operation_key_v1 &key) {
               private_storage::kProfileCompressedShared384 ||
           key.storage_profile ==
               private_storage::kProfileGlobal384) &&
+         key.private_slot_base_address != 0 &&
+         key.private_slot_base_address % kChunkBytes == 0 &&
          key.private_layout_profile_id == kPrivateLayoutProfileId &&
          key.bvh_format_profile_id == kGenRtBvhFormatProfileId &&
          key.reservation_generation != 0 &&
@@ -76,6 +78,46 @@ private_frontier::owner_binding_v0 make_owner(
   owner.private_slot_id = identity.private_slot_id;
   owner.lane_id = identity.lane_id;
   return owner;
+}
+
+uint8_t global_write_field_kind(uint8_t producer, uint8_t chunk_index) {
+  switch (producer) {
+    case operand_plan::kProducerPrimitive:
+      if (chunk_index == 2 || chunk_index == 3) {
+        return private_frontier::kFieldCommittedHit;
+      }
+      if (chunk_index == 8) {
+        return private_frontier::kFieldRetainedCandidate;
+      }
+      if (chunk_index == 9) {
+        return private_frontier::kFieldPrimitiveResume;
+      }
+      break;
+    case operand_plan::kProducerInstanceEnter:
+    case operand_plan::kProducerStack:
+    case operand_plan::kProducerStackCrossAsReturn:
+      if (chunk_index == 0) {
+        return private_frontier::kFieldMutableRayState;
+      }
+      if (chunk_index == 1) {
+        return private_frontier::kFieldAsDecodeContext;
+      }
+      if (chunk_index == 3 || chunk_index == 4) {
+        return chunk_index == 3
+                   ? private_frontier::kFieldCurrentInstance
+                   : private_frontier::kFieldFrontierMetadata;
+      }
+      if (chunk_index >= 5 && chunk_index <= 7) {
+        return private_frontier::kFieldFrontierEntry;
+      }
+      if (chunk_index == 10 || chunk_index == 11) {
+        return private_frontier::kFieldParentFrame;
+      }
+      break;
+    default:
+      break;
+  }
+  return private_frontier::kFieldInvalid;
 }
 
 bool destination_valid(uint8_t destination) {
@@ -384,12 +426,21 @@ status_kind stage_sparse_commit(
     return kStatusInvalidOwner;
   }
   if (input.operation_sequence == 0 || input.commit_epoch == 0 ||
-      input.expected_write_ack_count == 0 ||
       input.expected_write_ack_count > 16) {
     return kStatusInvalidCommit;
   }
-  if (input.storage_profile !=
-          private_storage::kProfileCompressedShared384 ||
+  const bool compressed =
+      input.storage_profile ==
+      private_storage::kProfileCompressedShared384;
+  const bool global =
+      input.storage_profile == private_storage::kProfileGlobal384;
+  const uint64_t slot_base =
+      compressed && input.private_slot_base_address == 0
+          ? private_slot_base(input.owner)
+          : input.private_slot_base_address;
+  if ((!compressed && !global) || slot_base == 0 ||
+      slot_base % kChunkBytes != 0 ||
+      (compressed && slot_base != private_slot_base(input.owner)) ||
       input.bvh_format_profile_id != kGenRtBvhFormatProfileId) {
     return kStatusInvalidProfile;
   }
@@ -399,12 +450,16 @@ status_kind stage_sparse_commit(
   operand_plan::unit_sparse_write_plan_v1 merged = {};
   if (operand_plan::merge_sparse_writes(
           request, deltas, delta_count, &merged) !=
-          operand_plan::kStatusOk ||
-      merged.write_count == 0) {
+      operand_plan::kStatusOk ||
+      merged.write_count == 0 || merged.write_count > 16 ||
+      (global && input.expected_write_ack_count != 0 &&
+       input.expected_write_ack_count != merged.write_count) ||
+      (compressed && input.expected_write_ack_count == 0)) {
     return kStatusWriteRejected;
   }
   pending->key.identity =
       make_identity(input.owner, input.operation_sequence);
+  pending->key.private_slot_base_address = slot_base;
   pending->key.private_layout_profile_id = kPrivateLayoutProfileId;
   pending->key.bvh_format_profile_id = input.bvh_format_profile_id;
   pending->key.reservation_generation = input.commit_epoch;
@@ -415,13 +470,15 @@ status_kind stage_sparse_commit(
       operand_plan::kCompletionReasonNone;
   pending->merged_write_plan = merged;
   pending->commit_epoch = input.commit_epoch;
+  const uint16_t expected_write_ack_count =
+      global ? merged.write_count : input.expected_write_ack_count;
   pending->expected_ack_mask = static_cast<uint16_t>(
-      input.expected_write_ack_count == 16
+      expected_write_ack_count == 16
           ? 0xffffu
-          : (uint16_t{1} << input.expected_write_ack_count) - 1u);
+          : (uint16_t{1} << expected_write_ack_count) - 1u);
   pending->producer = input.producer;
   pending->expected_write_ack_count =
-      static_cast<uint8_t>(input.expected_write_ack_count);
+      static_cast<uint8_t>(expected_write_ack_count);
   pending->valid = 1;
   return kStatusOk;
 }
@@ -435,7 +492,11 @@ status_kind register_modeled_write(
       !bytes_are_zero(write.reserved_zero,
                       sizeof(write.reserved_zero)) ||
       write.reserved_zero1 != 0 ||
-      write.address_space != private_shared::kAddressSpaceShared ||
+      write.address_space !=
+          (pending->key.storage_profile ==
+                   private_storage::kProfileGlobal384
+               ? private_shared::kAddressSpaceGlobal
+               : private_shared::kAddressSpaceShared) ||
       write.address_mode != private_shared::kAddressModePrivateField ||
       write.access_operation != private_shared::kAccessOperationWrite ||
       write.destination != private_shared::kDestinationPrivateCommitAck ||
@@ -461,6 +522,34 @@ status_kind register_modeled_write(
   }
   pending_sparse_commit_v1::expected_write_ack_v1 &expected =
       pending->expected_writes[write.memory_op_seq - 1u];
+  if (pending->key.storage_profile ==
+      private_storage::kProfileGlobal384) {
+    if (pending->expected_write_ack_count !=
+            pending->merged_write_plan.write_count ||
+        write.memory_op_seq >
+            pending->merged_write_plan.write_count) {
+      return kStatusInvalidCommit;
+    }
+    const chunk_write_v1 &canonical =
+        pending->merged_write_plan
+            .writes[write.memory_op_seq - 1u];
+    const uint8_t canonical_chunk = static_cast<uint8_t>(
+        canonical.slot_byte_offset / kChunkBytes);
+    if (canonical.byte_count != kChunkBytes ||
+        canonical.slot_byte_offset % kChunkBytes != 0 ||
+        canonical.slot_byte_offset >= kSlotBytes ||
+        write.aligned_32b_address !=
+            pending->key.private_slot_base_address +
+                canonical.slot_byte_offset ||
+        write.byte_mask != canonical.byte_mask ||
+        write.field_kind != global_write_field_kind(
+                                pending->producer,
+                                canonical_chunk) ||
+        std::memcmp(write.payload, canonical.payload,
+                    sizeof(write.payload)) != 0) {
+      return kStatusInvalidCommit;
+    }
+  }
   expected.aligned_32b_address = write.aligned_32b_address;
   expected.byte_mask = write.byte_mask;
   expected.memory_operation_seq =
@@ -473,6 +562,125 @@ status_kind register_modeled_write(
               sizeof(expected.payload));
   pending->registered_ack_mask = static_cast<uint16_t>(
       pending->registered_ack_mask | write_bit);
+  return kStatusOk;
+}
+
+status_kind prepare_global_modeled_write(
+    const pending_sparse_commit_v1 &pending, uint8_t write_index,
+    uint64_t enqueue_cycle, private_shared::shared_write_v0 *write) {
+  if (write == NULL || pending.valid != 1 || pending.committed != 0 ||
+      !operation_key_valid(pending.key) ||
+      pending.key.storage_profile !=
+          private_storage::kProfileGlobal384 ||
+      pending.producer == operand_plan::kProducerInvalid ||
+      pending.expected_write_ack_count !=
+          pending.merged_write_plan.write_count ||
+      write_index >= pending.merged_write_plan.write_count) {
+    return kStatusInvalidCommit;
+  }
+  const chunk_write_v1 &canonical =
+      pending.merged_write_plan.writes[write_index];
+  if (canonical.byte_count != kChunkBytes ||
+      canonical.slot_byte_offset % kChunkBytes != 0 ||
+      canonical.slot_byte_offset >= kSlotBytes ||
+      canonical.byte_mask == 0) {
+    return kStatusWriteRejected;
+  }
+  const uint8_t chunk_index = static_cast<uint8_t>(
+      canonical.slot_byte_offset / kChunkBytes);
+  const uint8_t field_kind =
+      global_write_field_kind(pending.producer, chunk_index);
+  if (field_kind == private_frontier::kFieldInvalid) {
+    return kStatusWriteRejected;
+  }
+  *write = private_shared::shared_write_v0();
+  write->valid = true;
+  write->address_space = private_shared::kAddressSpaceGlobal;
+  write->address_mode = private_shared::kAddressModePrivateField;
+  write->access_operation = private_shared::kAccessOperationWrite;
+  write->destination = private_shared::kDestinationPrivateCommitAck;
+  write->owner = make_owner(pending.key.identity);
+  write->operation_seq = pending.key.identity.operation_sequence;
+  write->commit_epoch = pending.commit_epoch;
+  write->memory_op_seq = static_cast<uint32_t>(write_index) + 1u;
+  write->chunk_id = write_index;
+  write->chunk_count = pending.merged_write_plan.write_count;
+  write->field_kind = field_kind;
+  write->aligned_32b_address =
+      pending.key.private_slot_base_address +
+      canonical.slot_byte_offset;
+  write->byte_mask = canonical.byte_mask;
+  std::memcpy(write->payload, canonical.payload,
+              sizeof(write->payload));
+  write->enqueue_cycle = enqueue_cycle;
+  return kStatusOk;
+}
+
+status_kind accept_global_write_ack(
+    const private_shared::shared_write_v0 &write,
+    const private_shared::runtime_write_ack_v0 &ack,
+    pending_sparse_commit_v1 *pending, bool *all_acknowledged) {
+  if (pending == NULL || all_acknowledged == NULL) {
+    return kStatusInvalidArgument;
+  }
+  *all_acknowledged = false;
+  if (pending->valid != 1 || pending->committed != 0 ||
+      pending->key.storage_profile !=
+          private_storage::kProfileGlobal384 ||
+      !operation_key_valid(pending->key) ||
+      !ack.valid ||
+      !bytes_are_zero(ack.reserved_zero,
+                      sizeof(ack.reserved_zero)) ||
+      !bridge_owners_equal(
+          ack.owner, make_owner(pending->key.identity)) ||
+      ack.operation_seq !=
+          pending->key.identity.operation_sequence ||
+      ack.commit_epoch != pending->commit_epoch ||
+      ack.memory_operation_seq == 0 ||
+      ack.memory_operation_seq > 16) {
+    return kStatusInvalidWriteAck;
+  }
+  const uint16_t ack_bit = static_cast<uint16_t>(
+      uint16_t{1} << (ack.memory_operation_seq - 1u));
+  if ((pending->expected_ack_mask & ack_bit) == 0 ||
+      (pending->registered_ack_mask & ack_bit) == 0) {
+    return kStatusInvalidWriteAck;
+  }
+  if ((pending->acknowledged_ack_mask & ack_bit) != 0) {
+    return kStatusDuplicateWriteAck;
+  }
+  const pending_sparse_commit_v1::expected_write_ack_v1 &expected =
+      pending->expected_writes[ack.memory_operation_seq - 1u];
+  if (expected.valid != 1 ||
+      expected.memory_operation_seq != ack.memory_operation_seq ||
+      expected.field_kind != ack.field_kind || !write.valid ||
+      write.address_space != private_shared::kAddressSpaceGlobal ||
+      write.address_mode != private_shared::kAddressModePrivateField ||
+      write.access_operation != private_shared::kAccessOperationWrite ||
+      write.destination !=
+          private_shared::kDestinationPrivateCommitAck ||
+      !bridge_owners_equal(write.owner, ack.owner) ||
+      write.operation_seq != ack.operation_seq ||
+      write.commit_epoch != ack.commit_epoch ||
+      write.memory_op_seq != ack.memory_operation_seq ||
+      write.chunk_id != expected.chunk_id ||
+      write.chunk_count != expected.chunk_count ||
+      write.field_kind != ack.field_kind ||
+      write.aligned_32b_address != expected.aligned_32b_address ||
+      write.byte_mask != expected.byte_mask ||
+      std::memcmp(write.payload, expected.payload,
+                  sizeof(expected.payload)) != 0) {
+    return kStatusInvalidWriteAck;
+  }
+  pending->acknowledged_ack_mask = static_cast<uint16_t>(
+      pending->acknowledged_ack_mask | ack_bit);
+  if (pending->acknowledged_ack_mask == pending->expected_ack_mask) {
+    if (pending->registered_ack_mask != pending->expected_ack_mask) {
+      return kStatusInvalidCommit;
+    }
+    pending->committed = 1;
+    *all_acknowledged = true;
+  }
   return kStatusOk;
 }
 

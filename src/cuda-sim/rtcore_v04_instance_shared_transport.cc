@@ -264,9 +264,13 @@ status_kind capture_enter_result(
       (private_storage_profile !=
            private_storage::kProfileLegacyShared832 &&
        private_storage_profile !=
-           private_storage::kProfileCompressedShared384) ||
-      (private_storage_profile ==
            private_storage::kProfileCompressedShared384 &&
+       private_storage_profile !=
+           private_storage::kProfileGlobal384) ||
+      ((private_storage_profile ==
+            private_storage::kProfileCompressedShared384 ||
+        private_storage_profile ==
+            private_storage::kProfileGlobal384) &&
        !short_stack_mode)) {
     return kStatusInvalidArgument;
   }
@@ -279,13 +283,22 @@ status_kind capture_enter_result(
   if (state->next_issue_age == 0) return kStatusInvalidArgument;
 
   instance_semantic::enter_commit_plan_v0 plan = {};
-  if (instance_semantic::prepare_enter(
-          owner, producer_operation_seq, region, canonical_slot,
-          input, result, &plan, short_stack_mode) !=
-          instance_semantic::kStatusOk ||
+  const bool global =
+      private_storage_profile == private_storage::kProfileGlobal384;
+  const instance_semantic::status_kind semantic_status =
+      global
+          ? instance_semantic::prepare_enter_route(
+                owner, producer_operation_seq, input, result, &plan)
+          : instance_semantic::prepare_enter(
+                owner, producer_operation_seq, region, canonical_slot,
+                input, result, &plan, short_stack_mode);
+  if (semantic_status != instance_semantic::kStatusOk ||
       plan.valid != 1 ||
+      (global &&
+       (plan.route_kind != instance_semantic::kRouteBlasRootNode ||
+        plan.write_fragment_count != 0)) ||
       (plan.route_kind == instance_semantic::kRouteBlasRootNode &&
-       plan.write_fragment_count !=
+       !global && plan.write_fragment_count !=
            (short_stack_mode
                 ? instance_semantic::
                       kEnterShortStackWriteFragmentCount

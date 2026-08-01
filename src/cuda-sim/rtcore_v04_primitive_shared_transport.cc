@@ -109,6 +109,35 @@ int find_oldest_result(const engine_state_v0 &state) {
   return selected;
 }
 
+int find_oldest_global_write_tracker(const engine_state_v0 &state) {
+  int selected = -1;
+  uint64_t selected_age = std::numeric_limits<uint64_t>::max();
+  for (unsigned index = 0; index < state.config.tracker_capacity;
+       ++index) {
+    const commit_tracker_v0 &tracker = state.trackers[index];
+    if (tracker.valid == 0 ||
+        tracker.private_storage_profile !=
+            private_storage::kProfileGlobal384 ||
+        tracker.expected_write_count == 0 ||
+        tracker.accepted_write_mask ==
+            expected_mask(tracker.expected_write_count)) {
+      continue;
+    }
+    if (selected < 0 || tracker.issue_age < selected_age) {
+      selected = static_cast<int>(index);
+      selected_age = tracker.issue_age;
+    }
+  }
+  return selected;
+}
+
+uint8_t first_missing_write(uint16_t mask, uint16_t count) {
+  for (uint8_t index = 0; index < count; ++index) {
+    if ((mask & (uint16_t{1} << index)) == 0) return index;
+  }
+  return static_cast<uint8_t>(count);
+}
+
 int find_result(const engine_state_v0 &state,
                 const write_offer_v0 &offer) {
   for (unsigned index = 0;
@@ -520,6 +549,100 @@ status_kind capture_result_with_private_state_384(
       private_state_384::operand_plan::kProducerPrimitive, receipt);
 }
 
+status_kind capture_result_global384(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    uint64_t private_slot_base_address,
+    const typed_primitive::route_input_v0 &input,
+    const typed_primitive::route_result_v0 &result,
+    capture_receipt_v0 *receipt) {
+  if (state == NULL || receipt == NULL || state->initialized != 1 ||
+      producer_operation_seq == 0 || commit_epoch == 0 ||
+      target_operation_seq == 0 ||
+      target_operation_seq == producer_operation_seq ||
+      private_slot_base_address == 0 ||
+      private_slot_base_address % private_state_384::kChunkBytes != 0) {
+    return kStatusInvalidArgument;
+  }
+  *receipt = capture_receipt_v0();
+  primitive_semantic::semantic_plan_v0 semantic = {};
+  if (primitive_semantic::prepare_result(
+          owner, producer_operation_seq, input, result, &semantic) !=
+          primitive_semantic::kStatusOk ||
+      semantic.valid != 1 ||
+      semantic.route_kind != primitive_semantic::kRouteStackPopNext ||
+      semantic.retained_candidate_valid != 0 ||
+      semantic.primitive_resume_valid != 0 ||
+      semantic.intersection_boundary_valid != 0 ||
+      semantic.shader_return_valid != 0) {
+    return kStatusSemanticPlanRejected;
+  }
+  if (operation_live(*state, owner, producer_operation_seq)) {
+    return kStatusDuplicateOperation;
+  }
+  const int tracker_index = find_free_tracker(*state);
+  if (tracker_index < 0) return kStatusTrackerBackpressure;
+  if (state->next_issue_age == 0 ||
+      state->next_issue_age == std::numeric_limits<uint64_t>::max()) {
+    return kStatusCounterExhausted;
+  }
+
+  private_state_384::live_bridge::sparse_chunk_delta_v1
+      deltas[kMaxPrivateState384DeltaCount] = {};
+  uint8_t delta_count = 0;
+  if (!prepare_private_state_384_deltas(
+          semantic, input.decode_context, deltas, &delta_count)) {
+    return kStatusPrivateState384Rejected;
+  }
+  private_state_384::live_bridge::pending_sparse_commit_v1 pending = {};
+  if (delta_count != 0) {
+    private_state_384::live_bridge::write_commit_input_v1 commit = {};
+    commit.owner = owner;
+    commit.private_slot_base_address = private_slot_base_address;
+    commit.operation_sequence = producer_operation_seq;
+    commit.commit_epoch = commit_epoch;
+    commit.bvh_format_profile_id =
+        private_state_384::kGenRtBvhFormatProfileId;
+    commit.storage_profile = private_storage::kProfileGlobal384;
+    commit.producer =
+        private_state_384::operand_plan::kProducerPrimitive;
+    if (private_state_384::live_bridge::stage_sparse_commit(
+            commit, deltas, delta_count, &pending) !=
+        private_state_384::live_bridge::kStatusOk) {
+      return kStatusPrivateState384Rejected;
+    }
+  }
+
+  commit_tracker_v0 tracker = {};
+  tracker.owner = owner;
+  tracker.active_decode_context = input.decode_context;
+  tracker.issue_age = state->next_issue_age;
+  tracker.operation_seq = producer_operation_seq;
+  tracker.target_operation_seq = target_operation_seq;
+  tracker.commit_epoch = commit_epoch;
+  tracker.expected_write_count =
+      pending.expected_write_ack_count;
+  tracker.route_kind = semantic.route_kind;
+  tracker.private_storage_profile =
+      private_storage::kProfileGlobal384;
+  tracker.semantic_plan = semantic;
+  tracker.private_state_384_commit = pending;
+  tracker.valid = 1;
+  tracker.ready = tracker.expected_write_count == 0 ? 1 : 0;
+  state->trackers[tracker_index] = tracker;
+  ++state->next_issue_age;
+
+  receipt->producer_operation_seq = producer_operation_seq;
+  receipt->target_operation_seq = target_operation_seq;
+  receipt->commit_epoch = commit_epoch;
+  receipt->write_count = tracker.expected_write_count;
+  receipt->route_kind = semantic.route_kind;
+  receipt->valid = 1;
+  return kStatusOk;
+}
+
 status_kind capture_semantic_plan(
     engine_state_v0 *state,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
@@ -634,6 +757,38 @@ status_kind transfer_next_write(
   return kStatusOk;
 }
 
+status_kind transfer_next_global_write(
+    engine_state_v0 *state, uint64_t enqueue_cycle,
+    private_shared::shared_write_v0 *write) {
+  if (state == NULL || write == NULL || state->initialized != 1) {
+    return kStatusInvalidArgument;
+  }
+  *write = private_shared::shared_write_v0();
+  const int tracker_index = find_oldest_global_write_tracker(*state);
+  if (tracker_index < 0) return kStatusNoWriteOffer;
+
+  engine_state_v0 staged = *state;
+  commit_tracker_v0 &tracker = staged.trackers[tracker_index];
+  const uint8_t write_index = first_missing_write(
+      tracker.accepted_write_mask, tracker.expected_write_count);
+  private_shared::shared_write_v0 prepared = {};
+  if (write_index >= tracker.expected_write_count ||
+      private_state_384::live_bridge::prepare_global_modeled_write(
+          tracker.private_state_384_commit, write_index,
+          enqueue_cycle, &prepared) !=
+          private_state_384::live_bridge::kStatusOk ||
+      private_state_384::live_bridge::register_modeled_write(
+          prepared, &tracker.private_state_384_commit) !=
+          private_state_384::live_bridge::kStatusOk) {
+    return kStatusPrivateState384Rejected;
+  }
+  tracker.accepted_write_mask = static_cast<uint16_t>(
+      tracker.accepted_write_mask | (uint16_t{1} << write_index));
+  *state = staged;
+  *write = prepared;
+  return kStatusOk;
+}
+
 bool owns_ack(const engine_state_v0 &state,
               const private_shared::runtime_write_ack_v0 &ack) {
   return state.initialized == 1 && ack.valid &&
@@ -656,7 +811,8 @@ bool profile_for_write(
   const uint8_t profile =
       state.trackers[tracker_index].private_storage_profile;
   if (profile != private_storage::kProfileLegacyShared832 &&
-      profile != private_storage::kProfileCompressedShared384) {
+      profile != private_storage::kProfileCompressedShared384 &&
+      profile != private_storage::kProfileGlobal384) {
     return false;
   }
   *private_storage_profile = profile;
@@ -796,6 +952,56 @@ status_kind service_next_ack_with_private_state_384(
   *private_state_384_backing = staged_private_384;
   receipt->valid = true;
   receipt->shared_ack = ack;
+  return kStatusOk;
+}
+
+status_kind accept_global_write_ack(
+    engine_state_v0 *state,
+    const private_shared::shared_write_v0 &write,
+    const private_shared::runtime_write_ack_v0 &ack) {
+  if (state == NULL || state->initialized != 1 || !ack.valid) {
+    return kStatusInvalidArgument;
+  }
+  const int tracker_index = find_tracker(
+      *state, ack.owner, ack.operation_seq, ack.commit_epoch);
+  if (tracker_index < 0) return kStatusUnknownAck;
+  const commit_tracker_v0 &tracker = state->trackers[tracker_index];
+  if (tracker.private_storage_profile !=
+          private_storage::kProfileGlobal384 ||
+      tracker.private_state_384_commit.valid != 1 ||
+      ack.memory_operation_seq == 0 ||
+      ack.memory_operation_seq > tracker.expected_write_count) {
+    return kStatusPrivateState384Rejected;
+  }
+  const uint16_t bit = static_cast<uint16_t>(
+      uint16_t{1} << (ack.memory_operation_seq - 1));
+  if ((tracker.accepted_write_mask & bit) == 0) {
+    return kStatusAckBeforeTransfer;
+  }
+  if ((tracker.acknowledged_write_mask & bit) != 0) {
+    return kStatusDuplicateAck;
+  }
+
+  engine_state_v0 staged = *state;
+  commit_tracker_v0 &staged_tracker =
+      staged.trackers[tracker_index];
+  bool all_acknowledged = false;
+  if (private_state_384::live_bridge::accept_global_write_ack(
+          write, ack, &staged_tracker.private_state_384_commit,
+          &all_acknowledged) !=
+      private_state_384::live_bridge::kStatusOk) {
+    return kStatusPrivateState384Rejected;
+  }
+  staged_tracker.acknowledged_write_mask = static_cast<uint16_t>(
+      staged_tracker.acknowledged_write_mask | bit);
+  const bool all_acked =
+      staged_tracker.acknowledged_write_mask ==
+      expected_mask(staged_tracker.expected_write_count);
+  if (all_acked != all_acknowledged) {
+    return kStatusPrivateState384Rejected;
+  }
+  if (all_acked) staged_tracker.ready = 1;
+  *state = staged;
   return kStatusOk;
 }
 

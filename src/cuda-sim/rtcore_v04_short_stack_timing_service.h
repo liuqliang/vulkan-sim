@@ -1,6 +1,7 @@
 #ifndef RTCORE_V04_SHORT_STACK_TIMING_SERVICE_H
 #define RTCORE_V04_SHORT_STACK_TIMING_SERVICE_H
 
+#include <cstddef>
 #include <cstdint>
 
 #include "rtcore_replay_interface.h"
@@ -44,6 +45,7 @@ enum status_kind : uint8_t {
   kStatusNoAckOwned,
   kStatusAckRejected,
   kStatusNoFollowupRead,
+  kStatusNoWriteOffer,
   kStatusNoReadyResult,
 };
 
@@ -98,6 +100,7 @@ struct reservation_input_v0 {
   uint32_t producer_commit_epoch;
   uint32_t target_operation_seq;
   uint32_t blas_build_generation;
+  uint64_t private_slot_base_address;
   uint8_t operation_kind;
   uint8_t pending_parent_resume_valid;
   uint8_t private_storage_profile;
@@ -261,6 +264,12 @@ status_kind accept_private_state_384_read_response(
     const rtcore_memory_unit_request_snapshot &request,
     uint64_t response_cycle);
 
+status_kind accept_private_state_384_read_response_bytes(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *payload, size_t payload_byte_count,
+    uint64_t response_cycle);
+
 status_kind take_private_state_384_followup_read_plan(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
     uint64_t issue_cycle, request_plan_v0 *requests);
@@ -281,6 +290,11 @@ status_kind service_write_enqueue(
     uint64_t service_cycle, uint8_t write_enqueue_budget,
     uint8_t *writes_enqueued, bool *shared_queue_blocked);
 
+status_kind transfer_next_global_write(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    uint64_t service_cycle,
+    private_shared::shared_write_v0 *write);
+
 bool owns_ack(const engine_state_v0 &state,
               const private_shared::runtime_write_ack_v0 &ack);
 
@@ -295,6 +309,11 @@ status_kind accept_write_ack_with_private_state_384(
     private_shared::backing_state_v0 *private_backing,
     private_state_384::backing::state_v1 *private_state_384_backing,
     uint64_t service_cycle,
+    const private_shared::runtime_write_ack_v0 &ack);
+
+status_kind accept_global_write_ack(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_shared::shared_write_v0 &write,
     const private_shared::runtime_write_ack_v0 &ack);
 
 status_kind peek_ready_result(const engine_state_v0 &state,

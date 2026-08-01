@@ -75,6 +75,7 @@ struct read_request_plan_v1 {
 
 struct write_commit_input_v1 {
   private_frontier::owner_binding_v0 owner;
+  uint64_t private_slot_base_address;
   uint32_t operation_sequence;
   uint32_t commit_epoch;
   uint32_t bvh_format_profile_id;
@@ -135,6 +136,15 @@ status_kind stage_sparse_commit(
 status_kind register_modeled_write(
     const private_shared::shared_write_v0 &write,
     pending_sparse_commit_v1 *pending);
+
+status_kind prepare_global_modeled_write(
+    const pending_sparse_commit_v1 &pending, uint8_t write_index,
+    uint64_t enqueue_cycle, private_shared::shared_write_v0 *write);
+
+status_kind accept_global_write_ack(
+    const private_shared::shared_write_v0 &write,
+    const private_shared::runtime_write_ack_v0 &ack,
+    pending_sparse_commit_v1 *pending, bool *all_acknowledged);
 
 status_kind accept_write_ack_and_maybe_commit(
     backing::state_v1 *state,

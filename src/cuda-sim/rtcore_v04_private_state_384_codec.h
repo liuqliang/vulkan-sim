@@ -23,6 +23,8 @@ static const uint64_t kSharedPlacementBase = UINT64_C(0xfe00000000000000);
 static const uint64_t kSharedPlacementOwnerStride = UINT64_C(0x1000000);
 static const uint8_t kCommittedHitProjectionBytes = 56;
 static const uint8_t kBoundaryProjectionBytes = 64;
+static const uint8_t kCurrentInstanceProjectionBytes = 20;
+static const uint8_t kParentRestoreProjectionBytes = 64;
 
 static const uint16_t kChunk0Offset = 0x000;
 static const uint16_t kChunk1Offset = 0x020;
@@ -208,6 +210,21 @@ status_kind encode_boundary_sparse_projection(
     const boundary_state_v1 &boundary, uint8_t reason,
     const as_context_v1 &active_as,
     uint8_t payload[kBoundaryProjectionBytes]);
+
+status_kind encode_ray_sparse_projection(
+    const ray_v1 &ray, uint8_t payload[kChunkBytes]);
+
+status_kind encode_as_context_sparse_projection(
+    const as_context_v1 &context, bool include_cull_mask,
+    uint8_t payload[kChunkBytes]);
+
+status_kind encode_current_instance_sparse_projection(
+    const current_instance_v1 &instance, uint8_t active_domain,
+    uint8_t payload[kCurrentInstanceProjectionBytes]);
+
+status_kind encode_parent_restore_sparse_projection(
+    const parent_restore_state_v1 &parent,
+    uint8_t payload[kParentRestoreProjectionBytes]);
 
 const char *status_name(status_kind status);
 

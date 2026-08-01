@@ -57,6 +57,7 @@ enum resident_charge_profile_kind : uint8_t {
 enum address_space_kind : uint8_t {
   kAddressSpaceInvalid = 0,
   kAddressSpaceShared = 1,
+  kAddressSpaceGlobal = 2,
 };
 
 enum address_mode_kind : uint8_t {

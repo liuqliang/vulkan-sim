@@ -323,6 +323,11 @@ extern "C" bool rtcore_complete_v04_global384_private_init_write(
     memory_space *global_memory, unsigned long long response_address,
     unsigned long long completion_cycle);
 
+extern "C" bool rtcore_complete_v04_global384_private_runtime_write(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    memory_space *global_memory, unsigned long long response_address,
+    unsigned long long completion_cycle);
+
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_SHARED = 1u;
 static const unsigned RTCORE_MEMORY_OPERATION_READ = 0u;
@@ -460,6 +465,11 @@ bool rtcore_accept_v04_stack_private_shared_read(
 
 bool rtcore_accept_v04_short_stack_private_shared_read(
     const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle);
+
+bool rtcore_accept_v04_short_stack_private_state_384_read_response(
+    const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
     unsigned long long response_cycle);
 
 bool rtcore_accept_v04_private_boundary_state_384_read(

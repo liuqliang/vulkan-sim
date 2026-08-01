@@ -143,14 +143,12 @@ status_kind prepare_restore_parent(
   return kStatusOk;
 }
 
-status_kind prepare_enter(
+status_kind prepare_enter_route(
     const private_frontier::owner_binding_v0 &owner,
     uint32_t operation_seq,
-    const private_frontier::region_binding_v0 &region,
-    const private_frontier::shadow_slot_v0 &canonical_slot,
     const typed_instance::enter_input_v0 &input,
     const typed_instance::enter_result_v0 &result,
-    enter_commit_plan_v0 *plan, bool short_stack_mode) {
+    enter_commit_plan_v0 *plan) {
   if (plan == NULL) return kStatusInvalidArgument;
   *plan = enter_commit_plan_v0();
   if (operation_seq == 0) return kStatusInvalidOperationIdentity;
@@ -186,6 +184,42 @@ status_kind prepare_enter(
       result.root_fetch.build_generation == 0 ||
       result.root_fetch.encoded_reference == 0) {
     return kStatusInvalidTypedResult;
+  }
+  prepared.route_kind = kRouteBlasRootNode;
+  prepared.root_build_generation =
+      result.root_fetch.build_generation;
+  prepared.root_fetch.child.payload_offset =
+      result.root_fetch.encoded_reference;
+  std::memcpy(&prepared.root_fetch.child.near_t_bits,
+              &result.object_ray.t_min,
+              sizeof(prepared.root_fetch.child.near_t_bits));
+  prepared.root_fetch.child.payload_byte_count = 64;
+  prepared.root_fetch.child.payload_kind =
+      result.root_fetch.expected_payload_kind;
+  prepared.root_fetch.child.child_slot = 0;
+  prepared.root_fetch.decode_context =
+      result.root_fetch.decode_context;
+  prepared.valid = 1;
+  *plan = prepared;
+  return kStatusOk;
+}
+
+status_kind prepare_enter(
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t operation_seq,
+    const private_frontier::region_binding_v0 &region,
+    const private_frontier::shadow_slot_v0 &canonical_slot,
+    const typed_instance::enter_input_v0 &input,
+    const typed_instance::enter_result_v0 &result,
+    enter_commit_plan_v0 *plan, bool short_stack_mode) {
+  if (plan == NULL) return kStatusInvalidArgument;
+  enter_commit_plan_v0 prepared = {};
+  const status_kind route_status = prepare_enter_route(
+      owner, operation_seq, input, result, &prepared);
+  if (route_status != kStatusOk) return route_status;
+  if (prepared.route_kind == kRouteStackPopNext) {
+    *plan = prepared;
+    return kStatusOk;
   }
 
   private_frontier::shadow_slot_v0 updated_slot = canonical_slot;
@@ -246,23 +280,8 @@ status_kind prepare_enter(
                : kEnterVisibleWriteFragmentCount)) {
     return kStatusInvalidWriteFragment;
   }
-  prepared.route_kind = kRouteBlasRootNode;
-  prepared.root_build_generation =
-      result.root_fetch.build_generation;
   prepared.write_fragment_count = fragment_count;
   prepared.required_ack_count = fragment_count;
-  prepared.root_fetch.child.payload_offset =
-      result.root_fetch.encoded_reference;
-  std::memcpy(&prepared.root_fetch.child.near_t_bits,
-              &result.object_ray.t_min,
-              sizeof(prepared.root_fetch.child.near_t_bits));
-  prepared.root_fetch.child.payload_byte_count = 64;
-  prepared.root_fetch.child.payload_kind =
-      result.root_fetch.expected_payload_kind;
-  prepared.root_fetch.child.child_slot = 0;
-  prepared.root_fetch.decode_context =
-      result.root_fetch.decode_context;
-  prepared.valid = 1;
   *plan = prepared;
   return kStatusOk;
 }

@@ -165,6 +165,16 @@ status_kind capture_result_with_private_state_384(
     const typed_primitive::route_result_v0 &result,
     capture_receipt_v0 *receipt);
 
+status_kind capture_result_global384(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    uint64_t private_slot_base_address,
+    const typed_primitive::route_input_v0 &input,
+    const typed_primitive::route_result_v0 &result,
+    capture_receipt_v0 *receipt);
+
 status_kind capture_semantic_plan(
     engine_state_v0 *state,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
@@ -190,6 +200,10 @@ status_kind transfer_next_write(
     engine_state_v0 *state, private_shared::backing_state_v0 *shared_state,
     uint64_t enqueue_cycle, transfer_receipt_v0 *receipt);
 
+status_kind transfer_next_global_write(
+    engine_state_v0 *state, uint64_t enqueue_cycle,
+    private_shared::shared_write_v0 *write);
+
 bool owns_ack(const engine_state_v0 &state,
               const private_shared::runtime_write_ack_v0 &ack);
 
@@ -207,6 +221,11 @@ status_kind service_next_ack_with_private_state_384(
     private_shared::backing_state_v0 *shared_state,
     private_state_384::backing::state_v1 *private_state_384_backing,
     uint64_t service_cycle, ack_receipt_v0 *receipt);
+
+status_kind accept_global_write_ack(
+    engine_state_v0 *state,
+    const private_shared::shared_write_v0 &write,
+    const private_shared::runtime_write_ack_v0 &ack);
 
 status_kind pop_ready_event(engine_state_v0 *state,
                             ready_event_v0 *event);
