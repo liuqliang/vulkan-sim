@@ -124,6 +124,10 @@ static bool rtcore_validate_v04_shadow_trace_input(
     unsigned long long context_ptr, unsigned long long handoff_window_base,
     unsigned lane_slot_index,
     const struct rtcore_v03_compact_context_decoded &context,
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned resident_warp_generation,
+    const unsigned char *acquired_lane_bytes,
+    unsigned acquired_lane_byte_count,
     std::array<uint32_t, rtcore::abi_v04::kWordCount> *words);
 namespace {
 bool rtcore_v04_register_global384_provisional_publication(
@@ -8468,7 +8472,9 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
   if (global384_preissued_initial) {
     printf("GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_PREFUNCTIONAL "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
-           "resident_generation=%u live_bind=validated result=ready\n",
+           "resident_generation=%u live_bind=validated "
+           "initial_handoff_acquire=validated input_source=l1d_response_bytes "
+           "result=ready\n",
            owner_hw_sid, warp_uid, warp_id, active_mask,
            resident_generation);
     fflush(stdout);
@@ -8501,10 +8507,114 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
       return false;
     }
 
+    root_packet::lane_input_v0 &lane_input = input.lanes[lane];
+    lane_input.valid = true;
+    lane_input.lane_id = static_cast<uint8_t>(lane);
+    lane_input.thread_uid = thread->get_uid();
+    lane_input.context_ptr = context_value.u64;
+    lane_input.handoff_window_base = handoff_value.u64;
+    rtcore::abi_v04::shadow::trace_input_values retained_trace_input = {};
+    bool retained_trace_input_authority = false;
+    if (functional_only) {
+      std::array<uint8_t, rtcore::abi_v04::kLaneSlotBytes>
+          acquired_handoff_image = {};
+      const unsigned char *acquired_handoff_bytes = NULL;
+      unsigned acquired_handoff_byte_count = 0;
+      if (global384_preissued_initial) {
+        if (!rtcore_copy_v04_global384_initial_handoff_acquire_lane_before_functional(
+                owner_hw_sid, dynamic_warp_id, warp_uid, warp_id,
+                active_mask, resident_generation, lane,
+                acquired_handoff_image.data(), acquired_handoff_image.size())) {
+          return false;
+        }
+        acquired_handoff_bytes = acquired_handoff_image.data();
+        acquired_handoff_byte_count = acquired_handoff_image.size();
+      }
+      lane_input.v04_trace_input_valid =
+          rtcore_validate_v04_shadow_trace_input(
+              instruction, thread, context_value.u64,
+              handoff_value.u64, lane, context, owner_hw_sid,
+              dynamic_warp_id, warp_uid, warp_id, resident_generation,
+              acquired_handoff_bytes,
+              acquired_handoff_byte_count,
+              &lane_input.v04_trace_input_words);
+      if (!lane_input.v04_trace_input_valid) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_ROOT_PACKET_INPUT_FAULT "
+                "reason=V04_SHADOW_TRACE_INPUT_MISMATCH "
+                "phase=root_prefunctional owner_hw_sid=%u warp_uid=%u "
+                "warp_id=%u lane=%u traversal_consumed=0\n",
+                owner_hw_sid, warp_uid, warp_id, lane);
+        fflush(stderr);
+        return false;
+      }
+      if (global384_preissued_initial) {
+        if (!rtcore::abi_v04::shadow::unpack_trace_input_words(
+                lane_input.v04_trace_input_words,
+                &retained_trace_input)) {
+          return false;
+        }
+        retained_trace_input_authority = true;
+      }
+    }
+
+    const uint64_t effective_traversable_reference =
+        retained_trace_input_authority
+            ? retained_trace_input.traversable_reference
+            : context.as_handle_or_traversable_ref;
+    const float effective_ray_origin[3] = {
+        retained_trace_input_authority
+            ? rtcore_context_u32_to_float(
+                  retained_trace_input.world_ray_origin_fp32[0])
+            : context.ray_origin.x,
+        retained_trace_input_authority
+            ? rtcore_context_u32_to_float(
+                  retained_trace_input.world_ray_origin_fp32[1])
+            : context.ray_origin.y,
+        retained_trace_input_authority
+            ? rtcore_context_u32_to_float(
+                  retained_trace_input.world_ray_origin_fp32[2])
+            : context.ray_origin.z,
+    };
+    const float effective_ray_direction[3] = {
+        retained_trace_input_authority
+            ? rtcore_context_u32_to_float(
+                  retained_trace_input.world_ray_direction_fp32[0])
+            : context.ray_direction.x,
+        retained_trace_input_authority
+            ? rtcore_context_u32_to_float(
+                  retained_trace_input.world_ray_direction_fp32[1])
+            : context.ray_direction.y,
+        retained_trace_input_authority
+            ? rtcore_context_u32_to_float(
+                  retained_trace_input.world_ray_direction_fp32[2])
+            : context.ray_direction.z,
+    };
+    const float effective_ray_tmin =
+        retained_trace_input_authority
+            ? rtcore_context_u32_to_float(retained_trace_input.ray_tmin_fp32)
+            : context.ray_tmin;
+    const float effective_ray_tmax =
+        retained_trace_input_authority
+            ? rtcore_context_u32_to_float(
+                  retained_trace_input.launch_ray_tmax_fp32)
+            : context.ray_tmax;
+    lane_input.sbt_record_offset =
+        retained_trace_input_authority
+            ? retained_trace_input.sbt_record_offset
+            : context.sbt_offset;
+    lane_input.sbt_record_stride =
+        retained_trace_input_authority
+            ? retained_trace_input.sbt_record_stride
+            : context.sbt_stride;
+    lane_input.miss_index = retained_trace_input_authority
+                                ? retained_trace_input.miss_index
+                                : context.miss_index;
+
     rtcore_tlas_binding_snapshot tlas = {};
     const char *capture_failure = "unvalidated";
     if (!VulkanRayTracing::captureTlasBinding(
-            context.as_handle_or_traversable_ref, &tlas,
+            effective_traversable_reference, &tlas,
             &capture_failure) ||
         !tlas.valid || !tlas.live || !tlas.root_descriptor_valid ||
         tlas.root_build_generation == 0 ||
@@ -8520,38 +8630,19 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
               "reason=%s owner_hw_sid=%u warp_uid=%u warp_id=%u lane=%u "
               "as_ref=0x%llx\n",
               capture_failure, owner_hw_sid, warp_uid, warp_id, lane,
-              (unsigned long long)context.as_handle_or_traversable_ref);
+              (unsigned long long)effective_traversable_reference);
       fflush(stderr);
       return false;
     }
 
-    root_packet::lane_input_v0 &lane_input = input.lanes[lane];
-    lane_input.valid = true;
-    lane_input.lane_id = static_cast<uint8_t>(lane);
-    lane_input.thread_uid = thread->get_uid();
-    lane_input.context_ptr = context_value.u64;
-    lane_input.handoff_window_base = handoff_value.u64;
-    lane_input.sbt_record_offset = context.sbt_offset;
-    lane_input.sbt_record_stride = context.sbt_stride;
-    lane_input.miss_index = context.miss_index;
-    if (functional_only) {
-      lane_input.v04_trace_input_valid =
-          rtcore_validate_v04_shadow_trace_input(
-              instruction, thread, context_value.u64,
-              handoff_value.u64, lane, context,
-              &lane_input.v04_trace_input_words);
-      if (!lane_input.v04_trace_input_valid) {
-        return false;
-      }
-    }
     lane_input.raw_payload_base_address =
         tlas.device_base_address + tlas.root_payload_offset;
     lane_input.root_build_generation =
         tlas.root_build_generation;
     lane_input.target_reference.payload_offset =
         tlas.root_payload_offset;
-    memcpy(&lane_input.target_reference.near_t_bits, &context.ray_tmin,
-           sizeof(context.ray_tmin));
+    memcpy(&lane_input.target_reference.near_t_bits, &effective_ray_tmin,
+           sizeof(effective_ray_tmin));
     lane_input.target_reference.build_generation =
         tlas.root_build_generation;
     lane_input.target_reference.payload_byte_count = 64;
@@ -8563,19 +8654,19 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
 
     private_frontier::root_private_operands_v0 &operands =
         lane_input.private_operands;
-    operands.mutable_ray.origin[0] = context.ray_origin.x;
-    operands.mutable_ray.origin[1] = context.ray_origin.y;
-    operands.mutable_ray.origin[2] = context.ray_origin.z;
-    operands.mutable_ray.direction[0] = context.ray_direction.x;
-    operands.mutable_ray.direction[1] = context.ray_direction.y;
-    operands.mutable_ray.direction[2] = context.ray_direction.z;
+    operands.mutable_ray.origin[0] = effective_ray_origin[0];
+    operands.mutable_ray.origin[1] = effective_ray_origin[1];
+    operands.mutable_ray.origin[2] = effective_ray_origin[2];
+    operands.mutable_ray.direction[0] = effective_ray_direction[0];
+    operands.mutable_ray.direction[1] = effective_ray_direction[1];
+    operands.mutable_ray.direction[2] = effective_ray_direction[2];
     for (unsigned axis = 0; axis < 3; ++axis) {
       const float direction = operands.mutable_ray.direction[axis];
       operands.mutable_ray.inverse_direction[axis] =
           rtcore::v04::canonical_ray::inverse_direction(direction);
     }
-    operands.mutable_ray.t_min = context.ray_tmin;
-    operands.mutable_ray.t_max = context.ray_tmax;
+    operands.mutable_ray.t_min = effective_ray_tmin;
+    operands.mutable_ray.t_max = effective_ray_tmax;
     operands.decode_context.bvh_format_profile_id =
         tlas.root_bvh_profile_id;
     operands.decode_context.as_object.object_id = tlas.object_id;
@@ -8584,9 +8675,13 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     operands.decode_context.device_base = tlas.device_base_address;
     operands.decode_context.device_range_bytes = tlas.size_bytes;
     operands.committed_hit.valid = 0;
-    lane_input.ray_policy.ray_flags = context.ray_flags;
+    lane_input.ray_policy.ray_flags = retained_trace_input_authority
+                                          ? retained_trace_input.ray_flags
+                                          : context.ray_flags;
     lane_input.ray_policy.cull_mask =
-        static_cast<uint8_t>(context.cull_mask);
+        static_cast<uint8_t>(retained_trace_input_authority
+                                 ? retained_trace_input.cull_mask
+                                 : context.cull_mask);
     if (functional_only && rtcore_v04_ray_input_debug_enabled()) {
       printf(
           "GPGPU-Sim RTCORE_V04_RAY_INPUT_DEBUG "
@@ -8597,7 +8692,10 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
           "origin_bits=(0x%08x,0x%08x,0x%08x) "
           "direction_bits=(0x%08x,0x%08x,0x%08x) "
           "tmin_bits=0x%08x tmax_bits=0x%08x\n",
-          resident_live ? "resubmit" : "initial", owner_hw_sid,
+          global384_preissued_initial
+              ? "initial_l1d_authority"
+              : (resident_live ? "resubmit" : "initial"),
+          owner_hw_sid,
           warp_uid, warp_id, lane, thread->get_uid(),
           (unsigned long long)context_value.u64,
           operands.mutable_ray.origin[0], operands.mutable_ray.origin[1],
@@ -8622,12 +8720,13 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
   }
 
   if (functional_only) {
-    return resident_live && !global384_preissued_initial
-               ? rtcore_v04_functional_only_prepare_resubmit(
-                     input, lane_threads, previous_warp_uid,
-                     previous_active_mask)
-               : rtcore_v04_functional_only_prepare_initial(
-                     input, lane_threads);
+    const bool prepared =
+        resident_live && !global384_preissued_initial
+            ? rtcore_v04_functional_only_prepare_resubmit(
+                  input, lane_threads, previous_warp_uid,
+                  previous_active_mask)
+            : rtcore_v04_functional_only_prepare_initial(input, lane_threads);
+    return prepared;
   }
 
   if (rtcore_v04_functional_node_driver_gate_active()) {
@@ -9198,6 +9297,10 @@ static bool rtcore_validate_v04_shadow_trace_input(
     unsigned long long context_ptr, unsigned long long handoff_window_base,
     unsigned lane_slot_index,
     const rtcore_v03_compact_context_decoded &admission_context,
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned resident_warp_generation,
+    const unsigned char *acquired_lane_bytes,
+    unsigned acquired_lane_byte_count,
     std::array<uint32_t, rtcore::abi_v04::kWordCount> *validated_words) {
   if (thread == NULL || lane_slot_index >= 32) {
     return false;
@@ -9210,8 +9313,15 @@ static bool rtcore_validate_v04_shadow_trace_input(
   }
 
   std::array<uint8_t, rtcore::abi_v04::kLaneSlotBytes> image = {};
-  thread->get_global_memory()->read_simulator_backing(
-      (mem_addr_t)lane_address, image.size(), image.data());
+  const bool retained_initial_acquire = acquired_lane_bytes != NULL;
+  if (retained_initial_acquire) {
+    if (acquired_lane_byte_count != image.size()) return false;
+    memcpy(image.data(), acquired_lane_bytes, image.size());
+  } else {
+    if (acquired_lane_byte_count != 0) return false;
+    thread->get_global_memory()->read_simulator_backing(
+        (mem_addr_t)lane_address, image.size(), image.data());
+  }
   std::array<uint32_t, rtcore::abi_v04::kWordCount> actual =
       rtcore::abi_v04::decode_words_le(image);
 
@@ -9272,18 +9382,26 @@ static bool rtcore_validate_v04_shadow_trace_input(
   }
   printf("GPGPU-Sim PTX: RT_SUBMIT v04-shadow-trace-input-consumer "
          "(%s:%u), profile=%s, context_ptr=0x%llx, "
+         "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+         "resident_generation=%u "
          "handoff_window_base=0x%llx, lane_slot_index=%u, "
          "lane_address=0x%llx, expected_encoding_valid=%u, "
          "owned_word_mask=0x%08x, mismatch_word_mask=0x%08x, "
-         "mutation=%s, mutation_valid=%u, observation_only=1, "
-         "traversal_authority=0, valid=%u\n",
+         "mutation=%s, mutation_valid=%u, input_source=%s, "
+         "observation_only=%u, traversal_authority=%u, valid=%u\n",
          pI->source_file(), pI->source_line(), rtcore::abi_v04::kProfileId,
-         context_ptr, handoff_window_base, lane_slot_index,
+         context_ptr, owner_hw_sid, dynamic_warp_id, warp_uid, warp_id,
+         resident_warp_generation, handoff_window_base, lane_slot_index,
          (unsigned long long)lane_address,
          validation.expected_encoding_valid ? 1u : 0u,
          validation.owned_word_mask, validation.mismatch_word_mask,
          mutation != NULL && mutation[0] != '\0' ? mutation : "none",
-         mutation_valid ? 1u : 0u, valid ? 1u : 0u);
+         mutation_valid ? 1u : 0u,
+         retained_initial_acquire ? "initial_l1d_response_bytes"
+                                  : "simulator_backing",
+         retained_initial_acquire ? 0u : 1u,
+         retained_initial_acquire ? 1u : 0u,
+         valid ? 1u : 0u);
   fflush(stdout);
   return valid;
 }
@@ -16179,11 +16297,13 @@ struct rtcore_v04_global384_bind_material {
 
 struct rtcore_v04_global384_pending_bind_owner {
   unsigned dynamic_warp_id;
+  unsigned reserved_warp_uid;
   unsigned warp_id;
   unsigned active_mask;
 
   rtcore_v04_global384_pending_bind_owner()
-      : dynamic_warp_id(0), warp_id(0), active_mask(0) {}
+      : dynamic_warp_id(0), reserved_warp_uid(0), warp_id(0),
+        active_mask(0) {}
 };
 
 static std::map<unsigned, rtcore_v04_global384_pending_bind_owner>
@@ -16395,6 +16515,15 @@ static bool rtcore_v04_make_global384_retire_release_material(
 
 static bool rtcore_v04_global384_pending_owner_matches(
     const rtcore_v04_global384_pending_bind_owner &owner,
+    unsigned dynamic_warp_id, unsigned reserved_warp_uid,
+    unsigned warp_id, unsigned active_mask) {
+  return owner.dynamic_warp_id == dynamic_warp_id &&
+         owner.reserved_warp_uid == reserved_warp_uid &&
+         owner.warp_id == warp_id && owner.active_mask == active_mask;
+}
+
+static bool rtcore_v04_global384_pending_logical_submit_matches(
+    const rtcore_v04_global384_pending_bind_owner &owner,
     unsigned dynamic_warp_id, unsigned warp_id, unsigned active_mask) {
   return owner.dynamic_warp_id == dynamic_warp_id &&
          owner.warp_id == warp_id && owner.active_mask == active_mask;
@@ -16442,6 +16571,38 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
           warp_id, active_mask, &material)) {
     return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
   }
+  std::map<unsigned, rtcore_v04_global384_pending_bind_owner>::iterator
+      pending = g_rtcore_v04_global384_pending_bind_by_sm.find(owner_hw_sid);
+  if (pending != g_rtcore_v04_global384_pending_bind_by_sm.end() &&
+      !rtcore_v04_global384_pending_owner_matches(
+          pending->second, dynamic_warp_id, expected_warp_uid,
+          warp_id, active_mask)) {
+    return rtcore_v04_global384_pending_logical_submit_matches(
+               pending->second, dynamic_warp_id, warp_id, active_mask)
+               ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT
+               : RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
+  }
+  if (resident_live && expected_warp_uid == previous_warp_uid) {
+    if (active_mask != previous_active_mask ||
+        !rtcore_validate_v04_global384_resident_warp_shell(
+            owner_hw_sid, expected_warp_uid, warp_id, active_mask,
+            instruction != NULL ? instruction->uid() : 0,
+            previous_generation)) {
+      return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    const rtcore_v04_first_submit_live_bind_preissue_status poll_status =
+        rtcore_poll_v04_global384_initial_handoff_acquire_before_issue(
+            owner_hw_sid, dynamic_warp_id, expected_warp_uid, warp_id,
+            active_mask, previous_generation,
+            material.request.allocation_ranges.handoff_base,
+            material.request.handoff_lane_stride_bytes, issue_cycle);
+    if (poll_status == RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY) {
+      g_rtcore_v04_global384_pending_bind_by_sm.erase(owner_hw_sid);
+    }
+    return poll_status == RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE
+               ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT
+               : poll_status;
+  }
   if (resident_live && expected_warp_uid != previous_warp_uid &&
       active_mask != 0 &&
       (active_mask & ~previous_active_mask) == 0) {
@@ -16483,14 +16644,6 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
           previous_generation)) {
     return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE;
   }
-  std::map<unsigned, rtcore_v04_global384_pending_bind_owner>::iterator
-      pending = g_rtcore_v04_global384_pending_bind_by_sm.find(owner_hw_sid);
-  if (pending != g_rtcore_v04_global384_pending_bind_by_sm.end() &&
-      !rtcore_v04_global384_pending_owner_matches(
-          pending->second, dynamic_warp_id, warp_id, active_mask)) {
-    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
-  }
-
   request_owner::allocator_state_v0 &allocator =
       rtcore_v04_functional_only_allocator(owner_hw_sid);
   request_owner::warp_identity_v0 identity = {};
@@ -16519,6 +16672,7 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
   }
   rtcore_v04_global384_pending_bind_owner owner;
   owner.dynamic_warp_id = dynamic_warp_id;
+  owner.reserved_warp_uid = expected_warp_uid;
   owner.warp_id = warp_id;
   owner.active_mask = active_mask;
   g_rtcore_v04_global384_pending_bind_by_sm[owner_hw_sid] = owner;
@@ -16552,7 +16706,6 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
       commit.resident_warp_generation != resident_generation) {
     return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
   }
-  g_rtcore_v04_global384_pending_bind_by_sm.erase(owner_hw_sid);
   printf("GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND "
          "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
          "active_mask=0x%08x issue_cycle=%llu resource_plan=prepared "
@@ -16561,7 +16714,24 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
          owner_hw_sid, dynamic_warp_id, expected_warp_uid, warp_id,
          active_mask, issue_cycle, resident_generation);
   fflush(stdout);
-  return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY;
+  unsigned lane_request_ids[RTCORE_MAX_LANES_PER_WARP] = {};
+  for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
+    if ((active_mask & (1u << lane)) == 0) continue;
+    if (lane_threads[lane] == NULL || lane_threads[lane]->get_uid() == 0) {
+      return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    lane_request_ids[lane] = lane_threads[lane]->get_uid();
+  }
+  const rtcore_v04_first_submit_live_bind_preissue_status acquire_status =
+      rtcore_service_v04_global384_initial_handoff_acquire_before_issue(
+      owner_hw_sid, dynamic_warp_id, expected_warp_uid, warp_id, active_mask,
+      resident_generation, material.request.allocation_ranges.handoff_base,
+      material.request.handoff_lane_stride_bytes, lane_request_ids,
+      issue_cycle);
+  if (acquire_status == RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY) {
+    g_rtcore_v04_global384_pending_bind_by_sm.erase(owner_hw_sid);
+  }
+  return acquire_status;
 }
 
 static bool
@@ -36644,11 +36814,57 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   std::array<uint32_t, rtcore::abi_v04::kWordCount>
       v04_shadow_trace_input_words = {};
+  std::array<uint8_t, rtcore::abi_v04::kLaneSlotBytes>
+      v04_initial_handoff_acquire_image = {};
+  const unsigned char *v04_initial_handoff_acquire_bytes = NULL;
+  unsigned v04_initial_handoff_acquire_byte_count = 0;
+  unsigned v04_initial_resident_generation = 0;
+  bool global384_profile = false;
+  if (!rtcore_v04_global384_profile_selected(&global384_profile)) {
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+  const bool v04_initial_handoff_acquire_consumer =
+      global384_profile && rtcore_v04_functional_only_engine_gate_active();
+  if (v04_initial_handoff_acquire_consumer) {
+    unsigned resident_warp_uid = 0;
+    unsigned resident_active_mask = 0;
+    unsigned resident_occupancy = 0;
+    if (!rtcore_query_resident_rt_warp_record(
+            current_warp_metadata.owner_hw_sid,
+            current_warp_metadata.warp_id, &resident_warp_uid,
+            &resident_active_mask, &v04_initial_resident_generation,
+            &resident_occupancy) ||
+        resident_warp_uid != current_warp_metadata.warp_uid ||
+        resident_active_mask != current_warp_metadata.active_mask ||
+        resident_occupancy == 0 ||
+        !rtcore_copy_v04_global384_initial_handoff_acquire_lane_before_functional(
+            current_warp_metadata.owner_hw_sid,
+            current_warp_metadata.dynamic_warp_id,
+            current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
+            current_warp_metadata.active_mask, v04_initial_resident_generation,
+            lane_slot_index, v04_initial_handoff_acquire_image.data(),
+            v04_initial_handoff_acquire_image.size())) {
+      rtcore_reject_symbolic_submit(pI);
+      return;
+    }
+    v04_initial_handoff_acquire_bytes =
+        v04_initial_handoff_acquire_image.data();
+    v04_initial_handoff_acquire_byte_count =
+        v04_initial_handoff_acquire_image.size();
+  }
   if (v04_shadow_consumer_enabled &&
       (!admission_context_valid ||
        !rtcore_validate_v04_shadow_trace_input(
            pI, thread, context_ptr_data.u64, handoff_window_base_data.u64,
            lane_slot_index, admission_context,
+           current_warp_metadata.owner_hw_sid,
+           current_warp_metadata.dynamic_warp_id,
+           current_warp_metadata.warp_uid,
+           current_warp_metadata.warp_id,
+           v04_initial_resident_generation,
+           v04_initial_handoff_acquire_bytes,
+           v04_initial_handoff_acquire_byte_count,
            &v04_shadow_trace_input_words))) {
     printf("GPGPU-Sim PTX: RT_SUBMIT fail-closed (%s:%u), "
            "reason=V04_SHADOW_TRACE_INPUT_MISMATCH, context_ptr=0x%llx, "
@@ -36709,6 +36925,17 @@ void rt_submit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
            (unsigned long long)handoff_window_base_data.u64,
            lane_slot_index);
     fflush(stdout);
+    rtcore_reject_symbolic_submit(pI);
+    return;
+  }
+
+  if (v04_initial_handoff_acquire_consumer &&
+      !rtcore_consume_v04_global384_initial_handoff_acquire_lane_before_functional(
+          current_warp_metadata.owner_hw_sid,
+          current_warp_metadata.dynamic_warp_id,
+          current_warp_metadata.warp_uid, current_warp_metadata.warp_id,
+          current_warp_metadata.active_mask, v04_initial_resident_generation,
+          lane_slot_index, thread->get_uid())) {
     rtcore_reject_symbolic_submit(pI);
     return;
   }

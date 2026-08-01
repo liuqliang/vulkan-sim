@@ -3401,7 +3401,7 @@ class shader_core_ctx : public core_t {
   friend class LooseRoundRobbinScheduler;
   virtual void issue_warp(register_set &warp, const warp_inst_t *pI,
                   const active_mask_t &active_mask, unsigned warp_id,
-                  unsigned sch_id);
+                  unsigned sch_id, unsigned reserved_uid = 0);
   bool rtcore_submit_resident_warp_capacity_available(
       const warp_inst_t &inst, unsigned warp_id,
       unsigned rt_core_out_pending_warps,

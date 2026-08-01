@@ -5885,9 +5885,38 @@ struct rtcore_v04_resubmit_handoff_acquire_state {
     }
 };
 
+struct rtcore_v04_initial_handoff_acquire_state {
+    unsigned warp_uid;
+    unsigned active_mask;
+    unsigned window_generation;
+    unsigned long long handoff_base;
+    unsigned handoff_lane_stride_bytes;
+    unsigned expected_chunks;
+    unsigned completed_chunks;
+    unsigned consumed_lane_mask;
+    bool ready_reported;
+    unsigned lane_request_ids[32];
+    unsigned char completed_chunk_mask[32];
+    unsigned char lane_bytes[32][rtcore::abi_v04::kLaneSlotBytes];
+
+    rtcore_v04_initial_handoff_acquire_state()
+        : warp_uid(0), active_mask(0), window_generation(0), handoff_base(0),
+          handoff_lane_stride_bytes(0), expected_chunks(0),
+          completed_chunks(0), consumed_lane_mask(0), ready_reported(false)
+    {
+        memset(lane_request_ids, 0, sizeof(lane_request_ids));
+        memset(completed_chunk_mask, 0, sizeof(completed_chunk_mask));
+        memset(lane_bytes, 0, sizeof(lane_bytes));
+    }
+};
+
 static std::map<rtcore_v04_resubmit_handoff_acquire_key,
                 rtcore_v04_resubmit_handoff_acquire_state>
     g_rtcore_v04_resubmit_handoff_acquires;
+
+static std::map<rtcore_v04_resubmit_handoff_acquire_key,
+                rtcore_v04_initial_handoff_acquire_state>
+    g_rtcore_v04_initial_handoff_acquires;
 
 static rtcore_v04_resubmit_handoff_acquire_key
 rtcore_make_v04_resubmit_handoff_acquire_key(
@@ -6048,11 +6077,14 @@ rtcore_service_v04_global384_resubmit_handoff_acquire_before_issue(
                 resident_warp_generation;
             snapshot.v04_live_handoff_acquire.dynamic_warp_id =
                 dynamic_warp_id;
-            snapshot.v04_live_handoff_acquire.resubmit_active_mask =
+            snapshot.v04_live_handoff_acquire.submit_warp_uid =
+                previous_warp_uid;
+            snapshot.v04_live_handoff_acquire.acquire_active_mask =
                 active_mask;
             snapshot.v04_live_handoff_acquire.valid = 1;
             snapshot.v04_live_handoff_acquire.preaccepted = 1;
-            snapshot.v04_live_handoff_acquire.tracked_resubmit = 1;
+            snapshot.v04_live_handoff_acquire.transaction_kind =
+                RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_RESUBMIT;
 
             registry::live_access_v0 access = {};
             const bridge::status_kind preflight_status =
@@ -6125,6 +6157,289 @@ rtcore_service_v04_global384_resubmit_handoff_acquire_before_issue(
     return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
 }
 
+extern "C" rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_poll_v04_global384_initial_handoff_acquire_before_issue(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned resident_warp_generation, unsigned long long handoff_base,
+    unsigned handoff_lane_stride_bytes, unsigned long long issue_cycle)
+{
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            owner_hw_sid, dynamic_warp_id, warp_id,
+            resident_warp_generation);
+    std::map<rtcore_v04_resubmit_handoff_acquire_key,
+             rtcore_v04_initial_handoff_acquire_state>::iterator pending =
+        g_rtcore_v04_initial_handoff_acquires.find(key);
+    if (pending == g_rtcore_v04_initial_handoff_acquires.end()) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE;
+    }
+
+    const unsigned chunks_per_lane =
+        rtcore::abi_v04::kLaneSlotBytes /
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    const rtcore_v04_initial_handoff_acquire_state &state = pending->second;
+    const rtcore_resident_rt_warp_record_key resident_key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::const_iterator resident =
+        g_rtcore_resident_rt_warp_records.find(resident_key);
+    if (resident == g_rtcore_resident_rt_warp_records.end() ||
+        !resident->second.valid || !resident->second.v04_global384_preissued ||
+        resident->second.current_warp_uid != warp_uid ||
+        resident->second.active_mask != active_mask ||
+        resident->second.resident_generation != resident_warp_generation ||
+        state.warp_uid != warp_uid || state.active_mask != active_mask ||
+        state.window_generation == 0 || state.handoff_base != handoff_base ||
+        state.handoff_lane_stride_bytes != handoff_lane_stride_bytes ||
+        chunks_per_lane != 4 ||
+        state.expected_chunks != __builtin_popcount(active_mask) *
+                                     chunks_per_lane ||
+        state.completed_chunks > state.expected_chunks) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    if (state.completed_chunks != state.expected_chunks) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
+    }
+    const unsigned char expected_chunk_mask =
+        static_cast<unsigned char>((1u << chunks_per_lane) - 1u);
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        const bool active = (active_mask & (1u << lane)) != 0;
+        if ((active &&
+             (state.lane_request_ids[lane] == 0 ||
+              state.completed_chunk_mask[lane] != expected_chunk_mask)) ||
+            (!active && (state.lane_request_ids[lane] != 0 ||
+                         state.completed_chunk_mask[lane] != 0))) {
+            return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+        }
+    }
+    if (!pending->second.ready_reported) {
+        printf("GPGPU-Sim "
+               "RTCORE_V04_GLOBAL384_INITIAL_HANDOFF_ACQUIRE_READY "
+               "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+               "active_mask=0x%08x resident_generation=%u "
+               "window_generation=%u completed_chunks=%u ready_cycle=%llu "
+               "functional_reads_started=0\n",
+               owner_hw_sid, dynamic_warp_id, warp_uid, warp_id, active_mask,
+               resident_warp_generation, state.window_generation,
+               state.completed_chunks, issue_cycle);
+        fflush(stdout);
+        pending->second.ready_reported = true;
+    }
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_READY;
+}
+
+extern "C" rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_service_v04_global384_initial_handoff_acquire_before_issue(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned resident_warp_generation, unsigned long long handoff_base,
+    unsigned handoff_lane_stride_bytes, const unsigned *lane_request_ids,
+    unsigned long long issue_cycle)
+{
+    namespace bridge = rtcore::v04::pre_submit_publication;
+    namespace registry = rtcore::v04::address_range_registry;
+    const unsigned chunks_per_lane =
+        rtcore::abi_v04::kLaneSlotBytes /
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    if (warp_uid == 0 || active_mask == 0 ||
+        resident_warp_generation == 0 || handoff_base == 0 ||
+        handoff_lane_stride_bytes != rtcore::abi_v04::kLaneSlotBytes ||
+        lane_request_ids == NULL || chunks_per_lane != 4) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+
+    const rtcore_v04_first_submit_live_bind_preissue_status poll_status =
+        rtcore_poll_v04_global384_initial_handoff_acquire_before_issue(
+            owner_hw_sid, dynamic_warp_id, warp_uid, warp_id, active_mask,
+            resident_warp_generation, handoff_base,
+            handoff_lane_stride_bytes, issue_cycle);
+    if (poll_status != RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE) {
+        return poll_status;
+    }
+
+    const rtcore_resident_rt_warp_record_key resident_key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::const_iterator resident =
+        g_rtcore_resident_rt_warp_records.find(resident_key);
+    if (resident == g_rtcore_resident_rt_warp_records.end() ||
+        !resident->second.valid || !resident->second.v04_global384_preissued ||
+        resident->second.current_warp_uid != warp_uid ||
+        resident->second.active_mask != active_mask ||
+        resident->second.resident_generation != resident_warp_generation) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    if (g_rtcore_v04_resubmit_handoff_acquires.find(
+            rtcore_make_v04_resubmit_handoff_acquire_key(
+                owner_hw_sid, dynamic_warp_id, warp_id,
+                resident_warp_generation)) !=
+        g_rtcore_v04_resubmit_handoff_acquires.end()) {
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        if ((active_mask & (1u << lane)) == 0) continue;
+        const unsigned long long lane_offset =
+            static_cast<unsigned long long>(lane) *
+            handoff_lane_stride_bytes;
+        const unsigned long long last_chunk_offset =
+            static_cast<unsigned long long>(chunks_per_lane - 1) *
+            RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+        if (lane_request_ids[lane] == 0 ||
+            handoff_base > UINT64_MAX - lane_offset ||
+            handoff_base + lane_offset > UINT64_MAX - last_chunk_offset) {
+            return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+        }
+    }
+
+    std::vector<rtcore_memory_unit_request_snapshot> staged;
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        if ((active_mask & (1u << lane)) == 0) continue;
+        const unsigned long long lane_base =
+            handoff_base + static_cast<unsigned long long>(lane) *
+                               handoff_lane_stride_bytes;
+        for (unsigned chunk = 0; chunk < chunks_per_lane; ++chunk) {
+            rtcore_memory_unit_request_snapshot snapshot = {};
+            snapshot.valid = true;
+            snapshot.address_space = RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL;
+            snapshot.operation = RTCORE_MEMORY_OPERATION_READ;
+            snapshot.destination = RTCORE_MEMORY_DESTINATION_LEGACY;
+            snapshot.response_target = RTCORE_V02_LSU_RESPONSE_TARGET_RTCORE;
+            snapshot.owner_hw_sid = owner_hw_sid;
+            snapshot.rt_request_id = lane_request_ids[lane];
+            snapshot.lane_id = lane;
+            snapshot.resident_warp_id = warp_id;
+            snapshot.memory_op_seq =
+                dynamic_warp_id == std::numeric_limits<unsigned>::max()
+                    ? dynamic_warp_id
+                    : dynamic_warp_id + 1;
+            snapshot.chunk_id = chunk;
+            snapshot.chunk_count = chunks_per_lane;
+            snapshot.access_kind = RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE;
+            snapshot.aligned_32b_addr =
+                lane_base + static_cast<unsigned long long>(chunk) *
+                                RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+            snapshot.byte_mask = 0xffffffffu;
+            snapshot.is_write = false;
+            snapshot.issue_cycle = issue_cycle;
+            snapshot.v04_live_handoff_acquire.resident_warp_generation =
+                resident_warp_generation;
+            snapshot.v04_live_handoff_acquire.dynamic_warp_id =
+                dynamic_warp_id;
+            snapshot.v04_live_handoff_acquire.submit_warp_uid = warp_uid;
+            snapshot.v04_live_handoff_acquire.acquire_active_mask =
+                active_mask;
+            snapshot.v04_live_handoff_acquire.valid = 1;
+            snapshot.v04_live_handoff_acquire.preaccepted = 1;
+            snapshot.v04_live_handoff_acquire.transaction_kind =
+                RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_INITIAL;
+
+            registry::live_access_v0 access = {};
+            const bridge::status_kind preflight_status =
+                bridge::shared_bridge().preflight_live_handoff_access(
+                    owner_hw_sid, resident_warp_generation,
+                    static_cast<uint8_t>(lane),
+                    registry::kAccessHandoffRtcoreAcquire,
+                    snapshot.aligned_32b_addr, snapshot.byte_mask, &access);
+            if (preflight_status != bridge::kStatusOk) {
+                for (std::vector<rtcore_memory_unit_request_snapshot>::
+                         const_iterator rollback = staged.begin();
+                     rollback != staged.end(); ++rollback) {
+                    if (bridge::shared_bridge().cancel_live_access_preaccept(
+                            rtcore_make_v04_live_handoff_acquire_access(
+                                *rollback)) != bridge::kStatusOk) {
+                        abort();
+                    }
+                }
+                return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+            }
+            snapshot.v04_live_handoff_acquire.window_generation =
+                access.owner.window_generation;
+            if (bridge::shared_bridge().begin_live_access_preaccept(access) !=
+                bridge::kStatusOk) {
+                for (std::vector<rtcore_memory_unit_request_snapshot>::
+                         const_iterator rollback = staged.begin();
+                     rollback != staged.end(); ++rollback) {
+                    if (bridge::shared_bridge().cancel_live_access_preaccept(
+                            rtcore_make_v04_live_handoff_acquire_access(
+                                *rollback)) != bridge::kStatusOk) {
+                        abort();
+                    }
+                }
+                return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+            }
+            staged.push_back(snapshot);
+        }
+    }
+    if (staged.empty()) return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+
+    rtcore_v04_initial_handoff_acquire_state state;
+    state.warp_uid = warp_uid;
+    state.active_mask = active_mask;
+    state.window_generation =
+        staged.front().v04_live_handoff_acquire.window_generation;
+    state.handoff_base = handoff_base;
+    state.handoff_lane_stride_bytes = handoff_lane_stride_bytes;
+    state.expected_chunks = staged.size();
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        if ((active_mask & (1u << lane)) != 0) {
+            state.lane_request_ids[lane] = lane_request_ids[lane];
+        }
+    }
+    for (std::vector<rtcore_memory_unit_request_snapshot>::const_iterator it =
+             staged.begin();
+         it != staged.end(); ++it) {
+        if (it->v04_live_handoff_acquire.window_generation !=
+            state.window_generation) {
+            for (std::vector<rtcore_memory_unit_request_snapshot>::
+                     const_iterator rollback = staged.begin();
+                 rollback != staged.end(); ++rollback) {
+                if (bridge::shared_bridge().cancel_live_access_preaccept(
+                        rtcore_make_v04_live_handoff_acquire_access(
+                            *rollback)) != bridge::kStatusOk) {
+                    abort();
+                }
+            }
+            return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+        }
+    }
+
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            owner_hw_sid, dynamic_warp_id, warp_id,
+            resident_warp_generation);
+    const bool inserted =
+        g_rtcore_v04_initial_handoff_acquires.insert(
+            std::make_pair(key, state)).second;
+    if (!inserted) {
+        for (std::vector<rtcore_memory_unit_request_snapshot>::const_iterator
+                 rollback = staged.begin();
+             rollback != staged.end(); ++rollback) {
+            if (bridge::shared_bridge().cancel_live_access_preaccept(
+                    rtcore_make_v04_live_handoff_acquire_access(*rollback)) !=
+                bridge::kStatusOk) {
+                abort();
+            }
+        }
+        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    }
+    std::deque<rtcore_memory_unit_request_snapshot> &queue =
+        g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid];
+    queue.insert(queue.end(), staged.begin(), staged.end());
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_INITIAL_HANDOFF_ACQUIRE_ENQUEUE "
+           "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x resident_generation=%u "
+           "window_generation=%u handoff_base=0x%llx lane_stride=%u "
+           "chunk_count=%zu preaccepted=%zu functional_reads_started=0 "
+           "result=wait\n",
+           owner_hw_sid, dynamic_warp_id, warp_uid, warp_id, active_mask,
+           resident_warp_generation, state.window_generation, handoff_base,
+           handoff_lane_stride_bytes, staged.size(), staged.size());
+    fflush(stdout);
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
+}
+
 extern "C" bool
 rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
     const rtcore_memory_unit_request_snapshot *snapshot,
@@ -6132,7 +6447,8 @@ rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
 {
     if (snapshot == NULL || !snapshot->valid ||
         snapshot->v04_live_handoff_acquire.valid != 1 ||
-        snapshot->v04_live_handoff_acquire.tracked_resubmit != 1) {
+        snapshot->v04_live_handoff_acquire.transaction_kind !=
+            RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_RESUBMIT) {
         return true;
     }
     const rtcore_v04_resubmit_handoff_acquire_key key =
@@ -6148,8 +6464,10 @@ rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
         snapshot->lane_id >= 32 || snapshot->chunk_count == 0 ||
         snapshot->chunk_count > 8 ||
         snapshot->chunk_id >= snapshot->chunk_count ||
+        pending->second.previous_warp_uid !=
+            snapshot->v04_live_handoff_acquire.submit_warp_uid ||
         pending->second.active_mask !=
-            snapshot->v04_live_handoff_acquire.resubmit_active_mask ||
+            snapshot->v04_live_handoff_acquire.acquire_active_mask ||
         (pending->second.active_mask & (1u << snapshot->lane_id)) == 0) {
         return false;
     }
@@ -6174,6 +6492,200 @@ rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
            snapshot->chunk_id, pending->second.completed_chunks,
            pending->second.expected_chunks, completion_cycle);
     fflush(stdout);
+    return true;
+}
+
+static unsigned long long rtcore_v04_handoff_payload_hash(
+    const unsigned char *bytes, unsigned byte_count)
+{
+    unsigned long long hash = 1469598103934665603ull;
+    for (unsigned index = 0; index < byte_count; ++index) {
+        hash ^= bytes[index];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+extern "C" bool
+rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long completion_cycle)
+{
+    if (snapshot == NULL || !snapshot->valid || response_bytes == NULL ||
+        response_byte_count != RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES ||
+        snapshot->v04_live_handoff_acquire.valid != 1 ||
+        snapshot->v04_live_handoff_acquire.transaction_kind !=
+            RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_INITIAL) {
+        return false;
+    }
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            snapshot->owner_hw_sid,
+            snapshot->v04_live_handoff_acquire.dynamic_warp_id,
+            snapshot->resident_warp_id,
+            snapshot->v04_live_handoff_acquire.resident_warp_generation);
+    std::map<rtcore_v04_resubmit_handoff_acquire_key,
+             rtcore_v04_initial_handoff_acquire_state>::iterator pending =
+        g_rtcore_v04_initial_handoff_acquires.find(key);
+    if (pending == g_rtcore_v04_initial_handoff_acquires.end() ||
+        snapshot->address_space != RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL ||
+        snapshot->operation != RTCORE_MEMORY_OPERATION_READ ||
+        snapshot->is_write ||
+        snapshot->access_kind != RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE ||
+        snapshot->byte_mask != 0xffffffffu || snapshot->lane_id >= 32 ||
+        snapshot->chunk_count != 4 ||
+        snapshot->chunk_id >= snapshot->chunk_count ||
+        pending->second.warp_uid !=
+            snapshot->v04_live_handoff_acquire.submit_warp_uid ||
+        pending->second.active_mask !=
+            snapshot->v04_live_handoff_acquire.acquire_active_mask ||
+        pending->second.window_generation !=
+            snapshot->v04_live_handoff_acquire.window_generation ||
+        pending->second.lane_request_ids[snapshot->lane_id] !=
+            snapshot->rt_request_id ||
+        (pending->second.active_mask & (1u << snapshot->lane_id)) == 0) {
+        return false;
+    }
+    const unsigned long long expected_address =
+        pending->second.handoff_base +
+        static_cast<unsigned long long>(snapshot->lane_id) *
+            pending->second.handoff_lane_stride_bytes +
+        static_cast<unsigned long long>(snapshot->chunk_id) *
+            RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    if (snapshot->aligned_32b_addr != expected_address) return false;
+
+    const unsigned char chunk_bit =
+        static_cast<unsigned char>(1u << snapshot->chunk_id);
+    if ((pending->second.completed_chunk_mask[snapshot->lane_id] &
+         chunk_bit) != 0) {
+        return false;
+    }
+    unsigned char *destination =
+        pending->second.lane_bytes[snapshot->lane_id] +
+        snapshot->chunk_id * RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    memcpy(destination, response_bytes, response_byte_count);
+    const char *mutation = getenv(
+        "VULKAN_SIM_RTCORE_TEST_V04_INITIAL_HANDOFF_ACQUIRE_MUTATION");
+    const unsigned first_active_lane =
+        static_cast<unsigned>(__builtin_ctz(pending->second.active_mask));
+    bool payload_mutated = false;
+    if (mutation != NULL && strcmp(mutation, "payload") == 0 &&
+        snapshot->lane_id == first_active_lane && snapshot->chunk_id == 0) {
+      destination[0] ^= 1u;
+      payload_mutated = true;
+    }
+    pending->second.completed_chunk_mask[snapshot->lane_id] |= chunk_bit;
+    pending->second.completed_chunks++;
+    if (pending->second.completed_chunks > pending->second.expected_chunks) {
+        return false;
+    }
+    printf("GPGPU-Sim RTCORE_V04_INITIAL_HANDOFF_ACQUIRE_COMPLETE "
+           "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x resident_generation=%u "
+           "window_generation=%u "
+           "lane_id=%u chunk_id=%u completed_chunks=%u expected_chunks=%u "
+           "address=0x%llx byte_mask=0x%08x payload_hash=0x%016llx "
+           "mutation=%s completion_cycle=%llu\n",
+           snapshot->owner_hw_sid,
+           snapshot->v04_live_handoff_acquire.dynamic_warp_id,
+           pending->second.warp_uid, snapshot->resident_warp_id,
+           pending->second.active_mask,
+           snapshot->v04_live_handoff_acquire.resident_warp_generation,
+           pending->second.window_generation,
+           snapshot->lane_id, snapshot->chunk_id,
+           pending->second.completed_chunks, pending->second.expected_chunks,
+           snapshot->aligned_32b_addr, snapshot->byte_mask,
+           rtcore_v04_handoff_payload_hash(destination, response_byte_count),
+           payload_mutated ? "payload" : "none",
+           completion_cycle);
+    fflush(stdout);
+    return true;
+}
+
+extern "C" bool
+rtcore_copy_v04_global384_initial_handoff_acquire_lane_before_functional(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned resident_warp_generation, unsigned lane_id,
+    unsigned char *lane_bytes, unsigned lane_byte_count)
+{
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            owner_hw_sid, dynamic_warp_id, warp_id,
+            resident_warp_generation);
+    std::map<rtcore_v04_resubmit_handoff_acquire_key,
+             rtcore_v04_initial_handoff_acquire_state>::const_iterator pending =
+        g_rtcore_v04_initial_handoff_acquires.find(key);
+    if (pending == g_rtcore_v04_initial_handoff_acquires.end() ||
+        lane_bytes == NULL ||
+        lane_byte_count != rtcore::abi_v04::kLaneSlotBytes || lane_id >= 32 ||
+        pending->second.warp_uid != warp_uid ||
+        pending->second.active_mask != active_mask ||
+        (active_mask & (1u << lane_id)) == 0 ||
+        !pending->second.ready_reported ||
+        pending->second.completed_chunks != pending->second.expected_chunks ||
+        pending->second.completed_chunk_mask[lane_id] != 0x0fu) {
+        return false;
+    }
+    memcpy(lane_bytes, pending->second.lane_bytes[lane_id], lane_byte_count);
+    return true;
+}
+
+extern "C" bool
+rtcore_consume_v04_global384_initial_handoff_acquire_lane_before_functional(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned resident_warp_generation, unsigned lane_id,
+    unsigned thread_uid)
+{
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            owner_hw_sid, dynamic_warp_id, warp_id,
+            resident_warp_generation);
+    std::map<rtcore_v04_resubmit_handoff_acquire_key,
+             rtcore_v04_initial_handoff_acquire_state>::iterator pending =
+        g_rtcore_v04_initial_handoff_acquires.find(key);
+    if (pending == g_rtcore_v04_initial_handoff_acquires.end() ||
+        pending->second.warp_uid != warp_uid ||
+        pending->second.active_mask != active_mask ||
+        lane_id >= 32 || thread_uid == 0 ||
+        (active_mask & (1u << lane_id)) == 0 ||
+        pending->second.lane_request_ids[lane_id] != thread_uid ||
+        (pending->second.consumed_lane_mask & (1u << lane_id)) != 0 ||
+        !pending->second.ready_reported ||
+        pending->second.expected_chunks == 0 ||
+        pending->second.completed_chunks != pending->second.expected_chunks) {
+        return false;
+    }
+    pending->second.consumed_lane_mask |= 1u << lane_id;
+    if (pending->second.consumed_lane_mask != active_mask) return true;
+
+    unsigned long long aggregate_hash = 1469598103934665603ull;
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        if ((active_mask & (1u << lane)) == 0) continue;
+        if (pending->second.completed_chunk_mask[lane] != 0x0fu) return false;
+        for (unsigned byte = 0; byte < rtcore::abi_v04::kLaneSlotBytes;
+             ++byte) {
+            aggregate_hash ^= pending->second.lane_bytes[lane][byte];
+            aggregate_hash *= 1099511628211ull;
+        }
+    }
+    printf("GPGPU-Sim "
+           "RTCORE_V04_GLOBAL384_INITIAL_HANDOFF_ACQUIRE_CONSUME "
+           "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x resident_generation=%u window_generation=%u "
+           "completed_chunks=%u "
+           "consumed_lane_mask=0x%08x "
+           "aggregate_payload_hash=0x%016llx source=l1d_response_bytes "
+           "result=consumed\n",
+           owner_hw_sid, dynamic_warp_id, warp_uid, warp_id, active_mask,
+           resident_warp_generation, pending->second.window_generation,
+           pending->second.completed_chunks,
+           pending->second.consumed_lane_mask,
+           aggregate_hash);
+    fflush(stdout);
+    g_rtcore_v04_initial_handoff_acquires.erase(pending);
     return true;
 }
 

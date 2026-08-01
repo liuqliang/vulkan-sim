@@ -1323,7 +1323,8 @@ class warp_inst_t : public inst_t {
   void clear_pending_mem_requests() { m_accessq.clear(); }
 
   void issue(const active_mask_t &mask, unsigned warp_id,
-             unsigned long long cycle, int dynamic_warp_id, int sch_id);
+             unsigned long long cycle, int dynamic_warp_id, int sch_id,
+             unsigned reserved_uid = 0);
 
   const active_mask_t &get_active_mask() const { return m_warp_active_mask; }
   void completed(unsigned long long cycle)

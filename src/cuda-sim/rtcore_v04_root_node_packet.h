@@ -123,6 +123,21 @@ rtcore_service_v04_global384_first_submit_live_bind_before_issue(
     unsigned warp_id, unsigned active_mask,
     unsigned long long issue_cycle);
 
+extern "C" rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_service_v04_global384_initial_handoff_acquire_before_issue(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned resident_warp_generation, unsigned long long handoff_base,
+    unsigned handoff_lane_stride_bytes, const unsigned *lane_request_ids,
+    unsigned long long issue_cycle);
+
+extern "C" rtcore_v04_first_submit_live_bind_preissue_status
+rtcore_poll_v04_global384_initial_handoff_acquire_before_issue(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned resident_warp_generation, unsigned long long handoff_base,
+    unsigned handoff_lane_stride_bytes, unsigned long long issue_cycle);
+
 extern "C" bool
 rtcore_validate_v04_global384_first_submit_live_bind_before_functional(
     const ptx_instruction *instruction,
@@ -144,6 +159,20 @@ rtcore_consume_v04_global384_resubmit_handoff_acquire_before_functional(
     unsigned previous_warp_uid, unsigned warp_id,
     unsigned previous_active_mask, unsigned active_mask,
     unsigned resident_warp_generation, unsigned warp_uid);
+
+extern "C" bool
+rtcore_copy_v04_global384_initial_handoff_acquire_lane_before_functional(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned resident_warp_generation, unsigned lane_id,
+    unsigned char *lane_bytes, unsigned lane_byte_count);
+
+extern "C" bool
+rtcore_consume_v04_global384_initial_handoff_acquire_lane_before_functional(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_uid,
+    unsigned warp_id, unsigned active_mask,
+    unsigned resident_warp_generation, unsigned lane_id,
+    unsigned thread_uid);
 
 extern "C" rtcore_v04_retire_live_release_status
 rtcore_service_v04_global384_retire_live_release(

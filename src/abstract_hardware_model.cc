@@ -105,10 +105,15 @@ mem_access_t::~mem_access_t() {
 }
 void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
                         unsigned long long cycle, int dynamic_warp_id,
-                        int sch_id) {
+                        int sch_id, unsigned reserved_uid) {
   m_warp_active_mask = mask;
   m_warp_issued_mask = mask;
-  m_uid = ++(m_config->gpgpu_ctx->warp_inst_sm_next_uid);
+  if (reserved_uid != 0) {
+    assert(reserved_uid <= m_config->gpgpu_ctx->warp_inst_sm_next_uid);
+    m_uid = reserved_uid;
+  } else {
+    m_uid = ++(m_config->gpgpu_ctx->warp_inst_sm_next_uid);
+  }
   m_warp_id = warp_id;
   m_dynamic_warp_id = dynamic_warp_id;
   issue_cycle = cycle;

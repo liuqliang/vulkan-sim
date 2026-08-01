@@ -61,6 +61,44 @@ inline bool pack_trace_input_words(
       insert_field(*words, kMissIndex, values.miss_index);
 }
 
+inline bool unpack_trace_input_words(
+    const std::array<uint32_t, kWordCount> &words,
+    trace_input_values *values) {
+  if (values == NULL || !validate_reserved_zero(words)) return false;
+  trace_input_values decoded = {};
+  decoded.context_address =
+      static_cast<uint64_t>(extract_field(words, kContextAddressLow32)) |
+      (static_cast<uint64_t>(extract_field(words, kContextAddressHigh32))
+       << 32);
+  decoded.traversable_reference =
+      static_cast<uint64_t>(
+          extract_field(words, kTraversableReferenceLow32)) |
+      (static_cast<uint64_t>(
+           extract_field(words, kTraversableReferenceHigh32))
+       << 32);
+  decoded.world_ray_origin_fp32[0] =
+      extract_field(words, kWorldRayOriginXFp32);
+  decoded.world_ray_origin_fp32[1] =
+      extract_field(words, kWorldRayOriginYFp32);
+  decoded.world_ray_origin_fp32[2] =
+      extract_field(words, kWorldRayOriginZFp32);
+  decoded.ray_tmin_fp32 = extract_field(words, kRayTminFp32);
+  decoded.world_ray_direction_fp32[0] =
+      extract_field(words, kWorldRayDirectionXFp32);
+  decoded.world_ray_direction_fp32[1] =
+      extract_field(words, kWorldRayDirectionYFp32);
+  decoded.world_ray_direction_fp32[2] =
+      extract_field(words, kWorldRayDirectionZFp32);
+  decoded.launch_ray_tmax_fp32 = extract_field(words, kLaunchRayTmaxFp32);
+  decoded.ray_flags = extract_field(words, kRayFlags);
+  decoded.cull_mask = extract_field(words, kCullMask);
+  decoded.sbt_record_offset = extract_field(words, kSbtRecordOffset);
+  decoded.sbt_record_stride = extract_field(words, kSbtRecordStride);
+  decoded.miss_index = extract_field(words, kMissIndex);
+  *values = decoded;
+  return true;
+}
+
 inline uint32_t trace_input_owned_word_mask() {
   static_assert(kWordCount <= 32, "shadow mismatch mask is 32-bit");
   const field_spec fields[] = {

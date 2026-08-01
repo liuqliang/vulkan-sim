@@ -230,11 +230,12 @@ struct rtcore_v04_live_handoff_acquire_transport_snapshot {
   uint32_t resident_warp_generation;
   uint32_t window_generation;
   uint32_t dynamic_warp_id;
-  uint32_t resubmit_active_mask;
+  uint32_t submit_warp_uid;
+  uint32_t acquire_active_mask;
   uint8_t valid;
   uint8_t preaccepted;
-  uint8_t tracked_resubmit;
-  uint8_t reserved_zero;
+  uint8_t transaction_kind;
+  uint8_t reserved_zero[1];
 };
 
 struct rtcore_v04_live_transaction_transport_snapshot {
@@ -291,6 +292,12 @@ rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
     const rtcore_memory_unit_request_snapshot *snapshot,
     unsigned long long completion_cycle);
 
+extern "C" bool
+rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long completion_cycle);
+
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL = 0u;
 static const unsigned RTCORE_MEMORY_ADDRESS_SPACE_SHARED = 1u;
 static const unsigned RTCORE_MEMORY_OPERATION_READ = 0u;
@@ -318,6 +325,9 @@ static const unsigned RTCORE_MEMORY_TARGET_OPERAND_RAW_GLOBAL = 1u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_PRIVATE_SHARED = 2u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_STACK_SPILL = 3u;
 static const unsigned RTCORE_MEMORY_TARGET_OPERAND_HANDOFF_RAY_POLICY = 4u;
+static const unsigned RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_NONE = 0u;
+static const unsigned RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_INITIAL = 1u;
+static const unsigned RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_RESUBMIT = 2u;
 
 extern "C" bool
 rtcore_v04_private_frontier_live_init_memory_issue_profile_active();

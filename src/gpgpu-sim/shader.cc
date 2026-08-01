@@ -3701,11 +3701,28 @@ static void rtcore_accept_v04_live_handoff_acquire_or_abort(
   snapshot->v04_live_transaction.access =
       static_cast<uint8_t>(token.access);
   snapshot->v04_live_transaction.valid = 1;
+  printf("GPGPU-Sim RTCORE_V04_HANDOFF_ACQUIRE_TICKET_ACCEPT "
+         "owner_hw_sid=%u dynamic_warp_id=%u submit_warp_uid=%u "
+         "warp_id=%u resident_generation=%u window_generation=%u "
+         "active_mask=0x%08x lane_id=%u chunk_id=%u address=0x%llx "
+         "transaction_kind=%u transaction_id=%llu result=accepted\n",
+         snapshot->owner_hw_sid,
+         snapshot->v04_live_handoff_acquire.dynamic_warp_id,
+         snapshot->v04_live_handoff_acquire.submit_warp_uid,
+         snapshot->resident_warp_id,
+         snapshot->v04_live_handoff_acquire.resident_warp_generation,
+         snapshot->v04_live_handoff_acquire.window_generation,
+         snapshot->v04_live_handoff_acquire.acquire_active_mask,
+         snapshot->lane_id, snapshot->chunk_id, snapshot->aligned_32b_addr,
+         snapshot->v04_live_handoff_acquire.transaction_kind,
+         static_cast<unsigned long long>(token.transaction_id));
+  fflush(stdout);
 }
 
 static void rtcore_complete_v04_live_handoff_acquire_or_abort(
     const rtcore_memory_unit_request_snapshot &snapshot,
-    unsigned long long completion_cycle) {
+    unsigned long long completion_cycle, memory_space *global_memory,
+    unsigned long long response_address) {
   namespace bridge = rtcore::v04::pre_submit_publication;
   namespace registry = rtcore::v04::address_range_registry;
   if (!rtcore_v04_live_handoff_acquire_request(snapshot)) return;
@@ -3736,10 +3753,50 @@ static void rtcore_complete_v04_live_handoff_acquire_or_abort(
     fflush(stderr);
     abort();
   }
-  if (!rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
-          &snapshot, completion_cycle)) {
+  printf("GPGPU-Sim RTCORE_V04_HANDOFF_ACQUIRE_TICKET_COMPLETE "
+         "owner_hw_sid=%u dynamic_warp_id=%u submit_warp_uid=%u "
+         "warp_id=%u resident_generation=%u window_generation=%u "
+         "active_mask=0x%08x lane_id=%u chunk_id=%u address=0x%llx "
+         "transaction_kind=%u transaction_id=%llu result=completed\n",
+         snapshot.owner_hw_sid,
+         snapshot.v04_live_handoff_acquire.dynamic_warp_id,
+         snapshot.v04_live_handoff_acquire.submit_warp_uid,
+         snapshot.resident_warp_id,
+         snapshot.v04_live_handoff_acquire.resident_warp_generation,
+         snapshot.v04_live_handoff_acquire.window_generation,
+         snapshot.v04_live_handoff_acquire.acquire_active_mask,
+         snapshot.lane_id, snapshot.chunk_id, snapshot.aligned_32b_addr,
+         snapshot.v04_live_handoff_acquire.transaction_kind,
+         static_cast<unsigned long long>(token.transaction_id));
+  fflush(stdout);
+  bool tracker_completed = false;
+  const unsigned transaction_kind =
+      snapshot.v04_live_handoff_acquire.transaction_kind;
+  if (transaction_kind ==
+      RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_INITIAL) {
+    unsigned char response_bytes[
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES] = {};
+    if (global_memory == NULL ||
+        response_address != snapshot.aligned_32b_addr) {
+      rtcore_v04_live_handoff_acquire_fail_closed(
+          "initial-response-context", bridge::kStatusGroupConflict,
+          snapshot);
+    }
+    global_memory->read(snapshot.aligned_32b_addr, sizeof(response_bytes),
+                        response_bytes);
+    tracker_completed =
+        rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
+            &snapshot, response_bytes, sizeof(response_bytes),
+            completion_cycle);
+  } else if (transaction_kind ==
+             RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_RESUBMIT) {
+    tracker_completed =
+        rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
+            &snapshot, completion_cycle);
+  }
+  if (!tracker_completed) {
     rtcore_v04_live_handoff_acquire_fail_closed(
-        "resubmit-tracker-complete", bridge::kStatusGroupConflict,
+        "tracker-complete", bridge::kStatusGroupConflict,
         snapshot);
   }
 }
@@ -4032,8 +4089,8 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
                                                        response_cycle,
                                                        global_memory,
                                                        mf->get_addr());
-    rtcore_complete_v04_live_handoff_acquire_or_abort(*waiter_it,
-                                                       response_cycle);
+    rtcore_complete_v04_live_handoff_acquire_or_abort(
+        *waiter_it, response_cycle, global_memory, mf->get_addr());
   }
   const unsigned completed_count = it->second.size();
   if (completed_count > 1) {
@@ -4526,8 +4583,9 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     rtcore_record_v02_lsu_sideband_response_completion(
         snapshot, result.cycle, core->get_gpu()->get_global_memory(),
         mf->get_addr());
-    rtcore_complete_v04_live_handoff_acquire_or_abort(snapshot,
-                                                       result.cycle);
+    rtcore_complete_v04_live_handoff_acquire_or_abort(
+        snapshot, result.cycle, core->get_gpu()->get_global_memory(),
+        mf->get_addr());
     delete mf;
     return RTCORE_MEMORY_UNIT_OFFER_L1D_ACCESS_PROGRESS;
   }
@@ -7588,7 +7646,8 @@ bool shader_core_ctx::rtcore_submit_warp_completion_entry_reserve_issue_slot(
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                  const warp_inst_t *next_inst,
                                  const active_mask_t &active_mask,
-                                 unsigned warp_id, unsigned sch_id) {
+                                 unsigned warp_id, unsigned sch_id,
+                                 unsigned reserved_uid) {
   warp_inst_t **pipe_reg =
       pipe_reg_set.get_free(m_config->sub_core_model, sch_id);
   assert(pipe_reg);
@@ -7599,7 +7658,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   (*pipe_reg)->issue(active_mask, warp_id,
                      m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
                      m_warp[warp_id]->get_dynamic_warp_id(),
-                     sch_id);  // dynamic instruction information
+                     sch_id, reserved_uid);  // dynamic instruction information
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
   func_exec_inst(**pipe_reg);
   bool split_reaches_barrier = false;
@@ -7846,6 +7905,106 @@ void scheduler_unit::order_by_priority(
   }
 }
 
+namespace {
+
+struct rtcore_submit_uid_reservation_key {
+  unsigned owner_hw_sid;
+  unsigned dynamic_warp_id;
+  unsigned warp_id;
+  unsigned active_mask;
+  unsigned long long static_inst_pc;
+
+  bool operator<(const rtcore_submit_uid_reservation_key &other) const {
+    if (owner_hw_sid != other.owner_hw_sid)
+      return owner_hw_sid < other.owner_hw_sid;
+    if (dynamic_warp_id != other.dynamic_warp_id)
+      return dynamic_warp_id < other.dynamic_warp_id;
+    if (warp_id != other.warp_id) return warp_id < other.warp_id;
+    if (active_mask != other.active_mask) return active_mask < other.active_mask;
+    return static_inst_pc < other.static_inst_pc;
+  }
+};
+
+static std::map<rtcore_submit_uid_reservation_key, unsigned>
+    g_rtcore_submit_uid_reservations;
+
+static rtcore_submit_uid_reservation_key
+rtcore_make_submit_uid_reservation_key(unsigned owner_hw_sid,
+                                       unsigned dynamic_warp_id,
+                                       unsigned warp_id,
+                                       unsigned active_mask,
+                                       unsigned long long static_inst_pc) {
+  rtcore_submit_uid_reservation_key key = {};
+  key.owner_hw_sid = owner_hw_sid;
+  key.dynamic_warp_id = dynamic_warp_id;
+  key.warp_id = warp_id;
+  key.active_mask = active_mask;
+  key.static_inst_pc = static_inst_pc;
+  return key;
+}
+
+static unsigned rtcore_reserve_submit_uid(
+    gpgpu_context *context, unsigned owner_hw_sid, unsigned dynamic_warp_id,
+    unsigned warp_id, unsigned active_mask,
+    unsigned long long static_inst_pc) {
+  assert(context != NULL && active_mask != 0);
+  const rtcore_submit_uid_reservation_key key =
+      rtcore_make_submit_uid_reservation_key(
+          owner_hw_sid, dynamic_warp_id, warp_id, active_mask,
+          static_inst_pc);
+  std::map<rtcore_submit_uid_reservation_key, unsigned>::const_iterator found =
+      g_rtcore_submit_uid_reservations.find(key);
+  if (found != g_rtcore_submit_uid_reservations.end()) {
+    printf("GPGPU-Sim RTCORE_V04_SUBMIT_UID_RESERVATION "
+           "owner_hw_sid=%u dynamic_warp_id=%u warp_id=%u "
+           "active_mask=0x%08x static_inst_pc=0x%llx reserved_uid=%u "
+           "phase=reuse\n",
+           owner_hw_sid, dynamic_warp_id, warp_id, active_mask,
+           static_inst_pc, found->second);
+    fflush(stdout);
+    return found->second;
+  }
+  const unsigned reserved_uid = ++context->warp_inst_sm_next_uid;
+  const bool inserted =
+      g_rtcore_submit_uid_reservations.insert(
+          std::make_pair(key, reserved_uid)).second;
+  if (!inserted) abort();
+  printf("GPGPU-Sim RTCORE_V04_SUBMIT_UID_RESERVATION "
+         "owner_hw_sid=%u dynamic_warp_id=%u warp_id=%u "
+         "active_mask=0x%08x static_inst_pc=0x%llx reserved_uid=%u "
+         "phase=reserve\n",
+         owner_hw_sid, dynamic_warp_id, warp_id, active_mask,
+         static_inst_pc, reserved_uid);
+  fflush(stdout);
+  return reserved_uid;
+}
+
+static void rtcore_consume_submit_uid_reservation(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id, unsigned warp_id,
+    unsigned active_mask, unsigned long long static_inst_pc,
+    unsigned issued_uid) {
+  const rtcore_submit_uid_reservation_key key =
+      rtcore_make_submit_uid_reservation_key(
+          owner_hw_sid, dynamic_warp_id, warp_id, active_mask,
+          static_inst_pc);
+  std::map<rtcore_submit_uid_reservation_key, unsigned>::iterator found =
+      g_rtcore_submit_uid_reservations.find(key);
+  if (found == g_rtcore_submit_uid_reservations.end() || issued_uid == 0 ||
+      found->second != issued_uid) {
+    abort();
+  }
+  printf("GPGPU-Sim RTCORE_V04_SUBMIT_UID_RESERVATION "
+         "owner_hw_sid=%u dynamic_warp_id=%u warp_id=%u "
+         "active_mask=0x%08x static_inst_pc=0x%llx reserved_uid=%u "
+         "phase=consume\n",
+         owner_hw_sid, dynamic_warp_id, warp_id, active_mask,
+         static_inst_pc, issued_uid);
+  fflush(stdout);
+  g_rtcore_submit_uid_reservations.erase(found);
+}
+
+}  // namespace
+
 void scheduler_unit::cycle() {
   SCHED_DPRINTF("scheduler_unit::cycle()\n");
   bool valid_inst =
@@ -8009,6 +8168,14 @@ void scheduler_unit::cycle() {
               }
               const unsigned rtcore_active_mask =
                   static_cast<unsigned>(active_mask.to_ulong());
+              unsigned rtcore_reserved_submit_uid = 0;
+              if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT) {
+                rtcore_reserved_submit_uid = rtcore_reserve_submit_uid(
+                    m_shader->m_config->gpgpu_ctx, m_shader->get_sid(),
+                    (*iter)->get_dynamic_warp_id(), warp_id,
+                    rtcore_active_mask,
+                    static_cast<unsigned long long>(pI->pc));
+              }
               const char *rtcore_scheduler_credit_ledger_noop_env =
                   getenv("VULKAN_SIM_RTCORE_SCHEDULER_CREDIT_LEDGER_NOOP_HOOK");
               rtcore_scheduler_credit_ledger_readiness_snapshot
@@ -8238,7 +8405,7 @@ void scheduler_unit::cycle() {
               rtcore_scheduler_credit_ledger_shadow_table.owner_hw_sid =
                   rtcore_scheduler_credit_ledger_reservation.owner_hw_sid;
               rtcore_scheduler_credit_ledger_shadow_table.warp_uid =
-                  m_shader->m_config->gpgpu_ctx->warp_inst_sm_next_uid + 1;
+                  rtcore_reserved_submit_uid;
               rtcore_scheduler_credit_ledger_shadow_table.warp_id =
                   rtcore_scheduler_credit_ledger_reservation.warp_id;
               rtcore_scheduler_credit_ledger_shadow_table.static_inst_pc =
@@ -9664,17 +9831,13 @@ void scheduler_unit::cycle() {
                   const ptx_instruction *source_instruction =
                       static_cast<const ptx_instruction *>(
                           m_shader->get_next_inst(warp_id, pI->pc));
-                  const unsigned expected_warp_uid =
-                      m_shader->m_config->gpgpu_ctx
-                          ->warp_inst_sm_next_uid +
-                      1;
                   const rtcore_v04_first_submit_live_bind_preissue_status
                       live_bind_status =
                           rtcore_service_v04_global384_first_submit_live_bind_before_issue(
                               source_instruction, lane_threads,
                               m_shader->get_sid(),
                               (*iter)->get_dynamic_warp_id(),
-                              expected_warp_uid, warp_id,
+                              rtcore_reserved_submit_uid, warp_id,
                               rtcore_active_mask,
                               rtcore_warp_admission_issue_cycle);
                   if (live_bind_status ==
@@ -9714,7 +9877,16 @@ void scheduler_unit::cycle() {
                   abort();
                 }
                 m_shader->issue_warp(*m_rt_core_out, pI, active_mask,
-                                     warp_id, m_id);
+                                     warp_id, m_id,
+                                     rtcore_reserved_submit_uid);
+                if (pI->rt_subop == RT_CORE_SUBOP_SUBMIT) {
+                  rtcore_consume_submit_uid_reservation(
+                      m_shader->get_sid(),
+                      (*iter)->get_dynamic_warp_id(), warp_id,
+                      rtcore_active_mask,
+                      static_cast<unsigned long long>(pI->pc),
+                      rtcore_reserved_submit_uid);
+                }
                 if (rtcore_scheduler_credit_ledger_scheduler_bridge_enabled) {
                   printf("GPGPU-Sim PTX: RT_SUBMIT "
                          "scheduler-credit-ledger-reusable-credit-scheduler-bridge=1, "
