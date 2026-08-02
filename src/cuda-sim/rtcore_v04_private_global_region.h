@@ -22,6 +22,8 @@ static const uint8_t kLaneCapacity = 32;
 static const uint8_t kResidentWarpCapacity = 8;
 static const uint8_t kLaunchWriteCount =
     private_state_384::kLaunchWriteCount;
+static const char kBaseColorEnvironmentName[] =
+    "VULKAN_SIM_RTCORE_REPLAY_V04_GLOBAL384_BASE_COLOR";
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -99,6 +101,8 @@ struct whole_mask_launch_plan_v0 {
   region_layout_v0 layout;
   lane_launch_plan_v0 lanes[kLaneCapacity];
 };
+
+status_kind parse_base_color(const char *value, uint8_t *base_color);
 
 status_kind prepare_region_layout(
     const region_config_v0 &config,

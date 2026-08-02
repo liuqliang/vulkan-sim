@@ -167,6 +167,22 @@ bool launch_plan_is_canonical(
 
 }  // namespace
 
+status_kind parse_base_color(const char *value, uint8_t *base_color) {
+  if (base_color == NULL) return kStatusInvalidArgument;
+  *base_color = 0;
+  if (value == NULL || value[0] == '\0') return kStatusOk;
+  if (std::strcmp(value, "0") == 0) return kStatusOk;
+  if (std::strcmp(value, "1") == 0) {
+    *base_color = 1;
+    return kStatusOk;
+  }
+  if (std::strcmp(value, "7") == 0) {
+    *base_color = 7;
+    return kStatusOk;
+  }
+  return kStatusInvalidBaseColor;
+}
+
 status_kind prepare_region_layout(
     const region_config_v0 &config,
     const address_range_v0 *application_visible_ranges,

@@ -16743,7 +16743,20 @@ static bool rtcore_v04_global384_build_private_init_plan(
   config.sm_region_stride = UINT64_C(0x20000);
   config.sm_count = owner_hw_sid + 1;
   config.configured_l1_line_bytes = 128;
-  config.base_color = 0;
+  global_region::status_kind global_status =
+      global_region::parse_base_color(
+          getenv(global_region::kBaseColorEnvironmentName),
+          &config.base_color);
+  if (global_status != global_region::kStatusOk) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_FAULT "
+            "phase=config reason=invalid_base_color status=%s "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u\n",
+            global_region::status_name(global_status), owner_hw_sid,
+            warp_uid, warp_id);
+    fflush(stderr);
+    return false;
+  }
   global_region::address_range_v0 visible_ranges[2] = {};
   visible_ranges[0].base = material.request.allocation_ranges.context_base;
   visible_ranges[0].byte_count =
@@ -16751,7 +16764,6 @@ static bool rtcore_v04_global384_build_private_init_plan(
   visible_ranges[1].base = material.request.allocation_ranges.handoff_base;
   visible_ranges[1].byte_count =
       material.request.allocation_ranges.handoff_byte_count;
-  global_region::status_kind global_status = global_region::kStatusOk;
   const storage::status_kind status =
       storage::prepare_global384_launch_candidate_from_selector(
           getenv(storage::kSelectorEnvironmentName), config, visible_ranges,
@@ -16770,6 +16782,17 @@ static bool rtcore_v04_global384_build_private_init_plan(
     fflush(stderr);
     return false;
   }
+  printf("GPGPU-Sim RTCORE_V04_GLOBAL384_REGION_CONFIG "
+         "owner_hw_sid=%u base_color=%u configured_l1_line_bytes=%u "
+         "hidden_base=0x%llx colored_hidden_base=0x%llx "
+         "sm_region_stride=%llu region_bytes=%llu\n",
+         owner_hw_sid, plan->layout.base_color,
+         plan->layout.configured_l1_line_bytes,
+         static_cast<unsigned long long>(plan->layout.hidden_base),
+         static_cast<unsigned long long>(plan->layout.colored_hidden_base),
+         static_cast<unsigned long long>(plan->layout.sm_region_stride),
+         static_cast<unsigned long long>(plan->layout.region_bytes));
+  fflush(stdout);
   return true;
 }
 
