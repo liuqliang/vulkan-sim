@@ -1322,6 +1322,299 @@ static bool rtcore_v04_immutable_trace_input_for(
 static uint32_t rtcore_v04_native_publication_chunk_byte_mask(
     uint32_t word_mask, unsigned chunk);
 
+static unsigned long long
+    g_rtcore_v04_global384_context_functional_setup_access_count = 0;
+static unsigned long long
+    g_rtcore_v04_global384_context_functional_setup_byte_count = 0;
+
+static bool rtcore_v04_global384_semantic_accounting_enabled() {
+    const rtcore_candidate_gate_state state =
+        rtcore_candidate_gate_state_for(
+            "VULKAN_SIM_RTCORE_V04_GLOBAL384_SEMANTIC_ACCOUNTING");
+    if (state == RTCORE_CANDIDATE_GATE_INVALID) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+                "fault=invalid_gate_value\n");
+        fflush(stderr);
+        abort();
+    }
+    if (state != RTCORE_CANDIDATE_GATE_ENABLED) return false;
+    rtcore::v04::private_storage::profile_kind profile =
+        rtcore::v04::private_storage::kProfileLegacyShared832;
+    if (rtcore::v04::private_storage::parse_profile(
+            getenv(rtcore::v04::private_storage::kSelectorEnvironmentName),
+            &profile) != rtcore::v04::private_storage::kStatusOk ||
+        profile != rtcore::v04::private_storage::kProfileGlobal384) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+                "fault=accounting_requires_global384_profile\n");
+        fflush(stderr);
+        abort();
+    }
+    return true;
+}
+
+static bool rtcore_v04_private_slot_base_for_owner(
+    const rtcore::v04::private_frontier::owner_binding_v0 &owner,
+    uint8_t profile, uint64_t *private_slot_base_address);
+
+static bool rtcore_v04_add_masked_semantic_slice(
+    rtcore_v04_semantic_memory_snapshot *semantic, uint8_t tag,
+    uint32_t field_mask, uint32_t request_mask) {
+    const uint32_t useful_mask = field_mask & request_mask;
+    return useful_mask == 0 ||
+           rtcore_v04_add_semantic_memory_slice(
+               semantic, tag, useful_mask);
+}
+
+static bool rtcore_v04_map_private_chunk_semantics(
+    unsigned chunk, uint32_t request_mask,
+    rtcore_v04_semantic_memory_snapshot *semantic) {
+    switch (chunk) {
+      case 0:
+        return rtcore_v04_add_masked_semantic_slice(
+            semantic, RTCORE_V04_SEMANTIC_TAG_PRIVATE_RAY,
+            0xffffffffu, request_mask);
+      case 1:
+        return rtcore_v04_add_masked_semantic_slice(
+            semantic, RTCORE_V04_SEMANTIC_TAG_PRIVATE_AS_CONTEXT,
+            0x3fffffffu, request_mask);
+      case 2:
+        return rtcore_v04_add_masked_semantic_slice(
+            semantic, RTCORE_V04_SEMANTIC_TAG_PRIVATE_COMMITTED_HIT,
+            0xffffffffu, request_mask);
+      case 3:
+        return rtcore_v04_add_masked_semantic_slice(
+                   semantic,
+                   RTCORE_V04_SEMANTIC_TAG_PRIVATE_COMMITTED_HIT,
+                   0x00ffffffu, request_mask) &&
+               rtcore_v04_add_masked_semantic_slice(
+                   semantic,
+                   RTCORE_V04_SEMANTIC_TAG_PRIVATE_INSTANCE_POLICY,
+                   0xff000000u, request_mask);
+      case 4:
+        return rtcore_v04_add_masked_semantic_slice(
+                   semantic,
+                   RTCORE_V04_SEMANTIC_TAG_PRIVATE_INSTANCE_POLICY,
+                   0x00000fffu, request_mask) &&
+               rtcore_v04_add_masked_semantic_slice(
+                   semantic, RTCORE_V04_SEMANTIC_TAG_PRIVATE_RAY,
+                   0x0000f000u, request_mask) &&
+               rtcore_v04_add_masked_semantic_slice(
+                   semantic,
+                   RTCORE_V04_SEMANTIC_TAG_PRIVATE_AS_CONTEXT,
+                   0x00ff0000u, request_mask) &&
+               rtcore_v04_add_masked_semantic_slice(
+                   semantic,
+                   RTCORE_V04_SEMANTIC_TAG_PRIVATE_SHORT_STACK_METADATA,
+                   0x0f000000u, request_mask);
+      case 5:
+      case 6:
+      case 7:
+        return rtcore_v04_add_masked_semantic_slice(
+            semantic,
+            RTCORE_V04_SEMANTIC_TAG_PRIVATE_SHORT_STACK_ENTRY,
+            0xffffffffu, request_mask);
+      case 8:
+      case 9:
+        return rtcore_v04_add_masked_semantic_slice(
+            semantic, RTCORE_V04_SEMANTIC_TAG_PRIVATE_BOUNDARY_UNION,
+            0xffffffffu, request_mask);
+      case 10:
+        return rtcore_v04_add_masked_semantic_slice(
+            semantic, RTCORE_V04_SEMANTIC_TAG_PRIVATE_PARENT_RESTORE,
+            0xffffffffu, request_mask);
+      case 11:
+        return rtcore_v04_add_masked_semantic_slice(
+            semantic, RTCORE_V04_SEMANTIC_TAG_PRIVATE_PARENT_RESTORE,
+            0x3fffffffu, request_mask);
+      default:
+        return false;
+    }
+}
+
+static bool rtcore_v04_map_private_field_semantics(
+    uint8_t field_kind, unsigned canonical_chunk, uint32_t request_mask,
+    rtcore_v04_semantic_memory_snapshot *semantic) {
+    namespace private_frontier = rtcore::v04::private_frontier;
+    uint8_t tag = RTCORE_V04_SEMANTIC_TAG_INVALID;
+    switch (field_kind) {
+      case private_frontier::kFieldMutableRayState:
+        tag = RTCORE_V04_SEMANTIC_TAG_PRIVATE_RAY;
+        break;
+      case private_frontier::kFieldAsDecodeContext:
+        tag = RTCORE_V04_SEMANTIC_TAG_PRIVATE_AS_CONTEXT;
+        break;
+      case private_frontier::kFieldCommittedHit:
+        tag = RTCORE_V04_SEMANTIC_TAG_PRIVATE_COMMITTED_HIT;
+        break;
+      case private_frontier::kFieldCurrentInstance:
+        tag = RTCORE_V04_SEMANTIC_TAG_PRIVATE_INSTANCE_POLICY;
+        break;
+      case private_frontier::kFieldFrontierMetadata:
+        tag = RTCORE_V04_SEMANTIC_TAG_PRIVATE_SHORT_STACK_METADATA;
+        break;
+      case private_frontier::kFieldFrontierEntry:
+        tag = RTCORE_V04_SEMANTIC_TAG_PRIVATE_SHORT_STACK_ENTRY;
+        break;
+      case private_frontier::kFieldTransitionSpill:
+      case private_frontier::kFieldRetainedCandidate:
+      case private_frontier::kFieldPrimitiveResume:
+        tag = RTCORE_V04_SEMANTIC_TAG_PRIVATE_BOUNDARY_UNION;
+        break;
+      case private_frontier::kFieldParentFrame:
+        if (canonical_chunk != 10 && canonical_chunk != 11) {
+            return false;
+        }
+        tag = RTCORE_V04_SEMANTIC_TAG_PRIVATE_PARENT_RESTORE;
+        break;
+      default:
+        return false;
+    }
+    const uint32_t field_mask =
+        field_kind == private_frontier::kFieldParentFrame &&
+                canonical_chunk == 11
+            ? 0x3fffffffu
+            : 0xffffffffu;
+    return rtcore_v04_add_masked_semantic_slice(
+        semantic, tag, field_mask, request_mask);
+}
+
+static bool rtcore_v04_prepare_global384_semantic_snapshot(
+    rtcore_memory_unit_request_snapshot *snapshot) {
+    if (snapshot == NULL || !snapshot->valid) return false;
+    if (!rtcore_v04_global384_semantic_accounting_enabled()) return true;
+    if (snapshot->v04_semantic_memory.valid == 1) {
+        return rtcore_v04_semantic_memory_snapshot_valid(
+            snapshot->v04_semantic_memory, snapshot->byte_mask);
+    }
+
+    rtcore_v04_semantic_memory_snapshot semantic = {};
+    bool in_scope = false;
+    bool mapped = false;
+    if (snapshot->v04_live_handoff_acquire.valid == 1) {
+        in_scope = true;
+        mapped = rtcore_v04_add_semantic_memory_slice(
+            &semantic, RTCORE_V04_SEMANTIC_TAG_HANDOFF_RTCORE_ACQUIRE,
+            snapshot->byte_mask);
+    } else if (snapshot->address_space ==
+                   RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
+               (snapshot->access_kind ==
+                    RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE ||
+                snapshot->access_kind ==
+                    RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE)) {
+        in_scope = true;
+        mapped = rtcore_v04_add_semantic_memory_slice(
+            &semantic, RTCORE_V04_SEMANTIC_TAG_HANDOFF_RTCORE_PUBLISH,
+            snapshot->byte_mask);
+    } else if (snapshot->v04_global384_private_init.valid == 1) {
+        in_scope = true;
+        mapped = rtcore_v04_map_private_chunk_semantics(
+            snapshot->chunk_id, snapshot->byte_mask, &semantic);
+    } else if (snapshot->address_space ==
+                   RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
+               snapshot->access_kind ==
+                   RTCORE_MEMORY_ACCESS_PRIVATE_RUNTIME_WRITE &&
+               snapshot->v04_private_write.valid == 1) {
+        in_scope = true;
+        rtcore::v04::private_frontier::owner_binding_v0 owner = {};
+        owner.owner_hw_sid = snapshot->owner_hw_sid;
+        owner.resident_warp_id = snapshot->resident_warp_id;
+        owner.request_identity = snapshot->rt_request_id;
+        owner.generation = snapshot->request_generation;
+        owner.private_slot_id = snapshot->private_slot_id;
+        owner.lane_id = static_cast<uint8_t>(snapshot->lane_id);
+        uint64_t private_base = 0;
+        if (rtcore_v04_private_slot_base_for_owner(
+                owner,
+                rtcore::v04::private_storage::kProfileGlobal384,
+                &private_base) &&
+            snapshot->aligned_32b_addr >= private_base) {
+            const uint64_t offset =
+                snapshot->aligned_32b_addr - private_base;
+            mapped =
+                offset < rtcore::v04::private_state_384::kSlotBytes &&
+                offset % rtcore::v04::private_state_384::kChunkBytes == 0 &&
+                rtcore_v04_map_private_field_semantics(
+                    snapshot->v04_private_write.field_kind,
+                    static_cast<unsigned>(
+                        offset /
+                        rtcore::v04::private_state_384::kChunkBytes),
+                    snapshot->byte_mask, &semantic);
+        }
+    } else if (snapshot->access_kind ==
+                   RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ &&
+               snapshot->v04_private_state_384_read.valid == 1 &&
+               snapshot->v04_private_state_384_read.storage_profile ==
+                   rtcore::v04::private_storage::kProfileGlobal384) {
+        const uint64_t private_base = snapshot->v04_private_state_384_read
+                                          .private_slot_base_address;
+        in_scope = true;
+        if (snapshot->aligned_32b_addr >= private_base) {
+            const uint64_t offset = snapshot->aligned_32b_addr - private_base;
+            mapped = offset % rtcore::v04::private_state_384::kChunkBytes ==
+                         0 &&
+                     rtcore_v04_map_private_chunk_semantics(
+                         static_cast<unsigned>(
+                             offset /
+                             rtcore::v04::private_state_384::kChunkBytes),
+                         snapshot->byte_mask, &semantic);
+        }
+    }
+    if (!in_scope) return true;
+    if (!mapped ||
+        !rtcore_v04_semantic_memory_snapshot_valid(
+            semantic, snapshot->byte_mask) ||
+        snapshot->address_space != RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL) {
+        return false;
+    }
+    snapshot->v04_semantic_memory = semantic;
+    return true;
+}
+
+static void rtcore_v04_prepare_global384_semantic_snapshot_or_abort(
+    rtcore_memory_unit_request_snapshot *snapshot) {
+    if (snapshot == NULL || !snapshot->valid) return;
+    if (!rtcore_v04_prepare_global384_semantic_snapshot(snapshot)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+                "owner_hw_sid=%u request_key=%u lane_id=%u "
+                "memory_op_seq=%u chunk_id=%u access_kind=%u "
+                "byte_mask=0x%08x fault=semantic_snapshot_invalid\n",
+                snapshot->owner_hw_sid, snapshot->rt_request_id,
+                snapshot->lane_id, snapshot->memory_op_seq,
+                snapshot->chunk_id, snapshot->access_kind,
+                snapshot->byte_mask);
+        fflush(stderr);
+        abort();
+    }
+}
+
+extern "C" void rtcore_record_v04_global384_context_functional_setup(
+    unsigned owner_hw_sid, unsigned lane_id, unsigned byte_count) {
+    (void)owner_hw_sid;
+    if (!rtcore_v04_global384_semantic_accounting_enabled()) return;
+    if (lane_id >= 32 || byte_count == 0) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+                "fault=context_functional_setup_invalid\n");
+        fflush(stderr);
+        abort();
+    }
+    ++g_rtcore_v04_global384_context_functional_setup_access_count;
+    g_rtcore_v04_global384_context_functional_setup_byte_count += byte_count;
+}
+
+extern "C" unsigned long long
+rtcore_v04_global384_context_functional_setup_access_count() {
+    return g_rtcore_v04_global384_context_functional_setup_access_count;
+}
+
+extern "C" unsigned long long
+rtcore_v04_global384_context_functional_setup_byte_count() {
+    return g_rtcore_v04_global384_context_functional_setup_byte_count;
+}
+
 enum rtcore_v04_private_boundary_read_purpose {
     RTCORE_V04_PRIVATE_BOUNDARY_READ_NONE = 0,
     RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION = 1,
@@ -7003,6 +7296,8 @@ extern "C" bool rtcore_complete_v04_global384_private_init_write(
     }
     pending->second.completed_private_init_mask[snapshot->lane_id] |= chunk_bit;
     pending->second.completed_private_init_writes++;
+    rtcore_record_v04_global384_semantic_last_arrival(
+        snapshot, completion_cycle);
     printf("GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_INIT_ACK "
            "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
            "active_mask=0x%08x resident_generation=%u "
@@ -7137,6 +7432,8 @@ extern "C" bool rtcore_complete_v04_global384_private_runtime_write(
     }
     rtcore_v04_timing_driver_for(snapshot->owner_hw_sid) =
         staged_timing;
+    rtcore_record_v04_global384_semantic_last_arrival(
+        snapshot, completion_cycle);
     printf("GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_RUNTIME_WRITE_ACK "
            "owner_hw_sid=%u request_identity=%u request_generation=%u "
            "resident_warp_slot=%u lane_id=%u private_slot_id=%u "
@@ -7228,6 +7525,8 @@ static bool rtcore_apply_v04_global384_resubmit_handoff_acquire_chunk(
     if (pending->second.completed_chunks > pending->second.expected_chunks) {
         return false;
     }
+    rtcore_record_v04_global384_semantic_last_arrival(
+        snapshot, completion_cycle);
     printf("GPGPU-Sim RTCORE_V04_LIVE_HANDOFF_ACQUIRE_COMPLETE "
            "owner_hw_sid=%u dynamic_warp_id=%u warp_id=%u lane_id=%u "
            "chunk_id=%u completed_chunks=%u expected_chunks=%u "
@@ -7347,6 +7646,8 @@ static bool rtcore_apply_v04_global384_initial_handoff_acquire_chunk(
     if (pending->second.completed_chunks > pending->second.expected_chunks) {
         return false;
     }
+    rtcore_record_v04_global384_semantic_last_arrival(
+        snapshot, completion_cycle);
     printf("GPGPU-Sim RTCORE_V04_INITIAL_HANDOFF_ACQUIRE_COMPLETE "
            "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "
            "active_mask=0x%08x resident_generation=%u "
@@ -11311,6 +11612,10 @@ extern "C" bool rtcore_accept_v04_handoff_publication_response(
     }
 
     record->v04_boundary_completion = staged;
+    if (ack.lane_ack_complete != 0) {
+        rtcore_record_v04_global384_semantic_last_arrival(
+            request, response_cycle);
+    }
     printf("GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_ACK "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u "
            "request_key=0x%08x lane_id=%u publication_chunk=%u "
@@ -29241,6 +29546,8 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
                 queue_it->second.pop_front();
             }
         }
+        rtcore_v04_prepare_global384_semantic_snapshot_or_abort(
+            sideband_snapshot);
     }
     return result.tick_result.progressed;
 }
@@ -29276,6 +29583,8 @@ extern "C" bool rtcore_pop_memory_unit_request_for_sm(
     }
     if (sideband_snapshot) {
         *sideband_snapshot = queue_it->second.front();
+        rtcore_v04_prepare_global384_semantic_snapshot_or_abort(
+            sideband_snapshot);
     }
     queue_it->second.pop_front();
     return true;
@@ -29308,6 +29617,8 @@ extern "C" bool rtcore_peek_memory_unit_request_for_sm(
     }
     if (sideband_snapshot) {
         *sideband_snapshot = queue_it->second.front();
+        rtcore_v04_prepare_global384_semantic_snapshot_or_abort(
+            sideband_snapshot);
     }
     return true;
 }
@@ -29417,11 +29728,45 @@ extern "C" void rtcore_enqueue_memory_unit_handoff_window_request(
         snapshot.owner_hw_sid = owner_hw_sid;
         snapshot.rt_request_id = rt_request_id;
         snapshot.lane_id = lane_id;
+        snapshot.address_space = RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL;
+        snapshot.operation = is_write ? RTCORE_MEMORY_OPERATION_WRITE
+                                      : RTCORE_MEMORY_OPERATION_READ;
+        if (is_write &&
+            (access_kind ==
+                 RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
+             access_kind ==
+                 RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE)) {
+            snapshot.destination =
+                RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK;
+        }
         snapshot.memory_op_seq = memory_op_seq;
         snapshot.chunk_id = chunk_id;
         snapshot.chunk_count = chunk_count;
         snapshot.access_kind = access_kind;
         snapshot.aligned_32b_addr = rtcore_v02_lsu_align_32b(chunk_address);
+        snapshot.byte_mask = 0xffffffffu;
+        if (access_kind ==
+                RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE &&
+            rtcore_v04_live_publication_memory_op_seq(memory_op_seq)) {
+            std::map<unsigned, rtcore_replay_lane_request>::const_iterator
+                request_it =
+                    g_rtcore_replay_lane_requests.find(rt_request_id);
+            const unsigned publication_chunk =
+                memory_op_seq - RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE;
+            if (request_it == g_rtcore_replay_lane_requests.end() ||
+                publication_chunk >=
+                    RTCORE_V04_LIVE_PUBLICATION_CHUNK_COUNT) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+                        "fault=live_publication_snapshot_source_missing\n");
+                fflush(stderr);
+                abort();
+            }
+            snapshot.byte_mask =
+                rtcore_v04_native_publication_chunk_byte_mask(
+                    request_it->second.v04_live_publication_word_mask,
+                    publication_chunk);
+        }
         snapshot.is_write = is_write;
         snapshot.issue_cycle = issue_cycle;
         g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid]

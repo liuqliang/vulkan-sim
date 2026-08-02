@@ -264,6 +264,110 @@ struct rtcore_v04_live_transaction_transport_snapshot {
   uint8_t valid;
 };
 
+enum rtcore_v04_semantic_memory_tag {
+  RTCORE_V04_SEMANTIC_TAG_INVALID = 0,
+  RTCORE_V04_SEMANTIC_TAG_HANDOFF_RTCORE_ACQUIRE = 1,
+  RTCORE_V04_SEMANTIC_TAG_HANDOFF_RTCORE_PUBLISH = 2,
+  RTCORE_V04_SEMANTIC_TAG_HANDOFF_SHADER_TRACE_INPUT_PUBLISH = 3,
+  RTCORE_V04_SEMANTIC_TAG_HANDOFF_SHADER_DISPATCH_READ = 4,
+  RTCORE_V04_SEMANTIC_TAG_HANDOFF_SHADER_BUILTIN_READ = 5,
+  RTCORE_V04_SEMANTIC_TAG_HANDOFF_SHADER_RETURN = 6,
+  RTCORE_V04_SEMANTIC_TAG_PRIVATE_RAY = 7,
+  RTCORE_V04_SEMANTIC_TAG_PRIVATE_AS_CONTEXT = 8,
+  RTCORE_V04_SEMANTIC_TAG_PRIVATE_COMMITTED_HIT = 9,
+  RTCORE_V04_SEMANTIC_TAG_PRIVATE_INSTANCE_POLICY = 10,
+  RTCORE_V04_SEMANTIC_TAG_PRIVATE_SHORT_STACK_METADATA = 11,
+  RTCORE_V04_SEMANTIC_TAG_PRIVATE_SHORT_STACK_ENTRY = 12,
+  RTCORE_V04_SEMANTIC_TAG_PRIVATE_BOUNDARY_UNION = 13,
+  RTCORE_V04_SEMANTIC_TAG_PRIVATE_PARENT_RESTORE = 14,
+  RTCORE_V04_SEMANTIC_TAG_CONTEXT_SHADER_READ = 15,
+  RTCORE_V04_SEMANTIC_TAG_CONTEXT_SHADER_WRITE = 16,
+  RTCORE_V04_SEMANTIC_TAG_CONTEXT_FUNCTIONAL_SETUP = 17,
+  RTCORE_V04_SEMANTIC_TAG_COUNT = 18,
+};
+
+static const unsigned RTCORE_V04_SEMANTIC_MAX_SLICES = 4u;
+
+struct rtcore_v04_semantic_memory_slice_snapshot {
+  uint32_t useful_byte_mask;
+  uint8_t tag;
+  uint8_t reserved_zero[3];
+};
+
+struct rtcore_v04_semantic_memory_snapshot {
+  uint32_t tag_set;
+  uint32_t useful_byte_mask;
+  uint32_t physical_request_uid;
+  uint8_t slice_count;
+  uint8_t valid;
+  uint8_t reserved_zero[2];
+  rtcore_v04_semantic_memory_slice_snapshot
+      slices[RTCORE_V04_SEMANTIC_MAX_SLICES];
+};
+
+inline bool rtcore_v04_add_semantic_memory_slice(
+    rtcore_v04_semantic_memory_snapshot *semantic, uint8_t tag,
+    uint32_t useful_byte_mask) {
+  if (semantic == NULL ||
+      tag <= RTCORE_V04_SEMANTIC_TAG_INVALID ||
+      tag >= RTCORE_V04_SEMANTIC_TAG_COUNT || useful_byte_mask == 0) {
+    return false;
+  }
+  const uint32_t tag_bit = uint32_t{1} << (tag - 1u);
+  for (unsigned index = 0; index < semantic->slice_count; ++index) {
+    if (semantic->slices[index].tag == tag) {
+      semantic->slices[index].useful_byte_mask |= useful_byte_mask;
+      semantic->tag_set |= tag_bit;
+      semantic->useful_byte_mask |= useful_byte_mask;
+      semantic->valid = 1;
+      return true;
+    }
+  }
+  if (semantic->slice_count >= RTCORE_V04_SEMANTIC_MAX_SLICES) {
+    return false;
+  }
+  rtcore_v04_semantic_memory_slice_snapshot &slice =
+      semantic->slices[semantic->slice_count++];
+  slice.tag = tag;
+  slice.useful_byte_mask = useful_byte_mask;
+  semantic->tag_set |= tag_bit;
+  semantic->useful_byte_mask |= useful_byte_mask;
+  semantic->valid = 1;
+  return true;
+}
+
+inline bool rtcore_v04_semantic_memory_snapshot_valid(
+    const rtcore_v04_semantic_memory_snapshot &semantic,
+    uint32_t request_byte_mask) {
+  if (semantic.valid != 1 || semantic.slice_count == 0 ||
+      semantic.slice_count > RTCORE_V04_SEMANTIC_MAX_SLICES ||
+      semantic.tag_set == 0 || semantic.useful_byte_mask == 0 ||
+      (semantic.useful_byte_mask & ~request_byte_mask) != 0 ||
+      semantic.reserved_zero[0] != 0 || semantic.reserved_zero[1] != 0) {
+    return false;
+  }
+  uint32_t rebuilt_tag_set = 0;
+  uint32_t rebuilt_useful_mask = 0;
+  for (unsigned index = 0; index < semantic.slice_count; ++index) {
+    const rtcore_v04_semantic_memory_slice_snapshot &slice =
+        semantic.slices[index];
+    if (slice.tag <= RTCORE_V04_SEMANTIC_TAG_INVALID ||
+        slice.tag >= RTCORE_V04_SEMANTIC_TAG_COUNT ||
+        slice.useful_byte_mask == 0 ||
+        (slice.useful_byte_mask & ~request_byte_mask) != 0 ||
+        slice.reserved_zero[0] != 0 || slice.reserved_zero[1] != 0 ||
+        slice.reserved_zero[2] != 0) {
+      return false;
+    }
+    const uint32_t tag_bit = uint32_t{1} << (slice.tag - 1u);
+    if ((rebuilt_tag_set & tag_bit) != 0) return false;
+    rebuilt_tag_set |= tag_bit;
+    rebuilt_useful_mask |= slice.useful_byte_mask;
+  }
+  return rebuilt_tag_set == semantic.tag_set &&
+         rebuilt_useful_mask == semantic.useful_byte_mask;
+}
+
 struct rtcore_memory_unit_request_snapshot {
   bool valid;
   unsigned address_space;
@@ -297,7 +401,18 @@ struct rtcore_memory_unit_request_snapshot {
   rtcore_v04_global384_private_init_transport_snapshot
       v04_global384_private_init;
   rtcore_v04_live_transaction_transport_snapshot v04_live_transaction;
+  rtcore_v04_semantic_memory_snapshot v04_semantic_memory;
 };
+
+extern "C" void rtcore_record_v04_global384_context_functional_setup(
+    unsigned owner_hw_sid, unsigned lane_id, unsigned byte_count);
+extern "C" unsigned long long
+rtcore_v04_global384_context_functional_setup_access_count();
+extern "C" unsigned long long
+rtcore_v04_global384_context_functional_setup_byte_count();
+extern "C" void rtcore_record_v04_global384_semantic_last_arrival(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    unsigned long long completion_cycle);
 
 extern "C" bool rtcore_record_v04_memory_conservation_event(
     const rtcore_memory_unit_request_snapshot *snapshot,

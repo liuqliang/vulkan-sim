@@ -52,6 +52,17 @@ enum cache_request_status {
   NUM_CACHE_REQUEST_STATUS
 };
 
+struct cache_access_observation {
+  cache_access_observation()
+      : valid(false), probe_status(RESERVATION_FAIL),
+        access_status(RESERVATION_FAIL), no_write_allocate(false) {}
+
+  bool valid;
+  enum cache_request_status probe_status;
+  enum cache_request_status access_status;
+  bool no_write_allocate;
+};
+
 enum cache_reservation_fail_reason {
   LINE_ALLOC_FAIL = 0,  // all line are reserved
   MISS_QUEUE_FULL,      // MISS queue (i.e. interconnect or DRAM) is full
@@ -1136,6 +1147,13 @@ class cache_t {
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events) = 0;
+  virtual enum cache_request_status access_with_observation(
+      new_addr_type addr, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events,
+      cache_access_observation *observation) {
+    if (observation != NULL) *observation = cache_access_observation();
+    return access(addr, mf, time, events);
+  }
 
   // accessors for cache bandwidth availability
   virtual bool data_port_free() const = 0;
@@ -1371,7 +1389,6 @@ class read_only_cache : public baseline_cache {
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events);
-
   virtual ~read_only_cache() {}
 
  protected:
@@ -1455,6 +1472,10 @@ class data_cache : public baseline_cache {
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events);
+  virtual enum cache_request_status access_with_observation(
+      new_addr_type addr, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events,
+      cache_access_observation *observation);
 
  protected:
   data_cache(const char *name, cache_config &config, int core_id, int type_id,

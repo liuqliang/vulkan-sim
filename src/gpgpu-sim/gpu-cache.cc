@@ -1723,6 +1723,13 @@ enum cache_request_status data_cache::process_tag_probe(
 enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                                              unsigned time,
                                              std::list<cache_event> &events) {
+  return access_with_observation(addr, mf, time, events, NULL);
+}
+
+enum cache_request_status data_cache::access_with_observation(
+    new_addr_type addr, mem_fetch *mf, unsigned time,
+    std::list<cache_event> &events,
+    cache_access_observation *observation) {
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
@@ -1731,6 +1738,13 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
       m_tag_array->probe(block_addr, cache_index, mf, true);
   enum cache_request_status access_status =
       process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
+  if (observation != NULL) {
+    observation->valid = true;
+    observation->probe_status = probe_status;
+    observation->access_status = access_status;
+    observation->no_write_allocate =
+        m_config.m_write_alloc_policy == NO_WRITE_ALLOCATE;
+  }
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status));
   m_stats.inc_stats_pw(mf->get_access_type(), m_stats.select_stats_status(

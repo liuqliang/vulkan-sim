@@ -16314,6 +16314,13 @@ bool rtcore_v04_register_global384_provisional_publication(
          result.published_lane_mask, lane_slot_index,
          result.publication_complete, result.provisional_group_registered);
   fflush(stdout);
+  if (bridge_status ==
+          rtcore::v04::pre_submit_publication::kStatusOk &&
+      result.lane_was_new == 1) {
+    rtcore_record_v04_global384_context_functional_setup(
+        metadata.owner_hw_sid, lane_slot_index,
+        allocation.context_lane_stride_bytes);
+  }
   return bridge_status ==
          rtcore::v04::pre_submit_publication::kStatusOk;
 }
