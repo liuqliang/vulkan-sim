@@ -14382,6 +14382,12 @@ static unsigned rtcore_compute_resident_rt_warp_admitted_lane_mask(
         return 0;
     }
 
+    if (record.v04_global384_preissued && record.v04_root_packet_valid &&
+        record.v04_request_owner_binding_valid &&
+        record.v04_private_frontier_init_committed) {
+        return record.active_mask;
+    }
+
     unsigned admitted_lane_mask = 0;
     for (unsigned lane = 0; lane < 32; ++lane) {
         const unsigned lane_mask = 1u << lane;
