@@ -420,7 +420,9 @@ bool request_matches_entry(
       request.chunk_count == kReturnInstanceReadChunkCount &&
       request.memory_op_seq ==
           (entry.input.private_storage_profile ==
-                   private_storage::kProfileCompressedShared384
+                   private_storage::kProfileCompressedShared384 ||
+               entry.input.private_storage_profile ==
+                   private_storage::kProfileGlobal384
                ? entry.reservation.read_chunk_count
                : kReadChunkCount) +
               request.chunk_id + 1;
@@ -2160,14 +2162,12 @@ status_kind service_cycle(
     } else if (
         transition_status ==
         short_stack_transition::kStatusReturnInstanceRequired) {
-      if (entry.input.private_storage_profile ==
-          private_storage::kProfileGlobal384) {
-        return kStatusTransitionRejected;
-      }
       entry.transition = transition;
       entry.input.operation_kind = kOperationResumeTransition;
       if (entry.input.private_storage_profile ==
-          private_storage::kProfileCompressedShared384) {
+              private_storage::kProfileCompressedShared384 ||
+          entry.input.private_storage_profile ==
+              private_storage::kProfileGlobal384) {
         if (entry.private_state_384_operands_valid != 1 ||
             entry.private_state_384_cross_as_operands_valid != 0) {
           return kStatusSharedPlanRejected;
