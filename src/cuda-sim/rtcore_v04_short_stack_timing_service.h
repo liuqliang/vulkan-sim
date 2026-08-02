@@ -169,6 +169,7 @@ struct operation_entry_v0 {
   uint8_t private_state_384_completion_operands_valid;
   uint8_t private_state_384_completion_reason;
   uint8_t return_instance_projection_valid;
+  uint8_t return_transition_state_carry_valid;
   uint8_t valid;
 };
 

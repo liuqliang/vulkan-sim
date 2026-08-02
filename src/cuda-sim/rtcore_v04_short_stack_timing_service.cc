@@ -1491,6 +1491,28 @@ static status_kind accept_private_state_384_read_response_impl(
           private_state_384::operand_materializer::kStatusOk) {
         return kStatusSharedPlanRejected;
       }
+      if (entry.return_transition_state_carry_valid != 0) {
+        if (entry.input.operation_kind !=
+                kOperationResumeTransition ||
+            !short_stack_shared::validate_persistent_state(
+                entry.transition.persistent_state)) {
+          return kStatusSharedPlanRejected;
+        }
+        entry.private_state_384_cross_as_operands.base
+            .tlas_build_generation =
+            entry.transition.persistent_state
+                .tlas_build_generation;
+        entry.private_state_384_cross_as_operands.base
+            .blas_build_generation =
+            entry.transition.persistent_state
+                .blas_build_generation;
+        entry.private_state_384_cross_as_operands.base.stack =
+            entry.transition.persistent_state.stack;
+        entry.input.recovery_target_inflight =
+            entry.transition.persistent_state
+                .recovery_target_inflight;
+        entry.return_transition_state_carry_valid = 0;
+      }
       entry.private_state_384_stack_operands =
           entry.private_state_384_cross_as_operands.base;
       entry.private_state_384_cross_as_operands_valid = 1;
@@ -2172,6 +2194,12 @@ status_kind service_cycle(
             entry.private_state_384_cross_as_operands_valid != 0) {
           return kStatusSharedPlanRejected;
         }
+        // A recovery-backed node miss can normalize lost/recovery state before
+        // discovering that only the cross-AS return entry remains. Keep that
+        // state transaction-local until the old Global384 response has been
+        // materialized, then apply it before resume. The final resume commit
+        // remains the sole writeback to the 384-byte backing image.
+        entry.return_transition_state_carry_valid = 1;
         entry.private_state_384_selected_operation =
             private_state_384::operand_plan::
                 kOperationStackCrossAsReturn;
