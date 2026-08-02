@@ -236,6 +236,9 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
     const rtcore::v04::root_node_packet::warp_input_v0 *input,
     unsigned long long issue_cycle, const char **failure_reason);
 
+extern "C" bool rtcore_v04_root_node_packet_issue_capacity_available(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned active_mask);
+
 extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
     const ptx_instruction *instruction, ptx_thread_info *const *lane_threads,
     unsigned owner_hw_sid, unsigned warp_uid, unsigned dynamic_warp_id,

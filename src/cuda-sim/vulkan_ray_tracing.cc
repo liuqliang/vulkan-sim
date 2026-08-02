@@ -20154,6 +20154,52 @@ extern "C" bool rtcore_accept_v04_private_shared_request(
            private_shared::kStatusOk;
 }
 
+extern "C" bool rtcore_v04_root_node_packet_issue_capacity_available(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned active_mask)
+{
+    namespace fetch_target = rtcore::v04::fetch_target;
+    if (!rtcore_v04_root_node_ready_packet_enabled() || active_mask == 0 ||
+        warp_id >= 64) {
+        return true;
+    }
+
+    const rtcore_resident_rt_warp_record_key record_key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::const_iterator existing =
+        g_rtcore_resident_rt_warp_records.find(record_key);
+    if (existing != g_rtcore_resident_rt_warp_records.end() &&
+        existing->second.valid &&
+        !(existing->second.v04_global384_preissued &&
+          !existing->second.v04_root_packet_valid)) {
+        // A live retained-state submit resumes existing lane requests and does
+        // not allocate a fresh root-node packet for every active lane.
+        return true;
+    }
+
+    const fetch_target::engine_state_v0 &target =
+        rtcore_v04_live_target_engine_for(owner_hw_sid);
+    const unsigned active_slots = fetch_target::active_slot_count(
+        target, fetch_target::kTargetNode);
+    unsigned required_slots = 0;
+    for (unsigned lanes = active_mask; lanes != 0; lanes >>= 1) {
+        required_slots += lanes & 1u;
+    }
+    const unsigned capacity = target.config.node_capacity;
+    const bool available =
+        active_slots <= capacity && required_slots <= capacity - active_slots;
+    if (!available) {
+        printf("GPGPU-Sim RTCORE_V04_ROOT_PACKET_ISSUE_BACKPRESSURE "
+               "owner_hw_sid=%u warp_id=%u active_mask=0x%08x "
+               "required_node_slots=%u active_node_slots=%u "
+               "node_capacity=%u action=stall_before_functional_issue\n",
+               owner_hw_sid, warp_id, active_mask, required_slots,
+               active_slots, capacity);
+        fflush(stdout);
+    }
+    return available;
+}
+
 extern "C" bool rtcore_admit_v04_root_node_packet(
     const rtcore::v04::root_node_packet::warp_input_v0 *input,
     unsigned long long issue_cycle, const char **failure_reason)

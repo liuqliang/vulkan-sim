@@ -11433,6 +11433,17 @@ void scheduler_unit::cycle() {
                   break;
                 }
 
+                const bool rtcore_root_packet_capacity_ready =
+                    pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+                    rtcore_v04_root_node_packet_issue_capacity_available(
+                        m_shader->get_sid(), warp_id,
+                        rtcore_active_mask);
+                if (!rtcore_root_packet_capacity_ready) {
+                  rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
+                      "scheduler_bridge_rollback_after_root_packet_capacity");
+                  break;
+                }
+
                 rtcore_warp_completion_entry_gate_materialized_input_provenance_snapshot
                     rtcore_warp_completion_entry_gate_materialized_input_provenance;
                 rtcore_warp_completion_entry_gate_materialized_input_provenance
