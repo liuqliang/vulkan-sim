@@ -1342,8 +1342,9 @@ struct rtcore_v04_private_boundary_read_state {
           purpose(RTCORE_V04_PRIVATE_BOUNDARY_READ_NONE),
           phase(RTCORE_V04_PRIVATE_BOUNDARY_PHASE_INVALID),
           completion_reason(0), route_kind(0), operation_seq(0),
-          read_generation(0), commit_epoch(0), owner(), collector(),
-          software_boundary(), final_completion(), handoff_words()
+          read_generation(0), commit_epoch(0), owner(), read_key(),
+          collector(), software_boundary(), final_completion(),
+          handoff_words()
     {
     }
 
@@ -1358,6 +1359,8 @@ struct rtcore_v04_private_boundary_read_state {
     uint32_t read_generation;
     uint32_t commit_epoch;
     rtcore::v04::private_frontier::owner_binding_v0 owner;
+    rtcore::v04::private_state_384::live_bridge::live_operation_key_v1
+        read_key;
     rtcore::v04::private_state_384::operand_materializer::
         response_collector_v1 collector;
     rtcore::v04::private_state_384::operand_materializer::
@@ -21336,8 +21339,9 @@ rtcore_accept_v04_short_stack_private_state_384_read_response(
     return true;
 }
 
-extern "C" bool rtcore_accept_v04_private_boundary_state_384_read(
+static bool rtcore_accept_v04_private_boundary_state_384_read_impl(
     const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
     unsigned long long response_cycle)
 {
     namespace live_bridge =
@@ -21355,6 +21359,23 @@ extern "C" bool rtcore_accept_v04_private_boundary_state_384_read(
         request->destination !=
             RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL ||
         request->lane_id >= 32) {
+        return false;
+    }
+    const uint8_t private_storage_profile =
+        request->v04_private_state_384_read.storage_profile;
+    const bool compressed_private_state =
+        private_storage_profile ==
+        rtcore::v04::private_storage::kProfileCompressedShared384;
+    const bool global_private_state =
+        private_storage_profile ==
+        rtcore::v04::private_storage::kProfileGlobal384;
+    if ((!compressed_private_state && !global_private_state) ||
+        (compressed_private_state &&
+         (response_bytes != NULL || response_byte_count != 0)) ||
+        (global_private_state &&
+         (response_bytes == NULL ||
+          response_byte_count !=
+              rtcore::v04::private_state_384::kChunkBytes))) {
         return false;
     }
     const uint8_t consumer =
@@ -21386,8 +21407,7 @@ extern "C" bool rtcore_accept_v04_private_boundary_state_384_read(
         rtcore_find_v04_native_boundary_resident(owner);
     if (record == NULL ||
         record->v04_private_storage_profile !=
-            rtcore::v04::private_storage::
-                kProfileCompressedShared384) {
+            private_storage_profile) {
         return false;
     }
     rtcore_v04_private_boundary_read_state staged_read =
@@ -21413,10 +21433,14 @@ extern "C" bool rtcore_accept_v04_private_boundary_state_384_read(
     timing_driver::state_v0 staged_timing =
         rtcore_v04_timing_driver_for(request->owner_hw_sid);
     const live_bridge::status_kind read_status =
-        live_bridge::accept_read_response(
-            rtcore_v04_private_state_384_backing_for(
-                request->owner_hw_sid),
-            *request, &staged_read.collector);
+        global_private_state
+            ? live_bridge::accept_read_response_bytes_for_key(
+                  staged_read.read_key, *request, response_bytes,
+                  response_byte_count, &staged_read.collector)
+            : live_bridge::accept_read_response(
+                  rtcore_v04_private_state_384_backing_for(
+                      request->owner_hw_sid),
+                  *request, &staged_read.collector);
     const timing_driver::status_kind timing_status =
         staged_read.terminal_pending_read
             ? timing_driver::
@@ -21539,6 +21563,24 @@ extern "C" bool rtcore_accept_v04_private_boundary_state_384_read(
             record, response_cycle);
     }
     return true;
+}
+
+extern "C" bool rtcore_accept_v04_private_boundary_state_384_read(
+    const rtcore_memory_unit_request_snapshot *request,
+    unsigned long long response_cycle)
+{
+    return rtcore_accept_v04_private_boundary_state_384_read_impl(
+        request, NULL, 0, response_cycle);
+}
+
+extern "C" bool
+rtcore_accept_v04_private_boundary_state_384_read_response(
+    const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long response_cycle)
+{
+    return rtcore_accept_v04_private_boundary_state_384_read_impl(
+        request, response_bytes, response_byte_count, response_cycle);
 }
 
 extern "C" bool rtcore_accept_v04_short_stack_return_instance_read(
@@ -26903,8 +26945,10 @@ static bool rtcore_service_v04_live_primitive_ready(
                 &staged_primitive, event);
         const bool deferred_private_state_384_completion =
             event.private_storage_profile ==
-            rtcore::v04::private_storage::
-                kProfileCompressedShared384;
+                rtcore::v04::private_storage::
+                    kProfileCompressedShared384 ||
+            event.private_storage_profile ==
+                rtcore::v04::private_storage::kProfileGlobal384;
         if (boundary_status ==
             primitive_shared::kStatusBoundaryBackpressure) {
             return false;
@@ -27723,6 +27767,7 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
             fflush(stderr);
             abort();
         }
+        staged_read.read_key = read_plan.key;
         for (unsigned index = 0;
              index < read_plan.request_count; ++index) {
             if (timing_driver::
@@ -27980,10 +28025,13 @@ static bool rtcore_service_v04_native_boundary_publication(
         boundary_receipt.private_storage_profile ==
             rtcore::v04::private_storage::
                 kProfileCompressedShared384;
-    if (compressed_private_state !=
-        (record->v04_private_storage_profile ==
-         rtcore::v04::private_storage::
-             kProfileCompressedShared384)) {
+    const bool global_private_state =
+        boundary_receipt.private_storage_profile ==
+        rtcore::v04::private_storage::kProfileGlobal384;
+    const bool private_state_384 =
+        compressed_private_state || global_private_state;
+    if (boundary_receipt.private_storage_profile !=
+        record->v04_private_storage_profile) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_FAULT "
                 "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
@@ -27997,7 +28045,7 @@ static bool rtcore_service_v04_native_boundary_publication(
 
     rtcore_v04_private_boundary_read_state *private_read =
         &record->v04_private_boundary_reads[owner.lane_id];
-    if (compressed_private_state && !private_read->valid) {
+    if (private_state_384 && !private_read->valid) {
         uint8_t completion_reason =
             operand_plan::kCompletionReasonNone;
         if (boundary_receipt.route_kind ==
@@ -28030,8 +28078,22 @@ static bool rtcore_service_v04_native_boundary_publication(
         input.reservation_generation =
             boundary_receipt.commit_epoch;
         input.storage_profile =
-            rtcore::v04::private_storage::
-                kProfileCompressedShared384;
+            boundary_receipt.private_storage_profile;
+        if (global_private_state &&
+            !rtcore_v04_private_slot_base_for_owner(
+                boundary_receipt.owner,
+                boundary_receipt.private_storage_profile,
+                &input.private_slot_base_address)) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_BOUNDARY_FAULT "
+                    "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                    "service_cycle=%llu phase=read_plan "
+                    "fault=global_private_slot_base_missing\n",
+                    owner_hw_sid, owner.packed_request_key,
+                    owner.lane_id, service_cycle);
+            fflush(stderr);
+            abort();
+        }
         input.consumer =
             operand_plan::kConsumerCompletionPublisher;
         input.operation = operand_plan::kOperationDefault;
@@ -28075,6 +28137,7 @@ static bool rtcore_service_v04_native_boundary_publication(
             fflush(stderr);
             abort();
         }
+        staged_read.read_key = read_plan.key;
         for (unsigned index = 0;
              index < read_plan.request_count; ++index) {
             if (timing_driver::begin_memory_transaction(
@@ -28112,7 +28175,7 @@ static bool rtcore_service_v04_native_boundary_publication(
         fflush(stdout);
         return true;
     }
-    if (compressed_private_state &&
+    if (private_state_384 &&
         (!private_read->valid ||
          private_read->purpose !=
              RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION ||
@@ -28133,12 +28196,12 @@ static bool rtcore_service_v04_native_boundary_publication(
         fflush(stderr);
         abort();
     }
-    if (compressed_private_state &&
+    if (private_state_384 &&
         private_read->phase !=
             RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READY) {
         return false;
     }
-    if (compressed_private_state &&
+    if (private_state_384 &&
         private_read->result_commit_closed &&
         record->v04_continuation_lifecycle.resubmit_pending == 1) {
         return false;
@@ -28169,7 +28232,7 @@ static bool rtcore_service_v04_native_boundary_publication(
         rtcore_v04_timing_driver_for(owner_hw_sid);
     boundary::arm_receipt_v0 arm = {};
     boundary::status_kind arm_status = boundary::kStatusInvalidArgument;
-    if (!compressed_private_state) {
+    if (!private_state_384) {
         arm_status = boundary::arm_boundary(
             &staged_completion, boundary_receipt.semantic_plan,
             preimage, boundary_receipt.commit_epoch,
@@ -28229,7 +28292,7 @@ static bool rtcore_service_v04_native_boundary_publication(
         fflush(stderr);
         abort();
     }
-    if (compressed_private_state &&
+    if (private_state_384 &&
         !private_read->result_commit_closed &&
         timing_driver::complete_result_commit(
             &staged_timing, owner,
@@ -28269,7 +28332,7 @@ static bool rtcore_service_v04_native_boundary_publication(
     }
 
     record->v04_boundary_completion = staged_completion;
-    if (compressed_private_state) {
+    if (private_state_384) {
         *private_read =
             rtcore_v04_private_boundary_read_state();
         rtcore_v04_timing_driver_for(owner_hw_sid) =

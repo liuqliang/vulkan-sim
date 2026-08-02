@@ -3959,6 +3959,53 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
     return;
   }
   if (snapshot.destination ==
+          RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL &&
+      snapshot.access_kind ==
+          RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ) {
+    const bool response_valid =
+        snapshot.address_space == RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
+        snapshot.operation == RTCORE_MEMORY_OPERATION_READ &&
+        !snapshot.is_write &&
+        snapshot.v04_private_state_384_read.storage_profile ==
+            rtcore::v04::private_storage::kProfileGlobal384 &&
+        response_address == snapshot.aligned_32b_addr &&
+        bound_read_payload != NULL &&
+        bound_read_payload_bytes ==
+            rtcore::v04::private_state_384::kChunkBytes;
+    if (!response_valid ||
+        !rtcore_accept_v04_private_boundary_state_384_read_response(
+            &snapshot, bound_read_payload, bound_read_payload_bytes,
+            response_cycle)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_GLOBAL384_BOUNDARY_READ_FAULT "
+              "owner_hw_sid=%u request_key=0x%08x generation=%u "
+              "operation_seq=%u chunk_id=%u chunk_count=%u "
+              "response_addr=0x%llx expected_addr=0x%llx\n",
+              snapshot.owner_hw_sid, snapshot.rt_request_id,
+              snapshot.request_generation,
+              snapshot.v04_private_state_384_read.operation_sequence,
+              snapshot.chunk_id, snapshot.chunk_count,
+              response_address, snapshot.aligned_32b_addr);
+      fflush(stderr);
+      abort();
+    }
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_BOUNDARY_RESPONSE_ACCEPTED "
+           "owner_hw_sid=%u request_key=0x%08x generation=%u "
+           "operation_seq=%u reservation_generation=%u "
+           "chunk_id=%u chunk_count=%u response_addr=0x%llx "
+           "source=l1d_completion_bytes "
+           "payload_capture=cache_accept_snapshot\n",
+           snapshot.owner_hw_sid, snapshot.rt_request_id,
+           snapshot.request_generation,
+           snapshot.v04_private_state_384_read.operation_sequence,
+           snapshot.v04_private_state_384_read.reservation_generation,
+           snapshot.chunk_id, snapshot.chunk_count, response_address);
+    fflush(stdout);
+    rtcore_record_v04_memory_conservation_or_abort(
+        snapshot, true, response_cycle);
+    return;
+  }
+  if (snapshot.destination ==
           RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
       snapshot.access_kind ==
           RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ) {
@@ -4367,6 +4414,18 @@ static new_addr_type rtcore_memory_unit_effective_addr(
     fflush(stderr);
     abort();
   }
+  if (snapshot.destination ==
+          RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL &&
+      snapshot.access_kind ==
+          RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_GLOBAL384_BOUNDARY_CONFIGURATION_FAULT "
+            "owner_hw_sid=%u request_key=0x%08x "
+            "fault=same_cycle_merge_stress_rewrites_private_address\n",
+            snapshot.owner_hw_sid, snapshot.rt_request_id);
+    fflush(stderr);
+    abort();
+  }
   return static_cast<new_addr_type>(
       0x70000000ull +
       static_cast<unsigned long long>(result.lsu_sideband_owner_hw_sid) *
@@ -4609,6 +4668,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
             RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL ||
         snapshot.destination ==
             RTCORE_MEMORY_DESTINATION_SHORT_STACK_QUEUE_FILL ||
+        snapshot.destination ==
+            RTCORE_MEMORY_DESTINATION_PRIVATE_BOUNDARY_FILL ||
         snapshot.destination ==
             RTCORE_MEMORY_DESTINATION_HANDOFF_PUBLICATION_ACK ||
         rtcore_v04_global384_private_init_request(snapshot) ||

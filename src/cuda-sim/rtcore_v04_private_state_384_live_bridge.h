@@ -128,6 +128,12 @@ status_kind accept_read_response_bytes(
     const uint8_t *payload, size_t payload_byte_count,
     operand_materializer::response_collector_v1 *collector);
 
+status_kind accept_read_response_bytes_for_key(
+    const live_operation_key_v1 &expected_key,
+    const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *payload, size_t payload_byte_count,
+    operand_materializer::response_collector_v1 *collector);
+
 status_kind stage_sparse_commit(
     const write_commit_input_v1 &input,
     const sparse_chunk_delta_v1 *deltas, size_t delta_count,

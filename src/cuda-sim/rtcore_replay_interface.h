@@ -476,6 +476,11 @@ bool rtcore_accept_v04_private_boundary_state_384_read(
     const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle);
 
+bool rtcore_accept_v04_private_boundary_state_384_read_response(
+    const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long response_cycle);
+
 bool rtcore_accept_v04_short_stack_return_instance_read(
     const rtcore_memory_unit_request_snapshot *request,
     const uint8_t *response_payload,

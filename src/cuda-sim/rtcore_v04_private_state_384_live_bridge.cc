@@ -33,6 +33,23 @@ bool operation_key_valid(const live_operation_key_v1 &key) {
                         sizeof(key.identity.reserved_zero));
 }
 
+bool operation_keys_equal(const live_operation_key_v1 &left,
+                          const live_operation_key_v1 &right) {
+  return operation_key_valid(left) && operation_key_valid(right) &&
+         std::memcmp(&left.identity, &right.identity,
+                     sizeof(left.identity)) == 0 &&
+         left.private_slot_base_address ==
+             right.private_slot_base_address &&
+         left.private_layout_profile_id ==
+             right.private_layout_profile_id &&
+         left.bvh_format_profile_id == right.bvh_format_profile_id &&
+         left.reservation_generation == right.reservation_generation &&
+         left.storage_profile == right.storage_profile &&
+         left.consumer == right.consumer &&
+         left.operation == right.operation &&
+         left.completion_reason == right.completion_reason;
+}
+
 bool owner_valid(const private_frontier::owner_binding_v0 &owner) {
   return owner.request_identity != 0 && owner.generation != 0 &&
          owner.resident_warp_id < backing::kResidentWarpCapacity &&
@@ -412,6 +429,39 @@ status_kind accept_read_response_bytes(
              operand_materializer::kStatusOk
          ? kStatusOk
          : kStatusCollectorRejected;
+}
+
+status_kind accept_read_response_bytes_for_key(
+    const live_operation_key_v1 &expected_key,
+    const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *payload, size_t payload_byte_count,
+    operand_materializer::response_collector_v1 *collector) {
+  operand_plan::read_plan_v1 plan = {};
+  operand_materializer::operation_identity_v1 identity = {};
+  if (!request_shape_valid(request, &plan, &identity)) {
+    return kStatusMalformedTransport;
+  }
+  const rtcore_v04_private_state_384_read_transport_snapshot &transport =
+      request.v04_private_state_384_read;
+  live_operation_key_v1 observed_key = {};
+  observed_key.identity = identity;
+  observed_key.private_slot_base_address =
+      transport.private_slot_base_address;
+  observed_key.private_layout_profile_id =
+      transport.private_layout_profile_id;
+  observed_key.bvh_format_profile_id =
+      transport.bvh_format_profile_id;
+  observed_key.reservation_generation =
+      transport.reservation_generation;
+  observed_key.storage_profile = transport.storage_profile;
+  observed_key.consumer = transport.consumer;
+  observed_key.operation = transport.operation_kind;
+  observed_key.completion_reason = transport.completion_reason;
+  if (!operation_keys_equal(expected_key, observed_key)) {
+    return kStatusMalformedTransport;
+  }
+  return accept_read_response_bytes(
+      request, payload, payload_byte_count, collector);
 }
 
 status_kind stage_sparse_commit(

@@ -560,8 +560,6 @@ status_kind capture_result_global384(
     capture_receipt_v0 *receipt) {
   if (state == NULL || receipt == NULL || state->initialized != 1 ||
       producer_operation_seq == 0 || commit_epoch == 0 ||
-      target_operation_seq == 0 ||
-      target_operation_seq == producer_operation_seq ||
       private_slot_base_address == 0 ||
       private_slot_base_address % private_state_384::kChunkBytes != 0) {
     return kStatusInvalidArgument;
@@ -572,11 +570,18 @@ status_kind capture_result_global384(
           owner, producer_operation_seq, input, result, &semantic) !=
           primitive_semantic::kStatusOk ||
       semantic.valid != 1 ||
-      semantic.route_kind != primitive_semantic::kRouteStackPopNext ||
-      semantic.retained_candidate_valid != 0 ||
       semantic.primitive_resume_valid != 0 ||
-      semantic.intersection_boundary_valid != 0 ||
       semantic.shader_return_valid != 0) {
+    return kStatusSemanticPlanRejected;
+  }
+  const bool boundary_route = is_boundary_route(semantic.route_kind);
+  const bool successor_route =
+      semantic.route_kind == primitive_semantic::kRouteStackPopNext;
+  if ((!boundary_route && !successor_route) ||
+      (boundary_route && target_operation_seq != 0) ||
+      (successor_route &&
+       (target_operation_seq == 0 ||
+        target_operation_seq == producer_operation_seq))) {
     return kStatusSemanticPlanRejected;
   }
   if (operation_live(*state, owner, producer_operation_seq)) {
@@ -1059,7 +1064,9 @@ status_kind enqueue_boundary_receipt(
   }
   ready_event_v0 queued = event;
   if (event.private_storage_profile ==
-      private_storage::kProfileCompressedShared384) {
+          private_storage::kProfileCompressedShared384 ||
+      event.private_storage_profile ==
+          private_storage::kProfileGlobal384) {
     queued.semantic_plan = primitive_semantic::semantic_plan_v0();
     queued.semantic_plan.owner = event.owner;
     queued.semantic_plan.operation_seq =
