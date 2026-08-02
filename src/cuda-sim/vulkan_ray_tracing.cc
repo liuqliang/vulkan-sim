@@ -115,6 +115,123 @@ static bool rtcore_v04_numeric_projection_evidence_enabled() {
     return enabled;
 }
 
+enum rtcore_v04_compact_runtime_event_kind {
+    kCompactShortStackWriteTransfer = 0,
+    kCompactPrivateRuntimeWriteArbitration,
+    kCompactNodeRouteCommitted,
+    kCompactSelectedFetchTargetReady,
+    kCompactShortStackSuccessorAccepted,
+    kCompactShortStackIngressAccepted,
+    kCompactPrimitiveResultCaptured,
+    kCompactInstanceEnterCaptured,
+    kCompactInstanceCommitReady,
+    kCompactPrimitiveCommitReady,
+    kCompactShortStackReturnInstanceReads,
+    kCompactGlobal384PrivateRuntimeWriteAck,
+    kCompactRuntimeEventCount
+};
+
+struct rtcore_v04_compact_runtime_log_state {
+    bool enabled;
+    unsigned long long event_counts[kCompactRuntimeEventCount];
+    unsigned node_ready;
+    unsigned node_pipeline_active;
+    unsigned node_result_active;
+    unsigned primitive_ready;
+    unsigned primitive_units_active;
+    unsigned primitive_units_executing;
+    unsigned primitive_units_output_pending;
+    unsigned instance_ready;
+    unsigned instance_pipeline_active;
+    unsigned stack_ready;
+    unsigned stack_pipeline_active;
+    unsigned short_stack_active_operations;
+    unsigned short_stack_ready_results;
+
+    rtcore_v04_compact_runtime_log_state()
+        : enabled(false), node_ready(0), node_pipeline_active(0),
+          node_result_active(0), primitive_ready(0),
+          primitive_units_active(0), primitive_units_executing(0),
+          primitive_units_output_pending(0), instance_ready(0),
+          instance_pipeline_active(0), stack_ready(0),
+          stack_pipeline_active(0), short_stack_active_operations(0),
+          short_stack_ready_results(0) {
+        memset(event_counts, 0, sizeof(event_counts));
+        const char *value =
+            getenv("VULKAN_SIM_RTCORE_V04_COMPACT_RUNTIME_LOG");
+        enabled = value && strcmp(value, "1") == 0;
+        if (enabled) {
+            printf("GPGPU-Sim RTCORE_V04_COMPACT_RUNTIME_LOG_ACTIVE "
+                   "enabled=1\n");
+        }
+    }
+
+    ~rtcore_v04_compact_runtime_log_state() {
+        if (!enabled) return;
+        static const char *labels[kCompactRuntimeEventCount] = {
+            "short_stack_write_transfer",
+            "private_runtime_write_arbitration",
+            "node_route_committed",
+            "selected_fetch_target_ready",
+            "short_stack_successor_accepted",
+            "short_stack_ingress_accepted",
+            "primitive_result_captured",
+            "instance_enter_captured",
+            "instance_commit_ready",
+            "primitive_commit_ready",
+            "short_stack_return_instance_reads",
+            "global384_private_runtime_write_ack",
+        };
+        for (unsigned index = 0; index < kCompactRuntimeEventCount;
+             ++index) {
+            printf("GPGPU-Sim RTCORE_V04_COMPACT_RUNTIME_EVENT_COUNT "
+                   "label=%s count=%llu\n",
+                   labels[index], event_counts[index]);
+        }
+        printf("GPGPU-Sim RTCORE_V04_COMPACT_RUNTIME_OCCUPANCY_MAX "
+               "unit=node node_ready=%u pipeline_active=%u "
+               "result_active=%u\n",
+               node_ready, node_pipeline_active, node_result_active);
+        printf("GPGPU-Sim RTCORE_V04_COMPACT_RUNTIME_OCCUPANCY_MAX "
+               "unit=primitive primitive_ready=%u units_active=%u "
+               "units_executing=%u units_output_pending=%u\n",
+               primitive_ready, primitive_units_active,
+               primitive_units_executing,
+               primitive_units_output_pending);
+        printf("GPGPU-Sim RTCORE_V04_COMPACT_RUNTIME_OCCUPANCY_MAX "
+               "unit=instance instance_ready=%u pipeline_active=%u\n",
+               instance_ready, instance_pipeline_active);
+        printf("GPGPU-Sim RTCORE_V04_COMPACT_RUNTIME_OCCUPANCY_MAX "
+               "unit=stack stack_ready=%u pipeline_active=%u\n",
+               stack_ready, stack_pipeline_active);
+        printf("GPGPU-Sim RTCORE_V04_COMPACT_RUNTIME_OCCUPANCY_MAX "
+               "unit=short_stack active_operations=%u ready_results=%u\n",
+               short_stack_active_operations,
+               short_stack_ready_results);
+        fflush(stdout);
+    }
+};
+
+static rtcore_v04_compact_runtime_log_state &
+rtcore_v04_compact_runtime_log_state_value() {
+    static rtcore_v04_compact_runtime_log_state state;
+    return state;
+}
+
+static bool rtcore_v04_compact_runtime_logging_enabled() {
+    return rtcore_v04_compact_runtime_log_state_value().enabled;
+}
+
+static void rtcore_v04_record_compact_runtime_event(
+    rtcore_v04_compact_runtime_event_kind kind) {
+    ++rtcore_v04_compact_runtime_log_state_value().event_counts[kind];
+}
+
+static void rtcore_v04_update_compact_max(unsigned *target,
+                                           unsigned value) {
+    if (value > *target) *target = value;
+}
+
 static bool rtcore_standalone_cuda_memory_enabled() {
     static int enabled = []() {
         const char *value = getenv("VULKAN_SIM_STANDALONE_CUDA_MEMORY");
@@ -7434,7 +7551,11 @@ extern "C" bool rtcore_complete_v04_global384_private_runtime_write(
         staged_timing;
     rtcore_record_v04_global384_semantic_last_arrival(
         snapshot, completion_cycle);
-    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_RUNTIME_WRITE_ACK "
+    if (rtcore_v04_compact_runtime_logging_enabled()) {
+        rtcore_v04_record_compact_runtime_event(
+            kCompactGlobal384PrivateRuntimeWriteAck);
+    } else {
+        printf("GPGPU-Sim RTCORE_V04_GLOBAL384_PRIVATE_RUNTIME_WRITE_ACK "
            "owner_hw_sid=%u request_identity=%u request_generation=%u "
            "resident_warp_slot=%u lane_id=%u private_slot_id=%u "
            "producer_operation_seq=%u commit_epoch=%u memory_op_seq=%u "
@@ -7448,8 +7569,9 @@ extern "C" bool rtcore_complete_v04_global384_private_runtime_write(
            write.chunk_id, write.chunk_count, write.field_kind,
            snapshot->aligned_32b_addr, snapshot->byte_mask,
            short_owns ? "short_stack" : "primitive",
-           completion_cycle);
-    fflush(stdout);
+               completion_cycle);
+        fflush(stdout);
+    }
     return true;
 }
 
@@ -21049,7 +21171,11 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
         rtcore::v04::conservation::kEventTargetReady,
         packet.owner, packet.target_operation_seq, 0, 0, 0, 0,
         packet.target_kind, ready_cycle);
-    printf("GPGPU-Sim RTCORE_V04_SELECTED_FETCH_TARGET_READY "
+    if (rtcore_v04_compact_runtime_logging_enabled()) {
+        rtcore_v04_record_compact_runtime_event(
+            kCompactSelectedFetchTargetReady);
+    } else {
+        printf("GPGPU-Sim RTCORE_V04_SELECTED_FETCH_TARGET_READY "
            "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
            "request_identity=%u request_generation=%u "
            "target_operation_seq=%u reservation_id=%llu "
@@ -21070,8 +21196,9 @@ static void rtcore_maybe_publish_v04_selected_fetch_ready(
                static_cast<
                    rtcore::v04::private_storage::profile_kind>(
                    packet.private_storage_profile)),
-           ready_cycle);
-    fflush(stdout);
+               ready_cycle);
+        fflush(stdout);
+    }
 }
 
 extern "C" bool rtcore_accept_v04_target_raw_read_response(
@@ -22356,7 +22483,11 @@ rtcore_accept_v04_short_stack_node_route(
     route->next_target_kind =
         node_timing::kMaterializedRouteTargetStackOperation;
     route->next_target_materialized = 1;
-    printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_INGRESS_ACCEPTED "
+    if (rtcore_v04_compact_runtime_logging_enabled()) {
+        rtcore_v04_record_compact_runtime_event(
+            kCompactShortStackIngressAccepted);
+    } else {
+        printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_INGRESS_ACCEPTED "
            "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
            "request_identity=%u request_generation=%u "
            "producer_operation_seq=%u short_operation_seq=%u "
@@ -22377,8 +22508,9 @@ rtcore_accept_v04_short_stack_node_route(
            resident_private_storage_profile,
            static_cast<unsigned long long>(
                input.private_slot_base_address),
-           request_plan.request_count, context->service_cycle);
-    fflush(stdout);
+               request_plan.request_count, context->service_cycle);
+        fflush(stdout);
+    }
     return node_timing::kRouteSinkAccepted;
 }
 
@@ -22949,7 +23081,11 @@ static bool rtcore_service_v04_live_node_timing(
          ++index) {
         const node_timing::committed_route_receipt_v0 &receipt =
             result.committed_routes[index];
-        printf("GPGPU-Sim RTCORE_V04_LIVE_NODE_ROUTE_COMMITTED "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_record_compact_runtime_event(
+                kCompactNodeRouteCommitted);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_LIVE_NODE_ROUTE_COMMITTED "
                "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
                "request_identity=%u request_generation=%u "
                "target_operation_seq=%u reservation_id=%llu "
@@ -22991,13 +23127,26 @@ static bool rtcore_service_v04_live_node_timing(
                            .private_storage_profile)),
                receipt.next_target_materialized,
                receipt.next_target_operation_seq,
-               receipt.next_target_kind);
-        fflush(stdout);
+                   receipt.next_target_kind);
+            fflush(stdout);
+        }
     }
     if (result.issued_count != 0 ||
         result.captured_result_count != 0 ||
         result.committed_route_count != 0) {
-        printf("GPGPU-Sim RTCORE_V04_LIVE_NODE_TIMING_CYCLE "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_compact_runtime_log_state &compact =
+                rtcore_v04_compact_runtime_log_state_value();
+            rtcore_v04_update_compact_max(
+                &compact.node_pipeline_active,
+                result.active_pipeline_entries);
+            rtcore_v04_update_compact_max(
+                &compact.node_result_active,
+                result.active_result_entries);
+            rtcore_v04_update_compact_max(
+                &compact.node_ready, result.ready_node_entries);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_LIVE_NODE_TIMING_CYCLE "
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
                "captured=%u committed=%u stall_mask=0x%02x "
                "pipeline_active=%u result_active=%u node_ready=%u "
@@ -23015,8 +23164,9 @@ static bool rtcore_service_v04_live_node_timing(
                timing_state.config.node_initiation_interval,
                timing_state.config.node_issue_width,
                timing_state.config.result_commit_capacity,
-               timing_state.config.result_commit_width);
-        fflush(stdout);
+                   timing_state.config.result_commit_width);
+            fflush(stdout);
+        }
     }
     return result.issued_count != 0 ||
            result.captured_result_count != 0 ||
@@ -23247,15 +23397,20 @@ static bool rtcore_service_v04_live_short_stack_timing(
         const rtcore_memory_unit_request_snapshot &first =
             return_reads.requests[0];
         return_reads_issued = true;
-        printf("GPGPU-Sim "
-               "RTCORE_V04_SHORT_STACK_RETURN_INSTANCE_READS "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_record_compact_runtime_event(
+                kCompactShortStackReturnInstanceReads);
+        } else {
+            printf("GPGPU-Sim "
+                   "RTCORE_V04_SHORT_STACK_RETURN_INSTANCE_READS "
                "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
                "operation_seq=%u global_reads=%u issue_cycle=%llu\n",
                first.owner_hw_sid, first.resident_warp_id,
                first.lane_id,
                first.v04_stack_private_read.target_operation_seq,
-               return_reads.request_count, service_cycle);
-        fflush(stdout);
+                   return_reads.request_count, service_cycle);
+            fflush(stdout);
+        }
     }
     fetch_target::engine_state_v0 staged_target =
         rtcore_v04_live_target_engine_for(owner_hw_sid);
@@ -23437,8 +23592,12 @@ static bool rtcore_service_v04_live_short_stack_timing(
                     ready.owner, accepted.target_operation_seq,
                     0, 0, 0, 0, accepted.target_kind,
                     service_cycle);
-                printf("GPGPU-Sim "
-                       "RTCORE_V04_SHORT_STACK_SUCCESSOR_ACCEPTED "
+                if (rtcore_v04_compact_runtime_logging_enabled()) {
+                    rtcore_v04_record_compact_runtime_event(
+                        kCompactShortStackSuccessorAccepted);
+                } else {
+                    printf("GPGPU-Sim "
+                           "RTCORE_V04_SHORT_STACK_SUCCESSOR_ACCEPTED "
                        "owner_hw_sid=%u resident_warp_slot=%u "
                        "lane_id=%u short_operation_seq=%u "
                        "target_operation_seq=%u target_kind=%u "
@@ -23466,8 +23625,9 @@ static bool rtcore_service_v04_live_short_stack_timing(
                                accepted.private_storage_profile)),
                        ready.transition.replay_cursor.anchor_valid,
                        ready.transition.pending_parent_resume_valid,
-                       service_cycle);
-                fflush(stdout);
+                           service_cycle);
+                    fflush(stdout);
+                }
             }
         } else if (ready.transition.terminal != 0 &&
                    ready.transition.selected_valid == 0) {
@@ -23592,7 +23752,17 @@ static bool rtcore_service_v04_live_short_stack_timing(
         return_reads_issued ||
         successor_accepted || terminal_accepted ||
         successor_backpressured) {
-        printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_CYCLE "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_compact_runtime_log_state &compact =
+                rtcore_v04_compact_runtime_log_state_value();
+            rtcore_v04_update_compact_max(
+                &compact.short_stack_active_operations,
+                cycle_result.active_operations);
+            rtcore_v04_update_compact_max(
+                &compact.short_stack_ready_results,
+                cycle_result.ready_results);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_TIMING_CYCLE "
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
                "transition_committed=%u parent_lookup_completed=%u "
                "return_instance_requested=%u "
@@ -23611,8 +23781,9 @@ static bool rtcore_service_v04_live_short_stack_timing(
                successor_backpressured ? 1u : 0u,
                terminal_accepted ? 1u : 0u,
                cycle_result.active_operations,
-               cycle_result.ready_results);
-        fflush(stdout);
+                   cycle_result.ready_results);
+            fflush(stdout);
+        }
     }
     return cycle_result.issued != 0 ||
            cycle_result.transition_committed != 0 ||
@@ -23701,15 +23872,20 @@ static unsigned rtcore_service_v04_live_short_stack_write_transfer(
     const unsigned writes_enqueued =
         global_writes_enqueued + shared_writes_enqueued;
     if (writes_enqueued != 0 || shared_queue_blocked) {
-        printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_WRITE_TRANSFER "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_record_compact_runtime_event(
+                kCompactShortStackWriteTransfer);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_SHORT_STACK_WRITE_TRANSFER "
                "owner_hw_sid=%u service_cycle=%llu budget=%u "
                "global_writes_enqueued=%u "
                "shared_writes_enqueued=%u writes_enqueued=%u "
                "shared_queue_blocked=%u\n",
                owner_hw_sid, service_cycle, transfer_budget,
                global_writes_enqueued, shared_writes_enqueued,
-               writes_enqueued, shared_queue_blocked ? 1u : 0u);
-        fflush(stdout);
+                   writes_enqueued, shared_queue_blocked ? 1u : 0u);
+            fflush(stdout);
+        }
     }
     return writes_enqueued;
 }
@@ -25363,7 +25539,16 @@ static bool rtcore_service_v04_live_stack_timing(
         result.captured_result_count != 0 ||
         transferred != 0 || runtime_acks_already_consumed != 0 ||
         ready_progressed) {
-        printf("GPGPU-Sim RTCORE_V04_LIVE_STACK_TIMING_CYCLE "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_compact_runtime_log_state &compact =
+                rtcore_v04_compact_runtime_log_state_value();
+            rtcore_v04_update_compact_max(
+                &compact.stack_pipeline_active,
+                result.active_pipeline_entries);
+            rtcore_v04_update_compact_max(
+                &compact.stack_ready, result.ready_stack_entries);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_LIVE_STACK_TIMING_CYCLE "
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
                "captured=%u writes_transferred=%u acks=%u "
                "commit_ready=%u stall_mask=0x%02x "
@@ -25382,8 +25567,9 @@ static bool rtcore_service_v04_live_stack_timing(
                timing_state.config.stack_initiation_interval,
                timing_state.config.stack_issue_width,
                rtcore_v04_live_stack_commit_for(owner_hw_sid)
-                   .config.result_commit_capacity);
-        fflush(stdout);
+                       .config.result_commit_capacity);
+            fflush(stdout);
+        }
     }
     return result.issued_count != 0 ||
            result.captured_result_count != 0 ||
@@ -26125,7 +26311,11 @@ static bool rtcore_service_v04_live_instance_ready(
             short_stack_requests.requests +
                 short_stack_requests.request_count);
     }
-    printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_COMMIT_READY "
+    if (rtcore_v04_compact_runtime_logging_enabled()) {
+        rtcore_v04_record_compact_runtime_event(
+            kCompactInstanceCommitReady);
+    } else {
+        printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_COMMIT_READY "
            "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
            "producer_operation_seq=%u commit_epoch=%u "
            "target_operation_seq=%u route=%s "
@@ -26134,8 +26324,9 @@ static bool rtcore_service_v04_live_instance_ready(
            owner_hw_sid, event.owner.resident_warp_id,
            event.owner.lane_id, event.producer_operation_seq,
            event.commit_epoch, event.target_operation_seq, route_name,
-           raw_read_count, private_read_count, service_cycle);
-    fflush(stdout);
+               raw_read_count, private_read_count, service_cycle);
+        fflush(stdout);
+    }
     return true;
 }
 
@@ -26297,7 +26488,11 @@ static bool rtcore_service_v04_live_instance_timing(
          ++captured_index) {
         const instance_timing::completed_enter_receipt_v0 &enter =
             result.completed_enters[captured_index];
-        printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_ENTER_CAPTURED "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_record_compact_runtime_event(
+                kCompactInstanceEnterCaptured);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_ENTER_CAPTURED "
                "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
                "producer_operation_seq=%u commit_epoch=%u "
                "target_operation_seq=%u operator_invocations=%u "
@@ -26318,13 +26513,24 @@ static bool rtcore_service_v04_live_instance_timing(
                static_cast<unsigned long long>(enter.capture_cycle),
                static_cast<unsigned long long>(
                    enter.result_ready_cycle - enter.issue_cycle));
-        fflush(stdout);
+            fflush(stdout);
+        }
     }
     if (result.issued_count != 0 ||
         result.captured_result_count != 0 ||
         runtime_acks_already_consumed != 0 ||
         ready_progressed) {
-        printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_TIMING_CYCLE "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_compact_runtime_log_state &compact =
+                rtcore_v04_compact_runtime_log_state_value();
+            rtcore_v04_update_compact_max(
+                &compact.instance_pipeline_active,
+                result.active_pipeline_entries);
+            rtcore_v04_update_compact_max(
+                &compact.instance_ready,
+                result.ready_instance_entries);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_TIMING_CYCLE "
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
                "captured=%u captured_restore=%u captured_enter=%u "
                "acks=%u commit_ready=%u "
@@ -26345,8 +26551,9 @@ static bool rtcore_service_v04_live_instance_timing(
                timing_state.config.instance_initiation_interval,
                timing_state.config.instance_issue_width,
                rtcore_v04_live_instance_shared_for(owner_hw_sid)
-                   .config.result_commit_capacity);
-        fflush(stdout);
+                       .config.result_commit_capacity);
+            fflush(stdout);
+        }
     }
     return result.issued_count != 0 ||
            result.captured_result_count != 0 ||
@@ -27662,7 +27869,11 @@ static bool rtcore_service_v04_live_primitive_ready(
         (void)rtcore_try_commit_v04_native_continuation_resubmit(
             native_resubmit_record, service_cycle);
     }
-    printf("GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_COMMIT_READY "
+    if (rtcore_v04_compact_runtime_logging_enabled()) {
+        rtcore_v04_record_compact_runtime_event(
+            kCompactPrimitiveCommitReady);
+    } else {
+        printf("GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_COMMIT_READY "
            "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
            "producer_operation_seq=%u commit_epoch=%u "
            "target_operation_seq=%u route=%s "
@@ -27674,8 +27885,9 @@ static bool rtcore_service_v04_live_primitive_ready(
            route_name,
            primitive_shared::boundary_receipt_count(
                staged_primitive),
-           service_cycle);
-    fflush(stdout);
+               service_cycle);
+        fflush(stdout);
+    }
     return true;
 }
 
@@ -27827,7 +28039,11 @@ static bool rtcore_service_v04_live_primitive_timing(
          index < result.captured_result_count; ++index) {
         const primitive_timing::completed_receipt_v0 &completed =
             result.completed[index];
-        printf("GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_RESULT_CAPTURED "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_record_compact_runtime_event(
+                kCompactPrimitiveResultCaptured);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_RESULT_CAPTURED "
                "owner_hw_sid=%u resident_warp_slot=%u lane_id=%u "
                "producer_operation_seq=%u commit_epoch=%u "
                "target_operation_seq=%u unit=%u "
@@ -27852,14 +28068,31 @@ static bool rtcore_service_v04_live_primitive_timing(
                    completed.capture_cycle),
                static_cast<unsigned long long>(
                    completed.result_ready_cycle -
-                   completed.issue_cycle));
-        fflush(stdout);
+                       completed.issue_cycle));
+            fflush(stdout);
+        }
     }
     if (result.issued_count != 0 ||
         result.captured_result_count != 0 ||
         runtime_acks_already_consumed != 0 ||
         ready_progressed || native_return_ingress_progressed) {
-        printf("GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_TIMING_CYCLE "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_compact_runtime_log_state &compact =
+                rtcore_v04_compact_runtime_log_state_value();
+            rtcore_v04_update_compact_max(
+                &compact.primitive_units_active,
+                result.active_unit_count);
+            rtcore_v04_update_compact_max(
+                &compact.primitive_units_executing,
+                result.executing_unit_count);
+            rtcore_v04_update_compact_max(
+                &compact.primitive_units_output_pending,
+                result.output_pending_count);
+            rtcore_v04_update_compact_max(
+                &compact.primitive_ready,
+                result.ready_primitive_entries);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_LIVE_PRIMITIVE_TIMING_CYCLE "
                "owner_hw_sid=%u service_cycle=%llu issued=%u "
                "captured=%u acks=%u commit_ready=%u "
                "stall_mask=0x%02x units_active=%u "
@@ -27884,8 +28117,9 @@ static bool rtcore_service_v04_live_primitive_timing(
                rtcore_v04_live_primitive_shared_for(owner_hw_sid)
                    .config.result_commit_capacity,
                rtcore_v04_live_primitive_shared_for(owner_hw_sid)
-                   .config.boundary_capacity);
-        fflush(stdout);
+                       .config.boundary_capacity);
+            fflush(stdout);
+        }
     }
     return result.issued_count != 0 ||
            result.captured_result_count != 0 ||
@@ -29555,7 +29789,11 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
             &primitive_writes_transferred,
             &short_stack_writes_transferred);
     if (runtime_writes_transferred != 0) {
-        printf("GPGPU-Sim RTCORE_V04_PRIVATE_RUNTIME_WRITE_ARBITRATION "
+        if (rtcore_v04_compact_runtime_logging_enabled()) {
+            rtcore_v04_record_compact_runtime_event(
+                kCompactPrivateRuntimeWriteArbitration);
+        } else {
+            printf("GPGPU-Sim RTCORE_V04_PRIVATE_RUNTIME_WRITE_ARBITRATION "
                "owner_hw_sid=%u service_cycle=%llu budget=%u "
                "stack_transferred=%u instance_transferred=%u "
                "primitive_transferred=%u "
@@ -29566,8 +29804,9 @@ rtcore_service_replay_cycle_for_sm_with_identity_and_memory_unit(
                instance_writes_transferred,
                primitive_writes_transferred,
                short_stack_writes_transferred,
-               runtime_writes_transferred);
-        fflush(stdout);
+                   runtime_writes_transferred);
+            fflush(stdout);
+        }
     }
     if (v04_live_node_progressed ||
         v04_live_short_stack_progressed ||
