@@ -27408,6 +27408,24 @@ static bool rtcore_service_v04_live_primitive_ready(
                 event.target_operation_seq;
             input.operation_kind =
                 short_timing::kOperationResumeTransition;
+            const timing_driver::lane_control_state_v0 *lane_control =
+                timing_driver::find_live_lane_control(
+                    staged_timing, owner);
+            if (lane_control == NULL) {
+                fprintf(
+                    stderr,
+                    "GPGPU-Sim "
+                    "RTCORE_V04_LIVE_PRIMITIVE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=lane_control_missing\n",
+                    owner_hw_sid, service_cycle);
+                fflush(stderr);
+                abort();
+            }
+            input.recovery_target_inflight =
+                lane_control->private_recovery_target_inflight;
+            input.recovery_target_completed =
+                lane_control->private_recovery_target_inflight;
             short_timing::reservation_receipt_v0 reservation = {};
             const bool private_state_384 =
                 event.private_storage_profile ==

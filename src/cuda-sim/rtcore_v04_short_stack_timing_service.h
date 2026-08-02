@@ -106,6 +106,7 @@ struct reservation_input_v0 {
   uint8_t private_storage_profile;
   uint8_t recovery_target_inflight;
   uint8_t deferred_instance_valid;
+  uint8_t recovery_target_completed;
 };
 
 struct reservation_receipt_v0 {

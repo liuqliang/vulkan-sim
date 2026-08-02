@@ -705,6 +705,7 @@ bool valid_operation_input(const reservation_input_v0 &input,
       input.pending_parent_resume_valid > 1 ||
       input.recovery_target_inflight > 1 ||
       input.deferred_instance_valid > 1 ||
+      input.recovery_target_completed > 1 ||
       (input.private_storage_profile !=
            private_storage::kProfileLegacyShared832 &&
        input.private_storage_profile !=
@@ -727,13 +728,16 @@ bool valid_operation_input(const reservation_input_v0 &input,
     return false;
   }
   if (input.operation_kind == kOperationNodeTransition) {
-    return !existing_target;
+    return !existing_target && input.recovery_target_completed == 0;
   }
   if (input.operation_kind == kOperationResumeTransition) {
-    return existing_target && input.deferred_instance_valid == 0;
+    return existing_target && input.deferred_instance_valid == 0 &&
+           (input.recovery_target_completed == 0 ||
+            input.recovery_target_inflight != 0);
   }
   if (input.operation_kind == kOperationEnterBlasTransition) {
     return existing_target && input.blas_build_generation != 0 &&
+           input.recovery_target_completed == 0 &&
            (input.private_storage_profile ==
                     private_storage::kProfileLegacyShared832 ||
             input.deferred_instance_valid == 1);
@@ -2086,6 +2090,8 @@ status_kind service_cycle(
         transition_input.persistent_state
             .recovery_target_inflight =
             entry.input.recovery_target_inflight;
+        transition_input.recovery_target_completed =
+            entry.input.recovery_target_completed;
         transition_input.active_decode_context =
             entry.private_state_384_stack_operands
                 .active_decode_context;

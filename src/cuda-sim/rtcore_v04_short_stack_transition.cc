@@ -368,6 +368,7 @@ static status_kind prepare_resume_transition_impl(
     result_v0 *result) {
   if (result == NULL || input.parent_restore_valid > 1 ||
       input.parent_edge_valid > 1 ||
+      input.recovery_target_completed > 1 ||
       !bytes_are_zero(input.reserved_zero,
                       sizeof(input.reserved_zero))) {
     return kStatusInvalidArgument;
@@ -379,6 +380,19 @@ static status_kind prepare_resume_transition_impl(
     return kStatusPrivateStateRejected;
   }
   if (persistent.recovery_target_inflight != 0) {
+    if (input.recovery_target_completed == 0 ||
+        !short_stack::validate_drained_recovery_state(
+            persistent.stack)) {
+      return kStatusShortStackRejected;
+    }
+    // Only a unit-completion producer may consume the selected recovery
+    // target. A generic resume without that evidence remains fail-closed.
+    persistent.stack.lost = 0;
+    persistent.recovery_target_inflight = 0;
+    if (!short_stack_shared::validate_persistent_state(persistent)) {
+      return kStatusShortStackRejected;
+    }
+  } else if (input.recovery_target_completed != 0) {
     return kStatusShortStackRejected;
   }
   const uint32_t build_generation =

@@ -73,7 +73,8 @@ struct resume_operands_input_v1 {
   short_stack::parent_edge_v0 parent_edge;
   uint8_t parent_restore_valid;
   uint8_t parent_edge_valid;
-  uint8_t reserved_zero[6];
+  uint8_t recovery_target_completed;
+  uint8_t reserved_zero[5];
 };
 
 struct enter_blas_input_v0 {
