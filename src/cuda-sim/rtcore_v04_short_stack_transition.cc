@@ -597,7 +597,15 @@ static status_kind prepare_enter_blas_transition_impl(
     return kStatusPrivateStateRejected;
   }
   if (persistent.recovery_target_inflight != 0) {
-    return kStatusShortStackRejected;
+    if (!short_stack::validate_drained_recovery_state(
+            persistent.stack)) {
+      return kStatusShortStackRejected;
+    }
+    // The current TLAS instance is the in-flight recovery target. Entering its
+    // BLAS consumes that target and replaces the drained recovery marker with
+    // a protected cross-AS return entry.
+    persistent.stack.lost = 0;
+    persistent.recovery_target_inflight = 0;
   }
   if (persistent.stack.active_domain != short_stack::kDomainTlas ||
       persistent.stack.cross_as != 0 ||

@@ -25829,6 +25829,20 @@ static bool rtcore_service_v04_live_instance_ready(
             event.producer_operation_seq;
         input.producer_commit_epoch = event.commit_epoch;
         input.target_operation_seq = event.target_operation_seq;
+        const timing_driver::lane_control_state_v0 *lane_control =
+            timing_driver::find_live_lane_control(
+                staged_timing, owner);
+        if (lane_control == NULL) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_LIVE_INSTANCE_READY_FAULT "
+                    "owner_hw_sid=%u service_cycle=%llu "
+                    "fault=lane_control_missing\n",
+                    owner_hw_sid, service_cycle);
+            fflush(stderr);
+            abort();
+        }
+        input.recovery_target_inflight =
+            lane_control->private_recovery_target_inflight;
         if (event.route_kind ==
             instance_semantic::kRouteStackPopNext) {
             input.operation_kind =
