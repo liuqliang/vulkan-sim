@@ -16475,13 +16475,21 @@ static bool rtcore_v04_make_global384_bind_material(
 
 static bool rtcore_v04_make_global384_retire_release_material(
     const rtcore_symbolic_retire_transaction &transaction,
-    rtcore_v04_global384_bind_material *material) {
-  if (material == NULL || !transaction.valid || !transaction.claimed ||
-      transaction.active_mask == 0 ||
-      transaction.seen_lane_mask != transaction.active_mask ||
-      transaction.validated_lane_mask != transaction.active_mask) {
+    rtcore_v04_global384_bind_material *material,
+    const char **failure_reason) {
+  if (failure_reason != NULL) *failure_reason = "accepted";
+  const auto reject = [failure_reason](const char *reason) {
+    if (failure_reason != NULL) *failure_reason = reason;
     return false;
-  }
+  };
+  if (material == NULL) return reject("material_missing");
+  if (!transaction.valid) return reject("transaction_invalid");
+  if (!transaction.claimed) return reject("transaction_not_claimed");
+  if (transaction.active_mask == 0) return reject("active_mask_empty");
+  if (transaction.seen_lane_mask != transaction.active_mask)
+    return reject("seen_lane_mask_mismatch");
+  if (transaction.validated_lane_mask != transaction.active_mask)
+    return reject("validated_lane_mask_mismatch");
   *material = rtcore_v04_global384_bind_material();
   bool have_common = false;
   unsigned long long common_context_allocation_base = 0;
@@ -16492,18 +16500,22 @@ static bool rtcore_v04_make_global384_retire_release_material(
     const rtcore_runtime_context_window_allocation_record &allocation =
         intent.allocation_record;
     unsigned long long context_allocation_base = 0;
-    if (!intent.valid || !allocation.enabled || !allocation.valid ||
-        allocation.lane_slot_index != lane ||
-        allocation.context_ptr != intent.context_ptr ||
-        allocation.handoff_window_base != intent.handoff_window_base ||
-        allocation.context_window_index >
-            std::numeric_limits<uint32_t>::max() ||
-        !rtcore_v04_checked_allocation_base(
+    if (!intent.valid) return reject("lane_intent_invalid");
+    if (!allocation.enabled) return reject("allocation_disabled");
+    if (!allocation.valid) return reject("allocation_invalid");
+    if (allocation.lane_slot_index != lane)
+      return reject("allocation_lane_slot_mismatch");
+    if (allocation.context_ptr != intent.context_ptr)
+      return reject("allocation_context_ptr_mismatch");
+    if (allocation.handoff_window_base != intent.handoff_window_base)
+      return reject("allocation_handoff_base_mismatch");
+    if (allocation.context_window_index >
+        std::numeric_limits<uint32_t>::max())
+      return reject("allocation_window_index_overflow");
+    if (!rtcore_v04_checked_allocation_base(
             allocation.context_base, allocation.context_window_index,
-            allocation.context_allocation_bytes,
-            &context_allocation_base)) {
-      return false;
-    }
+            allocation.context_allocation_bytes, &context_allocation_base))
+      return reject("allocation_context_base_invalid");
     if (!have_common) {
       common = allocation;
       common_context_allocation_base = context_allocation_base;
@@ -16524,10 +16536,10 @@ static bool rtcore_v04_make_global384_retire_release_material(
                allocation.capacity_lane_slots !=
                    common.capacity_lane_slots ||
                allocation.owner_generation != common.owner_generation) {
-      return false;
+      return reject("allocation_geometry_mismatch");
     }
   }
-  if (!have_common) return false;
+  if (!have_common) return reject("common_allocation_missing");
 
   const uint32_t owned_words =
       rtcore::abi_v04::shadow::trace_input_owned_word_mask();
@@ -36996,16 +37008,26 @@ rtcore_service_v04_global384_retire_live_release(
     unsigned owner_hw_sid, unsigned retire_warp_uid,
     unsigned warp_id, unsigned resident_warp_generation,
     unsigned active_mask, unsigned long long service_cycle) {
+  const auto reject = [&](const char *failure) {
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_RETIRE_LIVE_RELEASE "
+           "owner_hw_sid=%u retire_warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x resident_generation=%u "
+           "service_cycle=%llu preflight_status=%s result=fault\n",
+           owner_hw_sid, retire_warp_uid, warp_id, active_mask,
+           resident_warp_generation, service_cycle, failure);
+    fflush(stdout);
+    return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
+  };
   bool global384 = false;
   if (!rtcore_v04_global384_profile_selected(&global384)) {
-    return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
+    return reject("profile_lookup_failed");
   }
   if (!global384) return RTCORE_V04_RETIRE_LIVE_RELEASE_NOT_APPLICABLE;
-  if (!rtcore_v04_functional_only_engine_gate_active() ||
-      !rtcore_v04_root_node_input_gate_active() ||
-      resident_warp_generation == 0 || active_mask == 0) {
-    return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
-  }
+  if (!rtcore_v04_root_node_input_gate_active())
+    return reject("root_node_input_gate_disabled");
+  if (resident_warp_generation == 0)
+    return reject("resident_generation_missing");
+  if (active_mask == 0) return reject("active_mask_empty");
 
   std::map<unsigned, rtcore_symbolic_retire_transaction>::const_iterator
       transaction =
@@ -37016,12 +37038,20 @@ rtcore_service_v04_global384_retire_live_release(
       transaction->second.warp_uid != retire_warp_uid ||
       transaction->second.warp_id != warp_id ||
       transaction->second.active_mask != active_mask) {
-    return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
+    return reject("retire_transaction_mismatch");
   }
 
   rtcore_v04_global384_bind_material material;
+  const char *material_failure = "accepted";
   if (!rtcore_v04_make_global384_retire_release_material(
-          transaction->second, &material)) {
+          transaction->second, &material, &material_failure)) {
+    printf("GPGPU-Sim RTCORE_V04_GLOBAL384_RETIRE_LIVE_RELEASE "
+           "owner_hw_sid=%u retire_warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x resident_generation=%u "
+           "service_cycle=%llu material_status=%s result=fault\n",
+           owner_hw_sid, retire_warp_uid, warp_id, active_mask,
+           resident_warp_generation, service_cycle, material_failure);
+    fflush(stdout);
     return RTCORE_V04_RETIRE_LIVE_RELEASE_FAULT;
   }
   rtcore::v04::pre_submit_publication::retire_live_release_result_v0 result =

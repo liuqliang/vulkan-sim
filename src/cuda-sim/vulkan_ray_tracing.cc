@@ -17904,7 +17904,9 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
         }
     }
     if (record && strcmp(reason, "accepted") == 0 &&
-        rtcore_v04_private_frontier_live_init_enabled()) {
+        rtcore_v04_private_frontier_live_init_enabled() &&
+        record->v04_private_storage_profile !=
+            rtcore::v04::private_storage::kProfileGlobal384) {
         if (!record->v04_private_frontier_live_init_valid ||
             !record->v04_private_frontier_init_committed) {
             reason = "PRIVATE_FRONTIER_RETIRE_INIT_INCOMPLETE";
@@ -17921,6 +17923,21 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
                     &v04_private_shared_release_plan);
             if (private_status !=
                 rtcore::v04::private_shared::kStatusOk) {
+                const rtcore::v04::private_shared::backing_state_v0 &backing =
+                    rtcore_v04_private_shared_backing_for(owner_hw_sid);
+                fprintf(
+                    stderr,
+                    "GPGPU-Sim RTCORE_V04_PRIVATE_FRONTIER_RETIRE_PREFLIGHT "
+                    "owner_hw_sid=%u requested_warp_uid=%u warp_id=%u "
+                    "resident_warp_slot=%u backing_initialized=%u "
+                    "backing_owner_hw_sid=%u backing_charged_bytes=%u "
+                    "fault=%s\n",
+                    owner_hw_sid, record->current_warp_uid, warp_id,
+                    record->v04_resident_warp_slot,
+                    backing.initialized ? 1u : 0u, backing.owner_hw_sid,
+                    backing.charged_bytes,
+                    rtcore::v04::private_shared::status_name(private_status));
+                fflush(stderr);
                 reason =
                     rtcore::v04::private_shared::status_name(private_status);
             }
@@ -18060,7 +18077,9 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
                     .v04_request_owner_binding_valid = false;
             }
         }
-        if (rtcore_v04_private_frontier_live_init_enabled()) {
+        if (rtcore_v04_private_frontier_live_init_enabled() &&
+            record->v04_private_storage_profile !=
+                rtcore::v04::private_storage::kProfileGlobal384) {
             const rtcore::v04::private_shared::status_kind private_status =
                 rtcore::v04::private_shared::commit_release_warp(
                     &rtcore_v04_private_shared_backing_for(owner_hw_sid),
@@ -27903,8 +27922,14 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
         record->v04_private_storage_profile ==
             rtcore::v04::private_storage::
                 kProfileCompressedShared384;
+    const bool global_private_state =
+        record != NULL &&
+        record->v04_private_storage_profile ==
+            rtcore::v04::private_storage::kProfileGlobal384;
+    const bool private_state_384 =
+        compressed_private_state || global_private_state;
     const private_shared::lane_slot_state_v0 *private_lane =
-        compressed_private_state
+        private_state_384
             ? NULL
             : private_shared::find_live_lane(
                   rtcore_v04_private_shared_backing_for(owner_hw_sid),
@@ -27915,7 +27940,7 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
             terminal.owner, &authority) ||
         !authority.valid || authority.memory_backing == NULL ||
         authority.handoff_window_base == 0 ||
-        (!compressed_private_state &&
+        (!private_state_384 &&
          (private_lane == NULL ||
           private_frontier::decode_committed_hit(
               private_lane->canonical_slot, private_owner,
@@ -27933,7 +27958,7 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
 
     rtcore_v04_private_boundary_read_state *private_read =
         &record->v04_private_boundary_reads[terminal.owner.lane_id];
-    if (compressed_private_state && !private_read->valid) {
+    if (private_state_384 && !private_read->valid) {
         const uint8_t completion_reason =
             terminal.terminal_kind ==
                     timing_driver::kTerminalBoundaryFinalHit
@@ -27950,9 +27975,22 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
             rtcore::v04::private_state_384::
                 kGenRtBvhFormatProfileId;
         input.reservation_generation = terminal.commit_epoch;
-        input.storage_profile =
-            rtcore::v04::private_storage::
-                kProfileCompressedShared384;
+        input.storage_profile = record->v04_private_storage_profile;
+        if (global_private_state &&
+            !rtcore_v04_private_slot_base_for_owner(
+                private_owner, input.storage_profile,
+                &input.private_slot_base_address)) {
+            fprintf(stderr,
+                    "GPGPU-Sim "
+                    "RTCORE_V04_LIVE_STACK_TERMINAL_FAULT "
+                    "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                    "service_cycle=%llu phase=read_plan "
+                    "fault=global_private_slot_base_missing\n",
+                    owner_hw_sid, terminal.owner.packed_request_key,
+                    terminal.owner.lane_id, service_cycle);
+            fflush(stderr);
+            abort();
+        }
         input.consumer =
             operand_plan::kConsumerCompletionPublisher;
         input.operation = operand_plan::kOperationDefault;
@@ -28044,7 +28082,7 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
         fflush(stdout);
         return true;
     }
-    if (compressed_private_state &&
+    if (private_state_384 &&
         (!private_read->valid ||
          private_read->purpose !=
              RTCORE_V04_PRIVATE_BOUNDARY_READ_COMPLETION ||
@@ -28073,7 +28111,7 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
         fflush(stderr);
         abort();
     }
-    if (compressed_private_state) {
+    if (private_state_384) {
         committed_hit =
             private_read->final_completion.committed_hit;
     }
@@ -28158,7 +28196,7 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
     }
 
     record->v04_boundary_completion = staged_completion;
-    if (compressed_private_state) {
+    if (private_state_384) {
         *private_read =
             rtcore_v04_private_boundary_read_state();
     }
