@@ -717,9 +717,7 @@ bool valid_operation_input(const reservation_input_v0 &input,
       (input.private_slot_base_address == 0 ||
        input.private_slot_base_address %
                private_state_384::kChunkBytes !=
-           0 ||
-       (input.operation_kind != kOperationEnterBlasTransition &&
-        input.operation_kind != kOperationResumeTransition))) {
+           0)) {
     return false;
   }
   if (existing_target != (input.target_operation_seq != 0) ||
@@ -1983,7 +1981,9 @@ status_kind service_cycle(
         short_stack_transition::kStatusInvalidArgument;
     if (entry.input.operation_kind == kOperationNodeTransition) {
       if (entry.input.private_storage_profile ==
-          private_storage::kProfileCompressedShared384) {
+              private_storage::kProfileCompressedShared384 ||
+          entry.input.private_storage_profile ==
+              private_storage::kProfileGlobal384) {
         if (entry.private_state_384_operands_valid != 1) {
           return kStatusSharedPlanRejected;
         }
@@ -2160,6 +2160,10 @@ status_kind service_cycle(
     } else if (
         transition_status ==
         short_stack_transition::kStatusReturnInstanceRequired) {
+      if (entry.input.private_storage_profile ==
+          private_storage::kProfileGlobal384) {
+        return kStatusTransitionRejected;
+      }
       entry.transition = transition;
       entry.input.operation_kind = kOperationResumeTransition;
       if (entry.input.private_storage_profile ==

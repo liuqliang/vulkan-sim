@@ -21740,8 +21740,21 @@ rtcore_accept_v04_short_stack_node_route(
     input.private_storage_profile =
         resident_private_storage_profile;
     if (resident_private_storage_profile ==
-            rtcore::v04::private_storage::kProfileGlobal384) {
-        return node_timing::kRouteSinkBackpressure;
+            rtcore::v04::private_storage::kProfileGlobal384 &&
+        !rtcore_v04_private_slot_base_for_owner(
+            route->result_identity.owner,
+            resident_private_storage_profile,
+            &input.private_slot_base_address)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SHORT_STACK_INGRESS_FAULT "
+                "owner_hw_sid=%u lane_id=%u "
+                "producer_operation_seq=%u "
+                "fault=private_slot_base_missing\n",
+                context->owner_hw_sid,
+                route->result_identity.owner.lane_id,
+                route->result_identity.target_operation_seq);
+        fflush(stderr);
+        return node_timing::kRouteSinkRejected;
     }
     const rtcore::v04::timing_driver::lane_control_state_v0 *control =
         rtcore::v04::timing_driver::find_live_lane_control(
@@ -21777,10 +21790,13 @@ rtcore_accept_v04_short_stack_node_route(
         route->pending_parent_resume_valid;
     short_timing::reservation_receipt_v0 reservation = {};
     short_timing::request_plan_v0 request_plan = {};
-    const short_timing::status_kind status =
+    const bool private_state_384 =
         resident_private_storage_profile ==
-                rtcore::v04::private_storage::
-                    kProfileCompressedShared384
+            rtcore::v04::private_storage::kProfileCompressedShared384 ||
+        resident_private_storage_profile ==
+            rtcore::v04::private_storage::kProfileGlobal384;
+    const short_timing::status_kind status =
+        private_state_384
             ? short_timing::reserve_private_state_384(
                   &staged_short, staged_timing_state,
                   rtcore_v04_private_state_384_backing_for(
@@ -21839,7 +21855,9 @@ rtcore_accept_v04_short_stack_node_route(
            "request_identity=%u request_generation=%u "
            "producer_operation_seq=%u short_operation_seq=%u "
            "reservation_id=%llu slot_generation=%u "
-           "shared_reads=%u service_cycle=%llu\n",
+           "private_storage_profile=%u "
+           "private_slot_base=0x%llx private_reads=%u "
+           "service_cycle=%llu\n",
            route->result_identity.owner.owner_hw_sid,
            route->result_identity.owner.resident_warp_id,
            route->result_identity.owner.lane_id,
@@ -21850,6 +21868,9 @@ rtcore_accept_v04_short_stack_node_route(
            static_cast<unsigned long long>(
                reservation.reservation_id),
            reservation.slot_generation,
+           resident_private_storage_profile,
+           static_cast<unsigned long long>(
+               input.private_slot_base_address),
            request_plan.request_count, context->service_cycle);
     fflush(stdout);
     return node_timing::kRouteSinkAccepted;
@@ -22332,16 +22353,19 @@ rtcore_accept_v04_live_node_route(
     namespace result_semantic = rtcore::v04::result_semantic;
     if (route == NULL) return node_timing::kRouteSinkRejected;
     if (route->result_identity.private_storage_profile ==
-            private_storage::kProfileGlobal384) {
-        return route->semantic_plan.route_kind ==
-                       result_semantic::kNodeRouteDirectChild
-                   ? rtcore_accept_v04_direct_selected_fetch_route(
-                         route, staged_timing_state, opaque_context)
-                   : node_timing::kRouteSinkBackpressure;
+            private_storage::kProfileGlobal384 &&
+        route->semantic_plan.route_kind ==
+            result_semantic::kNodeRouteDirectChild) {
+        return rtcore_accept_v04_direct_selected_fetch_route(
+            route, staged_timing_state, opaque_context);
     }
     if (rtcore_v04_live_short_stack_timing_enabled()) {
         return rtcore_accept_v04_short_stack_node_route(
             route, staged_timing_state, opaque_context);
+    }
+    if (route->result_identity.private_storage_profile ==
+        private_storage::kProfileGlobal384) {
+        return node_timing::kRouteSinkBackpressure;
     }
     if (route->semantic_plan.route_kind ==
         result_semantic::kNodeRouteDirectChild) {
