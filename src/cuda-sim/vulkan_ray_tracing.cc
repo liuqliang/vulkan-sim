@@ -1453,6 +1453,14 @@ static bool rtcore_v04_private_storage_charge_matches_resident(
     const private_storage::profile_kind storage_profile =
         static_cast<private_storage::profile_kind>(
             record.v04_private_storage_profile);
+    const private_shared::resident_warp_state_v0 &resident =
+        rtcore_v04_private_shared_backing_for(
+            record.owner_hw_sid)
+            .resident_warps[record.v04_resident_warp_slot];
+    if (storage_profile == private_storage::kProfileGlobal384) {
+        return record.v04_private_storage_charge_bytes_per_lane == 0 &&
+               !resident.live;
+    }
     private_shared::resident_charge_profile_kind
         expected_charge_profile =
             private_shared::kResidentChargeProfileInvalid;
@@ -1477,10 +1485,6 @@ static bool rtcore_v04_private_storage_charge_matches_resident(
             expected_charge) {
         return false;
     }
-    const private_shared::resident_warp_state_v0 &resident =
-        rtcore_v04_private_shared_backing_for(
-            record.owner_hw_sid)
-            .resident_warps[record.v04_resident_warp_slot];
     return resident.live &&
            resident.owner_hw_sid == record.owner_hw_sid &&
            resident.warp_uid == record.current_warp_uid &&
@@ -6021,19 +6025,25 @@ struct rtcore_v04_resubmit_handoff_acquire_state {
     unsigned previous_warp_uid;
     unsigned previous_active_mask;
     unsigned active_mask;
+    unsigned window_generation;
     unsigned long long handoff_base;
     unsigned handoff_lane_stride_bytes;
     unsigned expected_chunks;
     unsigned completed_chunks;
     bool ready_reported;
     unsigned char completed_chunk_mask[32];
+    unsigned char lane_bytes[32][rtcore::abi_v04::kLaneSlotBytes];
+    unsigned lane_request_ids[32];
 
     rtcore_v04_resubmit_handoff_acquire_state()
         : previous_warp_uid(0), previous_active_mask(0), active_mask(0),
-          handoff_base(0), handoff_lane_stride_bytes(0), expected_chunks(0),
+          window_generation(0), handoff_base(0),
+          handoff_lane_stride_bytes(0), expected_chunks(0),
           completed_chunks(0), ready_reported(false)
     {
         memset(completed_chunk_mask, 0, sizeof(completed_chunk_mask));
+        memset(lane_bytes, 0, sizeof(lane_bytes));
+        memset(lane_request_ids, 0, sizeof(lane_request_ids));
     }
 };
 
@@ -6299,9 +6309,16 @@ rtcore_service_v04_global384_resubmit_handoff_acquire_before_issue(
     state.previous_warp_uid = previous_warp_uid;
     state.previous_active_mask = previous_active_mask;
     state.active_mask = active_mask;
+    state.window_generation =
+        staged.front().v04_live_handoff_acquire.window_generation;
     state.handoff_base = handoff_base;
     state.handoff_lane_stride_bytes = handoff_lane_stride_bytes;
     state.expected_chunks = staged.size();
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        if ((active_mask & (1u << lane)) != 0) {
+            state.lane_request_ids[lane] = lane_request_ids[lane];
+        }
+    }
     const rtcore_v04_resubmit_handoff_acquire_key key =
         rtcore_make_v04_resubmit_handoff_acquire_key(
             owner_hw_sid, dynamic_warp_id, warp_id,
@@ -7139,16 +7156,17 @@ extern "C" bool rtcore_complete_v04_global384_private_runtime_write(
     return true;
 }
 
-extern "C" bool
-rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
+static bool rtcore_apply_v04_global384_resubmit_handoff_acquire_chunk(
     const rtcore_memory_unit_request_snapshot *snapshot,
-    unsigned long long completion_cycle)
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long completion_cycle, bool commit)
 {
-    if (snapshot == NULL || !snapshot->valid ||
+    if (snapshot == NULL || !snapshot->valid || response_bytes == NULL ||
+        response_byte_count != RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES ||
         snapshot->v04_live_handoff_acquire.valid != 1 ||
         snapshot->v04_live_handoff_acquire.transaction_kind !=
             RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_RESUBMIT) {
-        return true;
+        return false;
     }
     const rtcore_v04_resubmit_handoff_acquire_key key =
         rtcore_make_v04_resubmit_handoff_acquire_key(
@@ -7160,22 +7178,51 @@ rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
              rtcore_v04_resubmit_handoff_acquire_state>::iterator pending =
         g_rtcore_v04_resubmit_handoff_acquires.find(key);
     if (pending == g_rtcore_v04_resubmit_handoff_acquires.end() ||
+        snapshot->address_space != RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL ||
+        snapshot->operation != RTCORE_MEMORY_OPERATION_READ ||
+        snapshot->is_write ||
+        snapshot->access_kind != RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE ||
+        snapshot->byte_mask != 0xffffffffu ||
         snapshot->lane_id >= 32 || snapshot->chunk_count == 0 ||
         snapshot->chunk_count > 8 ||
         snapshot->chunk_id >= snapshot->chunk_count ||
         pending->second.previous_warp_uid !=
             snapshot->v04_live_handoff_acquire.submit_warp_uid ||
+        pending->second.window_generation !=
+            snapshot->v04_live_handoff_acquire.window_generation ||
+        pending->second.lane_request_ids[snapshot->lane_id] !=
+            snapshot->rt_request_id ||
         pending->second.active_mask !=
             snapshot->v04_live_handoff_acquire.acquire_active_mask ||
-        (pending->second.active_mask & (1u << snapshot->lane_id)) == 0) {
+        (pending->second.active_mask & (1u << snapshot->lane_id)) == 0 ||
+        snapshot->chunk_count !=
+            rtcore::abi_v04::kLaneSlotBytes /
+                RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES ||
+        pending->second.expected_chunks !=
+            static_cast<unsigned>(
+                __builtin_popcount(pending->second.active_mask)) *
+                snapshot->chunk_count ||
+        snapshot->aligned_32b_addr !=
+            pending->second.handoff_base +
+                static_cast<unsigned long long>(snapshot->lane_id) *
+                    pending->second.handoff_lane_stride_bytes +
+                static_cast<unsigned long long>(snapshot->chunk_id) *
+                    RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES) {
         return false;
     }
     const unsigned char chunk_bit =
         static_cast<unsigned char>(1u << snapshot->chunk_id);
     if ((pending->second.completed_chunk_mask[snapshot->lane_id] &
-         chunk_bit) != 0) {
+         chunk_bit) != 0 ||
+        pending->second.completed_chunks >= pending->second.expected_chunks) {
         return false;
     }
+    if (!commit) return true;
+    memcpy(
+        pending->second.lane_bytes[snapshot->lane_id] +
+            snapshot->chunk_id *
+                RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES,
+        response_bytes, response_byte_count);
     pending->second.completed_chunk_mask[snapshot->lane_id] |= chunk_bit;
     pending->second.completed_chunks++;
     if (pending->second.completed_chunks > pending->second.expected_chunks) {
@@ -7194,6 +7241,26 @@ rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
     return true;
 }
 
+extern "C" bool
+rtcore_validate_v04_global384_resubmit_handoff_acquire_chunk(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    const unsigned char *response_bytes, unsigned response_byte_count)
+{
+    return rtcore_apply_v04_global384_resubmit_handoff_acquire_chunk(
+        snapshot, response_bytes, response_byte_count, 0, false);
+}
+
+extern "C" bool
+rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long completion_cycle)
+{
+    return rtcore_apply_v04_global384_resubmit_handoff_acquire_chunk(
+        snapshot, response_bytes, response_byte_count,
+        completion_cycle, true);
+}
+
 static unsigned long long rtcore_v04_handoff_payload_hash(
     const unsigned char *bytes, unsigned byte_count)
 {
@@ -7205,11 +7272,10 @@ static unsigned long long rtcore_v04_handoff_payload_hash(
     return hash;
 }
 
-extern "C" bool
-rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
+static bool rtcore_apply_v04_global384_initial_handoff_acquire_chunk(
     const rtcore_memory_unit_request_snapshot *snapshot,
     const unsigned char *response_bytes, unsigned response_byte_count,
-    unsigned long long completion_cycle)
+    unsigned long long completion_cycle, bool commit)
 {
     if (snapshot == NULL || !snapshot->valid || response_bytes == NULL ||
         response_byte_count != RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES ||
@@ -7257,9 +7323,11 @@ rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
     const unsigned char chunk_bit =
         static_cast<unsigned char>(1u << snapshot->chunk_id);
     if ((pending->second.completed_chunk_mask[snapshot->lane_id] &
-         chunk_bit) != 0) {
+         chunk_bit) != 0 ||
+        pending->second.completed_chunks >= pending->second.expected_chunks) {
         return false;
     }
+    if (!commit) return true;
     unsigned char *destination =
         pending->second.lane_bytes[snapshot->lane_id] +
         snapshot->chunk_id * RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
@@ -7300,6 +7368,26 @@ rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
            completion_cycle);
     fflush(stdout);
     return true;
+}
+
+extern "C" bool
+rtcore_validate_v04_global384_initial_handoff_acquire_chunk(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    const unsigned char *response_bytes, unsigned response_byte_count)
+{
+    return rtcore_apply_v04_global384_initial_handoff_acquire_chunk(
+        snapshot, response_bytes, response_byte_count, 0, false);
+}
+
+extern "C" bool
+rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long completion_cycle)
+{
+    return rtcore_apply_v04_global384_initial_handoff_acquire_chunk(
+        snapshot, response_bytes, response_byte_count,
+        completion_cycle, true);
 }
 
 extern "C" bool
@@ -23391,9 +23479,61 @@ extern "C" bool rtcore_mark_v04_native_shader_terminal_publication(
     return true;
 }
 
+static bool rtcore_snapshot_v04_global384_resubmit_handoff(
+    unsigned owner_hw_sid, unsigned dynamic_warp_id,
+    unsigned previous_warp_uid, unsigned warp_id,
+    unsigned previous_active_mask, unsigned active_mask,
+    unsigned resident_warp_generation,
+    unsigned long long handoff_window_base,
+    std::array<uint32_t, rtcore::abi_v04::kWordCount> lane_words[32])
+{
+    if (lane_words == NULL) return false;
+    const rtcore_v04_resubmit_handoff_acquire_key key =
+        rtcore_make_v04_resubmit_handoff_acquire_key(
+            owner_hw_sid, dynamic_warp_id, warp_id,
+            resident_warp_generation);
+    std::map<rtcore_v04_resubmit_handoff_acquire_key,
+             rtcore_v04_resubmit_handoff_acquire_state>::const_iterator
+        pending = g_rtcore_v04_resubmit_handoff_acquires.find(key);
+    if (pending == g_rtcore_v04_resubmit_handoff_acquires.end()) {
+        return false;
+    }
+    const rtcore_v04_resubmit_handoff_acquire_state &state =
+        pending->second;
+    const unsigned chunks_per_lane =
+        rtcore::abi_v04::kLaneSlotBytes /
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    const unsigned char completed_mask =
+        static_cast<unsigned char>((1u << chunks_per_lane) - 1u);
+    if (state.previous_warp_uid != previous_warp_uid ||
+        state.previous_active_mask != previous_active_mask ||
+        state.active_mask != active_mask ||
+        state.handoff_base != handoff_window_base ||
+        state.handoff_lane_stride_bytes !=
+            rtcore::abi_v04::kLaneSlotBytes ||
+        state.expected_chunks == 0 ||
+        state.completed_chunks != state.expected_chunks ||
+        !state.ready_reported) {
+        return false;
+    }
+    unsigned observed_chunks = 0;
+    for (unsigned lane = 0; lane < 32; ++lane) {
+        lane_words[lane].fill(0);
+        if ((active_mask & (1u << lane)) == 0) continue;
+        if (state.completed_chunk_mask[lane] != completed_mask) {
+            return false;
+        }
+        memcpy(lane_words[lane].data(), state.lane_bytes[lane],
+               rtcore::abi_v04::kLaneSlotBytes);
+        observed_chunks += chunks_per_lane;
+    }
+    return observed_chunks == state.expected_chunks;
+}
+
 extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
-    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
-    unsigned new_static_inst_uid, unsigned next_active_mask,
+    unsigned owner_hw_sid, unsigned dynamic_warp_id,
+    unsigned new_warp_uid, unsigned warp_id, unsigned new_static_inst_uid,
+    unsigned next_active_mask,
     unsigned expected_previous_warp_uid,
     unsigned expected_resident_generation,
     unsigned long long handoff_window_base,
@@ -23451,11 +23591,28 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
         record->v04_private_storage_profile ==
             rtcore::v04::private_storage::
                 kProfileCompressedShared384;
+    const bool global_private_state =
+        record != NULL &&
+        record->v04_private_storage_profile ==
+            rtcore::v04::private_storage::kProfileGlobal384;
+    const bool private_state_384 =
+        compressed_private_state || global_private_state;
+    std::array<uint32_t, rtcore::abi_v04::kWordCount>
+        acquired_handoff_words[32];
     if (strcmp(failure, "accepted") == 0) {
         staged_lifecycle = record->v04_continuation_lifecycle;
         for (unsigned lane = 0; lane < 32; ++lane) {
             staged_boundary_reads[lane] =
                 record->v04_private_boundary_reads[lane];
+        }
+        if (global_private_state &&
+            !rtcore_snapshot_v04_global384_resubmit_handoff(
+                owner_hw_sid, dynamic_warp_id,
+                expected_previous_warp_uid, warp_id,
+                record->active_mask, next_active_mask,
+                expected_resident_generation, handoff_window_base,
+                acquired_handoff_words)) {
+            failure = "GLOBAL384_RESUBMIT_HANDOFF_BYTES_NOT_READY";
         }
     }
 
@@ -23510,8 +23667,12 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
             identity.handoff_window_base +
             static_cast<unsigned long long>(lane) *
                 rtcore::abi_v04::kLaneSlotBytes;
-        identity.handoff_memory_backing->read_simulator_backing(
-            lane_address, sizeof(words), words.data());
+        if (global_private_state) {
+            words = acquired_handoff_words[lane];
+        } else {
+            identity.handoff_memory_backing->read_simulator_backing(
+                lane_address, sizeof(words), words.data());
+        }
         const rtcore::v04::boundary_publication::lane_publication_v0
             &completion =
                 record->v04_boundary_completion.lanes[lane];
@@ -23521,7 +23682,7 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
             rtcore::v04::primitive_semantic::kRouteInvalid;
         lifecycle::status_kind semantic_status =
             lifecycle::kStatusInvalidArgument;
-        if (compressed_private_state) {
+        if (private_state_384) {
             rtcore_v04_private_boundary_read_state &read_state =
                 staged_boundary_reads[lane];
             if (read_state.valid) {
@@ -23588,7 +23749,7 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
         }
     }
     for (unsigned lane = 0;
-         !compressed_private_state &&
+         !private_state_384 &&
          strcmp(failure, "accepted") == 0 && lane < 32; ++lane) {
         const unsigned lane_mask = 1u << lane;
         if ((next_active_mask & lane_mask) == 0) continue;
@@ -23601,9 +23762,19 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
         }
     }
 
+    if (global_private_state &&
+        strcmp(failure, "accepted") == 0 &&
+        !rtcore_consume_v04_global384_resubmit_handoff_acquire_before_functional(
+            owner_hw_sid, dynamic_warp_id,
+            expected_previous_warp_uid, warp_id,
+            record->active_mask, next_active_mask,
+            expected_resident_generation, new_warp_uid)) {
+        failure = "GLOBAL384_RESUBMIT_HANDOFF_CONSUME_FAILED";
+    }
+
     if (strcmp(failure, "accepted") == 0) {
         record->v04_continuation_lifecycle = staged_lifecycle;
-        if (compressed_private_state) {
+        if (private_state_384) {
             for (unsigned lane = 0; lane < 32; ++lane) {
                 record->v04_private_boundary_reads[lane] =
                     staged_boundary_reads[lane];
@@ -26117,6 +26288,9 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
     const bool compressed_private_state =
         record->v04_private_storage_profile ==
         rtcore::v04::private_storage::kProfileCompressedShared384;
+    const bool global_private_state =
+        record->v04_private_storage_profile ==
+        rtcore::v04::private_storage::kProfileGlobal384;
     private_state_384::state_v1 staged_compressed_private = {};
     if (compressed_private_state) {
         staged_compressed_private =
@@ -26166,11 +26340,15 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
             record->warp_id, next_active_mask,
             timing_expectation, &timing_plan);
     const private_shared::status_kind prepare_private =
-        private_shared::prepare_mask_shrink(
-            staged_private,
-            static_cast<uint8_t>(record->v04_resident_warp_slot),
-            previous_warp_uid, next_warp_uid, record->warp_id,
-            next_active_mask, &private_plan);
+        global_private_state
+            ? private_shared::kStatusOk
+            : private_shared::prepare_mask_shrink(
+                  staged_private,
+                  static_cast<uint8_t>(
+                      record->v04_resident_warp_slot),
+                  previous_warp_uid, next_warp_uid,
+                  record->warp_id, next_active_mask,
+                  &private_plan);
     const private_state_384::status_kind prepare_compressed_private =
         compressed_private_state
             ? private_state_384::prepare_mask_shrink(
@@ -26189,9 +26367,10 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
         timing_driver::commit_resubmit(
             &staged_timing, timing_plan) !=
             timing_driver::kStatusOk ||
-        private_shared::commit_mask_shrink(
-            &staged_private, private_plan) !=
-            private_shared::kStatusOk ||
+        (!global_private_state &&
+         private_shared::commit_mask_shrink(
+             &staged_private, private_plan) !=
+             private_shared::kStatusOk) ||
         (compressed_private_state &&
          private_state_384::commit_mask_shrink(
              &staged_compressed_private,
@@ -26309,8 +26488,10 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
 
     rtcore_v04_timing_driver_for(record->owner_hw_sid) =
         staged_timing;
-    rtcore_v04_private_shared_backing_for(record->owner_hw_sid) =
-        staged_private;
+    if (!global_private_state) {
+        rtcore_v04_private_shared_backing_for(record->owner_hw_sid) =
+            staged_private;
+    }
     if (compressed_private_state) {
         rtcore_v04_private_state_384_backing_for(
             record->owner_hw_sid) = staged_compressed_private;
@@ -26380,7 +26561,9 @@ static bool rtcore_try_commit_v04_native_continuation_resubmit(
            record->v04_continuation_lifecycle
                .completion_transaction_generation,
            live_native_request_carrier
-               ? "timing_driver_private_shared"
+               ? (global_private_state
+                      ? "timing_driver_global384"
+                      : "timing_driver_private_shared")
                : "legacy_replay_lane_request",
            service_cycle);
     fflush(stdout);
@@ -26415,6 +26598,11 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
             record.v04_private_storage_profile ==
             rtcore::v04::private_storage::
                 kProfileCompressedShared384;
+        const bool global_private_state =
+            record.v04_private_storage_profile ==
+            rtcore::v04::private_storage::kProfileGlobal384;
+        const bool private_state_384 =
+            compressed_private_state || global_private_state;
         const unsigned pending_mask =
             lifecycle_state.pending_next_active_mask &
             ~lifecycle_state.commit_enqueued_mask;
@@ -26425,8 +26613,8 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
                 (pending_mask & (1u << lane)) != 0;
             const rtcore_v04_private_boundary_read_state &read_state =
                 record.v04_private_boundary_reads[lane];
-            const bool selectable_compressed =
-                !compressed_private_state ||
+            const bool selectable_private_state =
+                !private_state_384 ||
                 (read_state.valid &&
                  read_state.purpose ==
                      RTCORE_V04_PRIVATE_BOUNDARY_READ_RESUBMIT &&
@@ -26434,7 +26622,7 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
                       RTCORE_V04_PRIVATE_BOUNDARY_PHASE_HANDOFF_STAGED ||
                   read_state.phase ==
                       RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READY));
-            if (pending && selectable_compressed) break;
+            if (pending && selectable_private_state) break;
             ++lane;
         }
         if (lane >= 32) continue;
@@ -26458,7 +26646,7 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
             private_owner =
                 rtcore::v04::request_owner::
                     make_private_frontier_owner(owner);
-        if (compressed_private_state &&
+        if (private_state_384 &&
             record.v04_private_boundary_reads[lane].phase ==
                 RTCORE_V04_PRIVATE_BOUNDARY_PHASE_HANDOFF_STAGED) {
             rtcore_v04_private_boundary_read_state staged_read =
@@ -26481,8 +26669,7 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
                     kGenRtBvhFormatProfileId;
             input.reservation_generation = read_generation;
             input.storage_profile =
-                rtcore::v04::private_storage::
-                    kProfileCompressedShared384;
+                record.v04_private_storage_profile;
             input.consumer = operand_plan::kConsumerResubmitApply;
             input.operation = operand_plan::kOperationDefault;
             input.completion_reason =
@@ -26495,6 +26682,20 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
                 timing_driver::allocate_target_operation(
                     &staged_timing, owner, &operation_seq);
             input.operation_sequence = operation_seq;
+            if (global_private_state &&
+                !rtcore_v04_private_slot_base_for_owner(
+                    private_owner, record.v04_private_storage_profile,
+                    &input.private_slot_base_address)) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                        "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                        "lane_id=%u phase=operand_read_plan "
+                        "fault=global_private_slot_base_missing\n",
+                        owner_hw_sid, record.current_warp_uid,
+                        record.warp_id, lane);
+                fflush(stderr);
+                abort();
+            }
             if (read_generation == 0 ||
                 allocate_status != timing_driver::kStatusOk ||
                 live_bridge::prepare_read_requests(
@@ -26532,6 +26733,7 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
             }
             staged_read.operation_seq = operation_seq;
             staged_read.read_generation = read_generation;
+            staged_read.read_key = requests.key;
             staged_read.phase =
                 RTCORE_V04_PRIVATE_BOUNDARY_PHASE_READING;
             record.v04_private_boundary_reads[lane] = staged_read;
@@ -26556,10 +26758,13 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
         }
 
         const private_shared::lane_slot_state_v0 *private_lane =
-            private_shared::find_live_lane(
-                rtcore_v04_private_shared_backing_for(owner_hw_sid),
-                private_owner);
-        if (private_lane == NULL) {
+            global_private_state
+                ? NULL
+                : private_shared::find_live_lane(
+                      rtcore_v04_private_shared_backing_for(
+                          owner_hw_sid),
+                      private_owner);
+        if (!global_private_state && private_lane == NULL) {
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
                     "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
@@ -26583,7 +26788,7 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
             semantic_plan = {};
         timing_driver::status_kind allocate_status =
             timing_driver::kStatusOk;
-        if (compressed_private_state) {
+        if (private_state_384) {
             const rtcore_v04_private_boundary_read_state &read_state =
                 record.v04_private_boundary_reads[lane];
             producer_operation_seq = read_state.operation_seq;
@@ -26643,8 +26848,31 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
             abort();
         }
         primitive_shared::capture_receipt_v0 receipt = {};
+        uint64_t private_slot_base_address = 0;
+        if (global_private_state &&
+            !rtcore_v04_private_slot_base_for_owner(
+                private_owner, record.v04_private_storage_profile,
+                &private_slot_base_address)) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_NATIVE_RESUBMIT_FAULT "
+                    "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                    "phase=return_ingress "
+                    "fault=global_private_slot_base_missing\n",
+                    owner_hw_sid, record.current_warp_uid,
+                    record.warp_id, lane);
+            fflush(stderr);
+            abort();
+        }
         const primitive_shared::status_kind capture_status =
-            compressed_private_state
+            global_private_state
+                ? primitive_shared::
+                      capture_resubmit_semantic_plan_global384(
+                          &staged_primitive,
+                          producer_operation_seq, commit_epoch,
+                          successor_operation_seq,
+                          private_slot_base_address,
+                          semantic_plan, &receipt)
+                : compressed_private_state
                 ? primitive_shared::
                       capture_resubmit_semantic_plan_with_private_state_384(
                           &staged_primitive,
@@ -26669,7 +26897,7 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
             lifecycle::kStatusInvalidArgument;
         if (capture_status == primitive_shared::kStatusOk) {
             lifecycle_status =
-                compressed_private_state
+                private_state_384
                     ? lifecycle::stage_lane_return(
                           &staged_lifecycle,
                           static_cast<uint8_t>(lane),
@@ -26703,7 +26931,7 @@ static bool rtcore_service_v04_native_continuation_return_ingress(
         rtcore_v04_live_primitive_shared_for(owner_hw_sid) =
             staged_primitive;
         lifecycle_state = staged_lifecycle;
-        if (compressed_private_state) {
+        if (private_state_384) {
             record.v04_private_boundary_reads[lane] =
                 rtcore_v04_private_boundary_read_state();
         }

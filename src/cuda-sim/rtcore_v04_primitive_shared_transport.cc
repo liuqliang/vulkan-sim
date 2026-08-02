@@ -549,31 +549,27 @@ status_kind capture_result_with_private_state_384(
       private_state_384::operand_plan::kProducerPrimitive, receipt);
 }
 
-status_kind capture_result_global384(
+static status_kind capture_semantic_plan_global384_impl(
     engine_state_v0 *state,
-    const private_frontier::owner_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
     uint32_t target_operation_seq,
     uint64_t private_slot_base_address,
-    const typed_primitive::route_input_v0 &input,
-    const typed_primitive::route_result_v0 &result,
+    const typed_blas::as_decode_context_v0 &active_decode_context,
+    const primitive_semantic::semantic_plan_v0 &semantic,
+    uint8_t producer,
     capture_receipt_v0 *receipt) {
   if (state == NULL || receipt == NULL || state->initialized != 1 ||
       producer_operation_seq == 0 || commit_epoch == 0 ||
       private_slot_base_address == 0 ||
-      private_slot_base_address % private_state_384::kChunkBytes != 0) {
+      private_slot_base_address % private_state_384::kChunkBytes != 0 ||
+      semantic.valid != 1 ||
+      semantic.operation_seq != producer_operation_seq ||
+      (producer !=
+           private_state_384::operand_plan::kProducerPrimitive &&
+       producer != private_state_384::operand_plan::kProducerResubmitApply)) {
     return kStatusInvalidArgument;
   }
   *receipt = capture_receipt_v0();
-  primitive_semantic::semantic_plan_v0 semantic = {};
-  if (primitive_semantic::prepare_result(
-          owner, producer_operation_seq, input, result, &semantic) !=
-          primitive_semantic::kStatusOk ||
-      semantic.valid != 1 ||
-      semantic.primitive_resume_valid != 0 ||
-      semantic.shader_return_valid != 0) {
-    return kStatusSemanticPlanRejected;
-  }
   const bool boundary_route = is_boundary_route(semantic.route_kind);
   const bool successor_route =
       semantic.route_kind == primitive_semantic::kRouteStackPopNext;
@@ -584,7 +580,8 @@ status_kind capture_result_global384(
         target_operation_seq == producer_operation_seq))) {
     return kStatusSemanticPlanRejected;
   }
-  if (operation_live(*state, owner, producer_operation_seq)) {
+  if (operation_live(
+          *state, semantic.owner, producer_operation_seq)) {
     return kStatusDuplicateOperation;
   }
   const int tracker_index = find_free_tracker(*state);
@@ -598,21 +595,20 @@ status_kind capture_result_global384(
       deltas[kMaxPrivateState384DeltaCount] = {};
   uint8_t delta_count = 0;
   if (!prepare_private_state_384_deltas(
-          semantic, input.decode_context, deltas, &delta_count)) {
+          semantic, active_decode_context, deltas, &delta_count)) {
     return kStatusPrivateState384Rejected;
   }
   private_state_384::live_bridge::pending_sparse_commit_v1 pending = {};
   if (delta_count != 0) {
     private_state_384::live_bridge::write_commit_input_v1 commit = {};
-    commit.owner = owner;
+    commit.owner = semantic.owner;
     commit.private_slot_base_address = private_slot_base_address;
     commit.operation_sequence = producer_operation_seq;
     commit.commit_epoch = commit_epoch;
     commit.bvh_format_profile_id =
         private_state_384::kGenRtBvhFormatProfileId;
     commit.storage_profile = private_storage::kProfileGlobal384;
-    commit.producer =
-        private_state_384::operand_plan::kProducerPrimitive;
+    commit.producer = producer;
     if (private_state_384::live_bridge::stage_sparse_commit(
             commit, deltas, delta_count, &pending) !=
         private_state_384::live_bridge::kStatusOk) {
@@ -621,8 +617,8 @@ status_kind capture_result_global384(
   }
 
   commit_tracker_v0 tracker = {};
-  tracker.owner = owner;
-  tracker.active_decode_context = input.decode_context;
+  tracker.owner = semantic.owner;
+  tracker.active_decode_context = active_decode_context;
   tracker.issue_age = state->next_issue_age;
   tracker.operation_seq = producer_operation_seq;
   tracker.target_operation_seq = target_operation_seq;
@@ -646,6 +642,32 @@ status_kind capture_result_global384(
   receipt->route_kind = semantic.route_kind;
   receipt->valid = 1;
   return kStatusOk;
+}
+
+status_kind capture_result_global384(
+    engine_state_v0 *state,
+    const private_frontier::owner_binding_v0 &owner,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    uint64_t private_slot_base_address,
+    const typed_primitive::route_input_v0 &input,
+    const typed_primitive::route_result_v0 &result,
+    capture_receipt_v0 *receipt) {
+  primitive_semantic::semantic_plan_v0 semantic = {};
+  if (primitive_semantic::prepare_result(
+          owner, producer_operation_seq, input, result, &semantic) !=
+          primitive_semantic::kStatusOk ||
+      semantic.valid != 1 ||
+      semantic.primitive_resume_valid != 0 ||
+      semantic.shader_return_valid != 0) {
+    return kStatusSemanticPlanRejected;
+  }
+  return capture_semantic_plan_global384_impl(
+      state, producer_operation_seq, commit_epoch,
+      target_operation_seq, private_slot_base_address,
+      input.decode_context, semantic,
+      private_state_384::operand_plan::kProducerPrimitive,
+      receipt);
 }
 
 status_kind capture_semantic_plan(
@@ -684,6 +706,28 @@ status_kind capture_resubmit_semantic_plan_with_private_state_384(
       semantic_plan,
       private_storage::kProfileCompressedShared384,
       &unused_decode_context,
+      private_state_384::operand_plan::kProducerResubmitApply,
+      receipt);
+}
+
+status_kind capture_resubmit_semantic_plan_global384(
+    engine_state_v0 *state,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    uint64_t private_slot_base_address,
+    const primitive_semantic::semantic_plan_v0 &semantic_plan,
+    capture_receipt_v0 *receipt) {
+  if (semantic_plan.shader_return_valid != 1 ||
+      semantic_plan.retained_candidate_valid != 0 ||
+      semantic_plan.primitive_resume_valid != 0 ||
+      semantic_plan.intersection_boundary_valid != 0) {
+    return kStatusSemanticPlanRejected;
+  }
+  const typed_blas::as_decode_context_v0 unused_decode_context = {};
+  return capture_semantic_plan_global384_impl(
+      state, producer_operation_seq, commit_epoch,
+      target_operation_seq, private_slot_base_address,
+      unused_decode_context, semantic_plan,
       private_state_384::operand_plan::kProducerResubmitApply,
       receipt);
 }

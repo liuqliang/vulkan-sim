@@ -100,6 +100,7 @@ private_frontier::owner_binding_v0 make_owner(
 uint8_t global_write_field_kind(uint8_t producer, uint8_t chunk_index) {
   switch (producer) {
     case operand_plan::kProducerPrimitive:
+    case operand_plan::kProducerResubmitApply:
       if (chunk_index == 2 || chunk_index == 3) {
         return private_frontier::kFieldCommittedHit;
       }

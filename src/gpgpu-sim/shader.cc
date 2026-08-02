@@ -3788,8 +3788,8 @@ static void rtcore_accept_v04_live_handoff_acquire_or_abort(
 
 static void rtcore_complete_v04_live_handoff_acquire_or_abort(
     const rtcore_memory_unit_request_snapshot &snapshot,
-    unsigned long long completion_cycle, memory_space *global_memory,
-    unsigned long long response_address) {
+    unsigned long long completion_cycle, unsigned long long response_address,
+    const uint8_t *bound_read_payload, unsigned bound_read_payload_bytes) {
   namespace bridge = rtcore::v04::pre_submit_publication;
   namespace registry = rtcore::v04::address_range_registry;
   if (!rtcore_v04_live_handoff_acquire_request(snapshot)) return;
@@ -3809,6 +3809,32 @@ static void rtcore_complete_v04_live_handoff_acquire_or_abort(
       snapshot.v04_live_transaction.object);
   token.access = static_cast<registry::access_kind>(
       snapshot.v04_live_transaction.access);
+  const unsigned transaction_kind =
+      snapshot.v04_live_handoff_acquire.transaction_kind;
+  const bool response_context_valid =
+      response_address == snapshot.aligned_32b_addr &&
+      bound_read_payload != NULL &&
+      bound_read_payload_bytes ==
+          RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+  bool tracker_valid = false;
+  if (transaction_kind ==
+      RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_INITIAL) {
+    tracker_valid =
+        response_context_valid &&
+        rtcore_validate_v04_global384_initial_handoff_acquire_chunk(
+            &snapshot, bound_read_payload, bound_read_payload_bytes);
+  } else if (transaction_kind ==
+             RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_RESUBMIT) {
+    tracker_valid =
+        response_context_valid &&
+        rtcore_validate_v04_global384_resubmit_handoff_acquire_chunk(
+            &snapshot, bound_read_payload, bound_read_payload_bytes);
+  }
+  if (!tracker_valid) {
+    rtcore_v04_live_handoff_acquire_fail_closed(
+        "precommit-validation", bridge::kStatusGroupConflict,
+        snapshot);
+  }
   const registry::status_kind status =
       bridge::shared_bridge().complete_live_access(token);
   if (status != registry::kStatusOk) {
@@ -3820,11 +3846,31 @@ static void rtcore_complete_v04_live_handoff_acquire_or_abort(
     fflush(stderr);
     abort();
   }
+  bool tracker_completed = false;
+  if (transaction_kind ==
+      RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_INITIAL) {
+    tracker_completed =
+        rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
+            &snapshot, bound_read_payload, bound_read_payload_bytes,
+            completion_cycle);
+  } else if (transaction_kind ==
+             RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_RESUBMIT) {
+    tracker_completed =
+        rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
+            &snapshot, bound_read_payload, bound_read_payload_bytes,
+            completion_cycle);
+  }
+  if (!tracker_completed) {
+    rtcore_v04_live_handoff_acquire_fail_closed(
+        "tracker-complete", bridge::kStatusGroupConflict,
+        snapshot);
+  }
   printf("GPGPU-Sim RTCORE_V04_HANDOFF_ACQUIRE_TICKET_COMPLETE "
          "owner_hw_sid=%u dynamic_warp_id=%u submit_warp_uid=%u "
          "warp_id=%u resident_generation=%u window_generation=%u "
          "active_mask=0x%08x lane_id=%u chunk_id=%u address=0x%llx "
-         "transaction_kind=%u transaction_id=%llu result=completed\n",
+         "transaction_kind=%u transaction_id=%llu "
+         "payload_source=cache_accept_snapshot result=completed\n",
          snapshot.owner_hw_sid,
          snapshot.v04_live_handoff_acquire.dynamic_warp_id,
          snapshot.v04_live_handoff_acquire.submit_warp_uid,
@@ -3836,36 +3882,6 @@ static void rtcore_complete_v04_live_handoff_acquire_or_abort(
          snapshot.v04_live_handoff_acquire.transaction_kind,
          static_cast<unsigned long long>(token.transaction_id));
   fflush(stdout);
-  bool tracker_completed = false;
-  const unsigned transaction_kind =
-      snapshot.v04_live_handoff_acquire.transaction_kind;
-  if (transaction_kind ==
-      RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_INITIAL) {
-    unsigned char response_bytes[
-        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES] = {};
-    if (global_memory == NULL ||
-        response_address != snapshot.aligned_32b_addr) {
-      rtcore_v04_live_handoff_acquire_fail_closed(
-          "initial-response-context", bridge::kStatusGroupConflict,
-          snapshot);
-    }
-    global_memory->read(snapshot.aligned_32b_addr, sizeof(response_bytes),
-                        response_bytes);
-    tracker_completed =
-        rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
-            &snapshot, response_bytes, sizeof(response_bytes),
-            completion_cycle);
-  } else if (transaction_kind ==
-             RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_RESUBMIT) {
-    tracker_completed =
-        rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
-            &snapshot, completion_cycle);
-  }
-  if (!tracker_completed) {
-    rtcore_v04_live_handoff_acquire_fail_closed(
-        "tracker-complete", bridge::kStatusGroupConflict,
-        snapshot);
-  }
 }
 
 static void rtcore_record_v02_lsu_sideband_response_completion(
@@ -4346,7 +4362,8 @@ static unsigned rtcore_complete_v02_lsu_sideband_pending_response(
                                                        bound_read_payload,
                                                        bound_read_payload_bytes);
     rtcore_complete_v04_live_handoff_acquire_or_abort(
-        *waiter_it, response_cycle, global_memory, mf->get_addr());
+        *waiter_it, response_cycle, mf->get_addr(),
+        bound_read_payload, bound_read_payload_bytes);
   }
   const unsigned completed_count = it->second.size();
   if (completed_count > 1) {
@@ -4898,8 +4915,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
         mf->get_addr(), read_payload.bytes.data(),
         read_payload.bytes.size());
     rtcore_complete_v04_live_handoff_acquire_or_abort(
-        snapshot, result.cycle, core->get_gpu()->get_global_memory(),
-        mf->get_addr());
+        snapshot, result.cycle, mf->get_addr(),
+        read_payload.bytes.data(), read_payload.bytes.size());
     delete mf;
     return RTCORE_MEMORY_UNIT_OFFER_L1D_ACCESS_PROGRESS;
   }

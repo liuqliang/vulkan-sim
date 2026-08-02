@@ -304,9 +304,20 @@ extern "C" bool rtcore_record_v04_memory_conservation_event(
     bool response, unsigned long long cycle);
 
 extern "C" bool
+rtcore_validate_v04_global384_resubmit_handoff_acquire_chunk(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    const unsigned char *response_bytes, unsigned response_byte_count);
+
+extern "C" bool
 rtcore_complete_v04_global384_resubmit_handoff_acquire_chunk(
     const rtcore_memory_unit_request_snapshot *snapshot,
+    const unsigned char *response_bytes, unsigned response_byte_count,
     unsigned long long completion_cycle);
+
+extern "C" bool
+rtcore_validate_v04_global384_initial_handoff_acquire_chunk(
+    const rtcore_memory_unit_request_snapshot *snapshot,
+    const unsigned char *response_bytes, unsigned response_byte_count);
 
 extern "C" bool
 rtcore_complete_v04_global384_initial_handoff_acquire_chunk(
@@ -528,8 +539,9 @@ bool rtcore_commit_v04_functional_only_compatibility_resubmit(
     const char **failure_reason);
 
 bool rtcore_stage_v04_native_continuation_resubmit(
-    unsigned owner_hw_sid, unsigned new_warp_uid, unsigned warp_id,
-    unsigned new_static_inst_uid, unsigned next_active_mask,
+    unsigned owner_hw_sid, unsigned dynamic_warp_id,
+    unsigned new_warp_uid, unsigned warp_id, unsigned new_static_inst_uid,
+    unsigned next_active_mask,
     unsigned expected_previous_warp_uid,
     unsigned expected_resident_generation,
     unsigned long long handoff_window_base,

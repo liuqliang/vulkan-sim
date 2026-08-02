@@ -15050,8 +15050,9 @@ static rtcore_symbolic_resubmit_action rtcore_try_commit_symbolic_resubmit(
     }
   } else if (v04_native_continuation_lifecycle) {
     committed = rtcore_stage_v04_native_continuation_resubmit(
-        metadata.owner_hw_sid, metadata.warp_uid, metadata.warp_id,
-        metadata.static_inst_uid, metadata.active_mask,
+        metadata.owner_hw_sid, metadata.dynamic_warp_id,
+        metadata.warp_uid, metadata.warp_id, metadata.static_inst_uid,
+        metadata.active_mask,
         transaction.previous_warp_uid, transaction.resident_generation,
         transaction.handoff_window_base, rtcore_v02_lsu_issue_cycle(thread),
         &committed_previous_active_mask, &released_lane_mask,
@@ -17221,8 +17222,7 @@ static bool rtcore_validate_v04_global384_resubmit_live_internal(
   bool global384 = false;
   if (!rtcore_v04_global384_profile_selected(&global384)) return false;
   if (!global384) return true;
-  if (!rtcore_v04_functional_only_engine_gate_active() ||
-      !rtcore_v04_root_node_input_gate_active() || instruction == NULL ||
+  if (!rtcore_v04_root_node_input_gate_active() || instruction == NULL ||
       lane_threads == NULL || previous_warp_uid == 0 || warp_uid == 0 ||
       previous_warp_uid == warp_uid || previous_active_mask == 0 ||
       active_mask == 0 || (active_mask & ~previous_active_mask) != 0 ||

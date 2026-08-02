@@ -193,6 +193,14 @@ status_kind capture_resubmit_semantic_plan_with_private_state_384(
     const primitive_semantic::semantic_plan_v0 &semantic_plan,
     capture_receipt_v0 *receipt);
 
+status_kind capture_resubmit_semantic_plan_global384(
+    engine_state_v0 *state,
+    uint32_t producer_operation_seq, uint32_t commit_epoch,
+    uint32_t target_operation_seq,
+    uint64_t private_slot_base_address,
+    const primitive_semantic::semantic_plan_v0 &semantic_plan,
+    capture_receipt_v0 *receipt);
+
 status_kind peek_write_offer(const engine_state_v0 &state,
                              write_offer_v0 *offer);
 
