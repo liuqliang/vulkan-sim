@@ -252,6 +252,12 @@ status_kind reserve_private_state_384(
     const reservation_input_v0 &input, uint64_t reservation_cycle,
     reservation_receipt_v0 *reservation, request_plan_v0 *requests);
 
+status_kind reserve_pending_private_state_384_recovery(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_state_384::backing::state_v1 &private_backing,
+    const reservation_input_v0 &input, uint64_t reservation_cycle,
+    reservation_receipt_v0 *reservation, request_plan_v0 *requests);
+
 status_kind accept_read_response(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
     const private_shared::backing_state_v0 &private_backing,

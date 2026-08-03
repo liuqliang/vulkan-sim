@@ -996,16 +996,36 @@ status_kind reserve_existing_target(
       reservation_cycle, true, reservation, requests);
 }
 
-status_kind reserve_private_state_384(
+static bool valid_pending_private_state_384_recovery_input(
+    const reservation_input_v0 &input) {
+  return input.producer_operation_seq != 0 &&
+         input.producer_commit_epoch == 0 &&
+         input.target_operation_seq != 0 &&
+         input.operation_kind == kOperationResumeTransition &&
+         input.pending_parent_resume_valid <= 1 &&
+         input.recovery_target_inflight <= 1 &&
+         input.deferred_instance_valid == 0 &&
+         input.recovery_target_completed <= 1 &&
+         input.private_slot_base_address != 0 &&
+         input.private_slot_base_address %
+                 private_state_384::kChunkBytes ==
+             0;
+}
+
+static status_kind reserve_private_state_384_impl(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
     const private_state_384::backing::state_v1 &private_backing,
     const reservation_input_v0 &input, uint64_t reservation_cycle,
-    reservation_receipt_v0 *reservation, request_plan_v0 *requests) {
+    reservation_receipt_v0 *reservation, request_plan_v0 *requests,
+    bool pending_recovery) {
   const bool existing_target = input.target_operation_seq != 0;
   if (state == NULL || timing_state == NULL || reservation == NULL ||
       requests == NULL || state->initialized != 1 ||
       !valid_config(state->config) ||
-      !valid_operation_input(input, existing_target) ||
+      (pending_recovery
+           ? !valid_pending_private_state_384_recovery_input(input)
+           : !valid_operation_input(input, existing_target)) ||
+      (pending_recovery && !existing_target) ||
       (input.private_storage_profile !=
            private_storage::kProfileCompressedShared384 &&
        input.private_storage_profile !=
@@ -1057,16 +1077,39 @@ status_kind reserve_private_state_384(
     const timing_driver::lane_control_state_v0 *control =
         timing_driver::find_live_lane_control(
             staged_timing, request_binding);
-    if (control == NULL ||
-        control->live_target_operation_seq != operation_seq ||
-        control->live_commit_producer_operation_seq !=
-            input.producer_operation_seq ||
-        control->live_commit_epoch != input.producer_commit_epoch ||
-        control->pending_recovery_operation_seq != 0 ||
-        control->pending_terminal_kind !=
-            timing_driver::kTerminalBoundaryInvalid ||
-        control->live_memory_transaction_count != 0 ||
-        control->live_commit_memory_transaction_count != 0) {
+    const bool pending_recovery_matches =
+        pending_recovery && control != NULL &&
+        control->live_target_operation_seq == operation_seq &&
+        control->live_target_reservation_id == 0 &&
+        control->live_target_operation_class ==
+            timing_driver::kTargetOperationClassInvalid &&
+        control->live_target_operation_kind == 0 &&
+        control->live_commit_producer_operation_seq == 0 &&
+        control->live_commit_epoch == 0 &&
+        control->pending_recovery_operation_seq == operation_seq &&
+        control->pending_recovery_producer_operation_seq ==
+            input.producer_operation_seq &&
+        control->pending_recovery_target_kind ==
+            timing_driver::kPendingRecoveryTargetStack &&
+        control->pending_recovery_route_kind ==
+            timing_driver::kPendingRecoveryRouteStackPopNext &&
+        control->pending_recovery_reservation_retained == 0 &&
+        control->pending_terminal_kind ==
+            timing_driver::kTerminalBoundaryInvalid &&
+        control->live_memory_transaction_count == 0 &&
+        control->live_commit_memory_transaction_count == 0;
+    const bool immediate_successor_matches =
+        !pending_recovery && control != NULL &&
+        control->live_target_operation_seq == operation_seq &&
+        control->live_commit_producer_operation_seq ==
+            input.producer_operation_seq &&
+        control->live_commit_epoch == input.producer_commit_epoch &&
+        control->pending_recovery_operation_seq == 0 &&
+        control->pending_terminal_kind ==
+            timing_driver::kTerminalBoundaryInvalid &&
+        control->live_memory_transaction_count == 0 &&
+        control->live_commit_memory_transaction_count == 0;
+    if (!pending_recovery_matches && !immediate_successor_matches) {
       return kStatusTimingControlRejected;
     }
   } else if (timing_driver::allocate_target_operation(
@@ -1141,6 +1184,19 @@ status_kind reserve_private_state_384(
     }
     requests->requests[index] = read_plan.requests[index];
   }
+  if (pending_recovery &&
+      (timing_driver::mark_pending_recovery_reservation_retained(
+           &staged_timing, request_binding, operation_seq,
+           timing_driver::kPendingRecoveryTargetStack,
+           timing_driver::kPendingRecoveryRouteStackPopNext) !=
+           timing_driver::kStatusOk ||
+       timing_driver::complete_pending_recovery_request_retention(
+           &staged_timing, request_binding, operation_seq,
+           timing_driver::kPendingRecoveryTargetStack,
+           timing_driver::kPendingRecoveryRouteStackPopNext) !=
+           timing_driver::kStatusOk)) {
+    return kStatusTimingControlRejected;
+  }
   requests->request_count = read_plan.request_count;
   requests->valid = 1;
   ++staged_state.reservations_this_cycle;
@@ -1156,6 +1212,26 @@ status_kind reserve_private_state_384(
       stall_attribution::kActionAdmissionAccept,
       stall_attribution::kReasonNone);
   return kStatusOk;
+}
+
+status_kind reserve_private_state_384(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_state_384::backing::state_v1 &private_backing,
+    const reservation_input_v0 &input, uint64_t reservation_cycle,
+    reservation_receipt_v0 *reservation, request_plan_v0 *requests) {
+  return reserve_private_state_384_impl(
+      state, timing_state, private_backing, input, reservation_cycle,
+      reservation, requests, false);
+}
+
+status_kind reserve_pending_private_state_384_recovery(
+    engine_state_v0 *state, timing_driver::state_v0 *timing_state,
+    const private_state_384::backing::state_v1 &private_backing,
+    const reservation_input_v0 &input, uint64_t reservation_cycle,
+    reservation_receipt_v0 *reservation, request_plan_v0 *requests) {
+  return reserve_private_state_384_impl(
+      state, timing_state, private_backing, input, reservation_cycle,
+      reservation, requests, true);
 }
 
 status_kind accept_read_response(
