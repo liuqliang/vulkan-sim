@@ -220,7 +220,7 @@ extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
     unsigned active_mask, unsigned static_inst_uid,
     const rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan,
     bool timing_driver_owned,
-    unsigned *resident_generation);
+    unsigned *resident_generation, const char **failure_reason);
 
 extern "C" bool rtcore_bind_v04_global384_resident_layout(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,

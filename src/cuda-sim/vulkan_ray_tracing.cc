@@ -50,6 +50,7 @@
 #include "rtcore_v04_primitive_timing_driver.h"
 #include "rtcore_v04_pre_submit_publication_bridge.h"
 #include "rtcore_v04_request_owner_binding.h"
+#include "rtcore_v04_resident_capacity.h"
 #include "rtcore_v04_root_node_packet.h"
 #include "rtcore_v04_selected_fetch_transition.h"
 #include "rtcore_v04_short_stack_timing_service.h"
@@ -14483,18 +14484,12 @@ rtcore_make_resident_rt_warp_record_key(unsigned owner_hw_sid,
     return key;
 }
 
-static unsigned rtcore_resident_rt_warp_record_occupancy()
+static unsigned rtcore_resident_rt_warp_record_occupancy(
+    unsigned owner_hw_sid)
 {
-    unsigned occupancy = 0;
-    for (std::map<rtcore_resident_rt_warp_record_key,
-                  rtcore_resident_rt_warp_record>::const_iterator it =
-             g_rtcore_resident_rt_warp_records.begin();
-         it != g_rtcore_resident_rt_warp_records.end(); ++it) {
-        if (it->second.valid) {
-            occupancy++;
-        }
-    }
-    return occupancy;
+    return rtcore::v04::resident_capacity::occupancy_for_owner(
+        g_rtcore_resident_rt_warp_records.begin(),
+        g_rtcore_resident_rt_warp_records.end(), owner_hw_sid);
 }
 
 static unsigned rtcore_compute_resident_rt_warp_admitted_lane_mask(
@@ -15027,7 +15022,8 @@ extern "C" bool rtcore_query_resident_rt_warp_record(
     unsigned *resident_occupancy)
 {
     if (resident_occupancy) {
-        *resident_occupancy = rtcore_resident_rt_warp_record_occupancy();
+        *resident_occupancy =
+            rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
     }
     if (!rtcore_continuation_model_enabled()) {
         return false;
@@ -15058,11 +15054,13 @@ extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
     unsigned active_mask, unsigned static_inst_uid,
     const rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan,
     bool timing_driver_owned,
-    unsigned *resident_generation)
+    unsigned *resident_generation, const char **failure_reason)
 {
     namespace request_owner = rtcore::v04::request_owner;
+    if (failure_reason != NULL) *failure_reason = "accepted";
     if (resident_generation == NULL || owner_plan == NULL ||
         !rtcore_continuation_model_enabled() || active_mask == 0) {
+        if (failure_reason != NULL) *failure_reason = "invalid_arguments_or_gate";
         return false;
     }
     const bool owner_plan_matches =
@@ -15076,7 +15074,10 @@ extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
         (!timing_driver_owned ||
          rtcore_validate_v04_global384_timing_owner_plan(
              owner_hw_sid, owner_plan));
-    if (!owner_plan_matches) return false;
+    if (!owner_plan_matches) {
+        if (failure_reason != NULL) *failure_reason = "owner_plan_mismatch";
+        return false;
+    }
     const rtcore_resident_rt_warp_record_key key =
         rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
     std::map<rtcore_resident_rt_warp_record_key,
@@ -15098,12 +15099,24 @@ extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
             record.v04_global384_owner_plan_valid &&
             std::memcmp(&record.v04_global384_owner_plan, owner_plan,
                         sizeof(*owner_plan)) == 0;
-        if (matches) *resident_generation = record.resident_generation;
+        if (matches) {
+            *resident_generation = record.resident_generation;
+        } else if (failure_reason != NULL) {
+            *failure_reason = "existing_shell_mismatch";
+        }
         return matches;
     }
-    if (rtcore_resident_rt_warp_record_occupancy() >=
-            rtcore::v04::request_owner::kResidentWarpCapacity ||
-        g_rtcore_next_resident_rt_warp_generation == 0) {
+    if (!rtcore::v04::resident_capacity::available_for_owner(
+            g_rtcore_resident_rt_warp_records.begin(),
+            g_rtcore_resident_rt_warp_records.end(), owner_hw_sid,
+            rtcore::v04::request_owner::kResidentWarpCapacity)) {
+        if (failure_reason != NULL) {
+            *failure_reason = "owner_resident_capacity_exceeded";
+        }
+        return false;
+    }
+    if (g_rtcore_next_resident_rt_warp_generation == 0) {
+        if (failure_reason != NULL) *failure_reason = "generation_exhausted";
         return false;
     }
 
@@ -15124,7 +15137,10 @@ extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
                        rtcore_resident_rt_warp_record>::iterator,
               bool> inserted = g_rtcore_resident_rt_warp_records.insert(
         std::make_pair(key, record));
-    if (!inserted.second) return false;
+    if (!inserted.second) {
+        if (failure_reason != NULL) *failure_reason = "resident_key_insert_failed";
+        return false;
+    }
     *resident_generation = record.resident_generation;
     printf("GPGPU-Sim RTCORE_V04_GLOBAL384_RESIDENT_SHELL "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
@@ -15133,7 +15149,7 @@ extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
            "resident_slot=%u result=allocated\n",
            owner_hw_sid, warp_uid, warp_id, active_mask, static_inst_uid,
            record.resident_generation,
-           rtcore_resident_rt_warp_record_occupancy(),
+           rtcore_resident_rt_warp_record_occupancy(owner_hw_sid),
            timing_driver_owned ? 1u : 0u,
            owner_plan->resident_warp_slot);
     fflush(stdout);
@@ -15324,7 +15340,7 @@ extern "C" bool rtcore_bind_resident_rt_warp_lane_identity(
            record.bound_lane_mask, record.admitted_lane_mask,
            record.resident_generation, thread_uid, context_ptr,
            handoff_window_base, allocated ? 1u : 0u,
-           rtcore_resident_rt_warp_record_occupancy(),
+           rtcore_resident_rt_warp_record_occupancy(owner_hw_sid),
            record.v04_request_owner_binding_valid ? 1u : 0u,
            record.v04_resident_warp_slot);
     fflush(stdout);
@@ -16622,7 +16638,8 @@ static bool rtcore_prepare_shader_visible_resubmit_admission(
         reason = "RESUBMIT_ADMISSION_PLAN_MISSING";
     } else {
         *plan = rtcore_shader_visible_resubmit_admission_plan();
-        plan->occupancy_before = rtcore_resident_rt_warp_record_occupancy();
+        plan->occupancy_before =
+            rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
     }
 
     const rtcore_resident_rt_warp_record_key resident_key =
@@ -17085,7 +17102,7 @@ static bool rtcore_commit_prepared_shader_visible_resubmit_admission(
     fflush(stdout);
 
     const unsigned occupancy_after =
-        rtcore_resident_rt_warp_record_occupancy();
+        rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
     if (previous_active_mask) *previous_active_mask = old_active_mask;
     if (released_lane_mask) *released_lane_mask = released_mask;
     if (reactivated_lane_mask) *reactivated_lane_mask = reactivated_mask;
@@ -17198,7 +17215,7 @@ rtcore_commit_v04_functional_only_compatibility_resubmit(
 {
     const char *reason = "accepted";
     const unsigned occupancy_before =
-        rtcore_resident_rt_warp_record_occupancy();
+        rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
     const rtcore_resident_rt_warp_record_key key =
         rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
     std::map<rtcore_resident_rt_warp_record_key,
@@ -17283,7 +17300,7 @@ rtcore_commit_v04_functional_only_compatibility_resubmit(
     }
 
     const unsigned occupancy_after =
-        rtcore_resident_rt_warp_record_occupancy();
+        rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
     if (previous_active_mask) *previous_active_mask = old_active_mask;
     if (released_lane_mask) *released_lane_mask = released_mask;
     if (reactivated_lane_mask) *reactivated_lane_mask = reactivated_mask;
@@ -17621,7 +17638,7 @@ rtcore_commit_v04_functional_shader_visible_resubmit_admission(
                 ? 1u
                 : 0u;
         const unsigned occupancy =
-            rtcore_resident_rt_warp_record_occupancy();
+            rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
         if (previous_active_mask) {
             *previous_active_mask = admission_plan.valid
                                         ? admission_plan.old_active_mask
@@ -17927,7 +17944,7 @@ extern "C" bool rtcore_begin_retire_resident_rt_warp_transaction(
     }
 
     const unsigned occupancy =
-        rtcore_resident_rt_warp_record_occupancy();
+        rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
     const rtcore_resident_rt_warp_record_key resident_key =
         rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
     std::map<rtcore_resident_rt_warp_record_key,
@@ -18263,7 +18280,7 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
     }
 
     const unsigned occupancy_before =
-        rtcore_resident_rt_warp_record_occupancy();
+        rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
     const rtcore_resident_rt_warp_record_key resident_key =
         rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
     std::map<rtcore_resident_rt_warp_record_key,
@@ -18609,7 +18626,7 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
     }
 
     const unsigned occupancy_after =
-        rtcore_resident_rt_warp_record_occupancy();
+        rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
     if (strcmp(reason, "accepted") == 0) {
         if (!rtcore_v04_functional_only_engine_gate_active()) {
             rtcore_record_v04_warp_conservation_or_abort(
@@ -24099,7 +24116,7 @@ extern "C" bool rtcore_stage_v04_native_continuation_resubmit(
     namespace timing_driver = rtcore::v04::timing_driver;
     const char *failure = "accepted";
     const unsigned occupancy =
-        rtcore_resident_rt_warp_record_occupancy();
+        rtcore_resident_rt_warp_record_occupancy(owner_hw_sid);
     const rtcore_resident_rt_warp_record_key key =
         rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
     std::map<rtcore_resident_rt_warp_record_key,

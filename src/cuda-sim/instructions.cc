@@ -17172,10 +17172,21 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
   }
 
   unsigned resident_generation = 0;
+  const char *resident_shell_failure = "accepted";
   if (!rtcore_prepare_v04_global384_resident_warp_shell(
           owner_hw_sid, expected_warp_uid, warp_id, active_mask,
           instruction->uid(), &resource_plan, timing_driver_owned,
-          &resident_generation)) {
+          &resident_generation, &resident_shell_failure)) {
+    fprintf(stderr,
+            "GPGPU-Sim "
+            "RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND_DETAIL_FAULT "
+            "phase=resident_shell owner_hw_sid=%u dynamic_warp_id=%u "
+            "warp_uid=%u warp_id=%u active_mask=0x%08x "
+            "owner_resident_occupancy=%u resident_capacity=%u reason=%s\n",
+            owner_hw_sid, dynamic_warp_id, expected_warp_uid, warp_id,
+            active_mask, resident_occupancy,
+            request_owner::kResidentWarpCapacity, resident_shell_failure);
+    fflush(stderr);
     if (!rtcore_v04_global384_rollback_pending_timing_owner(
             owner_hw_sid, expected_warp_uid, warp_id, active_mask,
             resource_plan, timing_driver_owned)) {
