@@ -23312,7 +23312,7 @@ static bool rtcore_service_v04_live_short_stack_timing(
         rtcore_v04_live_short_stack_timing_for(owner_hw_sid);
     timing_driver::state_v0 staged_timing =
         rtcore_v04_timing_driver_for(owner_hw_sid);
-    rtcore::v04::private_shared::backing_state_v0 staged_backing =
+    rtcore::v04::private_shared::backing_state_v0 &staged_backing =
         rtcore_v04_private_shared_backing_for(owner_hw_sid);
     rtcore_v04_short_stack_parent_resolver_context resolver_context = {};
     resolver_context.owner_hw_sid = owner_hw_sid;
@@ -23761,8 +23761,6 @@ static bool rtcore_service_v04_live_short_stack_timing(
     rtcore_v04_live_short_stack_timing_for(owner_hw_sid) =
         staged_short;
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
-    rtcore_v04_private_shared_backing_for(owner_hw_sid) =
-        staged_backing;
     if (successor_accepted) {
         rtcore_v04_live_target_engine_for(owner_hw_sid) =
             staged_target;
@@ -23844,7 +23842,7 @@ static unsigned rtcore_service_v04_live_short_stack_write_transfer(
         rtcore_v04_live_short_stack_timing_for(owner_hw_sid);
     timing_driver::state_v0 staged_timing =
         rtcore_v04_timing_driver_for(owner_hw_sid);
-    private_shared::backing_state_v0 staged_backing =
+    private_shared::backing_state_v0 &staged_backing =
         rtcore_v04_private_shared_backing_for(owner_hw_sid);
     const unsigned bounded_budget = std::min(
         transfer_budget,
@@ -23896,8 +23894,6 @@ static unsigned rtcore_service_v04_live_short_stack_write_transfer(
     rtcore_v04_live_short_stack_timing_for(owner_hw_sid) =
         staged_short;
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged_timing;
-    rtcore_v04_private_shared_backing_for(owner_hw_sid) =
-        staged_backing;
     if (!global_requests.empty()) {
         std::deque<rtcore_memory_unit_request_snapshot> &live_queue =
             g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid];
@@ -25436,7 +25432,7 @@ static unsigned rtcore_service_v04_live_stack_write_transfer(
          ++transferred) {
         rtcore::v04::stack_commit::engine_state_v0 staged_stack =
             rtcore_v04_live_stack_commit_for(owner_hw_sid);
-        rtcore::v04::private_shared::backing_state_v0 staged_backing =
+        rtcore::v04::private_shared::backing_state_v0 &staged_backing =
             rtcore_v04_private_shared_backing_for(owner_hw_sid);
         timing_driver::state_v0 staged_timing =
             rtcore_v04_timing_driver_for(owner_hw_sid);
@@ -25469,8 +25465,6 @@ static unsigned rtcore_service_v04_live_stack_write_transfer(
         }
         rtcore_v04_live_stack_commit_for(owner_hw_sid) =
             staged_stack;
-        rtcore_v04_private_shared_backing_for(owner_hw_sid) =
-            staged_backing;
         rtcore_v04_timing_driver_for(owner_hw_sid) =
             staged_timing;
     }
@@ -26375,7 +26369,7 @@ static unsigned rtcore_service_v04_live_instance_write_transfer(
     for (; transferred < transfer_budget; ++transferred) {
         instance_shared::engine_state_v0 staged_instance =
             rtcore_v04_live_instance_shared_for(owner_hw_sid);
-        rtcore::v04::private_shared::backing_state_v0 staged_backing =
+        rtcore::v04::private_shared::backing_state_v0 &staged_backing =
             rtcore_v04_private_shared_backing_for(owner_hw_sid);
         timing_driver::state_v0 staged_timing =
             rtcore_v04_timing_driver_for(owner_hw_sid);
@@ -26408,8 +26402,6 @@ static unsigned rtcore_service_v04_live_instance_write_transfer(
         }
         rtcore_v04_live_instance_shared_for(owner_hw_sid) =
             staged_instance;
-        rtcore_v04_private_shared_backing_for(owner_hw_sid) =
-            staged_backing;
         rtcore_v04_timing_driver_for(owner_hw_sid) =
             staged_timing;
     }
@@ -27937,7 +27929,7 @@ static unsigned rtcore_service_v04_live_primitive_write_transfer(
     for (; transferred < transfer_budget; ++transferred) {
         primitive_shared::engine_state_v0 staged_primitive =
             rtcore_v04_live_primitive_shared_for(owner_hw_sid);
-        rtcore::v04::private_shared::backing_state_v0 staged_backing =
+        rtcore::v04::private_shared::backing_state_v0 &staged_backing =
             rtcore_v04_private_shared_backing_for(owner_hw_sid);
         timing_driver::state_v0 staged_timing =
             rtcore_v04_timing_driver_for(owner_hw_sid);
@@ -28009,8 +28001,6 @@ static unsigned rtcore_service_v04_live_primitive_write_transfer(
         }
         rtcore_v04_live_primitive_shared_for(owner_hw_sid) =
             staged_primitive;
-        rtcore_v04_private_shared_backing_for(owner_hw_sid) =
-            staged_backing;
         rtcore_v04_timing_driver_for(owner_hw_sid) =
             staged_timing;
     }
