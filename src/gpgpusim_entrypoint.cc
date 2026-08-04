@@ -42,6 +42,8 @@
 
 static int sg_argc = 3;
 static const char *sg_argv[] = {"", "-config", "gpgpusim.config"};
+static gpgpu_context *sg_termination_context = NULL;
+static bool sg_termination_callback_registered = false;
 
 void *gpgpu_sim_thread_sequential(void *ctx_ptr) {
   gpgpu_context *ctx = (gpgpu_context *)ctx_ptr;
@@ -70,11 +72,13 @@ void *gpgpu_sim_thread_sequential(void *ctx_ptr) {
 static void termination_callback() {
   printf("GPGPU-Sim: *** exit detected ***\n");
   fflush(stdout);
+  if (sg_termination_context != NULL) {
+    sg_termination_context->exit_simulation();
+  }
 }
 
 void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
   gpgpu_context *ctx = (gpgpu_context *)ctx_ptr;
-  atexit(termination_callback);
   // concurrent kernel execution simulation thread
   do {
     if (g_debug_execution >= 3) {
@@ -191,10 +195,22 @@ void gpgpu_context::synchronize() {
 }
 
 void gpgpu_context::exit_simulation() {
+  if (!the_gpgpusim->g_simulation_thread_started ||
+      the_gpgpusim->g_simulation_thread_joined) {
+    return;
+  }
   the_gpgpusim->g_sim_done = true;
+  sem_post(&(the_gpgpusim->g_sim_signal_start));
   printf("GPGPU-Sim: exit_simulation called\n");
   fflush(stdout);
+  if (pthread_equal(pthread_self(),
+                    the_gpgpusim->g_simulation_thread)) {
+    return;
+  }
   sem_wait(&(the_gpgpusim->g_sim_signal_exit));
+  pthread_join(the_gpgpusim->g_simulation_thread, NULL);
+  the_gpgpusim->g_simulation_thread_joined = true;
+  the_gpgpusim->g_simulation_thread_started = false;
   printf("GPGPU-Sim: simulation thread signaled exit\n");
   fflush(stdout);
 }
@@ -240,13 +256,31 @@ gpgpu_sim *gpgpu_context::gpgpu_ptx_sim_init_perf() {
 void gpgpu_context::start_sim_thread(int api) {
   if (the_gpgpusim->g_sim_done) {
     the_gpgpusim->g_sim_done = false;
-    if (api == 1) {
-      pthread_create(&(the_gpgpusim->g_simulation_thread), NULL,
-                     gpgpu_sim_thread_concurrent, (void *)this);
-    } else {
-      pthread_create(&(the_gpgpusim->g_simulation_thread), NULL,
-                     gpgpu_sim_thread_sequential, (void *)this);
+    sg_termination_context = this;
+    if (!sg_termination_callback_registered) {
+      atexit(termination_callback);
+      sg_termination_callback_registered = true;
     }
+    int create_status = 0;
+    if (api == 1) {
+      create_status = pthread_create(
+          &(the_gpgpusim->g_simulation_thread), NULL,
+          gpgpu_sim_thread_concurrent, (void *)this);
+    } else {
+      create_status = pthread_create(
+          &(the_gpgpusim->g_simulation_thread), NULL,
+          gpgpu_sim_thread_sequential, (void *)this);
+    }
+    if (create_status != 0) {
+      the_gpgpusim->g_sim_done = true;
+      fprintf(stderr,
+              "GPGPU-Sim: failed to create simulation thread: %d\n",
+              create_status);
+      fflush(stderr);
+      abort();
+    }
+    the_gpgpusim->g_simulation_thread_started = true;
+    the_gpgpusim->g_simulation_thread_joined = false;
   }
 }
 

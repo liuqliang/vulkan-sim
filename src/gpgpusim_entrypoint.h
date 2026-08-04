@@ -42,6 +42,8 @@ class GPGPUsim_ctx {
   GPGPUsim_ctx(gpgpu_context *ctx) {
     g_sim_active = false;
     g_sim_done = true;
+    g_simulation_thread_started = false;
+    g_simulation_thread_joined = true;
     break_limit = false;
     g_sim_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -72,6 +74,8 @@ class GPGPUsim_ctx {
   pthread_mutex_t g_sim_lock;
   bool g_sim_active;
   bool g_sim_done;
+  bool g_simulation_thread_started;
+  bool g_simulation_thread_joined;
   bool break_limit;
 };
 
