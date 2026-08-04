@@ -23032,13 +23032,6 @@ rtcore_accept_v04_live_node_route(
     namespace private_storage = rtcore::v04::private_storage;
     namespace result_semantic = rtcore::v04::result_semantic;
     if (route == NULL) return node_timing::kRouteSinkRejected;
-    if (route->result_identity.private_storage_profile ==
-            private_storage::kProfileGlobal384 &&
-        route->semantic_plan.route_kind ==
-            result_semantic::kNodeRouteDirectChild) {
-        return rtcore_accept_v04_direct_selected_fetch_route(
-            route, staged_timing_state, opaque_context);
-    }
     if (rtcore_v04_live_short_stack_timing_enabled()) {
         return rtcore_accept_v04_short_stack_node_route(
             route, staged_timing_state, opaque_context);

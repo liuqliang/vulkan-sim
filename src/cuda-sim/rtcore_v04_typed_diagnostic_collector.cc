@@ -24,6 +24,32 @@ bool env_value_is_true(const char *value) {
           std::strcmp(value, "yes") == 0);
 }
 
+bool optional_u32_filter_matches(const char *name, uint32_t actual) {
+  const char *value = std::getenv(name);
+  if (value == NULL || value[0] == '\0') return true;
+  char *end = NULL;
+  const unsigned long parsed = std::strtoul(value, &end, 0);
+  return end != value && *end == '\0' && parsed <= UINT32_MAX &&
+         static_cast<uint32_t>(parsed) == actual;
+}
+
+bool diagnostic_filter_matches_owner(
+    const private_frontier::owner_binding_v0 &owner) {
+  return optional_u32_filter_matches(
+             "VULKAN_SIM_RTCORE_ABI_V04_TYPED_DIAGNOSTIC_OWNER_HW_SID",
+             owner.owner_hw_sid) &&
+         optional_u32_filter_matches(
+             "VULKAN_SIM_RTCORE_ABI_V04_TYPED_DIAGNOSTIC_REQUEST_IDENTITY",
+             owner.request_identity) &&
+         optional_u32_filter_matches(
+             "VULKAN_SIM_RTCORE_ABI_V04_TYPED_DIAGNOSTIC_LANE_ID",
+             owner.lane_id);
+}
+
+bool diagnostic_filter_matches(const record_v0 &record) {
+  return diagnostic_filter_matches_owner(record.owner);
+}
+
 uint64_t hash_bytes(const void *data, size_t byte_count) {
   const uint8_t *bytes = static_cast<const uint8_t *>(data);
   uint64_t hash = kFnvOffsetBasis;
@@ -455,26 +481,28 @@ bool emit_record(const record_v0 &record) {
     return false;
   }
 
-  conservation::lane_event_v0 conservation_record = {};
-  conservation_record.owner = record.owner;
-  conservation_record.operation_seq = record.operation_seq;
-  if (!conservation::ensure_target_ready_before_operation(
-          record.owner, record.operation_seq)) {
-    return false;
-  }
-  conservation_record.event = conservation::kEventTypedOperation;
-  conservation_record.detail_kind = record.unit;
-  if (!conservation::emit_lane_event(conservation_record)) {
-    return false;
-  }
-  if (record.driver == kDriverFunctionalOnly ||
-      record.unit == kUnitNode) {
-    conservation_record.event = conservation::kEventResultCommitZero;
+  if (conservation::enabled()) {
+    conservation::lane_event_v0 conservation_record = {};
+    conservation_record.owner = record.owner;
+    conservation_record.operation_seq = record.operation_seq;
+    if (!conservation::ensure_target_ready_before_operation(
+            record.owner, record.operation_seq)) {
+      return false;
+    }
+    conservation_record.event = conservation::kEventTypedOperation;
+    conservation_record.detail_kind = record.unit;
     if (!conservation::emit_lane_event(conservation_record)) {
       return false;
     }
+    if (record.driver == kDriverFunctionalOnly ||
+        record.unit == kUnitNode) {
+      conservation_record.event = conservation::kEventResultCommitZero;
+      if (!conservation::emit_lane_event(conservation_record)) {
+        return false;
+      }
+    }
   }
-  if (!enabled()) return true;
+  if (!enabled() || !diagnostic_filter_matches(record)) return true;
 
   const uint64_t raw_input_hash =
       hash_bytes(record.typed_input, record.typed_input_bytes);

@@ -8707,7 +8707,7 @@ extern "C" bool rtcore_prepare_v04_root_node_packet_before_functional(
         static_cast<uint8_t>(retained_trace_input_authority
                                  ? retained_trace_input.cull_mask
                                  : context.cull_mask);
-    if (functional_only && rtcore_v04_ray_input_debug_enabled()) {
+    if (rtcore_v04_ray_input_debug_enabled()) {
       printf(
           "GPGPU-Sim RTCORE_V04_RAY_INPUT_DEBUG "
           "phase=%s owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "

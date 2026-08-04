@@ -1,5 +1,7 @@
 #include "rtcore_v04_short_stack_timing_service.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -20,6 +22,103 @@ static const uint8_t kAllReturnInstanceReadChunks =
     static_cast<uint8_t>(
         (1u << kReturnInstanceReadChunkCount) - 1u);
 static const unsigned kResponseTargetRtcore = 1;
+
+bool diagnostic_env_is_true(const char *name) {
+  const char *value = std::getenv(name);
+  return value != NULL &&
+         (std::strcmp(value, "1") == 0 ||
+          std::strcmp(value, "true") == 0 ||
+          std::strcmp(value, "on") == 0 ||
+          std::strcmp(value, "yes") == 0);
+}
+
+bool diagnostic_u32_filter_matches(const char *name, uint32_t actual) {
+  const char *value = std::getenv(name);
+  if (value == NULL || value[0] == '\0') return true;
+  char *end = NULL;
+  const unsigned long parsed = std::strtoul(value, &end, 0);
+  return end != value && *end == '\0' && parsed <= UINT32_MAX &&
+         static_cast<uint32_t>(parsed) == actual;
+}
+
+bool transition_diagnostic_enabled_for_owner(
+    const private_frontier::owner_binding_v0 &owner) {
+  return diagnostic_env_is_true(
+             "VULKAN_SIM_RTCORE_ABI_V04_TYPED_DIAGNOSTIC_COLLECTOR") &&
+         diagnostic_u32_filter_matches(
+             "VULKAN_SIM_RTCORE_ABI_V04_TYPED_DIAGNOSTIC_OWNER_HW_SID",
+             owner.owner_hw_sid) &&
+         diagnostic_u32_filter_matches(
+             "VULKAN_SIM_RTCORE_ABI_V04_TYPED_DIAGNOSTIC_REQUEST_IDENTITY",
+             owner.request_identity) &&
+         diagnostic_u32_filter_matches(
+             "VULKAN_SIM_RTCORE_ABI_V04_TYPED_DIAGNOSTIC_LANE_ID",
+             owner.lane_id);
+}
+
+uint64_t diagnostic_hash_bytes(const void *data, size_t byte_count) {
+  static const uint64_t kFnvOffsetBasis =
+      UINT64_C(14695981039346656037);
+  static const uint64_t kFnvPrime = UINT64_C(1099511628211);
+  const uint8_t *bytes = static_cast<const uint8_t *>(data);
+  uint64_t hash = kFnvOffsetBasis;
+  for (size_t index = 0; index < byte_count; ++index) {
+    hash ^= bytes[index];
+    hash *= kFnvPrime;
+  }
+  return hash;
+}
+
+void emit_transition_diagnostic(
+    const operation_entry_v0 &entry,
+    short_stack_transition::status_kind status,
+    const short_stack_transition::result_v0 &transition) {
+  if ((entry.input.private_storage_profile !=
+           private_storage::kProfileCompressedShared384 &&
+       entry.input.private_storage_profile !=
+           private_storage::kProfileGlobal384) ||
+      !transition_diagnostic_enabled_for_owner(entry.input.owner)) {
+    return;
+  }
+  const short_stack::state_v0 &input_stack =
+      entry.private_state_384_stack_operands.stack;
+  const short_stack::state_v0 &output_stack =
+      transition.persistent_state.stack;
+  std::printf(
+      "GPGPU-Sim RTCORE_V04_TYPED_SHORT_STACK_DIAGNOSTIC "
+      "schema=1 owner_hw_sid=%u resident_warp_slot=%u "
+      "request_identity=%u request_generation=%u private_slot_id=%u "
+      "lane_id=%u storage_profile=%u operation_seq=%u "
+      "producer_operation_seq=%u operation_kind=%u status=%u "
+      "input_stack_count=%u input_stack_top=%u input_cross_as=%u "
+      "input_lost=%u input_domain=%u input_stack_hash=%016llx "
+      "output_stack_count=%u output_stack_top=%u output_cross_as=%u "
+      "output_lost=%u output_domain=%u output_stack_hash=%016llx "
+      "selected_valid=%u terminal=%u selected_hash=%016llx\n",
+      entry.input.owner.owner_hw_sid,
+      entry.input.owner.resident_warp_id,
+      entry.input.owner.request_identity,
+      entry.input.owner.generation,
+      entry.input.owner.private_slot_id,
+      entry.input.owner.lane_id,
+      entry.input.private_storage_profile,
+      entry.reservation.operation_seq,
+      entry.reservation.producer_operation_seq,
+      entry.input.operation_kind,
+      static_cast<unsigned>(status),
+      input_stack.stack_count, input_stack.stack_top_ptr,
+      input_stack.cross_as, input_stack.lost, input_stack.active_domain,
+      static_cast<unsigned long long>(
+          diagnostic_hash_bytes(&input_stack, sizeof(input_stack))),
+      output_stack.stack_count, output_stack.stack_top_ptr,
+      output_stack.cross_as, output_stack.lost, output_stack.active_domain,
+      static_cast<unsigned long long>(
+          diagnostic_hash_bytes(&output_stack, sizeof(output_stack))),
+      transition.selected_valid, transition.terminal,
+      static_cast<unsigned long long>(diagnostic_hash_bytes(
+          &transition.selected_fetch, sizeof(transition.selected_fetch))));
+  std::fflush(stdout);
+}
 
 bool bytes_are_zero(const uint8_t *bytes, size_t count) {
   for (size_t index = 0; index < count; ++index) {
@@ -2256,6 +2355,13 @@ status_kind service_cycle(
             short_stack_transition::prepare_enter_blas_transition(
                 transition_input, &transition);
       }
+    }
+    if (transition_status == short_stack_transition::kStatusOk ||
+        transition_status ==
+            short_stack_transition::kStatusParentLookupRequired ||
+        transition_status ==
+            short_stack_transition::kStatusReturnInstanceRequired) {
+      emit_transition_diagnostic(entry, transition_status, transition);
     }
     if (transition_status ==
         short_stack_transition::kStatusParentLookupRequired) {
