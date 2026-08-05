@@ -71,6 +71,15 @@
 
 #define WRITE_MASK_SIZE 8
 
+void rtcore_v04_record_l2_service_access(
+    mem_fetch *mf, const cache_access_observation &observation,
+    enum cache_request_status status, const std::list<cache_event> &events,
+    unsigned long long cycle);
+void rtcore_v04_record_dram_service_request(mem_fetch *mf,
+                                             unsigned long long cycle);
+void rtcore_v04_record_dram_service_response(mem_fetch *mf,
+                                              unsigned long long cycle);
+
 class gpgpu_context;
 
 enum exec_unit_type_t {

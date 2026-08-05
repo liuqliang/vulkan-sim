@@ -232,6 +232,8 @@ void memory_partition_unit::simple_dram_model_cycle() {
       int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
       assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
       if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
+        rtcore_v04_record_dram_service_response(
+            mf_return, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         if (mf_return->get_access_type() == L1_WRBK_ACC) {
           m_sub_partition[dest_spid]->set_done(mf_return);
           delete mf_return;
@@ -249,6 +251,8 @@ void memory_partition_unit::simple_dram_model_cycle() {
       }
 
     } else {
+      rtcore_v04_record_dram_service_response(
+          mf_return, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       this->set_done(mf_return);
       delete mf_return;
       m_dram_latency_queue.pop_front();
@@ -270,6 +274,8 @@ void memory_partition_unit::simple_dram_model_cycle() {
       if (m_dram->full(mf->is_write())) break;
 
       m_sub_partition[spid]->L2_dram_queue_pop();
+      rtcore_v04_record_dram_service_request(
+          mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       MEMPART_DPRINTF(
           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
           spid);
@@ -296,6 +302,8 @@ void memory_partition_unit::dram_cycle() {
     int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
     assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
     if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
+      rtcore_v04_record_dram_service_response(
+          mf_return, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       if (mf_return->get_access_type() == L1_WRBK_ACC) {
         m_sub_partition[dest_spid]->set_done(mf_return);
         delete mf_return;
@@ -332,6 +340,8 @@ void memory_partition_unit::dram_cycle() {
       if (m_dram->full(mf->is_write())) break;
 
       m_sub_partition[spid]->L2_dram_queue_pop();
+      rtcore_v04_record_dram_service_request(
+          mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
       MEMPART_DPRINTF(
           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
           spid);
@@ -507,10 +517,15 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
       bool port_free = m_L2cache->data_port_free();
       if (!output_full && port_free) {
         std::list<cache_event> events;
+        cache_access_observation observation;
         enum cache_request_status status =
-            m_L2cache->access(mf->get_addr(), mf,
-                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
-                              events);
+            m_L2cache->access_with_observation(
+                mf->get_addr(), mf,
+                m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events,
+                &observation);
+        rtcore_v04_record_l2_service_access(
+            mf, observation, status, events,
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
         bool write_sent = was_write_sent(events);
         bool read_sent = was_read_sent(events);
         MEM_SUBPART_DPRINTF("Probing L2 cache Address=%llx, status=%u\n",

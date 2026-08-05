@@ -2207,7 +2207,6 @@ struct rtcore_v04_semantic_tag_set_stats {
   unsigned long long frontend_blocked;
   unsigned long long cache_lookup;
   unsigned long long reservation_fail_retry;
-  unsigned long long hit_reserved_retry;
   unsigned long long same_cycle_merged_child;
   unsigned long long accepted_physical;
   unsigned long long physical_requested_bytes;
@@ -2224,6 +2223,14 @@ struct rtcore_v04_semantic_tag_set_stats {
   unsigned long long write_no_allocate_miss;
   unsigned long long first_touch_miss;
   unsigned long long repeat_miss_unclassified;
+  unsigned long long l2_access;
+  unsigned long long l2_reservation_fail_retry;
+  unsigned long long l2_hit;
+  unsigned long long l2_local_write_allocate;
+  unsigned long long l2_accepted_mshr_merge;
+  unsigned long long l2_miss_to_dram;
+  unsigned long long dram_request;
+  unsigned long long dram_response;
   unsigned long long response_or_ack_fanout;
   unsigned long long last_arrival_closer_count;
   unsigned long long last_arrival_closer_cycles;
@@ -2233,6 +2240,7 @@ struct rtcore_v04_semantic_tag_set_stats {
   rtcore_v04_semantic_latency_histogram ready_to_response;
   rtcore_v04_semantic_latency_histogram write_ack;
   rtcore_v04_semantic_latency_histogram last_arrival_closer;
+  rtcore_v04_semantic_latency_histogram dram_request_to_response;
 };
 
 struct rtcore_v04_semantic_region_stats {
@@ -2694,11 +2702,9 @@ static void rtcore_v04_semantic_record_cache_retry(
       rtcore_v04_semantic_observe_logical(snapshot);
   rtcore_v04_semantic_tag_set_stats &stats =
       rtcore_v04_semantic_tag_set_stats_for(logical.tag_set);
-  if (access_status == RESERVATION_FAIL) {
+  if (access_status == RESERVATION_FAIL ||
+      (probe_status == HIT_RESERVED && access_status == HIT_RESERVED)) {
     stats.reservation_fail_retry++;
-  } else if (probe_status == HIT_RESERVED &&
-             access_status == HIT_RESERVED) {
-    stats.hit_reserved_retry++;
   } else {
     fprintf(stderr,
             "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
@@ -3101,6 +3107,80 @@ static unsigned long long rtcore_v04_semantic_histogram_mean(
   return histogram.count == 0 ? 0 : histogram.total / histogram.count;
 }
 
+}  // namespace
+
+void rtcore_v04_record_l2_service_access(
+    mem_fetch *mf, const cache_access_observation &observation,
+    enum cache_request_status status, const std::list<cache_event> &events,
+    unsigned long long cycle) {
+  (void)cycle;
+  if (mf == NULL || !mf->has_rtcore_v04_semantic_tag_set()) return;
+  if (!rtcore_v04_global384_semantic_accounting_enabled() ||
+      !observation.valid || observation.access_status != status) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=l2_service_observation_invalid\n");
+    fflush(stderr);
+    abort();
+  }
+  rtcore_v04_semantic_tag_set_stats &stats =
+      rtcore_v04_semantic_tag_set_stats_for(
+          mf->get_rtcore_v04_semantic_tag_set());
+  stats.l2_access++;
+  if (status == RESERVATION_FAIL) {
+    stats.l2_reservation_fail_retry++;
+    return;
+  }
+  const bool explicit_lower_request =
+      was_read_sent(events) || was_write_sent(events);
+  const bool write_allocate_operation = was_writeallocate_sent(events);
+  if (status == HIT) {
+    stats.l2_hit++;
+  } else if (mf->get_is_write() && status == MISS &&
+             !explicit_lower_request && !write_allocate_operation) {
+    stats.l2_local_write_allocate++;
+  } else if (observation.probe_status == HIT_RESERVED && status == MISS &&
+             !explicit_lower_request) {
+    stats.l2_accepted_mshr_merge++;
+  } else if (explicit_lower_request || write_allocate_operation) {
+    stats.l2_miss_to_dram++;
+  } else {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=l2_service_class_invalid probe=%u access=%u\n",
+            static_cast<unsigned>(observation.probe_status),
+            static_cast<unsigned>(status));
+    fflush(stderr);
+    abort();
+  }
+}
+
+void rtcore_v04_record_dram_service_request(mem_fetch *mf,
+                                             unsigned long long cycle) {
+  if (mf == NULL || !mf->has_rtcore_v04_semantic_tag_set()) return;
+  if (!rtcore_v04_global384_semantic_accounting_enabled()) abort();
+  mf->begin_rtcore_v04_dram_service(cycle);
+  rtcore_v04_semantic_tag_set_stats_for(
+      mf->get_rtcore_v04_semantic_tag_set())
+      .dram_request++;
+}
+
+void rtcore_v04_record_dram_service_response(mem_fetch *mf,
+                                              unsigned long long cycle) {
+  if (mf == NULL || !mf->has_rtcore_v04_semantic_tag_set()) return;
+  if (!rtcore_v04_global384_semantic_accounting_enabled()) abort();
+  const unsigned long long latency =
+      mf->complete_rtcore_v04_dram_service(cycle);
+  rtcore_v04_semantic_tag_set_stats &stats =
+      rtcore_v04_semantic_tag_set_stats_for(
+          mf->get_rtcore_v04_semantic_tag_set());
+  stats.dram_response++;
+  rtcore_v04_semantic_histogram_observe(
+      &stats.dram_request_to_response, latency);
+}
+
+namespace {
+
 extern "C" void rtcore_record_v04_global384_semantic_last_arrival(
     const rtcore_memory_unit_request_snapshot *snapshot,
     unsigned long long completion_cycle) {
@@ -3226,7 +3306,7 @@ static void rtcore_report_v04_global384_semantic_accounting() {
            "tag_set=0x%08x tags=%s logical_access=%llu "
            "logical_requested_bytes=%llu issue_attempt=%llu "
            "frontend_blocked=%llu cache_lookup=%llu "
-           "reservation_fail_retry=%llu hit_reserved_retry=%llu "
+           "reservation_fail_retry=%llu "
            "same_cycle_merged_child=%llu accepted_physical=%llu "
            "physical_requested_bytes=%llu physical_completion=%llu "
            "lower_read=%llu lower_write=%llu lower_write_allocate=%llu "
@@ -3234,6 +3314,15 @@ static void rtcore_report_v04_global384_semantic_accounting() {
            "line_miss=%llu sector_miss=%llu accepted_mshr_merge=%llu "
            "write_no_allocate_miss=%llu "
            "first_touch_miss=%llu repeat_miss_unclassified=%llu "
+           "l2_access=%llu l2_reservation_fail_retry=%llu "
+           "l2_hit=%llu l2_local_write_allocate=%llu "
+           "l2_accepted_mshr_merge=%llu "
+           "l2_miss_to_dram=%llu dram_request=%llu dram_response=%llu "
+           "dram_request_to_response_count=%llu "
+           "dram_request_to_response_mean=%llu "
+           "dram_request_to_response_p50=%llu "
+           "dram_request_to_response_p95=%llu "
+           "dram_request_to_response_p99=%llu "
            "response_or_ack_fanout=%llu ready_to_accept_mean=%llu "
            "ready_to_accept_p50=%llu ready_to_accept_p95=%llu "
            "ready_to_accept_p99=%llu accept_to_response_mean=%llu "
@@ -3248,14 +3337,28 @@ static void rtcore_report_v04_global384_semantic_accounting() {
            "last_arrival_co_closure_suppressed=%llu\n",
            it->first, names.c_str(), s.logical_access,
            s.logical_requested_bytes, s.issue_attempt, s.frontend_blocked,
-           s.cache_lookup, s.reservation_fail_retry, s.hit_reserved_retry,
+           s.cache_lookup, s.reservation_fail_retry,
            s.same_cycle_merged_child, s.accepted_physical,
            s.physical_requested_bytes, s.physical_completion, s.lower_read,
            s.lower_write, s.lower_write_allocate, s.lower_any,
            s.immediate_read_hit, s.pending_write_hit, s.line_miss,
            s.sector_miss, s.accepted_mshr_merge,
            s.write_no_allocate_miss, s.first_touch_miss,
-           s.repeat_miss_unclassified, s.response_or_ack_fanout,
+           s.repeat_miss_unclassified, s.l2_access,
+           s.l2_reservation_fail_retry, s.l2_hit,
+           s.l2_local_write_allocate, s.l2_accepted_mshr_merge,
+           s.l2_miss_to_dram,
+           s.dram_request, s.dram_response,
+           s.dram_request_to_response.count,
+           rtcore_v04_semantic_histogram_mean(
+               s.dram_request_to_response),
+           rtcore_v04_semantic_histogram_quantile(
+               s.dram_request_to_response, 50),
+           rtcore_v04_semantic_histogram_quantile(
+               s.dram_request_to_response, 95),
+           rtcore_v04_semantic_histogram_quantile(
+               s.dram_request_to_response, 99),
+           s.response_or_ack_fanout,
            rtcore_v04_semantic_histogram_mean(s.ready_to_accept),
            rtcore_v04_semantic_histogram_quantile(s.ready_to_accept, 50),
            rtcore_v04_semantic_histogram_quantile(s.ready_to_accept, 95),
@@ -3458,8 +3561,8 @@ struct rtcore_memory_unit_same_cycle_32b_merge_key {
     return is_write < other.is_write;
   }
 };
-static std::map<rtcore_memory_unit_same_cycle_32b_merge_key, unsigned>
-    g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key;
+static std::map<rtcore_memory_unit_same_cycle_32b_merge_key, mem_fetch *>
+    g_rtcore_memory_unit_same_cycle_32b_merge_mf_by_key;
 static std::map<unsigned, bool>
     g_rtcore_v02_lsu_shared_frontend_blocked_by_owner;
 static std::map<unsigned, unsigned long long>
@@ -5687,7 +5790,7 @@ static void rtcore_memory_unit_refresh_same_cycle_32b_merge_map(
     unsigned long long cycle) {
   if (!g_rtcore_memory_unit_same_cycle_32b_merge_map_initialized ||
       g_rtcore_memory_unit_same_cycle_32b_merge_map_cycle != cycle) {
-    g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key.clear();
+    g_rtcore_memory_unit_same_cycle_32b_merge_mf_by_key.clear();
     g_rtcore_memory_unit_same_cycle_32b_merge_map_cycle = cycle;
     g_rtcore_memory_unit_same_cycle_32b_merge_map_initialized = true;
   }
@@ -5709,16 +5812,19 @@ static bool rtcore_try_merge_memory_unit_same_cycle_32b(
   key.cycle = result.cycle;
   key.aligned_32b_addr = static_cast<unsigned long long>(addr);
   key.is_write = result.lsu_sideband_is_write;
-  std::map<rtcore_memory_unit_same_cycle_32b_merge_key, unsigned>::iterator
-      key_it = g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key.find(key);
-  if (key_it == g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key.end()) {
+  std::map<rtcore_memory_unit_same_cycle_32b_merge_key, mem_fetch *>::iterator
+      key_it = g_rtcore_memory_unit_same_cycle_32b_merge_mf_by_key.find(key);
+  if (key_it == g_rtcore_memory_unit_same_cycle_32b_merge_mf_by_key.end()) {
     return false;
   }
+  mem_fetch *source_mf = key_it->second;
+  if (source_mf == NULL) abort();
   std::map<unsigned, rtcore_v04_pending_memory_transaction>::iterator
       pending_it =
-          g_rtcore_v02_lsu_pending_memory_requests.find(key_it->second);
+          g_rtcore_v02_lsu_pending_memory_requests.find(
+              source_mf->get_request_uid());
   if (pending_it == g_rtcore_v02_lsu_pending_memory_requests.end()) {
-    g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key.erase(key_it);
+    g_rtcore_memory_unit_same_cycle_32b_merge_mf_by_key.erase(key_it);
     return false;
   }
   if (snapshot == NULL) return false;
@@ -5726,7 +5832,10 @@ static bool rtcore_try_merge_memory_unit_same_cycle_32b(
   if (rtcore_v04_global384_semantic_accounting_enabled() &&
       snapshot->v04_semantic_memory.valid == 1) {
     rtcore_v04_semantic_observe_logical(*snapshot);
-    rtcore_v04_semantic_record_accept(snapshot, key_it->second, result.cycle);
+    rtcore_v04_semantic_record_accept(
+        snapshot, source_mf->get_request_uid(), result.cycle);
+    source_mf->merge_rtcore_v04_semantic_tag_set(
+        snapshot->v04_semantic_memory.tag_set);
     rtcore_v04_semantic_tag_set_stats_for(
         snapshot->v04_semantic_memory.tag_set)
         .same_cycle_merged_child++;
@@ -5768,7 +5877,7 @@ static void rtcore_register_memory_unit_same_cycle_32b_merge_source(
   key.cycle = result.cycle;
   key.aligned_32b_addr = static_cast<unsigned long long>(addr);
   key.is_write = result.lsu_sideband_is_write;
-  g_rtcore_memory_unit_same_cycle_32b_merge_uid_by_key[key] = mf->get_request_uid();
+  g_rtcore_memory_unit_same_cycle_32b_merge_mf_by_key[key] = mf;
 }
 
 enum rtcore_memory_unit_offer_outcome {
@@ -6032,6 +6141,10 @@ rtcore_maybe_accept_memory_unit_l1d_client(
       addr, is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R,
       RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write, result.cycle);
   mf->set_raytrace();
+  if (semantic_accounting) {
+    mf->set_rtcore_v04_semantic_tag_set(
+        snapshot.v04_semantic_memory.tag_set);
+  }
   mf->set_uncoalesced_addr(addr);
   mf->set_uncoalesced_base_addr(addr);
 
@@ -12633,6 +12746,24 @@ bool rtcore_v04_ordinary_semantic_candidate(
   }
 }
 
+static uint32_t rtcore_v04_ordinary_semantic_tag_set(
+    const rtcore_v04_publication_preflight &preflight) {
+  uint8_t tag = RTCORE_V04_SEMANTIC_TAG_INVALID;
+  if (!rtcore_v04_ordinary_semantic_candidate(preflight, &tag)) return 0;
+  if (tag == RTCORE_V04_SEMANTIC_TAG_INVALID ||
+      tag >= RTCORE_V04_SEMANTIC_TAG_COUNT) {
+    abort();
+  }
+  return uint32_t{1} << (tag - 1u);
+}
+
+static void rtcore_v04_attach_ordinary_semantic_tag(
+    mem_fetch *mf, const rtcore_v04_publication_preflight &preflight) {
+  if (mf == NULL) abort();
+  const uint32_t tag_set = rtcore_v04_ordinary_semantic_tag_set(preflight);
+  if (tag_set != 0) mf->set_rtcore_v04_semantic_tag_set(tag_set);
+}
+
 rtcore_v04_ordinary_semantic_key rtcore_v04_ordinary_semantic_key_for(
     const rtcore_v04_publication_preflight &preflight) {
   rtcore_v04_ordinary_semantic_key key = {};
@@ -12776,13 +12907,21 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
     fflush(stderr);
     abort();
   }
+  const uint32_t expected_tag_set = uint32_t{1} << (tag - 1u);
+  if (mf->get_rtcore_v04_semantic_tag_set() != expected_tag_set) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=ordinary_lsu_mem_fetch_tag_mismatch\n");
+    fflush(stderr);
+    abort();
+  }
   std::map<rtcore_v04_ordinary_semantic_key,
            rtcore_v04_ordinary_semantic_state>::iterator found =
       g_rtcore_v04_semantic_active_ordinary.find(key);
   if (found == g_rtcore_v04_semantic_active_ordinary.end()) {
     rtcore_v04_ordinary_semantic_state state = {};
     state.ready_cycle = mf->get_timestamp();
-    state.tag_set = uint32_t{1} << (tag - 1u);
+    state.tag_set = expected_tag_set;
     state.useful_byte_mask = key.byte_mask;
     found = g_rtcore_v04_semantic_active_ordinary
                 .insert(std::make_pair(key, state))
@@ -12802,7 +12941,7 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
   }
   rtcore_v04_ordinary_semantic_state &state = found->second;
   if (state.accepted || cycle < state.ready_cycle ||
-      state.tag_set != (uint32_t{1} << (tag - 1u)) ||
+      state.tag_set != expected_tag_set ||
       state.useful_byte_mask != key.byte_mask) {
     fprintf(stderr,
             "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
@@ -12815,12 +12954,7 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
   stats.issue_attempt++;
   stats.cache_lookup++;
   if (status == RESERVATION_FAIL) {
-    if (observation.probe_status == HIT_RESERVED &&
-        observation.access_status == HIT_RESERVED) {
-      stats.hit_reserved_retry++;
-    } else {
-      stats.reservation_fail_retry++;
-    }
+    stats.reservation_fail_retry++;
     return;
   }
 
@@ -13420,6 +13554,7 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
                                   m_core->get_gpu()->gpu_tot_sim_cycle);
     const rtcore_v04_publication_preflight preflight =
         rtcore_v04_preflight_ordinary_publication_store(mf);
+    rtcore_v04_attach_ordinary_semantic_tag(mf, preflight);
     rtcore_v04_arm_publication_preaccept(mf, preflight);
     std::list<cache_event> events;
     m_core->record_rtcore_shared_l1d_cache_access(
@@ -13463,6 +13598,7 @@ void ldst_unit::L1_latency_queue_cycle() {
         const rtcore_v04_publication_preflight preflight =
             rtcore_v04_preflight_ordinary_publication_store(
                 mf_next);
+        rtcore_v04_attach_ordinary_semantic_tag(mf_next, preflight);
         std::list<cache_event> events;
         m_core->record_rtcore_shared_l1d_cache_access(
             RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU);

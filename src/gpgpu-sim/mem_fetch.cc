@@ -75,6 +75,18 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     m_raw_addr.sub_partition = m_original_mf->get_tlx_addr().sub_partition;
   }
   m_israytrace = false;
+  m_rtcore_v04_semantic_tag_set = 0;
+  if (m_original_mf) {
+    m_rtcore_v04_semantic_tag_set |=
+        m_original_mf->get_rtcore_v04_semantic_tag_set();
+  }
+  if (m_original_wr_mf) {
+    m_rtcore_v04_semantic_tag_set |=
+        m_original_wr_mf->get_rtcore_v04_semantic_tag_set();
+  }
+  m_rtcore_v04_dram_service_started = false;
+  m_rtcore_v04_dram_service_completed = false;
+  m_rtcore_v04_dram_service_start_cycle = 0;
   memset(&m_rtcore_v04_publication_ticket, 0,
          sizeof(m_rtcore_v04_publication_ticket));
   m_rtcore_v04_publication_ticket_valid = false;
@@ -84,6 +96,37 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   memset(&m_rtcore_v04_live_access_preaccept, 0,
          sizeof(m_rtcore_v04_live_access_preaccept));
   m_rtcore_v04_live_access_preaccept_valid = false;
+}
+
+void mem_fetch::set_rtcore_v04_semantic_tag_set(uint32_t tag_set) {
+  assert(tag_set != 0);
+  assert(m_rtcore_v04_semantic_tag_set == 0 ||
+         m_rtcore_v04_semantic_tag_set == tag_set);
+  m_rtcore_v04_semantic_tag_set = tag_set;
+}
+
+void mem_fetch::merge_rtcore_v04_semantic_tag_set(uint32_t tag_set) {
+  assert(tag_set != 0);
+  assert(!m_rtcore_v04_dram_service_started);
+  m_rtcore_v04_semantic_tag_set |= tag_set;
+}
+
+void mem_fetch::begin_rtcore_v04_dram_service(unsigned long long cycle) {
+  assert(has_rtcore_v04_semantic_tag_set());
+  assert(!m_rtcore_v04_dram_service_started &&
+         !m_rtcore_v04_dram_service_completed);
+  m_rtcore_v04_dram_service_started = true;
+  m_rtcore_v04_dram_service_start_cycle = cycle;
+}
+
+unsigned long long mem_fetch::complete_rtcore_v04_dram_service(
+    unsigned long long cycle) {
+  assert(has_rtcore_v04_semantic_tag_set());
+  assert(m_rtcore_v04_dram_service_started &&
+         !m_rtcore_v04_dram_service_completed);
+  assert(cycle >= m_rtcore_v04_dram_service_start_cycle);
+  m_rtcore_v04_dram_service_completed = true;
+  return cycle - m_rtcore_v04_dram_service_start_cycle;
 }
 
 mem_fetch::~mem_fetch() {

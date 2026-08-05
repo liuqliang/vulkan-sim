@@ -30,6 +30,7 @@
 #define MEM_FETCH_H
 
 #include <bitset>
+#include <stdint.h>
 #include "../abstract_hardware_model.h"
 #include "../cuda-sim/rtcore_v04_pre_submit_publication_bridge.h"
 #include "addrdec.h"
@@ -106,6 +107,18 @@ class mem_fetch {
   bool isatomic() const;
   bool israytrace() const { return m_israytrace || (!m_inst.empty() && m_inst.op == RT_CORE_OP); }
   void set_raytrace() {m_israytrace = true; }
+
+  void set_rtcore_v04_semantic_tag_set(uint32_t tag_set);
+  void merge_rtcore_v04_semantic_tag_set(uint32_t tag_set);
+  uint32_t get_rtcore_v04_semantic_tag_set() const {
+    return m_rtcore_v04_semantic_tag_set;
+  }
+  bool has_rtcore_v04_semantic_tag_set() const {
+    return m_rtcore_v04_semantic_tag_set != 0;
+  }
+  void begin_rtcore_v04_dram_service(unsigned long long cycle);
+  unsigned long long complete_rtcore_v04_dram_service(
+      unsigned long long cycle);
 
   void set_return_timestamp(unsigned t) { m_timestamp2 = t; }
   void set_icnt_receive_time(unsigned t) { m_icnt_receive_time = t; }
@@ -197,6 +210,10 @@ class mem_fetch {
   warp_inst_t m_inst;
   
   bool m_israytrace;
+  uint32_t m_rtcore_v04_semantic_tag_set;
+  bool m_rtcore_v04_dram_service_started;
+  bool m_rtcore_v04_dram_service_completed;
+  unsigned long long m_rtcore_v04_dram_service_start_cycle;
 
   static unsigned sm_next_mf_request_uid;
 
