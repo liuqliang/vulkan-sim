@@ -13254,13 +13254,24 @@ void rtcore_v04_validate_accepted_publication_topology(
       !mf->has_rtcore_v04_live_access_preaccept()) {
     return;
   }
-  const bool write_sent = was_write_sent(events);
+  unsigned write_request_count = 0;
+  for (std::list<cache_event>::const_iterator event = events.begin();
+       event != events.end(); ++event) {
+    if (event->m_cache_event_type == WRITE_REQUEST_SENT) {
+      ++write_request_count;
+    }
+  }
+  const bool write_sent = write_request_count != 0;
+  const bool read_sent = was_read_sent(events);
   const bool write_allocate_sent =
       was_writeallocate_sent(events);
   const bool immediate_l1_completion =
       status == HIT && !write_sent && !write_allocate_sent;
+  // The original store retains its own WRITE_ACK when a write-allocate read
+  // is also emitted.  The derived fill carries no publication ticket, so the
+  // producer fence still completes on the original store acknowledgement.
   const bool downstream_ack_completion =
-      write_sent && !write_allocate_sent;
+      write_request_count == 1 && !read_sent;
   if (!immediate_l1_completion &&
       !downstream_ack_completion) {
     rtcore_v04_publication_ticket_fail_closed(
