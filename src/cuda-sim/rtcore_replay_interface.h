@@ -240,6 +240,22 @@ struct rtcore_v04_live_handoff_acquire_transport_snapshot {
   uint8_t reserved_zero[1];
 };
 
+struct rtcore_v04_dispatch_handoff_read_transport_snapshot {
+  uint32_t resident_warp_generation;
+  uint32_t window_generation;
+  uint32_t dynamic_warp_id;
+  uint32_t warp_uid;
+  uint32_t cohort_lane_mask;
+  uint32_t dispatch_generation;
+  uint16_t cohort_index;
+  uint8_t lane_slot_chunk;
+  uint8_t lane_read_count;
+  uint8_t phase;
+  uint8_t valid;
+  uint8_t preaccepted;
+  uint8_t reserved_zero[1];
+};
+
 struct rtcore_v04_global384_private_init_transport_snapshot {
   uint32_t resident_warp_generation;
   uint32_t dynamic_warp_id;
@@ -398,6 +414,8 @@ struct rtcore_memory_unit_request_snapshot {
       v04_handoff_publication;
   rtcore_v04_live_handoff_acquire_transport_snapshot
       v04_live_handoff_acquire;
+  rtcore_v04_dispatch_handoff_read_transport_snapshot
+      v04_dispatch_handoff_read;
   rtcore_v04_global384_private_init_transport_snapshot
       v04_global384_private_init;
   rtcore_v04_live_transaction_transport_snapshot v04_live_transaction;

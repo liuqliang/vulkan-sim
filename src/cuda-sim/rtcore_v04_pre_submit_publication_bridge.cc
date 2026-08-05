@@ -515,11 +515,17 @@ status_kind bridge_v0::preflight_live_handoff_access(
     uint8_t lane_id, address_range_registry::access_kind access_kind,
     uint64_t aligned_32b_address, uint32_t byte_mask,
     address_range_registry::live_access_v0 *access) const {
+  const bool rtcore_acquire =
+      access_kind ==
+      address_range_registry::kAccessHandoffRtcoreAcquire;
+  const bool shader_dispatch_read =
+      access_kind ==
+      address_range_registry::kAccessHandoffShaderDispatchRead;
   if (access == NULL || resident_warp_generation == 0 ||
       lane_id >= allocation_identity::kLaneCapacity ||
-      access_kind !=
-          address_range_registry::kAccessHandoffRtcoreAcquire ||
-      byte_mask != std::numeric_limits<uint32_t>::max()) {
+      (!rtcore_acquire && !shader_dispatch_read) || byte_mask == 0 ||
+      (rtcore_acquire &&
+       byte_mask != std::numeric_limits<uint32_t>::max())) {
     return kStatusInvalidArgument;
   }
   std::memset(access, 0, sizeof(*access));

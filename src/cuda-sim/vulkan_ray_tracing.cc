@@ -36095,12 +36095,17 @@ extern "C" int rtcore_read_shader_call_payload_debug_snapshot(
 
 extern "C" int rtcore_prepare_v04_direct_shader_input_context(
     const ptx_instruction *pI, ptx_thread_info *thread, unsigned reason,
-    unsigned lane_id, unsigned long long handoff_window_base) {
-    if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL) {
+    unsigned lane_id, unsigned long long handoff_window_base,
+    const uint32_t *handoff_words, unsigned handoff_word_count) {
+    if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
+        handoff_words == NULL ||
+        handoff_word_count != rtcore::abi_v04::kWordCount) {
         return 0;
     }
 
     std::array<uint32_t, rtcore::abi_v04::kWordCount> words = {};
+    std::copy(handoff_words, handoff_words + handoff_word_count,
+              words.begin());
     uint64_t lane_address = 0;
     rtcore::abi_v04::shader_input::error address_error =
         rtcore::abi_v04::shader_input::kErrorNone;
@@ -36114,9 +36119,6 @@ extern "C" int rtcore_prepare_v04_direct_shader_input_context(
         fflush(stderr);
         return 0;
     }
-    thread->get_global_memory()->read_simulator_backing(
-        lane_address, sizeof(words), words.data());
-
     const rtcore::abi_v04::shader_input::attribute_plan plan =
         rtcore::abi_v04::shader_input::decode(words, reason);
     if (!plan.valid()) {
@@ -36144,22 +36146,13 @@ extern "C" int rtcore_prepare_v04_direct_shader_input_context(
 
     printf("GPGPU-Sim RTCORE_V04_DIRECT_SHADER_INPUT_CONTEXT_PREPARE "
            "lane_id=%u lane_address=0x%llx reason=%u hit_kind=%u "
-           "world_ray_direction_fp32=(0x%08x,0x%08x,0x%08x) "
-           "boundary_ray_tmax_fp32=0x%08x primitive_index=%u "
-           "instance_custom_index=%u attribute_word_count=%u "
+           "attribute_word_count=%u "
            "attribute_location=%u attribute_format=%u "
            "inline_attribute_words=(0x%08x,0x%08x,0x%08x,0x%08x) "
            "attribute_materialized=%u "
-           "context_source=live_v04_handoff\n",
+           "context_source=timed_v04_handoff_response\n",
            lane_id, static_cast<unsigned long long>(lane_address), reason,
-           plan.hit_kind,
-           words[rtcore::abi_v04::kWorldRayDirectionXFp32.word],
-           words[rtcore::abi_v04::kWorldRayDirectionYFp32.word],
-           words[rtcore::abi_v04::kWorldRayDirectionZFp32.word],
-           words[rtcore::abi_v04::kBoundaryRayTmaxFp32.word],
-           words[rtcore::abi_v04::kPrimitiveIndex.word],
-           words[rtcore::abi_v04::kInstanceCustomIndex.word],
-           plan.word_count, plan.location, plan.format,
+           plan.hit_kind, plan.word_count, plan.location, plan.format,
            words[rtcore::abi_v04::kInlineAttributeWord0.word],
            words[rtcore::abi_v04::kInlineAttributeWord1.word],
            words[rtcore::abi_v04::kInlineAttributeWord2.word],

@@ -74,6 +74,75 @@ struct attribute_plan {
   std::array<uint32_t, 4> words;
 };
 
+static constexpr uint8_t kLaneSlotChunkCount = 4;
+static constexpr uint8_t kMaxDispatcherReadCount = 2;
+
+struct dispatcher_chunk_read {
+  dispatcher_chunk_read() : chunk(0), byte_mask(0) {}
+
+  uint8_t chunk;
+  uint32_t byte_mask;
+};
+
+struct dispatcher_read_plan {
+  dispatcher_read_plan() : status(kErrorNone), read_count(0) {}
+
+  bool valid() const { return status == kErrorNone; }
+
+  error status;
+  uint8_t read_count;
+  std::array<dispatcher_chunk_read, kMaxDispatcherReadCount> reads;
+};
+
+inline attribute_plan decode(
+    const std::array<uint32_t, kWordCount> &words, uint32_t reason);
+
+inline dispatcher_read_plan dispatch_selection_read_plan(uint32_t reason) {
+  dispatcher_read_plan plan;
+  if (reason != kReasonMiss && reason != kReasonClosestHitReady &&
+      reason != kReasonAnyHitRequired &&
+      reason != kReasonIntersectionRequired) {
+    plan.status = kErrorInvalidReason;
+    return plan;
+  }
+
+  // w13 selects the miss or hit-group record for every supported reason.
+  plan.reads[plan.read_count].chunk = 1;
+  plan.reads[plan.read_count++].byte_mask = 0x00f00000u;
+  if (reason == kReasonMiss) return plan;
+
+  // w16/w17 complete hit-group selection. w22 validates the hit kind;
+  // closest-hit/any-hit also need the w23 attribute contract.
+  plan.reads[plan.read_count].chunk = 2;
+  plan.reads[plan.read_count++].byte_mask =
+      reason == kReasonIntersectionRequired ? 0x0f0000ffu
+                                            : 0xff0000ffu;
+  return plan;
+}
+
+inline dispatcher_read_plan dispatch_attribute_read_plan(
+    const std::array<uint32_t, kWordCount> &words, uint32_t reason) {
+  dispatcher_read_plan plan;
+  const attribute_plan attributes = decode(words, reason);
+  if (!attributes.valid()) {
+    plan.status = attributes.status;
+    return plan;
+  }
+  if (!attributes.materializes_attributes()) return plan;
+  if (attributes.location != 0x01u || attributes.word_count == 0 ||
+      attributes.word_count > 4) {
+    plan.status = kErrorInvalidAttributeContract;
+    return plan;
+  }
+  plan.reads[0].chunk = 3;
+  plan.reads[0].byte_mask =
+      attributes.word_count == 4
+          ? 0xffffffffu
+          : (uint32_t{1} << (attributes.word_count * 4)) - 1u;
+  plan.read_count = 1;
+  return plan;
+}
+
 inline bool lane_slot_address(uint64_t base, uint32_t lane,
                               uint64_t *address, error *failure = NULL) {
   if (failure != NULL) *failure = kErrorNone;
