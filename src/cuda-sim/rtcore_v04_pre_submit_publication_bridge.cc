@@ -654,7 +654,12 @@ status_kind bridge_v0::preflight_ordinary_publication_store(
   std::memset(preflight, 0, sizeof(*preflight));
   preflight->registry_status =
       address_range_registry::kStatusOk;
-  if (!request.is_global_write) return kStatusOk;
+  if (request.is_global_write && request.is_global_read) {
+    return kStatusInvalidArgument;
+  }
+  if (!request.is_global_write && !request.is_global_read) {
+    return kStatusOk;
+  }
   if (request.aligned_32b_address %
           address_range_registry::kAddressChunkBytes !=
       0) {
@@ -733,9 +738,15 @@ status_kind bridge_v0::preflight_ordinary_publication_store(
     const uint64_t offset = request.aligned_32b_address -
                             range.range_base;
     const uint32_t shader_return_mask = 0xffff0fffu;
+    const bool valid_shader_return =
+        request.is_global_write &&
+        offset == 3u * address_range_registry::kAddressChunkBytes &&
+        (request.byte_mask & ~shader_return_mask) == 0;
+    const bool valid_shader_builtin_read =
+        request.is_global_read &&
+        offset < 4u * address_range_registry::kAddressChunkBytes;
     if (!group->live_bound || group->release_started ||
-        offset != 3u * address_range_registry::kAddressChunkBytes ||
-        (request.byte_mask & ~shader_return_mask) != 0) {
+        (!valid_shader_return && !valid_shader_builtin_read)) {
       preflight->registry_status =
           address_range_registry::kStatusByteMaskMismatch;
       return kStatusRegistryRejected;
@@ -744,7 +755,9 @@ status_kind bridge_v0::preflight_ordinary_publication_store(
     preflight->live_access.lane_id = range.lane_id;
     preflight->live_access.object = range.object;
     preflight->live_access.access =
-        address_range_registry::kAccessHandoffShaderReturn;
+        valid_shader_builtin_read
+            ? address_range_registry::kAccessHandoffShaderBuiltinRead
+            : address_range_registry::kAccessHandoffShaderReturn;
     preflight->live_access.aligned_32b_address =
         request.aligned_32b_address;
     preflight->live_access.byte_mask = request.byte_mask;
@@ -757,6 +770,12 @@ status_kind bridge_v0::preflight_ordinary_publication_store(
     preflight->candidate = 1;
     preflight->live_candidate = 1;
     return kStatusOk;
+  }
+
+  if (request.is_global_read) {
+    preflight->registry_status =
+        address_range_registry::kStatusWrongPhase;
+    return kStatusRegistryRejected;
   }
 
   preflight->store.owner = range.owner;

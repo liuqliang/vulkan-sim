@@ -74,9 +74,10 @@ struct ordinary_store_request_v0 {
   uint64_t aligned_32b_address;
   uint32_t byte_mask;
   uint8_t is_global_write;
+  uint8_t is_global_read;
   uint8_t byte_mask_single_chunk;
   uint8_t sector_mask_matches_address;
-  uint8_t reserved_zero[5];
+  uint8_t reserved_zero[4];
 };
 
 struct ordinary_store_preflight_v0 {
