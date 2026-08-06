@@ -1678,21 +1678,40 @@ enum cache_request_status read_only_cache::access(
 enum cache_request_status data_cache::process_tag_probe(
     bool wr, enum cache_request_status probe_status, new_addr_type addr,
     unsigned cache_index, mem_fetch *mf, unsigned time,
-    std::list<cache_event> &events) {
+    std::list<cache_event> &events,
+    enum cache_request_policy_hint policy_hint) {
   // Each function pointer ( m_[rd/wr]_[hit/miss] ) is set in the
   // data_cache constructor to reflect the corresponding cache configuration
   // options. Function pointers were used to avoid many long conditional
   // branches resulting from many cache configuration options.
+  if (policy_hint != CACHE_REQUEST_POLICY_DEFAULT &&
+      policy_hint != CACHE_REQUEST_POLICY_WRITE_ALLOCATE_RETAIN) {
+    abort();
+  }
+  const bool write_allocate_retain =
+      policy_hint == CACHE_REQUEST_POLICY_WRITE_ALLOCATE_RETAIN;
+  if (write_allocate_retain &&
+      (!wr || mf == NULL ||
+       !mf->has_rtcore_v04_handoff_cache_policy_eligibility())) {
+    abort();
+  }
   cache_request_status access_status = probe_status;
   if (wr) {  // Write
     if (probe_status == HIT) {
-      access_status =
-          (this->*m_wr_hit)(addr, cache_index, mf, time, events, probe_status);
+      access_status = write_allocate_retain
+                          ? wr_hit_wt(addr, cache_index, mf, time, events,
+                                      probe_status)
+                          : (this->*m_wr_hit)(addr, cache_index, mf, time,
+                                             events, probe_status);
     } else if ((probe_status != RESERVATION_FAIL) ||
                (probe_status == RESERVATION_FAIL &&
+                !write_allocate_retain &&
                 m_config.m_write_alloc_policy == NO_WRITE_ALLOCATE)) {
-      access_status =
-          (this->*m_wr_miss)(addr, cache_index, mf, time, events, probe_status);
+      access_status = write_allocate_retain
+                          ? wr_miss_wa_naive(addr, cache_index, mf, time,
+                                             events, probe_status)
+                          : (this->*m_wr_miss)(addr, cache_index, mf, time,
+                                              events, probe_status);
     } else {
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
       // lines are reserved)
@@ -1731,6 +1750,14 @@ enum cache_request_status data_cache::access_with_observation(
     new_addr_type addr, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events,
     cache_access_observation *observation) {
+  return access_with_policy_observation(addr, mf, time, events, observation,
+                                        CACHE_REQUEST_POLICY_DEFAULT);
+}
+
+enum cache_request_status data_cache::access_with_policy_observation(
+    new_addr_type addr, mem_fetch *mf, unsigned time,
+    std::list<cache_event> &events, cache_access_observation *observation,
+    enum cache_request_policy_hint policy_hint) {
   assert(mf->get_data_size() <= m_config.get_atom_sz());
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
@@ -1738,13 +1765,16 @@ enum cache_request_status data_cache::access_with_observation(
   enum cache_request_status probe_status =
       m_tag_array->probe(block_addr, cache_index, mf, true);
   enum cache_request_status access_status =
-      process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
+      process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events,
+                        policy_hint);
   if (observation != NULL) {
     observation->valid = true;
     observation->probe_status = probe_status;
     observation->access_status = access_status;
     observation->no_write_allocate =
+        policy_hint != CACHE_REQUEST_POLICY_WRITE_ALLOCATE_RETAIN &&
         m_config.m_write_alloc_policy == NO_WRITE_ALLOCATE;
+    observation->request_policy_hint = policy_hint;
   }
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status));

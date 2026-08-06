@@ -52,15 +52,22 @@ enum cache_request_status {
   NUM_CACHE_REQUEST_STATUS
 };
 
+enum cache_request_policy_hint {
+  CACHE_REQUEST_POLICY_DEFAULT = 0,
+  CACHE_REQUEST_POLICY_WRITE_ALLOCATE_RETAIN,
+};
+
 struct cache_access_observation {
   cache_access_observation()
       : valid(false), probe_status(RESERVATION_FAIL),
-        access_status(RESERVATION_FAIL), no_write_allocate(false) {}
+        access_status(RESERVATION_FAIL), no_write_allocate(false),
+        request_policy_hint(CACHE_REQUEST_POLICY_DEFAULT) {}
 
   bool valid;
   enum cache_request_status probe_status;
   enum cache_request_status access_status;
   bool no_write_allocate;
+  enum cache_request_policy_hint request_policy_hint;
 };
 
 enum cache_reservation_fail_reason {
@@ -1154,6 +1161,14 @@ class cache_t {
     if (observation != NULL) *observation = cache_access_observation();
     return access(addr, mf, time, events);
   }
+  virtual enum cache_request_status access_with_policy_observation(
+      new_addr_type addr, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events,
+      cache_access_observation *observation,
+      enum cache_request_policy_hint policy_hint) {
+    if (policy_hint != CACHE_REQUEST_POLICY_DEFAULT) abort();
+    return access_with_observation(addr, mf, time, events, observation);
+  }
 
   // accessors for cache bandwidth availability
   virtual bool data_port_free() const = 0;
@@ -1476,6 +1491,10 @@ class data_cache : public baseline_cache {
       new_addr_type addr, mem_fetch *mf, unsigned time,
       std::list<cache_event> &events,
       cache_access_observation *observation);
+  virtual enum cache_request_status access_with_policy_observation(
+      new_addr_type addr, mem_fetch *mf, unsigned time,
+      std::list<cache_event> &events, cache_access_observation *observation,
+      enum cache_request_policy_hint policy_hint);
 
  protected:
   data_cache(const char *name, cache_config &config, int core_id, int type_id,
@@ -1505,7 +1524,9 @@ class data_cache : public baseline_cache {
                                               new_addr_type addr,
                                               unsigned cache_index,
                                               mem_fetch *mf, unsigned time,
-                                              std::list<cache_event> &events);
+                                              std::list<cache_event> &events,
+                                              enum cache_request_policy_hint
+                                                  policy_hint);
 
  protected:
   mem_fetch_allocator *m_memfetch_creator;

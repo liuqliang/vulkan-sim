@@ -3360,6 +3360,123 @@ static bool rtcore_v04_semantic_tag_set_is_handoff_only(uint32_t tag_set) {
          (tag_set & ~kRtcoreV04HandoffSemanticTagMask) == 0;
 }
 
+struct rtcore_v04_handoff_cache_policy_stats {
+  unsigned long long eligible_attempts;
+  unsigned long long hinted_attempts;
+  unsigned long long hinted_accepted;
+  unsigned long long hinted_reservation_fail;
+  unsigned long long retained_write_hits;
+  unsigned long long write_allocate_events;
+  uint32_t observed_tag_set_or;
+  uint8_t observed_chunk_mask;
+};
+
+static rtcore_v04_handoff_cache_policy_stats
+    g_rtcore_v04_handoff_cache_policy_stats = {};
+static bool g_rtcore_v04_handoff_cache_policy_initialized = false;
+static bool g_rtcore_v04_handoff_cache_policy_report_registered = false;
+static rtcore::v04::handoff_cache_policy::profile_kind
+    g_rtcore_v04_handoff_cache_policy_profile =
+        rtcore::v04::handoff_cache_policy::kProfileBaseline;
+
+static void rtcore_v04_report_handoff_cache_policy() {
+  if (!g_rtcore_v04_handoff_cache_policy_initialized) return;
+  const rtcore_v04_handoff_cache_policy_stats &s =
+      g_rtcore_v04_handoff_cache_policy_stats;
+  printf("GPGPU-Sim RTCORE_V04_HANDOFF_CACHE_POLICY "
+         "profile=%s eligible_attempts=%llu hinted_attempts=%llu "
+         "hinted_accepted=%llu hinted_reservation_fail=%llu "
+         "retained_write_hits=%llu write_allocate_events=%llu "
+         "observed_tag_set_or=0x%08x observed_chunk_mask=0x%02x\n",
+         rtcore::v04::handoff_cache_policy::profile_name(
+             g_rtcore_v04_handoff_cache_policy_profile),
+         s.eligible_attempts, s.hinted_attempts, s.hinted_accepted,
+         s.hinted_reservation_fail, s.retained_write_hits,
+         s.write_allocate_events, s.observed_tag_set_or,
+         s.observed_chunk_mask);
+}
+
+static rtcore::v04::handoff_cache_policy::profile_kind
+rtcore_v04_handoff_cache_policy_profile() {
+  namespace policy = rtcore::v04::handoff_cache_policy;
+  if (!g_rtcore_v04_handoff_cache_policy_initialized) {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_V04_HANDOFF_CACHE_POLICY");
+    const policy::status_kind status =
+        policy::parse_profile(value, &g_rtcore_v04_handoff_cache_policy_profile);
+    if (status != policy::kStatusOk) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_HANDOFF_CACHE_POLICY_FAULT "
+              "fault=invalid_profile value=%s\n",
+              value == NULL ? "<unset>" : value);
+      fflush(stderr);
+      abort();
+    }
+    g_rtcore_v04_handoff_cache_policy_initialized = true;
+    if (!g_rtcore_v04_handoff_cache_policy_report_registered) {
+      if (atexit(rtcore_v04_report_handoff_cache_policy) != 0) abort();
+      g_rtcore_v04_handoff_cache_policy_report_registered = true;
+    }
+  }
+  return g_rtcore_v04_handoff_cache_policy_profile;
+}
+
+static enum cache_request_policy_hint
+rtcore_v04_handoff_cache_policy_hint_for(const mem_fetch *mf) {
+  if (mf == NULL ||
+      !mf->has_rtcore_v04_handoff_cache_policy_eligibility()) {
+    return CACHE_REQUEST_POLICY_DEFAULT;
+  }
+  return rtcore_v04_handoff_cache_policy_profile() ==
+                 rtcore::v04::handoff_cache_policy::
+                     kProfileWriteAllocateRetain
+             ? CACHE_REQUEST_POLICY_WRITE_ALLOCATE_RETAIN
+             : CACHE_REQUEST_POLICY_DEFAULT;
+}
+
+static void rtcore_v04_record_handoff_cache_policy_attempt(
+    const mem_fetch *mf, const cache_access_observation &observation,
+    enum cache_request_status status,
+    const std::list<cache_event> &events) {
+  if (mf == NULL) abort();
+  if (!mf->has_rtcore_v04_handoff_cache_policy_eligibility()) {
+    if (observation.request_policy_hint != CACHE_REQUEST_POLICY_DEFAULT) {
+      abort();
+    }
+    return;
+  }
+  namespace policy = rtcore::v04::handoff_cache_policy;
+  const uint32_t tag_set =
+      mf->get_rtcore_v04_handoff_cache_policy_tag_set();
+  const unsigned chunk = mf->get_rtcore_v04_handoff_cache_policy_chunk();
+  if (!policy::request_eligible(tag_set, chunk, mf->get_is_write())) abort();
+  const enum cache_request_policy_hint expected =
+      rtcore_v04_handoff_cache_policy_profile() ==
+              policy::kProfileWriteAllocateRetain
+          ? CACHE_REQUEST_POLICY_WRITE_ALLOCATE_RETAIN
+          : CACHE_REQUEST_POLICY_DEFAULT;
+  if (observation.request_policy_hint != expected) abort();
+
+  rtcore_v04_handoff_cache_policy_stats &s =
+      g_rtcore_v04_handoff_cache_policy_stats;
+  s.eligible_attempts++;
+  s.observed_tag_set_or |= tag_set;
+  s.observed_chunk_mask |= static_cast<uint8_t>(uint8_t{1} << chunk);
+  if (expected == CACHE_REQUEST_POLICY_DEFAULT) return;
+
+  s.hinted_attempts++;
+  if (status == RESERVATION_FAIL) {
+    s.hinted_reservation_fail++;
+    return;
+  }
+  s.hinted_accepted++;
+  if (observation.probe_status == HIT) {
+    if (!was_write_sent(events) || was_writeallocate_sent(events)) abort();
+    s.retained_write_hits++;
+  }
+  if (was_writeallocate_sent(events)) s.write_allocate_events++;
+}
+
 static void rtcore_v04_semantic_validate_handoff_tag_set(
     uint32_t tag_set) {
   if ((tag_set & kRtcoreV04HandoffSemanticTagMask) != 0 &&
@@ -3435,6 +3552,51 @@ static unsigned rtcore_v04_semantic_handoff_chunk_for_snapshot(
     abort();
   }
   return chunk;
+}
+
+static bool rtcore_v04_handoff_cache_policy_identity_for_snapshot(
+    const rtcore_memory_unit_request_snapshot &snapshot,
+    uint32_t *tag_set, unsigned *chunk) {
+  if (tag_set == NULL || chunk == NULL || !snapshot.is_write ||
+      !rtcore_handoff_publication_access_kind(snapshot.access_kind)) {
+    return false;
+  }
+
+  unsigned publication_chunk = kRtcoreV04InvalidHandoffChunk;
+  if (snapshot.v04_handoff_publication.valid == 1) {
+    publication_chunk =
+        snapshot.v04_handoff_publication.publication_chunk;
+  } else if (snapshot.access_kind ==
+                 RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE &&
+             rtcore_v04_live_publication_memory_op_seq(
+                 snapshot.memory_op_seq)) {
+    publication_chunk = snapshot.memory_op_seq -
+                        RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE;
+  } else if (snapshot.access_kind ==
+                 RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE &&
+             rtcore_v04_native_publication_memory_op_seq(
+                 snapshot.memory_op_seq)) {
+    publication_chunk = snapshot.memory_op_seq -
+                        RTCORE_V04_NATIVE_PUBLICATION_OP_SEQ_BASE;
+  } else {
+    return false;
+  }
+
+  if (publication_chunk >= 4u) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_CACHE_POLICY_FAULT "
+            "fault=publication_chunk_invalid access_kind=%u "
+            "memory_op_seq=%u chunk=%u\n",
+            snapshot.access_kind, snapshot.memory_op_seq,
+            publication_chunk);
+    fflush(stderr);
+    abort();
+  }
+
+  *tag_set = uint32_t{1}
+             << (RTCORE_V04_SEMANTIC_TAG_HANDOFF_RTCORE_PUBLISH - 1u);
+  *chunk = publication_chunk;
+  return true;
 }
 
 static unsigned rtcore_v04_semantic_handoff_chunk_for_mem_fetch(
@@ -7558,6 +7720,13 @@ rtcore_maybe_accept_memory_unit_l1d_client(
       addr, is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R,
       RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write, result.cycle);
   mf->set_raytrace();
+  uint32_t handoff_policy_tag_set = 0;
+  unsigned handoff_policy_chunk = kRtcoreV04InvalidHandoffChunk;
+  if (rtcore_v04_handoff_cache_policy_identity_for_snapshot(
+          snapshot, &handoff_policy_tag_set, &handoff_policy_chunk)) {
+    mf->set_rtcore_v04_handoff_cache_policy_eligibility(
+        handoff_policy_tag_set, handoff_policy_chunk);
+  }
   if (semantic_accounting) {
     const unsigned handoff_chunk =
         rtcore_v04_semantic_handoff_chunk_for_snapshot(snapshot);
@@ -7590,8 +7759,14 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     rtcore_v04_semantic_record_cache_lookup(snapshot);
   }
   cache_access_observation cache_observation;
-  const enum cache_request_status status = cache->access_with_observation(
-      mf->get_addr(), mf, result.cycle, events, &cache_observation);
+  const enum cache_request_policy_hint cache_policy_hint =
+      rtcore_v04_handoff_cache_policy_hint_for(mf);
+  const enum cache_request_status status =
+      cache->access_with_policy_observation(
+          mf->get_addr(), mf, result.cycle, events, &cache_observation,
+          cache_policy_hint);
+  rtcore_v04_record_handoff_cache_policy_attempt(
+      mf, cache_observation, status, events);
   const bool lower_memory_read_sent = was_read_sent(events);
   const bool lower_memory_write_sent = was_write_sent(events);
   const bool lower_memory_writeallocate_sent = was_writeallocate_sent(events);
@@ -14141,11 +14316,10 @@ rtcore_v04_preflight_ordinary_publication_store(
   return preflight;
 }
 
-bool rtcore_v04_ordinary_semantic_candidate(
+bool rtcore_v04_ordinary_handoff_candidate(
     const rtcore_v04_publication_preflight &preflight,
     uint8_t *tag) {
-  if (!rtcore_v04_global384_semantic_accounting_enabled() ||
-      !preflight.candidate || tag == NULL) {
+  if (!preflight.candidate || tag == NULL) {
     return false;
   }
   if (!preflight.live_candidate) {
@@ -14181,6 +14355,24 @@ bool rtcore_v04_ordinary_semantic_candidate(
   }
 }
 
+bool rtcore_v04_ordinary_semantic_candidate(
+    const rtcore_v04_publication_preflight &preflight,
+    uint8_t *tag) {
+  return rtcore_v04_global384_semantic_accounting_enabled() &&
+         rtcore_v04_ordinary_handoff_candidate(preflight, tag);
+}
+
+static uint32_t rtcore_v04_ordinary_handoff_tag_set(
+    const rtcore_v04_publication_preflight &preflight) {
+  uint8_t tag = RTCORE_V04_SEMANTIC_TAG_INVALID;
+  if (!rtcore_v04_ordinary_handoff_candidate(preflight, &tag)) return 0;
+  if (tag == RTCORE_V04_SEMANTIC_TAG_INVALID ||
+      tag >= RTCORE_V04_SEMANTIC_TAG_COUNT) {
+    abort();
+  }
+  return uint32_t{1} << (tag - 1u);
+}
+
 static uint32_t rtcore_v04_ordinary_semantic_tag_set(
     const rtcore_v04_publication_preflight &preflight) {
   uint8_t tag = RTCORE_V04_SEMANTIC_TAG_INVALID;
@@ -14195,8 +14387,10 @@ static uint32_t rtcore_v04_ordinary_semantic_tag_set(
 static void rtcore_v04_attach_ordinary_semantic_tag(
     mem_fetch *mf, const rtcore_v04_publication_preflight &preflight) {
   if (mf == NULL) abort();
+  const uint32_t handoff_tag_set =
+      rtcore_v04_ordinary_handoff_tag_set(preflight);
   const uint32_t tag_set = rtcore_v04_ordinary_semantic_tag_set(preflight);
-  if (tag_set != 0) {
+  if (handoff_tag_set != 0) {
     if (preflight.lane_slot_chunk >= 4u ||
         preflight.handoff_lane_base +
                 static_cast<uint64_t>(preflight.lane_slot_chunk) *
@@ -14208,8 +14402,14 @@ static void rtcore_v04_attach_ordinary_semantic_tag(
       fflush(stderr);
       abort();
     }
+  }
+  if (tag_set != 0) {
     mf->set_rtcore_v04_handoff_chunk(preflight.lane_slot_chunk);
     mf->set_rtcore_v04_semantic_tag_set(tag_set);
+  }
+  if (mf->get_is_write() && handoff_tag_set != 0) {
+    mf->set_rtcore_v04_handoff_cache_policy_eligibility(
+        handoff_tag_set, preflight.lane_slot_chunk);
   }
 }
 
@@ -15105,9 +15305,13 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
     const unsigned long long access_cycle =
         m_core->get_gpu()->gpu_sim_cycle +
         m_core->get_gpu()->gpu_tot_sim_cycle;
-    enum cache_request_status status = cache->access_with_observation(
-        mf->get_addr(), mf,
-        access_cycle, events, &observation);
+    const enum cache_request_policy_hint cache_policy_hint =
+        rtcore_v04_handoff_cache_policy_hint_for(mf);
+    enum cache_request_status status = cache->access_with_policy_observation(
+        mf->get_addr(), mf, access_cycle, events, &observation,
+        cache_policy_hint);
+    rtcore_v04_record_handoff_cache_policy_attempt(
+        mf, observation, status, events);
     rtcore_v04_record_ordinary_semantic_cache_attempt(
         mf, preflight, observation, status, events, access_cycle);
     if (status == RESERVATION_FAIL && preflight.candidate) {
@@ -15148,10 +15352,14 @@ void ldst_unit::L1_latency_queue_cycle() {
         const unsigned long long access_cycle =
             m_core->get_gpu()->gpu_sim_cycle +
             m_core->get_gpu()->gpu_tot_sim_cycle;
+        const enum cache_request_policy_hint cache_policy_hint =
+            rtcore_v04_handoff_cache_policy_hint_for(mf_next);
         enum cache_request_status status =
-            m_L1D->access_with_observation(
+            m_L1D->access_with_policy_observation(
                 mf_next->get_addr(), mf_next, access_cycle, events,
-                &observation);
+                &observation, cache_policy_hint);
+        rtcore_v04_record_handoff_cache_policy_attempt(
+            mf_next, observation, status, events);
         rtcore_v04_record_ordinary_semantic_cache_attempt(
             mf_next, preflight, observation, status, events,
             access_cycle);
@@ -20454,6 +20662,9 @@ void ldst_unit::writeback() {
             mem_fetch *mf = m_L1D->next_access();
             if (!mf->israytrace()) {
               m_next_wb = mf->get_inst();
+              rtcore_v04_complete_publication_ticket(
+                  mf, m_core->get_gpu()->gpu_sim_cycle +
+                          m_core->get_gpu()->gpu_tot_sim_cycle);
               rtcore_record_v02_lsu_shared_l1d_response_normal_serviced();
               rtcore_maybe_log_memory_unit_request_offer_stats(m_sid);
               delete mf;

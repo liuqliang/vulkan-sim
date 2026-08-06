@@ -33,6 +33,7 @@
 #include <stdint.h>
 #include "../abstract_hardware_model.h"
 #include "../cuda-sim/rtcore_v04_pre_submit_publication_bridge.h"
+#include "rtcore_v04_handoff_cache_policy.h"
 #include "addrdec.h"
 
 enum mf_type {
@@ -123,6 +124,17 @@ class mem_fetch {
   }
   bool has_rtcore_v04_handoff_chunk() const {
     return m_rtcore_v04_handoff_chunk < 4u;
+  }
+  void set_rtcore_v04_handoff_cache_policy_eligibility(uint32_t tag_set,
+                                                        unsigned chunk);
+  bool has_rtcore_v04_handoff_cache_policy_eligibility() const {
+    return m_rtcore_v04_handoff_cache_policy_eligible;
+  }
+  uint32_t get_rtcore_v04_handoff_cache_policy_tag_set() const {
+    return m_rtcore_v04_handoff_cache_policy_tag_set;
+  }
+  unsigned get_rtcore_v04_handoff_cache_policy_chunk() const {
+    return m_rtcore_v04_handoff_cache_policy_chunk;
   }
   void begin_rtcore_v04_dram_service(unsigned long long cycle);
   unsigned long long complete_rtcore_v04_dram_service(
@@ -220,6 +232,9 @@ class mem_fetch {
   bool m_israytrace;
   uint32_t m_rtcore_v04_semantic_tag_set;
   uint8_t m_rtcore_v04_handoff_chunk;
+  uint32_t m_rtcore_v04_handoff_cache_policy_tag_set;
+  uint8_t m_rtcore_v04_handoff_cache_policy_chunk;
+  bool m_rtcore_v04_handoff_cache_policy_eligible;
   bool m_rtcore_v04_dram_service_started;
   bool m_rtcore_v04_dram_service_completed;
   unsigned long long m_rtcore_v04_dram_service_start_cycle;

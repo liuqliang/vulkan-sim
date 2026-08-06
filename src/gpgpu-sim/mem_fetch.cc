@@ -77,6 +77,9 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   m_israytrace = false;
   m_rtcore_v04_semantic_tag_set = 0;
   m_rtcore_v04_handoff_chunk = 0xffu;
+  m_rtcore_v04_handoff_cache_policy_tag_set = 0;
+  m_rtcore_v04_handoff_cache_policy_chunk = 0xffu;
+  m_rtcore_v04_handoff_cache_policy_eligible = false;
   if (m_original_mf) {
     m_rtcore_v04_semantic_tag_set |=
         m_original_mf->get_rtcore_v04_semantic_tag_set();
@@ -136,6 +139,18 @@ void mem_fetch::merge_rtcore_v04_handoff_chunk(unsigned chunk) {
   assert(m_rtcore_v04_handoff_chunk == chunk);
 }
 
+void mem_fetch::set_rtcore_v04_handoff_cache_policy_eligibility(
+    uint32_t tag_set, unsigned chunk) {
+  using rtcore::v04::handoff_cache_policy::request_eligible;
+  assert(request_eligible(tag_set, chunk, get_is_write()));
+  assert(!m_rtcore_v04_handoff_cache_policy_eligible ||
+         (m_rtcore_v04_handoff_cache_policy_tag_set == tag_set &&
+          m_rtcore_v04_handoff_cache_policy_chunk == chunk));
+  m_rtcore_v04_handoff_cache_policy_tag_set = tag_set;
+  m_rtcore_v04_handoff_cache_policy_chunk = static_cast<uint8_t>(chunk);
+  m_rtcore_v04_handoff_cache_policy_eligible = true;
+}
+
 void mem_fetch::begin_rtcore_v04_dram_service(unsigned long long cycle) {
   assert(has_rtcore_v04_semantic_tag_set());
   assert(!m_rtcore_v04_dram_service_started &&
@@ -160,8 +175,24 @@ mem_fetch::~mem_fetch() {
       m_rtcore_v04_live_access_preaccept_valid) {
     fprintf(stderr,
             "GPGPU-Sim: deleting mem_fetch with live Global384 "
-            "publication metadata, request_uid=%u\n",
-            m_request_uid);
+            "publication metadata, request_uid=%u ticket=%u "
+            "publication_preaccept=%u live_access_preaccept=%u "
+            "is_write=%u access_type=%u address=0x%llx inst_empty=%u "
+            "inst_load=%u inst_store=%u status=%u original_mf=%u "
+            "original_wr_mf=%u\n",
+            m_request_uid,
+            m_rtcore_v04_publication_ticket_valid ? 1u : 0u,
+            m_rtcore_v04_publication_preaccept_valid ? 1u : 0u,
+            m_rtcore_v04_live_access_preaccept_valid ? 1u : 0u,
+            get_is_write() ? 1u : 0u,
+            static_cast<unsigned>(get_access_type()),
+            static_cast<unsigned long long>(get_addr()),
+            m_inst.empty() ? 1u : 0u,
+            !m_inst.empty() && m_inst.is_load() ? 1u : 0u,
+            !m_inst.empty() && m_inst.is_store() ? 1u : 0u,
+            static_cast<unsigned>(m_status),
+            original_mf != NULL ? 1u : 0u,
+            original_wr_mf != NULL ? 1u : 0u);
     fflush(stderr);
     abort();
   }
