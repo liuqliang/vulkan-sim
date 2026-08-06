@@ -49,6 +49,8 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include "../cuda-sim/ptx_sim.h"
 #include "../cuda-sim/rtcore_replay_interface.h"
 #include "../cuda-sim/rtcore_v04_conservation_recorder.h"
+#include "../cuda-sim/rtcore_v04_handoff_shared_timing.h"
+#include "../cuda-sim/rtcore_v04_handoff_storage_profile.h"
 #include "../cuda-sim/rtcore_v04_live_global_memory_adapter.h"
 #include "../cuda-sim/rtcore_v04_pre_submit_publication_bridge.h"
 #include "../cuda-sim/rtcore_v04_private_storage_profile.h"
@@ -199,8 +201,109 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
     bool external_resources_released, unsigned long long service_cycle,
     unsigned *resident_occupancy_before,
     unsigned *resident_occupancy_after, const char **failure_reason);
+extern "C" bool rtcore_query_resident_rt_warp_active_lane_state(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned *resident_active_lane_count, unsigned *warp_active_mask,
+    bool *warp_resident);
 
 namespace {
+
+namespace rtcore_handoff_storage = rtcore::v04::handoff_storage;
+namespace rtcore_handoff_shared_timing =
+    rtcore::v04::handoff_shared_timing;
+
+static rtcore_handoff_storage::profile_kind
+rtcore_v04_handoff_storage_profile() {
+  static const rtcore_handoff_storage::profile_kind profile = []() {
+    rtcore_handoff_storage::profile_kind parsed =
+        rtcore_handoff_storage::kProfileGlobal128;
+    const char *value =
+        getenv(rtcore_handoff_storage::kSelectorEnvironmentName);
+    const rtcore_handoff_storage::status_kind status =
+        rtcore_handoff_storage::parse_profile(value, &parsed);
+    if (status != rtcore_handoff_storage::kStatusOk) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_HANDOFF_STORAGE_PROFILE_FAULT "
+              "selector=%s value=%s status=%s\n",
+              rtcore_handoff_storage::kSelectorEnvironmentName,
+              value != NULL ? value : "<null>",
+              rtcore_handoff_storage::status_name(status));
+      fflush(stderr);
+      abort();
+    }
+    return parsed;
+  }();
+  return profile;
+}
+
+static unsigned rtcore_v04_handoff_shared_uint_config(
+    const char *name, unsigned default_value) {
+  const char *value = getenv(name);
+  if (value == NULL || value[0] == '\0') return default_value;
+  char *end = NULL;
+  const unsigned long parsed = strtoul(value, &end, 10);
+  if (end == value || *end != '\0' || parsed == 0 || parsed > UINT_MAX) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_CONFIG_FAULT "
+            "field=%s value=%s\n",
+            name, value);
+    fflush(stderr);
+    abort();
+  }
+  return static_cast<unsigned>(parsed);
+}
+
+static rtcore_handoff_shared_timing::config_v0
+rtcore_v04_handoff_shared_config() {
+  rtcore_handoff_shared_timing::config_v0 config =
+      rtcore_handoff_shared_timing::default_config();
+  config.issue_budget = rtcore_v04_handoff_shared_uint_config(
+      "VULKAN_SIM_RTCORE_REPLAY_V04_HANDOFF_SHARED_ISSUE_BUDGET",
+      config.issue_budget);
+  config.response_budget = rtcore_v04_handoff_shared_uint_config(
+      "VULKAN_SIM_RTCORE_REPLAY_V04_HANDOFF_SHARED_RESPONSE_BUDGET",
+      config.response_budget);
+  config.base_latency = rtcore_v04_handoff_shared_uint_config(
+      "VULKAN_SIM_RTCORE_REPLAY_V04_HANDOFF_SHARED_BASE_LATENCY",
+      config.base_latency);
+  config.ingress_capacity = rtcore_v04_handoff_shared_uint_config(
+      "VULKAN_SIM_RTCORE_REPLAY_V04_HANDOFF_SHARED_INGRESS_CAPACITY",
+      config.ingress_capacity);
+  config.outstanding_capacity = rtcore_v04_handoff_shared_uint_config(
+      "VULKAN_SIM_RTCORE_REPLAY_V04_HANDOFF_SHARED_OUTSTANDING_CAPACITY",
+      config.outstanding_capacity);
+  config.response_capacity = rtcore_v04_handoff_shared_uint_config(
+      "VULKAN_SIM_RTCORE_REPLAY_V04_HANDOFF_SHARED_RESPONSE_CAPACITY",
+      config.response_capacity);
+  if (!rtcore_handoff_shared_timing::config_valid(config)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_CONFIG_FAULT "
+            "field=combined status=invalid_configuration\n");
+    fflush(stderr);
+    abort();
+  }
+  return config;
+}
+
+static unsigned rtcore_v04_handoff_shared_charge_for_lanes(
+    unsigned active_lane_count) {
+  uint32_t bytes_per_lane = 0;
+  const rtcore_handoff_storage::status_kind status =
+      rtcore_handoff_storage::shared_bytes_per_lane(
+          rtcore_v04_handoff_storage_profile(), &bytes_per_lane);
+  if (status != rtcore_handoff_storage::kStatusOk ||
+      (bytes_per_lane != 0 &&
+       active_lane_count > UINT_MAX / bytes_per_lane)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_RESOURCE_FAULT "
+            "active_lane_count=%u bytes_per_lane=%u status=%s\n",
+            active_lane_count, bytes_per_lane,
+            rtcore_handoff_storage::status_name(status));
+    fflush(stderr);
+    abort();
+  }
+  return active_lane_count * bytes_per_lane;
+}
 
 static bool rtcore_replay_model_preset_simple_enabled() {
   static int enabled = []() {
@@ -2977,6 +3080,7 @@ struct rtcore_v04_semantic_tag_set_stats {
   unsigned long long issue_attempt;
   unsigned long long frontend_blocked;
   unsigned long long cache_lookup;
+  unsigned long long shared_accept;
   unsigned long long reservation_fail_retry;
   unsigned long long same_cycle_merged_child;
   unsigned long long accepted_physical;
@@ -3038,6 +3142,7 @@ struct rtcore_v04_semantic_region_stats {
   unsigned long long lower_write_participation;
   unsigned long long lower_write_allocate_participation;
   unsigned long long lower_any_participation;
+  unsigned long long shared_accept_participation;
   unsigned long long immediate_read_hit_participation;
   unsigned long long pending_write_hit_participation;
   unsigned long long line_miss_participation;
@@ -3213,6 +3318,28 @@ struct rtcore_v04_pending_memory_transaction {
   bool no_write_allocate;
   bool first_touch_miss;
   bool repeat_miss;
+  bool shared_backend;
+};
+
+struct rtcore_v04_handoff_shared_payload {
+  mem_fetch *mf;
+  bool rt_client;
+  bool rt_snapshot_valid;
+  rtcore_memory_unit_request_snapshot rt_snapshot;
+  rtcore::v04::pre_submit_publication::ordinary_store_preflight_v0
+      ordinary_preflight;
+};
+
+struct rtcore_v04_handoff_shared_service_state {
+  bool initialized;
+  rtcore_handoff_shared_timing::state_v0 timing;
+  std::map<uint64_t, rtcore_v04_handoff_shared_payload> payload_by_token;
+  unsigned long long enqueue_count;
+  unsigned long long enqueue_blocked_count;
+  unsigned long long rt_enqueue_count;
+  unsigned long long lsu_enqueue_count;
+  unsigned long long issued_count;
+  unsigned long long response_count;
 };
 
 static std::map<unsigned, rtcore_v04_pending_memory_transaction>
@@ -3247,6 +3374,58 @@ static unsigned long long g_rtcore_v04_semantic_fanout_total = 0;
 static unsigned long long g_rtcore_v04_semantic_accepted_physical_total = 0;
 static unsigned long long g_rtcore_v04_semantic_completed_physical_total = 0;
 static bool g_rtcore_v04_semantic_report_registered = false;
+static std::map<unsigned, rtcore_v04_handoff_shared_service_state>
+    g_rtcore_v04_handoff_shared_service_by_sm;
+static bool g_rtcore_v04_handoff_shared_report_registered = false;
+static unsigned long long
+    g_rtcore_v04_handoff_shared_submit_admission_checks = 0;
+static unsigned long long
+    g_rtcore_v04_handoff_shared_submit_admission_stalls = 0;
+static unsigned long long
+    g_rtcore_v04_handoff_shared_resubmit_replacement_checks = 0;
+static unsigned long long
+    g_rtcore_v04_handoff_shared_cta_admission_checks = 0;
+static unsigned long long
+    g_rtcore_v04_handoff_shared_cta_admission_stalls = 0;
+static unsigned g_rtcore_v04_handoff_shared_peak_resident_charge = 0;
+static unsigned g_rtcore_v04_handoff_shared_peak_cta_charge = 0;
+
+static void rtcore_v04_report_handoff_shared_backend();
+
+static void rtcore_v04_ensure_handoff_shared_report_registered() {
+  if (!g_rtcore_v04_handoff_shared_report_registered) {
+    atexit(rtcore_v04_report_handoff_shared_backend);
+    g_rtcore_v04_handoff_shared_report_registered = true;
+  }
+}
+
+static bool rtcore_v04_enqueue_handoff_shared_request(
+    unsigned sid, unsigned chunk, unsigned long long enqueue_cycle,
+    const rtcore_v04_handoff_shared_payload &payload);
+static void rtcore_v04_service_handoff_shared_backend(
+    unsigned sid, unsigned long long cycle, ldst_unit *ldst, rt_unit *rt);
+
+static rtcore_v04_handoff_shared_service_state &
+rtcore_v04_handoff_shared_service_for(unsigned sid) {
+  rtcore_v04_handoff_shared_service_state &service =
+      g_rtcore_v04_handoff_shared_service_by_sm[sid];
+  if (!service.initialized) {
+    const rtcore_handoff_shared_timing::status_kind status =
+        rtcore_handoff_shared_timing::initialize(
+            &service.timing, sid, rtcore_v04_handoff_shared_config());
+    if (status != rtcore_handoff_shared_timing::kStatusOk) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_CONFIG_FAULT "
+              "owner_hw_sid=%u status=%s\n",
+              sid, rtcore_handoff_shared_timing::status_name(status));
+      fflush(stderr);
+      abort();
+    }
+    service.initialized = true;
+    rtcore_v04_ensure_handoff_shared_report_registered();
+  }
+  return service;
+}
 
 static void rtcore_report_v04_global384_semantic_accounting();
 
@@ -3596,6 +3775,39 @@ static bool rtcore_v04_handoff_cache_policy_identity_for_snapshot(
   *tag_set = uint32_t{1}
              << (RTCORE_V04_SEMANTIC_TAG_HANDOFF_RTCORE_PUBLISH - 1u);
   *chunk = publication_chunk;
+  return true;
+}
+
+static bool rtcore_v04_handoff_shared_identity_for_snapshot(
+    const rtcore_memory_unit_request_snapshot &snapshot,
+    uint32_t *tag_set, unsigned *chunk) {
+  if (tag_set == NULL || chunk == NULL) return false;
+  if (snapshot.v04_live_handoff_acquire.valid == 1 &&
+      snapshot.access_kind == RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE &&
+      !snapshot.is_write) {
+    *tag_set = uint32_t{1}
+               << (RTCORE_V04_SEMANTIC_TAG_HANDOFF_RTCORE_ACQUIRE - 1u);
+    *chunk = snapshot.chunk_id;
+  } else if (snapshot.v04_dispatch_handoff_read.valid == 1 &&
+             snapshot.access_kind ==
+                 RTCORE_V02_LSU_ACCESS_HANDOFF_DISPATCH_READ &&
+             !snapshot.is_write) {
+    *tag_set = uint32_t{1}
+               << (RTCORE_V04_SEMANTIC_TAG_HANDOFF_SHADER_DISPATCH_READ -
+                   1u);
+    *chunk = snapshot.v04_dispatch_handoff_read.lane_slot_chunk;
+  } else if (!rtcore_v04_handoff_cache_policy_identity_for_snapshot(
+                 snapshot, tag_set, chunk)) {
+    return false;
+  }
+  if (*chunk >= rtcore_handoff_storage::kChunkCount) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_IDENTITY_FAULT "
+            "access_kind=%u chunk=%u\n",
+            snapshot.access_kind, *chunk);
+    fflush(stderr);
+    abort();
+  }
   return true;
 }
 
@@ -4002,6 +4214,19 @@ static void rtcore_v04_semantic_record_region_physical_participation(
   }
 }
 
+static void rtcore_v04_semantic_record_shared_region_participation(
+    uint32_t tag_set) {
+  for (unsigned tag = 1; tag < RTCORE_V04_SEMANTIC_TAG_COUNT; ++tag) {
+    if ((tag_set & (uint32_t{1} << (tag - 1))) == 0) continue;
+    rtcore_v04_semantic_region_stats &region =
+        g_rtcore_v04_semantic_region_stats[tag];
+    region.accepted_physical_participation++;
+    region.physical_requested_bytes_participation +=
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    region.shared_accept_participation++;
+  }
+}
+
 static void rtcore_v04_semantic_finalize_physical(
     unsigned physical_uid,
     const rtcore_v04_pending_memory_transaction &transaction,
@@ -4038,11 +4263,15 @@ static void rtcore_v04_semantic_finalize_physical(
                          ? 1u
                          : 0u;
   stats.response_or_ack_fanout += transaction.waiters.size();
-  rtcore_v04_semantic_classify_physical(
-      &stats, transaction.probe_status, transaction.access_status,
-      transaction.waiters.front().is_write,
-      transaction.no_write_allocate,
-      transaction.first_touch_miss, transaction.repeat_miss);
+  if (transaction.shared_backend) {
+    stats.shared_accept++;
+  } else {
+    rtcore_v04_semantic_classify_physical(
+        &stats, transaction.probe_status, transaction.access_status,
+        transaction.waiters.front().is_write,
+        transaction.no_write_allocate,
+        transaction.first_touch_miss, transaction.repeat_miss);
+  }
   if (handoff_chunk < 4u) {
     rtcore_v04_semantic_tag_set_stats &chunk_stats =
         rtcore_v04_semantic_handoff_chunk_stats_for(tag_set,
@@ -4062,18 +4291,26 @@ static void rtcore_v04_semantic_finalize_physical(
             ? 1u
             : 0u;
     chunk_stats.response_or_ack_fanout += transaction.waiters.size();
-    rtcore_v04_semantic_classify_physical(
-        &chunk_stats, transaction.probe_status, transaction.access_status,
-        transaction.waiters.front().is_write,
+    if (transaction.shared_backend) {
+      chunk_stats.shared_accept++;
+    } else {
+      rtcore_v04_semantic_classify_physical(
+          &chunk_stats, transaction.probe_status,
+          transaction.access_status, transaction.waiters.front().is_write,
+          transaction.no_write_allocate, transaction.first_touch_miss,
+          transaction.repeat_miss);
+    }
+  }
+  if (transaction.shared_backend) {
+    rtcore_v04_semantic_record_shared_region_participation(tag_set);
+  } else {
+    rtcore_v04_semantic_record_region_physical_participation(
+        tag_set, transaction.probe_status, transaction.access_status,
+        transaction.waiters.front().is_write, transaction.lower_read,
+        transaction.lower_write, transaction.lower_write_allocate,
         transaction.no_write_allocate, transaction.first_touch_miss,
         transaction.repeat_miss);
   }
-  rtcore_v04_semantic_record_region_physical_participation(
-      tag_set, transaction.probe_status, transaction.access_status,
-      transaction.waiters.front().is_write, transaction.lower_read,
-      transaction.lower_write, transaction.lower_write_allocate,
-      transaction.no_write_allocate, transaction.first_touch_miss,
-      transaction.repeat_miss);
   g_rtcore_v04_semantic_completed_physical_total++;
   g_rtcore_v04_semantic_fanout_total += transaction.waiters.size();
   rtcore_v04_semantic_completed_physical completing = {};
@@ -4283,6 +4520,24 @@ static void rtcore_v04_semantic_prepare_physical_transaction(
       transaction->first_touch_miss = first;
       transaction->repeat_miss = !first;
     }
+    g_rtcore_v04_semantic_accepted_physical_total++;
+  }
+  transaction->waiters.push_back(*snapshot);
+}
+
+static void rtcore_v04_semantic_prepare_shared_transaction(
+    rtcore_v04_pending_memory_transaction *transaction,
+    rtcore_memory_unit_request_snapshot *snapshot, unsigned physical_uid,
+    unsigned long long accept_cycle) {
+  if (transaction == NULL || snapshot == NULL) abort();
+  *transaction = rtcore_v04_pending_memory_transaction();
+  transaction->semantic_valid =
+      rtcore_v04_global384_semantic_accounting_enabled() &&
+      snapshot->v04_semantic_memory.valid == 1;
+  transaction->accept_cycle = accept_cycle;
+  transaction->shared_backend = true;
+  if (transaction->semantic_valid) {
+    rtcore_v04_semantic_record_accept(snapshot, physical_uid, accept_cycle);
     g_rtcore_v04_semantic_accepted_physical_total++;
   }
   transaction->waiters.push_back(*snapshot);
@@ -4534,6 +4789,7 @@ static bool rtcore_v04_semantic_histogram_equal(
   F(issue_attempt)                           \
   F(frontend_blocked)                        \
   F(cache_lookup)                            \
+  F(shared_accept)                           \
   F(reservation_fail_retry)                  \
   F(same_cycle_merged_child)                 \
   F(accepted_physical)                       \
@@ -4652,6 +4908,7 @@ static void rtcore_v04_semantic_report_handoff_chunks() {
            "tag_set=0x%08x tags=%s chunk=H%u useful_bytes=%llu "
            "logical_access=%llu logical_requested_bytes=%llu "
            "issue_attempt=%llu frontend_blocked=%llu cache_lookup=%llu "
+           "shared_accept=%llu "
            "reservation_fail_retry=%llu same_cycle_merged_child=%llu "
            "accepted_physical=%llu physical_requested_bytes=%llu "
            "physical_completion=%llu lower_read=%llu lower_write=%llu "
@@ -4676,7 +4933,7 @@ static void rtcore_v04_semantic_report_handoff_chunks() {
            it->first.tag_set, names.c_str(), it->first.chunk,
            it->second.useful_bytes, s.logical_access,
            s.logical_requested_bytes, s.issue_attempt,
-           s.frontend_blocked, s.cache_lookup,
+           s.frontend_blocked, s.cache_lookup, s.shared_accept,
            s.reservation_fail_retry, s.same_cycle_merged_child,
            s.accepted_physical, s.physical_requested_bytes,
            s.physical_completion, s.lower_read, s.lower_write,
@@ -4724,6 +4981,13 @@ static void rtcore_report_v04_global384_semantic_accounting() {
       rtcore_v04_global384_context_functional_setup_access_count();
   const unsigned long long context_setup_bytes =
       rtcore_v04_global384_context_functional_setup_byte_count();
+  unsigned long long rt_shared_request_count = 0;
+  for (std::map<unsigned,
+                rtcore_v04_handoff_shared_service_state>::const_iterator it =
+           g_rtcore_v04_handoff_shared_service_by_sm.begin();
+       it != g_rtcore_v04_handoff_shared_service_by_sm.end(); ++it) {
+    rt_shared_request_count += it->second.rt_enqueue_count;
+  }
   printf("GPGPU-Sim RTCORE_V04_GLOBAL384_SEMANTIC_ACCOUNTING_TOTAL "
          "gate=1 logical_access=%llu response_or_ack_fanout=%llu "
          "accepted_physical=%llu completed_physical=%llu "
@@ -4732,8 +4996,9 @@ static void rtcore_report_v04_global384_semantic_accounting() {
          "semantic_pending_physical=%llu semantic_pending_waiters=%llu "
          "completing_physical=%zu context_functional_setup_access=%llu "
          "context_functional_setup_bytes=%llu "
-         "direct_timing_backing_read=0 rt_shared_request_count=0 "
-         "resident_rt_shared_charge=0\n",
+         "direct_timing_backing_read=0 rt_shared_request_count=%llu "
+         "resident_rt_shared_charge=%u "
+         "resident_rt_shared_charge_semantics=peak\n",
          g_rtcore_v04_semantic_logical_total,
          g_rtcore_v04_semantic_fanout_total,
          g_rtcore_v04_semantic_accepted_physical_total,
@@ -4745,7 +5010,9 @@ static void rtcore_report_v04_global384_semantic_accounting() {
          g_rtcore_v04_semantic_active_ordinary_operations.size(),
          semantic_pending_physical, semantic_pending_waiters,
          g_rtcore_v04_semantic_completing_physical.size(),
-         context_setup_access, context_setup_bytes);
+         context_setup_access, context_setup_bytes,
+         rt_shared_request_count,
+         g_rtcore_v04_handoff_shared_peak_resident_charge);
   rtcore_v04_semantic_report_handoff_chunks();
   for (std::map<uint32_t, rtcore_v04_semantic_tag_set_stats>::const_iterator
            it = g_rtcore_v04_semantic_tag_set_stats.begin();
@@ -4755,7 +5022,7 @@ static void rtcore_report_v04_global384_semantic_accounting() {
     printf("GPGPU-Sim RTCORE_V04_GLOBAL384_SEMANTIC_TAG_SET "
            "tag_set=0x%08x tags=%s logical_access=%llu "
            "logical_requested_bytes=%llu issue_attempt=%llu "
-           "frontend_blocked=%llu cache_lookup=%llu "
+           "frontend_blocked=%llu cache_lookup=%llu shared_accept=%llu "
            "reservation_fail_retry=%llu "
            "same_cycle_merged_child=%llu accepted_physical=%llu "
            "physical_requested_bytes=%llu physical_completion=%llu "
@@ -4791,7 +5058,7 @@ static void rtcore_report_v04_global384_semantic_accounting() {
            "last_arrival_co_closure_suppressed=%llu\n",
            it->first, names.c_str(), s.logical_access,
            s.logical_requested_bytes, s.issue_attempt, s.frontend_blocked,
-           s.cache_lookup, s.reservation_fail_retry,
+           s.cache_lookup, s.shared_accept, s.reservation_fail_retry,
            s.same_cycle_merged_child, s.accepted_physical,
            s.physical_requested_bytes, s.physical_completion, s.lower_read,
            s.lower_write, s.lower_write_allocate, s.lower_any,
@@ -4854,7 +5121,7 @@ static void rtcore_report_v04_global384_semantic_accounting() {
            "physical_requested_bytes_participation=%llu "
            "lower_read_participation=%llu lower_write_participation=%llu "
            "lower_write_allocate_participation=%llu "
-           "lower_any_participation=%llu "
+           "lower_any_participation=%llu shared_accept_participation=%llu "
            "immediate_read_hit_participation=%llu "
            "pending_write_hit_participation=%llu "
            "line_miss_participation=%llu sector_miss_participation=%llu "
@@ -4884,6 +5151,7 @@ static void rtcore_report_v04_global384_semantic_accounting() {
            region.lower_write_participation,
            region.lower_write_allocate_participation,
            region.lower_any_participation,
+           region.shared_accept_participation,
            region.immediate_read_hit_participation,
            region.pending_write_hit_participation,
            region.line_miss_participation,
@@ -7447,6 +7715,7 @@ enum rtcore_memory_unit_offer_outcome {
   RTCORE_MEMORY_UNIT_OFFER_L1D_ARBITER_BLOCKED,
   RTCORE_MEMORY_UNIT_OFFER_L1D_DATA_PORT_BLOCKED,
   RTCORE_MEMORY_UNIT_OFFER_L1D_RESERVATION_BLOCKED,
+  RTCORE_MEMORY_UNIT_OFFER_SHARED_BACKPRESSURE_BLOCKED,
   RTCORE_MEMORY_UNIT_OFFER_REJECTED,
 };
 
@@ -7643,7 +7912,16 @@ rtcore_maybe_accept_memory_unit_l1d_client(
   const bool is_write = result.lsu_sideband_is_write;
   rtcore_memory_unit_request_snapshot snapshot =
       rtcore_v02_lsu_sideband_snapshot_from_result(result);
-  if (rtcore_try_merge_memory_unit_same_cycle_32b(result, addr, &snapshot)) {
+  uint32_t shared_tag_set = 0;
+  unsigned shared_chunk = kRtcoreV04InvalidHandoffChunk;
+  const bool routes_to_handoff_shared =
+      rtcore_v04_handoff_shared_identity_for_snapshot(
+          snapshot, &shared_tag_set, &shared_chunk) &&
+      rtcore_handoff_storage::routes_chunk_to_shared(
+          rtcore_v04_handoff_storage_profile(), shared_tag_set,
+          shared_chunk);
+  if (!routes_to_handoff_shared &&
+      rtcore_try_merge_memory_unit_same_cycle_32b(result, addr, &snapshot)) {
     rtcore_record_v04_memory_conservation_or_abort(
         snapshot, false, result.cycle);
     if (shader_continuation_sbt_access) {
@@ -7667,6 +7945,53 @@ rtcore_maybe_accept_memory_unit_l1d_client(
       snapshot.v04_semantic_memory.valid == 1;
   if (semantic_accounting) {
     rtcore_v04_semantic_record_issue_attempt(snapshot);
+  }
+
+  if (routes_to_handoff_shared) {
+    mem_fetch *mf = mf_allocator->alloc(
+        addr, is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R,
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write,
+        result.cycle);
+    mf->set_raytrace();
+    mf->set_rtcore_v04_handoff_shared_backend();
+    mf->set_rtcore_v04_handoff_chunk(shared_chunk);
+    if (semantic_accounting) {
+      mf->set_rtcore_v04_semantic_tag_set(
+          snapshot.v04_semantic_memory.tag_set);
+    }
+    mf->set_uncoalesced_addr(addr);
+    mf->set_uncoalesced_base_addr(addr);
+    rtcore_v04_handoff_shared_payload payload = {};
+    payload.mf = mf;
+    payload.rt_client = true;
+    payload.rt_snapshot_valid = true;
+    payload.rt_snapshot = snapshot;
+    if (!rtcore_v04_enqueue_handoff_shared_request(
+            sid, shared_chunk, result.cycle, payload)) {
+      if (semantic_accounting) {
+        rtcore_v04_semantic_record_frontend_blocked(snapshot);
+      }
+      const bool requeued =
+          rtcore_requeue_v02_lsu_sideband_request_for_retry(result);
+      if (!requeued) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_MEMORY_UNIT_REQUEUE_FAULT "
+                "owner_hw_sid=%u request_key=%u lane_id=%u generation=%u "
+                "fault=handoff_shared_ingress_retry_rejected\n",
+                snapshot.owner_hw_sid, snapshot.rt_request_id,
+                snapshot.lane_id, snapshot.request_generation);
+        fflush(stderr);
+        abort();
+      }
+      delete mf;
+      return RTCORE_MEMORY_UNIT_OFFER_SHARED_BACKPRESSURE_BLOCKED;
+    }
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_accepted_count++;
+    g_rtcore_replay_cycle_hook_consumer_stats
+        .v02_lsu_sideband_real_mem_fetch_count++;
+    stats->rt_mem_requests++;
+    return RTCORE_MEMORY_UNIT_OFFER_SHARED_PROGRESS;
   }
 
   if (!cache->data_port_free()) {
@@ -8298,6 +8623,7 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
   const unsigned long long current_cycle =
       core->get_gpu()->gpu_sim_cycle + core->get_gpu()->gpu_tot_sim_cycle;
   unsigned owner_hw_sid = it->second.waiters.front().owner_hw_sid;
+  const bool shared_backend = it->second.shared_backend;
   const new_addr_type response_addr = mf->get_addr();
   mf->set_status(IN_SHADER_FETCHED, current_cycle);
   baseline_cache *cache = l1d_cache;
@@ -8314,7 +8640,7 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
     delete mf;
     return true;
   }
-  if (cache != NULL) {
+  if (cache != NULL && !shared_backend) {
     cache->fill(mf, current_cycle);
     g_rtcore_replay_cycle_hook_consumer_stats
         .v02_lsu_sideband_mshr_response_probe_count++;
@@ -8351,6 +8677,7 @@ static bool rtcore_maybe_consume_v02_lsu_sideband_memory_response(
       .v02_lsu_sideband_response_wakeup_count += completed_count;
   rtcore_v02_lsu_update_sideband_pending_count();
   rtcore_maybe_log_memory_unit_request_offer_stats(owner_hw_sid);
+  if (shared_backend) delete mf;
   return true;
 }
 
@@ -8516,6 +8843,15 @@ static void rtcore_consume_replay_cycle_hook_result_from_rt_unit(
               rtcore::v04::stall_attribution::kOutcomeStall,
               rtcore::v04::stall_attribution::kActionNone,
               rtcore::v04::stall_attribution::kReasonL1dDataPort);
+        } else if (
+            outcome ==
+            RTCORE_MEMORY_UNIT_OFFER_SHARED_BACKPRESSURE_BLOCKED) {
+          rtcore_emit_memory_unit_attempt(
+              snapshot, result.cycle, arbitration_slot,
+              rtcore::v04::stall_attribution::kStageBackend,
+              rtcore::v04::stall_attribution::kOutcomeStall,
+              rtcore::v04::stall_attribution::kActionNone,
+              rtcore::v04::stall_attribution::kReasonQueueCapacity);
         } else {
           rtcore_emit_memory_unit_attempt(
               snapshot, result.cycle, arbitration_slot,
@@ -10939,6 +11275,158 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
   }
 }
 
+bool shader_core_ctx::rtcore_submit_handoff_shared_capacity_available(
+    const warp_inst_t &inst, unsigned warp_id,
+    unsigned active_mask) const {
+  if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT ||
+      rtcore_v04_handoff_storage_profile() ==
+          rtcore_handoff_storage::kProfileGlobal128) {
+    return true;
+  }
+
+  rtcore_v04_ensure_handoff_shared_report_registered();
+  unsigned resident_active_lanes = 0;
+  unsigned old_active_mask = 0;
+  bool warp_resident = false;
+  if (!rtcore_query_resident_rt_warp_active_lane_state(
+          m_sid, warp_id, &resident_active_lanes, &old_active_mask,
+          &warp_resident)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_RESOURCE_FAULT "
+            "owner_hw_sid=%u warp_id=%u reason=resident_query_failed\n",
+            m_sid, warp_id);
+    fflush(stderr);
+    abort();
+  }
+
+  const unsigned old_lane_count =
+      warp_resident
+          ? rtcore_handoff_storage::active_lane_count(old_active_mask)
+          : 0;
+  if (resident_active_lanes < old_lane_count) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_RESOURCE_FAULT "
+            "owner_hw_sid=%u warp_id=%u resident_active_lanes=%u "
+            "old_lane_count=%u reason=resident_lane_underflow\n",
+            m_sid, warp_id, resident_active_lanes, old_lane_count);
+    fflush(stderr);
+    abort();
+  }
+
+  const unsigned base_rt_charge = rtcore_v04_handoff_shared_charge_for_lanes(
+      resident_active_lanes - old_lane_count);
+  const unsigned new_rt_demand = rtcore_v04_handoff_shared_charge_for_lanes(
+      rtcore_handoff_storage::active_lane_count(active_mask));
+  unsigned cta_charge = m_occupied_shmem;
+  if (!m_config->gpgpu_concurrent_kernel_sm && m_kernel != NULL) {
+    const gpgpu_ptx_sim_info *kernel_info =
+        ptx_sim_kernel_info(m_kernel->entry());
+    cta_charge = get_n_active_cta() * kernel_info->smem;
+  }
+
+  bool available = false;
+  const rtcore_handoff_storage::status_kind status =
+      rtcore_handoff_storage::resource_available(
+          m_config->gpgpu_shmem_size, cta_charge, base_rt_charge,
+          new_rt_demand, &available);
+  ++g_rtcore_v04_handoff_shared_submit_admission_checks;
+  if (warp_resident) {
+    ++g_rtcore_v04_handoff_shared_resubmit_replacement_checks;
+  }
+  g_rtcore_v04_handoff_shared_peak_resident_charge = std::max(
+      g_rtcore_v04_handoff_shared_peak_resident_charge,
+      base_rt_charge + new_rt_demand);
+  g_rtcore_v04_handoff_shared_peak_cta_charge =
+      std::max(g_rtcore_v04_handoff_shared_peak_cta_charge, cta_charge);
+  if (status == rtcore_handoff_storage::kStatusOk && available) return true;
+  if (status != rtcore_handoff_storage::kStatusCapacityExceeded) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_RESOURCE_FAULT "
+            "owner_hw_sid=%u warp_id=%u active_mask=0x%08x "
+            "status=%s\n",
+            m_sid, warp_id, active_mask,
+            rtcore_handoff_storage::status_name(status));
+    fflush(stderr);
+    abort();
+  }
+
+  ++g_rtcore_v04_handoff_shared_submit_admission_stalls;
+  printf("GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_ADMISSION_STALL "
+         "kind=submit profile=%s owner_hw_sid=%u warp_id=%u "
+         "active_mask=0x%08x replacement=%u capacity_bytes=%u "
+         "cta_charge_bytes=%u base_rt_charge_bytes=%u "
+         "new_rt_demand_bytes=%u action=stall_before_completion_reserve\n",
+         rtcore_handoff_storage::profile_name(
+             rtcore_v04_handoff_storage_profile()),
+         m_sid, warp_id, active_mask, warp_resident ? 1u : 0u,
+         m_config->gpgpu_shmem_size, cta_charge, base_rt_charge,
+         new_rt_demand);
+  fflush(stdout);
+  return false;
+}
+
+bool shader_core_ctx::rtcore_handoff_shared_capacity_allows_cta(
+    unsigned cta_shared_demand_bytes) const {
+  if (rtcore_v04_handoff_storage_profile() ==
+      rtcore_handoff_storage::kProfileGlobal128) {
+    return true;
+  }
+
+  rtcore_v04_ensure_handoff_shared_report_registered();
+  unsigned resident_active_lanes = 0;
+  unsigned unused_active_mask = 0;
+  bool unused_warp_resident = false;
+  if (!rtcore_query_resident_rt_warp_active_lane_state(
+          m_sid, UINT_MAX, &resident_active_lanes, &unused_active_mask,
+          &unused_warp_resident)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_RESOURCE_FAULT "
+            "owner_hw_sid=%u reason=cta_resident_query_failed\n",
+            m_sid);
+    fflush(stderr);
+    abort();
+  }
+  const unsigned rt_charge =
+      rtcore_v04_handoff_shared_charge_for_lanes(resident_active_lanes);
+  unsigned cta_charge = m_occupied_shmem;
+  if (!m_config->gpgpu_concurrent_kernel_sm && m_kernel != NULL) {
+    const gpgpu_ptx_sim_info *kernel_info =
+        ptx_sim_kernel_info(m_kernel->entry());
+    cta_charge = get_n_active_cta() * kernel_info->smem;
+  }
+  bool available = false;
+  const rtcore_handoff_storage::status_kind status =
+      rtcore_handoff_storage::resource_available(
+          m_config->gpgpu_shmem_size, cta_charge, rt_charge,
+          cta_shared_demand_bytes, &available);
+  ++g_rtcore_v04_handoff_shared_cta_admission_checks;
+  g_rtcore_v04_handoff_shared_peak_resident_charge =
+      std::max(g_rtcore_v04_handoff_shared_peak_resident_charge, rt_charge);
+  g_rtcore_v04_handoff_shared_peak_cta_charge = std::max(
+      g_rtcore_v04_handoff_shared_peak_cta_charge,
+      cta_charge + cta_shared_demand_bytes);
+  if (status == rtcore_handoff_storage::kStatusOk && available) return true;
+  if (status != rtcore_handoff_storage::kStatusCapacityExceeded) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_RESOURCE_FAULT "
+            "owner_hw_sid=%u status=%s reason=cta_resource_state\n",
+            m_sid, rtcore_handoff_storage::status_name(status));
+    fflush(stderr);
+    abort();
+  }
+  ++g_rtcore_v04_handoff_shared_cta_admission_stalls;
+  printf("GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_ADMISSION_STALL "
+         "kind=cta profile=%s owner_hw_sid=%u capacity_bytes=%u "
+         "cta_charge_bytes=%u rt_charge_bytes=%u "
+         "cta_demand_bytes=%u action=stall_before_cta_issue\n",
+         rtcore_handoff_storage::profile_name(
+             rtcore_v04_handoff_storage_profile()),
+         m_sid, m_config->gpgpu_shmem_size, cta_charge, rt_charge,
+         cta_shared_demand_bytes);
+  fflush(stdout);
+  return false;
+}
+
 bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
     const warp_inst_t &inst, unsigned warp_id,
     unsigned rt_core_out_pending_warps,
@@ -13145,6 +13633,17 @@ void scheduler_unit::cycle() {
                   break;
                 }
 
+                const bool rtcore_handoff_shared_capacity_ready =
+                    pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
+                    m_shader
+                        ->rtcore_submit_handoff_shared_capacity_available(
+                            *pI, warp_id, rtcore_active_mask);
+                if (!rtcore_handoff_shared_capacity_ready) {
+                  rtcore_scheduler_credit_ledger_scheduler_bridge_rollback(
+                      "scheduler_bridge_rollback_after_handoff_shared_capacity");
+                  break;
+                }
+
                 const bool rtcore_root_packet_capacity_ready =
                     pI->rt_subop != RT_CORE_SUBOP_SUBMIT ||
                     rtcore_v04_root_node_packet_issue_capacity_available(
@@ -14041,8 +14540,11 @@ void shader_core_ctx::record_rtcore_shared_l1d_cache_access(
 }
 
 void shader_core_ctx::execute() {
-  prepare_rtcore_shared_l1d_request_arbiter(
-      get_gpu()->gpu_sim_cycle + get_gpu()->gpu_tot_sim_cycle);
+  const unsigned long long current_cycle =
+      get_gpu()->gpu_sim_cycle + get_gpu()->gpu_tot_sim_cycle;
+  rtcore_v04_service_handoff_shared_backend(
+      m_sid, current_cycle, m_ldst_unit, m_rt_unit);
+  prepare_rtcore_shared_l1d_request_arbiter(current_cycle);
   for (unsigned i = 0; i < num_result_bus; i++) {
     *(m_result_bus[i]) >>= 1;
   }
@@ -14413,6 +14915,15 @@ static void rtcore_v04_attach_ordinary_semantic_tag(
   }
 }
 
+static bool rtcore_v04_ordinary_routes_to_handoff_shared(
+    const rtcore_v04_publication_preflight &preflight) {
+  const uint32_t tag_set =
+      rtcore_v04_ordinary_handoff_tag_set(preflight);
+  return rtcore_handoff_storage::routes_chunk_to_shared(
+      rtcore_v04_handoff_storage_profile(), tag_set,
+      preflight.lane_slot_chunk);
+}
+
 rtcore_v04_ordinary_semantic_key rtcore_v04_ordinary_semantic_key_for(
     const rtcore_v04_publication_preflight &preflight) {
   rtcore_v04_ordinary_semantic_key key = {};
@@ -14535,6 +15046,169 @@ void rtcore_v04_observe_ordinary_semantic_operation(
              (logical.byte_mask & 0x0000000fu) == 0x0000000fu) {
     operation.sealed_by_w24 = true;
   }
+}
+
+static bool rtcore_v04_observe_ordinary_shared_semantic(
+    mem_fetch *mf, const rtcore_v04_publication_preflight &preflight,
+    rtcore_v04_ordinary_semantic_key *key_out,
+    rtcore_v04_ordinary_semantic_state **state_out, uint8_t *tag_out) {
+  uint8_t tag = RTCORE_V04_SEMANTIC_TAG_INVALID;
+  if (!rtcore_v04_ordinary_semantic_candidate(preflight, &tag)) return false;
+  if (mf == NULL || key_out == NULL || state_out == NULL || tag_out == NULL) {
+    abort();
+  }
+  const rtcore_v04_ordinary_semantic_key key =
+      rtcore_v04_ordinary_semantic_key_for(preflight);
+  const uint32_t expected_tag_set = uint32_t{1} << (tag - 1u);
+  if (key.aligned_32b_addr != mf->get_addr() || key.byte_mask == 0 ||
+      key.handoff_chunk >= 4u ||
+      key.handoff_lane_base +
+              static_cast<uint64_t>(key.handoff_chunk) *
+                  RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES !=
+          key.aligned_32b_addr ||
+      mf->get_rtcore_v04_semantic_tag_set() != expected_tag_set ||
+      rtcore_v04_semantic_handoff_chunk_for_mem_fetch(mf) !=
+          key.handoff_chunk) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=ordinary_lsu_shared_identity_invalid\n");
+    fflush(stderr);
+    abort();
+  }
+  std::map<rtcore_v04_ordinary_semantic_key,
+           rtcore_v04_ordinary_semantic_state>::iterator found =
+      g_rtcore_v04_semantic_active_ordinary.find(key);
+  if (found == g_rtcore_v04_semantic_active_ordinary.end()) {
+    rtcore_v04_ordinary_semantic_state state = {};
+    state.ready_cycle = mf->get_timestamp();
+    state.tag_set = expected_tag_set;
+    state.useful_byte_mask = key.byte_mask;
+    state.handoff_chunk = key.handoff_chunk;
+    found = g_rtcore_v04_semantic_active_ordinary
+                .insert(std::make_pair(key, state))
+                .first;
+    rtcore_v04_semantic_tag_set_stats &stats =
+        rtcore_v04_semantic_tag_set_stats_for(state.tag_set);
+    stats.logical_access++;
+    stats.logical_requested_bytes +=
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    rtcore_v04_handoff_chunk_stats &chunk_stats =
+        rtcore_v04_semantic_handoff_chunk_stats_for(
+            state.tag_set, state.handoff_chunk);
+    chunk_stats.lifecycle.logical_access++;
+    chunk_stats.lifecycle.logical_requested_bytes +=
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    chunk_stats.useful_bytes +=
+        rtcore_v04_semantic_popcount(state.useful_byte_mask);
+    rtcore_v04_semantic_region_stats &region =
+        g_rtcore_v04_semantic_region_stats[tag];
+    region.logical_access_participation++;
+    region.useful_bytes +=
+        rtcore_v04_semantic_popcount(state.useful_byte_mask);
+    g_rtcore_v04_semantic_logical_total++;
+    if (key.access == static_cast<unsigned>(
+                          rtcore::v04::address_range_registry::
+                              kAccessHandoffShaderTraceInputPublish) ||
+        key.access == static_cast<unsigned>(
+                          rtcore::v04::address_range_registry::
+                              kAccessHandoffShaderReturn)) {
+      rtcore_v04_observe_ordinary_semantic_operation(key,
+                                                     state.ready_cycle);
+    }
+  }
+  if (found->second.accepted ||
+      found->second.tag_set != expected_tag_set ||
+      found->second.useful_byte_mask != key.byte_mask ||
+      found->second.handoff_chunk != key.handoff_chunk) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=ordinary_lsu_shared_state_invalid\n");
+    fflush(stderr);
+    abort();
+  }
+  *key_out = key;
+  *state_out = &found->second;
+  *tag_out = tag;
+  return true;
+}
+
+static void rtcore_v04_record_ordinary_shared_enqueue_attempt(
+    mem_fetch *mf, const rtcore_v04_publication_preflight &preflight,
+    bool blocked) {
+  rtcore_v04_ordinary_semantic_key key = {};
+  rtcore_v04_ordinary_semantic_state *state = NULL;
+  uint8_t tag = RTCORE_V04_SEMANTIC_TAG_INVALID;
+  if (!rtcore_v04_observe_ordinary_shared_semantic(
+          mf, preflight, &key, &state, &tag)) {
+    return;
+  }
+  (void)key;
+  (void)tag;
+  rtcore_v04_semantic_tag_set_stats &stats =
+      rtcore_v04_semantic_tag_set_stats_for(state->tag_set);
+  rtcore_v04_semantic_tag_set_stats &chunk_stats =
+      rtcore_v04_semantic_handoff_chunk_stats_for(
+          state->tag_set, state->handoff_chunk)
+          .lifecycle;
+  stats.issue_attempt++;
+  chunk_stats.issue_attempt++;
+  if (blocked) {
+    stats.frontend_blocked++;
+    chunk_stats.frontend_blocked++;
+  }
+}
+
+static void rtcore_v04_record_ordinary_shared_accept(
+    mem_fetch *mf, const rtcore_v04_publication_preflight &preflight,
+    unsigned long long cycle) {
+  rtcore_v04_ordinary_semantic_key key = {};
+  rtcore_v04_ordinary_semantic_state *state = NULL;
+  uint8_t tag = RTCORE_V04_SEMANTIC_TAG_INVALID;
+  if (!rtcore_v04_observe_ordinary_shared_semantic(
+          mf, preflight, &key, &state, &tag)) {
+    return;
+  }
+  if (cycle < state->ready_cycle) abort();
+  state->accepted = true;
+  state->accept_cycle = cycle;
+  state->physical_request_uid = mf->get_request_uid();
+  if (!g_rtcore_v04_semantic_ordinary_key_by_physical_uid
+           .insert(std::make_pair(state->physical_request_uid, key))
+           .second) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=ordinary_lsu_shared_physical_uid_collision\n");
+    fflush(stderr);
+    abort();
+  }
+  rtcore_v04_semantic_tag_set_stats &stats =
+      rtcore_v04_semantic_tag_set_stats_for(state->tag_set);
+  rtcore_v04_semantic_tag_set_stats &chunk_stats =
+      rtcore_v04_semantic_handoff_chunk_stats_for(
+          state->tag_set, state->handoff_chunk)
+          .lifecycle;
+  stats.accepted_physical++;
+  stats.physical_requested_bytes +=
+      RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+  stats.shared_accept++;
+  chunk_stats.accepted_physical++;
+  chunk_stats.physical_requested_bytes +=
+      RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+  chunk_stats.shared_accept++;
+  rtcore_v04_semantic_region_stats &region =
+      g_rtcore_v04_semantic_region_stats[tag];
+  region.accepted_physical_participation++;
+  region.physical_requested_bytes_participation +=
+      RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+  region.shared_accept_participation++;
+  const unsigned long long ready_to_accept = cycle - state->ready_cycle;
+  rtcore_v04_semantic_histogram_observe(&stats.ready_to_accept,
+                                        ready_to_accept);
+  rtcore_v04_semantic_histogram_observe(&chunk_stats.ready_to_accept,
+                                        ready_to_accept);
+  rtcore_v04_semantic_histogram_observe(&region.ready_to_accept,
+                                        ready_to_accept);
+  g_rtcore_v04_semantic_accepted_physical_total++;
 }
 
 void rtcore_v04_record_ordinary_semantic_cache_attempt(
@@ -15143,6 +15817,276 @@ void rtcore_v04_complete_publication_ticket(
   }
 }
 
+static bool rtcore_v04_enqueue_handoff_shared_request(
+    unsigned sid, unsigned chunk, unsigned long long enqueue_cycle,
+    const rtcore_v04_handoff_shared_payload &payload) {
+  if (payload.mf == NULL || chunk >= rtcore_handoff_storage::kChunkCount ||
+      (payload.rt_client != payload.rt_snapshot_valid)) {
+    abort();
+  }
+  rtcore_v04_handoff_shared_service_state &service =
+      rtcore_v04_handoff_shared_service_for(sid);
+  rtcore_handoff_shared_timing::request_v0 request = {};
+  request.valid = true;
+  request.client = payload.rt_client
+                       ? rtcore_handoff_shared_timing::kClientRtMemoryUnit
+                       : rtcore_handoff_shared_timing::kClientOrdinaryLsu;
+  request.chunk = static_cast<uint8_t>(chunk);
+  request.is_write = payload.mf->get_is_write() ? 1u : 0u;
+  request.owner_hw_sid = sid;
+  request.token = payload.mf->get_request_uid();
+  request.aligned_32b_address = payload.mf->get_addr();
+  if (rtcore_handoff_storage::bank_mask_for_32b(
+          request.aligned_32b_address, service.timing.config.bank_count,
+          service.timing.config.bank_word_bytes, &request.bank_mask) !=
+      rtcore_handoff_storage::kStatusOk) {
+    abort();
+  }
+  const rtcore_handoff_shared_timing::status_kind status =
+      rtcore_handoff_shared_timing::enqueue(
+          &service.timing, request, enqueue_cycle);
+  const bool blocked =
+      status == rtcore_handoff_shared_timing::kStatusQueueFull;
+  if (!payload.rt_client) {
+    rtcore_v04_record_ordinary_shared_enqueue_attempt(
+        payload.mf, payload.ordinary_preflight, blocked);
+  }
+  if (blocked) {
+    service.enqueue_blocked_count++;
+    return false;
+  }
+  if (status != rtcore_handoff_shared_timing::kStatusOk ||
+      !service.payload_by_token
+           .insert(std::make_pair(request.token, payload))
+           .second) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_ENQUEUE_FAULT "
+            "owner_hw_sid=%u token=%llu status=%s\n",
+            sid, static_cast<unsigned long long>(request.token),
+            rtcore_handoff_shared_timing::status_name(status));
+    fflush(stderr);
+    abort();
+  }
+  service.enqueue_count++;
+  if (payload.rt_client) {
+    service.rt_enqueue_count++;
+  } else {
+    service.lsu_enqueue_count++;
+  }
+  return true;
+}
+
+static void rtcore_v04_accept_handoff_shared_issue(
+    rtcore_v04_handoff_shared_service_state *service,
+    const rtcore_handoff_shared_timing::request_v0 &issued,
+    unsigned long long cycle, memory_space *global_memory) {
+  if (service == NULL || issued.accept_cycle != cycle) abort();
+  std::map<uint64_t, rtcore_v04_handoff_shared_payload>::iterator found =
+      service->payload_by_token.find(issued.token);
+  if (found == service->payload_by_token.end() || found->second.mf == NULL) {
+    abort();
+  }
+  rtcore_v04_handoff_shared_payload &payload = found->second;
+  mem_fetch *mf = payload.mf;
+  if (payload.rt_client) {
+    rtcore_memory_unit_request_snapshot snapshot = payload.rt_snapshot;
+    rtcore_accept_v04_live_handoff_acquire_or_abort(&snapshot);
+    rtcore_accept_v04_dispatch_handoff_read_or_abort(&snapshot);
+    rtcore_memory_unit_read_payload_snapshot read_payload = {};
+    if (!mf->get_is_write() &&
+        !rtcore_capture_memory_unit_read_payload(
+            global_memory, mf->get_addr(), &read_payload)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_PAYLOAD_FAULT "
+              "owner_hw_sid=%u token=%llu address=0x%llx\n",
+              issued.owner_hw_sid,
+              static_cast<unsigned long long>(issued.token),
+              static_cast<unsigned long long>(mf->get_addr()));
+      fflush(stderr);
+      abort();
+    }
+    rtcore_v04_pending_memory_transaction &transaction =
+        g_rtcore_v02_lsu_pending_memory_requests[mf->get_request_uid()];
+    rtcore_v04_semantic_prepare_shared_transaction(
+        &transaction, &snapshot, mf->get_request_uid(), cycle);
+    if (!mf->get_is_write()) {
+      g_rtcore_v02_lsu_read_payload_by_mem_fetch_uid[
+          mf->get_request_uid()] = read_payload;
+    }
+    payload.rt_snapshot = snapshot;
+    rtcore_record_v04_memory_conservation_or_abort(snapshot, false, cycle);
+    rtcore_v02_lsu_update_sideband_pending_count();
+  } else {
+    rtcore_v04_attach_accepted_publication_ticket(
+        mf, payload.ordinary_preflight);
+    rtcore_v04_record_ordinary_shared_accept(
+        mf, payload.ordinary_preflight, cycle);
+  }
+  service->issued_count++;
+}
+
+static void rtcore_v04_service_handoff_shared_backend(
+    unsigned sid, unsigned long long cycle, ldst_unit *ldst, rt_unit *rt) {
+  if (rtcore_v04_handoff_storage_profile() ==
+      rtcore_handoff_storage::kProfileGlobal128) {
+    return;
+  }
+  if (ldst == NULL || rt == NULL) abort();
+  rtcore_v04_handoff_shared_service_state &service =
+      rtcore_v04_handoff_shared_service_for(sid);
+  rtcore_handoff_shared_timing::service_responses(&service.timing, cycle);
+  for (;;) {
+    rtcore_handoff_shared_timing::request_v0 response = {};
+    const rtcore_handoff_shared_timing::status_kind peek =
+        rtcore_handoff_shared_timing::peek_response(service.timing,
+                                                    &response);
+    if (peek == rtcore_handoff_shared_timing::kStatusNoReadyResponse) break;
+    if (peek != rtcore_handoff_shared_timing::kStatusOk) abort();
+    rtcore_handoff_shared_timing::request_v0 popped = {};
+    rtcore_handoff_shared_timing::status_kind pop_status =
+        rtcore_handoff_shared_timing::kStatusOk;
+    if (response.client == rtcore_handoff_shared_timing::kClientOrdinaryLsu &&
+        ldst->response_buffer_full()) {
+      pop_status = rtcore_handoff_shared_timing::pop_response_for_client(
+          &service.timing,
+          rtcore_handoff_shared_timing::kClientRtMemoryUnit, &popped);
+      if (pop_status ==
+          rtcore_handoff_shared_timing::kStatusNoReadyResponse) {
+        break;
+      }
+    } else {
+      pop_status = rtcore_handoff_shared_timing::pop_response(
+          &service.timing, &popped);
+    }
+    if (pop_status != rtcore_handoff_shared_timing::kStatusOk) {
+      abort();
+    }
+    std::map<uint64_t, rtcore_v04_handoff_shared_payload>::iterator found =
+        service.payload_by_token.find(popped.token);
+    if (found == service.payload_by_token.end() || found->second.mf == NULL ||
+        (found->second.rt_client !=
+         (popped.client ==
+          rtcore_handoff_shared_timing::kClientRtMemoryUnit))) {
+      abort();
+    }
+    mem_fetch *mf = found->second.mf;
+    const bool rt_client = found->second.rt_client;
+    mf->set_reply();
+    if (rt_client) {
+      rt->fill(mf);
+    } else {
+      ldst->fill(mf);
+    }
+    service.payload_by_token.erase(found);
+    service.response_count++;
+  }
+
+  const uint32_t ordinary_shared_bank_mask =
+      ldst->rtcore_ordinary_shared_bank_mask();
+  rtcore_handoff_shared_timing::service_issues(
+      &service.timing, cycle, ordinary_shared_bank_mask);
+  for (;;) {
+    rtcore_handoff_shared_timing::request_v0 issued = {};
+    const rtcore_handoff_shared_timing::status_kind status =
+        rtcore_handoff_shared_timing::pop_issued(&service.timing, &issued);
+    if (status == rtcore_handoff_shared_timing::kStatusNoReadyResponse) break;
+    if (status != rtcore_handoff_shared_timing::kStatusOk) abort();
+    rtcore_v04_accept_handoff_shared_issue(
+        &service, issued, cycle,
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->get_global_memory());
+  }
+}
+
+static void rtcore_v04_report_handoff_shared_backend() {
+  unsigned long long enqueue = 0;
+  unsigned long long enqueue_blocked = 0;
+  unsigned long long rt_enqueue = 0;
+  unsigned long long lsu_enqueue = 0;
+  unsigned long long issued = 0;
+  unsigned long long response = 0;
+  unsigned long long bank_blocked = 0;
+  unsigned long long ordinary_blocked = 0;
+  unsigned long long outstanding_full = 0;
+  unsigned long long response_full = 0;
+  unsigned long long response_hol_bypass = 0;
+  unsigned max_ingress = 0;
+  unsigned max_outstanding = 0;
+  unsigned max_response = 0;
+  for (std::map<unsigned,
+                rtcore_v04_handoff_shared_service_state>::const_iterator it =
+           g_rtcore_v04_handoff_shared_service_by_sm.begin();
+       it != g_rtcore_v04_handoff_shared_service_by_sm.end(); ++it) {
+    const rtcore_v04_handoff_shared_service_state &service = it->second;
+    const rtcore_handoff_shared_timing::stats_v0 &stats =
+        service.timing.stats;
+    if (!rtcore_handoff_shared_timing::drained(service.timing) ||
+        !service.payload_by_token.empty() ||
+        service.enqueue_count != service.issued_count ||
+        service.issued_count != service.response_count) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_DRAIN_FAULT "
+              "owner_hw_sid=%u enqueue=%llu issued=%llu response=%llu "
+              "payload=%zu ingress=%zu outstanding=%zu issued_notice=%zu "
+              "responses=%zu\n",
+              it->first, service.enqueue_count, service.issued_count,
+              service.response_count, service.payload_by_token.size(),
+              service.timing.ingress.size(),
+              service.timing.outstanding.size(), service.timing.issued.size(),
+              service.timing.responses.size());
+      fflush(stderr);
+      abort();
+    }
+    enqueue += service.enqueue_count;
+    enqueue_blocked += service.enqueue_blocked_count;
+    rt_enqueue += service.rt_enqueue_count;
+    lsu_enqueue += service.lsu_enqueue_count;
+    issued += service.issued_count;
+    response += service.response_count;
+    bank_blocked += stats.bank_conflict_blocked_count;
+    ordinary_blocked += stats.ordinary_shared_blocked_count;
+    outstanding_full += stats.outstanding_full_count;
+    response_full += stats.response_full_count;
+    response_hol_bypass += stats.response_hol_bypass_count;
+    max_ingress = std::max(max_ingress, stats.max_ingress_depth);
+    max_outstanding = std::max(max_outstanding,
+                               stats.max_outstanding_depth);
+    max_response = std::max(max_response, stats.max_response_depth);
+  }
+  const rtcore_handoff_shared_timing::config_v0 config =
+      rtcore_v04_handoff_shared_config();
+  printf("GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_BACKEND "
+         "profile=%s service_count=%zu issue_budget=%u response_budget=%u "
+         "base_latency=%u ingress_capacity=%u outstanding_capacity=%u "
+         "response_capacity=%u banks=%u bank_word_bytes=%u enqueue=%llu "
+         "enqueue_blocked=%llu rt_enqueue=%llu lsu_enqueue=%llu "
+         "issued=%llu response=%llu bank_conflict_blocked=%llu "
+         "ordinary_shared_blocked=%llu outstanding_full=%llu "
+         "response_full=%llu response_hol_bypass=%llu drained=1 "
+         "max_ingress=%u max_outstanding=%u "
+         "max_response=%u submit_admission_checks=%llu "
+         "submit_admission_stalls=%llu "
+         "resubmit_replacement_checks=%llu cta_admission_checks=%llu "
+         "cta_admission_stalls=%llu peak_resident_charge_bytes=%u "
+         "peak_cta_charge_bytes=%u\n",
+         rtcore_handoff_storage::profile_name(
+             rtcore_v04_handoff_storage_profile()),
+         g_rtcore_v04_handoff_shared_service_by_sm.size(),
+         config.issue_budget, config.response_budget, config.base_latency,
+         config.ingress_capacity, config.outstanding_capacity,
+         config.response_capacity, config.bank_count,
+         config.bank_word_bytes, enqueue, enqueue_blocked, rt_enqueue,
+         lsu_enqueue, issued, response, bank_blocked, ordinary_blocked,
+         outstanding_full, response_full, response_hol_bypass, max_ingress,
+         max_outstanding, max_response,
+         g_rtcore_v04_handoff_shared_submit_admission_checks,
+         g_rtcore_v04_handoff_shared_submit_admission_stalls,
+         g_rtcore_v04_handoff_shared_resubmit_replacement_checks,
+         g_rtcore_v04_handoff_shared_cta_admission_checks,
+         g_rtcore_v04_handoff_shared_cta_admission_stalls,
+         g_rtcore_v04_handoff_shared_peak_resident_charge,
+         g_rtcore_v04_handoff_shared_peak_cta_charge);
+}
+
 }  // namespace
 
 mem_stage_stall_type ldst_unit::process_cache_access(
@@ -15239,6 +16183,32 @@ unsigned ldst_unit::common_l1d_request_demand() const {
   return bypass_l1d ? 0u : 1u;
 }
 
+uint32_t ldst_unit::rtcore_ordinary_shared_bank_mask() const {
+  const warp_inst_t &inst = *m_dispatch_reg;
+  if (inst.empty() || inst.space.get_type() != shared_space ||
+      inst.active_count() == 0) {
+    return 0u;
+  }
+  if (m_config->num_shmem_bank !=
+      rtcore_handoff_storage::kSharedBankCount) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_CONFIG_FAULT "
+            "owner_hw_sid=%u configured_shared_banks=%u expected=%u\n",
+            m_sid, m_config->num_shmem_bank,
+            rtcore_handoff_storage::kSharedBankCount);
+    fflush(stderr);
+    abort();
+  }
+  uint32_t mask = 0u;
+  for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
+    if (!inst.active(lane)) continue;
+    const unsigned bank = m_config->shmem_bank_func(inst.get_addr(lane));
+    if (bank >= 32u) abort();
+    mask |= uint32_t{1} << bank;
+  }
+  return mask;
+}
+
 mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
     l1_cache *cache, warp_inst_t &inst) {
   mem_stage_stall_type result = NO_RC_FAIL;
@@ -15286,10 +16256,6 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
 
     return result;
   } else {
-    if (!m_core->consume_rtcore_shared_l1d_request_grant(
-            RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU)) {
-      return DATA_PORT_STALL;
-    }
     mem_fetch *mf =
         m_mf_allocator->alloc(inst, inst.accessq_back(),
                               m_core->get_gpu()->gpu_sim_cycle +
@@ -15297,14 +16263,36 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
     const rtcore_v04_publication_preflight preflight =
         rtcore_v04_preflight_ordinary_publication_store(mf);
     rtcore_v04_attach_ordinary_semantic_tag(mf, preflight);
+    const unsigned long long access_cycle =
+        m_core->get_gpu()->gpu_sim_cycle +
+        m_core->get_gpu()->gpu_tot_sim_cycle;
+    if (rtcore_v04_ordinary_routes_to_handoff_shared(preflight)) {
+      mf->set_rtcore_v04_handoff_shared_backend();
+      mf->set_rtcore_v04_handoff_chunk(preflight.lane_slot_chunk);
+      rtcore_v04_arm_publication_preaccept(mf, preflight);
+      rtcore_v04_handoff_shared_payload payload = {};
+      payload.mf = mf;
+      payload.ordinary_preflight = preflight;
+      if (!rtcore_v04_enqueue_handoff_shared_request(
+              m_sid, preflight.lane_slot_chunk, access_cycle, payload)) {
+        rtcore_v04_cancel_publication_preaccept(mf, preflight);
+        delete mf;
+        return BK_CONF;
+      }
+      inst.accessq_pop_back();
+      if (inst.is_store()) m_core->inc_store_req(inst.warp_id());
+      return inst.accessq_empty() ? NO_RC_FAIL : COAL_STALL;
+    }
+    if (!m_core->consume_rtcore_shared_l1d_request_grant(
+            RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU)) {
+      delete mf;
+      return DATA_PORT_STALL;
+    }
     rtcore_v04_arm_publication_preaccept(mf, preflight);
     std::list<cache_event> events;
     m_core->record_rtcore_shared_l1d_cache_access(
         RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU);
     cache_access_observation observation;
-    const unsigned long long access_cycle =
-        m_core->get_gpu()->gpu_sim_cycle +
-        m_core->get_gpu()->gpu_tot_sim_cycle;
     const enum cache_request_policy_hint cache_policy_hint =
         rtcore_v04_handoff_cache_policy_hint_for(mf);
     enum cache_request_status status = cache->access_with_policy_observation(
@@ -15336,22 +16324,33 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
 void ldst_unit::L1_latency_queue_cycle() {
   for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {
     if ((l1_latency_queue[j][0]) != NULL) {
+      mem_fetch *mf_next = l1_latency_queue[j][0];
+      const rtcore_v04_publication_preflight preflight =
+          rtcore_v04_preflight_ordinary_publication_store(mf_next);
+      rtcore_v04_attach_ordinary_semantic_tag(mf_next, preflight);
+      const unsigned long long access_cycle =
+          m_core->get_gpu()->gpu_sim_cycle +
+          m_core->get_gpu()->gpu_tot_sim_cycle;
+      if (rtcore_v04_ordinary_routes_to_handoff_shared(preflight)) {
+        mf_next->set_rtcore_v04_handoff_shared_backend();
+        mf_next->set_rtcore_v04_handoff_chunk(preflight.lane_slot_chunk);
+        rtcore_v04_handoff_shared_payload payload = {};
+        payload.mf = mf_next;
+        payload.ordinary_preflight = preflight;
+        if (rtcore_v04_enqueue_handoff_shared_request(
+                m_sid, preflight.lane_slot_chunk, access_cycle, payload)) {
+          l1_latency_queue[j][0] = NULL;
+        }
+        continue;
+      }
       const bool grant =
           m_core->consume_rtcore_shared_l1d_request_grant(
               RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU);
       if (grant) {
-        mem_fetch *mf_next = l1_latency_queue[j][0];
-        const rtcore_v04_publication_preflight preflight =
-            rtcore_v04_preflight_ordinary_publication_store(
-                mf_next);
-        rtcore_v04_attach_ordinary_semantic_tag(mf_next, preflight);
         std::list<cache_event> events;
         m_core->record_rtcore_shared_l1d_cache_access(
             RTCORE_SHARED_L1D_REQUEST_CLIENT_LSU);
         cache_access_observation observation;
-        const unsigned long long access_cycle =
-            m_core->get_gpu()->gpu_sim_cycle +
-            m_core->get_gpu()->gpu_tot_sim_cycle;
         const enum cache_request_policy_hint cache_policy_hint =
             rtcore_v04_handoff_cache_policy_hint_for(mf_next);
         enum cache_request_status status =
@@ -15498,38 +16497,63 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
       bypassL1D = true;
   }
   if (bypassL1D) {
-    // bypass L1 cache
-    unsigned control_size =
-        inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
-    unsigned size = access.get_size() + control_size;
-    // printf("Interconnect:Addr: %x, size=%d\n",access.get_addr(),size);
-    if (m_icnt->full(size, inst.is_store() || inst.isatomic())) {
-      stall_cond = ICNT_RC_FAIL;
-    } else {
-      mem_fetch *mf =
-          m_mf_allocator->alloc(inst, access,
-                                m_core->get_gpu()->gpu_sim_cycle +
-                                    m_core->get_gpu()->gpu_tot_sim_cycle);
-      const rtcore_v04_publication_preflight preflight =
-          rtcore_v04_preflight_ordinary_publication_store(mf);
-      if (preflight.candidate &&
-          rtcore_v04_global384_semantic_accounting_enabled()) {
-        rtcore_v04_publication_ticket_fail_closed(
-            "semantic-accounting-l1d-bypass-unsupported",
-            rtcore::v04::pre_submit_publication::kStatusRegistryRejected,
-            rtcore::v04::address_range_registry::kStatusInvalidRange, mf);
+    const unsigned long long access_cycle =
+        m_core->get_gpu()->gpu_sim_cycle +
+        m_core->get_gpu()->gpu_tot_sim_cycle;
+    mem_fetch *mf = m_mf_allocator->alloc(inst, access, access_cycle);
+    const rtcore_v04_publication_preflight preflight =
+        rtcore_v04_preflight_ordinary_publication_store(mf);
+    rtcore_v04_attach_ordinary_semantic_tag(mf, preflight);
+    if (rtcore_v04_ordinary_routes_to_handoff_shared(preflight)) {
+      mf->set_rtcore_v04_handoff_shared_backend();
+      mf->set_rtcore_v04_handoff_chunk(preflight.lane_slot_chunk);
+      rtcore_v04_arm_publication_preaccept(mf, preflight);
+      rtcore_v04_handoff_shared_payload payload = {};
+      payload.mf = mf;
+      payload.ordinary_preflight = preflight;
+      if (!rtcore_v04_enqueue_handoff_shared_request(
+              m_sid, preflight.lane_slot_chunk, access_cycle, payload)) {
+        rtcore_v04_cancel_publication_preaccept(mf, preflight);
+        delete mf;
+        stall_cond = BK_CONF;
+      } else {
+        inst.accessq_pop_back();
+        if (inst.is_load()) {
+          for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
+            if (inst.out[r] > 0)
+              assert(m_pending_writes[inst.warp_id()][inst.out[r]] > 0);
+        } else if (inst.is_store()) {
+          m_core->inc_store_req(inst.warp_id());
+        }
       }
-      rtcore_v04_attach_accepted_publication_ticket(
-          mf, preflight);
-      m_icnt->push(mf);
-      inst.accessq_pop_back();
-      // inst.clear_active( access.get_warp_mask() );
-      if (inst.is_load()) {
-        for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
-          if (inst.out[r] > 0)
-            assert(m_pending_writes[inst.warp_id()][inst.out[r]] > 0);
-      } else if (inst.is_store())
-        m_core->inc_store_req(inst.warp_id());
+    } else {
+      // Bypass L1D only after the exact handoff-Shared route has been ruled
+      // out; selected traffic never consumes ICNT/L2/DRAM capacity.
+      const unsigned control_size =
+          inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+      const unsigned size = access.get_size() + control_size;
+      if (m_icnt->full(size, inst.is_store() || inst.isatomic())) {
+        delete mf;
+        stall_cond = ICNT_RC_FAIL;
+      } else {
+        if (preflight.candidate &&
+            rtcore_v04_global384_semantic_accounting_enabled()) {
+          rtcore_v04_publication_ticket_fail_closed(
+              "semantic-accounting-l1d-bypass-unsupported",
+              rtcore::v04::pre_submit_publication::kStatusRegistryRejected,
+              rtcore::v04::address_range_registry::kStatusInvalidRange, mf);
+        }
+        rtcore_v04_attach_accepted_publication_ticket(mf, preflight);
+        m_icnt->push(mf);
+        inst.accessq_pop_back();
+        // inst.clear_active( access.get_warp_mask() );
+        if (inst.is_load()) {
+          for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
+            if (inst.out[r] > 0)
+              assert(m_pending_writes[inst.warp_id()][inst.out[r]] > 0);
+        } else if (inst.is_store())
+          m_core->inc_store_req(inst.warp_id());
+      }
     }
   } else {
     assert(CACHE_UNDEFINED != inst.cache_op);
@@ -20762,7 +21786,8 @@ void ldst_unit::cycle() {
                                       // on load miss only
 
         bool bypassL1D = false;
-        if (CACHE_GLOBAL == mf->get_inst().cache_op || (m_L1D == NULL)) {
+        if (mf->uses_rtcore_v04_handoff_shared_backend() ||
+            CACHE_GLOBAL == mf->get_inst().cache_op || (m_L1D == NULL)) {
           bypassL1D = true;
         } else if (mf->get_access_type() == GLOBAL_ACC_R ||
                    mf->get_access_type() ==

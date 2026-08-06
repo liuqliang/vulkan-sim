@@ -136,6 +136,12 @@ class mem_fetch {
   unsigned get_rtcore_v04_handoff_cache_policy_chunk() const {
     return m_rtcore_v04_handoff_cache_policy_chunk;
   }
+  void set_rtcore_v04_handoff_shared_backend() {
+    m_rtcore_v04_handoff_shared_backend = true;
+  }
+  bool uses_rtcore_v04_handoff_shared_backend() const {
+    return m_rtcore_v04_handoff_shared_backend;
+  }
   void begin_rtcore_v04_dram_service(unsigned long long cycle);
   unsigned long long complete_rtcore_v04_dram_service(
       unsigned long long cycle);
@@ -235,6 +241,7 @@ class mem_fetch {
   uint32_t m_rtcore_v04_handoff_cache_policy_tag_set;
   uint8_t m_rtcore_v04_handoff_cache_policy_chunk;
   bool m_rtcore_v04_handoff_cache_policy_eligible;
+  bool m_rtcore_v04_handoff_shared_backend;
   bool m_rtcore_v04_dram_service_started;
   bool m_rtcore_v04_dram_service_completed;
   unsigned long long m_rtcore_v04_dram_service_start_cycle;

@@ -2347,6 +2347,7 @@ class ldst_unit : public pipelined_simd_unit {
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
   unsigned common_l1d_request_demand() const;
+  uint32_t rtcore_ordinary_shared_bank_mask() const;
 
   bool shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
                     mem_stage_access_type &fail_type);
@@ -3571,6 +3572,11 @@ class shader_core_ctx : public core_t {
   bool occupy_shader_resource_1block(kernel_info_t &kernel, bool occupy);
   void release_shader_resource_1block(unsigned hw_ctaid, kernel_info_t &kernel);
   int find_available_hwtid(unsigned int cta_size, bool occupy);
+  bool rtcore_submit_handoff_shared_capacity_available(
+      const warp_inst_t &inst, unsigned warp_id,
+      unsigned active_mask) const;
+  bool rtcore_handoff_shared_capacity_allows_cta(
+      unsigned cta_shared_demand_bytes) const;
 
  private:
   unsigned int m_occupied_n_threads;

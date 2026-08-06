@@ -640,6 +640,11 @@ bool rtcore_query_replay_warp_completion_entry(
     unsigned active_mask,
     rtcore_replay_warp_completion_entry_snapshot *snapshot);
 
+bool rtcore_query_resident_rt_warp_active_lane_state(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned *resident_active_lane_count, unsigned *warp_active_mask,
+    bool *warp_resident);
+
 bool rtcore_commit_v04_functional_shader_visible_resubmit_admission(
     const ptx_instruction *pI, unsigned owner_hw_sid,
     unsigned new_warp_uid, unsigned warp_id,

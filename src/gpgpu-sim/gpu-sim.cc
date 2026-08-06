@@ -1618,6 +1618,11 @@ bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
 
     return occupy_shader_resource_1block(kernel, false);
   } else {
+    const gpgpu_ptx_sim_info *kernel_info =
+        ptx_sim_kernel_info(kernel.entry());
+    if (!rtcore_handoff_shared_capacity_allows_cta(kernel_info->smem)) {
+      return false;
+    }
     return (get_n_active_cta() < m_config->max_cta(kernel));
   }
 }
@@ -1660,6 +1665,8 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
   const struct gpgpu_ptx_sim_info *kernel_info = ptx_sim_kernel_info(kernel);
 
   if (m_occupied_shmem + kernel_info->smem > m_config->gpgpu_shmem_size)
+    return false;
+  if (!rtcore_handoff_shared_capacity_allows_cta(kernel_info->smem))
     return false;
 
   unsigned int used_regs = padded_cta_size * ((kernel_info->regs + 3) & ~3);

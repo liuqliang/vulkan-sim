@@ -80,6 +80,7 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   m_rtcore_v04_handoff_cache_policy_tag_set = 0;
   m_rtcore_v04_handoff_cache_policy_chunk = 0xffu;
   m_rtcore_v04_handoff_cache_policy_eligible = false;
+  m_rtcore_v04_handoff_shared_backend = false;
   if (m_original_mf) {
     m_rtcore_v04_semantic_tag_set |=
         m_original_mf->get_rtcore_v04_semantic_tag_set();

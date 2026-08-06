@@ -15080,6 +15080,38 @@ extern "C" bool rtcore_query_resident_rt_warp_record(
     return true;
 }
 
+extern "C" bool rtcore_query_resident_rt_warp_active_lane_state(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned *resident_active_lane_count, unsigned *warp_active_mask,
+    bool *warp_resident)
+{
+    if (resident_active_lane_count == NULL || warp_active_mask == NULL ||
+        warp_resident == NULL) {
+        return false;
+    }
+
+    *resident_active_lane_count = 0;
+    *warp_active_mask = 0;
+    *warp_resident = false;
+    for (std::map<rtcore_resident_rt_warp_record_key,
+                  rtcore_resident_rt_warp_record>::const_iterator it =
+             g_rtcore_resident_rt_warp_records.begin();
+         it != g_rtcore_resident_rt_warp_records.end(); ++it) {
+        const rtcore_resident_rt_warp_record &record = it->second;
+        if (!record.valid || record.owner_hw_sid != owner_hw_sid) continue;
+        unsigned mask = record.active_mask;
+        while (mask != 0) {
+            *resident_active_lane_count += mask & 1u;
+            mask >>= 1u;
+        }
+        if (record.warp_id == warp_id) {
+            *warp_active_mask = record.active_mask;
+            *warp_resident = true;
+        }
+    }
+    return true;
+}
+
 extern "C" bool rtcore_prepare_v04_global384_resident_warp_shell(
     unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
     unsigned active_mask, unsigned static_inst_uid,
