@@ -435,6 +435,11 @@ static const unsigned RTCORE_SHADER_CONTINUATION_REASON_TRACE_DONE_NO_SHADER =
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_FAULT = 6;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED = 7;
 
+static bool rtcore_handoff_publication_access_kind(unsigned access_kind) {
+  return access_kind == RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
+         access_kind == RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE;
+}
+
 static bool rtcore_shader_continuation_requires_handoff_return(
     unsigned reason) {
   return reason == RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED ||
@@ -1585,13 +1590,16 @@ static bool rtcore_issue_shader_continuation_handoff_reads(
         goto rollback;
       }
       registry::live_access_v0 access = {};
+      uint8_t verified_lane_slot_chunk = 0xffu;
       const bridge::status_kind access_status =
           bridge::shared_bridge().preflight_live_handoff_access(
               owner_hw_sid, entry.v04_native_resident_generation,
               static_cast<uint8_t>(lane),
               registry::kAccessHandoffShaderDispatchRead,
-              snapshot.aligned_32b_addr, snapshot.byte_mask, &access);
+              snapshot.aligned_32b_addr, snapshot.byte_mask, &access,
+              &verified_lane_slot_chunk);
       if (access_status != bridge::kStatusOk ||
+          verified_lane_slot_chunk != chunk.chunk ||
           (entry.lane_v04_live_window_generations[lane] != 0 &&
            entry.lane_v04_live_window_generations[lane] !=
                access.owner.window_generation)) {
@@ -3006,6 +3014,21 @@ struct rtcore_v04_semantic_tag_set_stats {
   rtcore_v04_semantic_latency_histogram dram_request_to_response;
 };
 
+struct rtcore_v04_handoff_chunk_key {
+  uint32_t tag_set;
+  uint8_t chunk;
+
+  bool operator<(const rtcore_v04_handoff_chunk_key &other) const {
+    if (tag_set != other.tag_set) return tag_set < other.tag_set;
+    return chunk < other.chunk;
+  }
+};
+
+struct rtcore_v04_handoff_chunk_stats {
+  rtcore_v04_semantic_tag_set_stats lifecycle;
+  unsigned long long useful_bytes;
+};
+
 struct rtcore_v04_semantic_region_stats {
   unsigned long long logical_access_participation;
   unsigned long long useful_bytes;
@@ -3061,6 +3084,7 @@ struct rtcore_v04_semantic_logical_state {
   unsigned long long accept_cycle;
   unsigned physical_request_uid;
   uint32_t tag_set;
+  uint8_t handoff_chunk;
   bool accepted;
 };
 
@@ -3100,6 +3124,7 @@ struct rtcore_v04_semantic_operation_state {
 
 struct rtcore_v04_semantic_completed_physical {
   uint32_t tag_set;
+  uint8_t handoff_chunk;
   bool closer_claimed;
 };
 
@@ -3111,6 +3136,8 @@ struct rtcore_v04_ordinary_semantic_key {
   unsigned access;
   unsigned long long aligned_32b_addr;
   uint32_t byte_mask;
+  unsigned long long handoff_lane_base;
+  uint8_t handoff_chunk;
 
   bool operator<(const rtcore_v04_ordinary_semantic_key &other) const {
     if (owner_hw_sid != other.owner_hw_sid)
@@ -3123,7 +3150,10 @@ struct rtcore_v04_ordinary_semantic_key {
     if (access != other.access) return access < other.access;
     if (aligned_32b_addr != other.aligned_32b_addr)
       return aligned_32b_addr < other.aligned_32b_addr;
-    return byte_mask < other.byte_mask;
+    if (byte_mask != other.byte_mask) return byte_mask < other.byte_mask;
+    if (handoff_lane_base != other.handoff_lane_base)
+      return handoff_lane_base < other.handoff_lane_base;
+    return handoff_chunk < other.handoff_chunk;
   }
 };
 
@@ -3133,6 +3163,7 @@ struct rtcore_v04_ordinary_semantic_state {
   unsigned physical_request_uid;
   uint32_t tag_set;
   uint32_t useful_byte_mask;
+  uint8_t handoff_chunk;
   bool accepted;
 };
 
@@ -3188,6 +3219,9 @@ static std::map<unsigned, rtcore_v04_pending_memory_transaction>
     g_rtcore_v02_lsu_pending_memory_requests;
 static std::map<uint32_t, rtcore_v04_semantic_tag_set_stats>
     g_rtcore_v04_semantic_tag_set_stats;
+static std::map<rtcore_v04_handoff_chunk_key,
+                rtcore_v04_handoff_chunk_stats>
+    g_rtcore_v04_handoff_chunk_stats;
 static rtcore_v04_semantic_region_stats
     g_rtcore_v04_semantic_region_stats[RTCORE_V04_SEMANTIC_TAG_COUNT] = {};
 static std::map<rtcore_v04_semantic_logical_key,
@@ -3317,6 +3351,113 @@ rtcore_v04_semantic_tag_set_stats_for(uint32_t tag_set) {
   return found->second;
 }
 
+static const uint32_t kRtcoreV04HandoffSemanticTagMask =
+    (uint32_t{1} << 6u) - 1u;
+static const unsigned kRtcoreV04InvalidHandoffChunk = 0xffu;
+
+static bool rtcore_v04_semantic_tag_set_is_handoff_only(uint32_t tag_set) {
+  return tag_set != 0 &&
+         (tag_set & ~kRtcoreV04HandoffSemanticTagMask) == 0;
+}
+
+static void rtcore_v04_semantic_validate_handoff_tag_set(
+    uint32_t tag_set) {
+  if ((tag_set & kRtcoreV04HandoffSemanticTagMask) != 0 &&
+      !rtcore_v04_semantic_tag_set_is_handoff_only(tag_set)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=handoff_private_context_tag_mix tag_set=0x%08x\n",
+            tag_set);
+    fflush(stderr);
+    abort();
+  }
+}
+
+static rtcore_v04_handoff_chunk_stats &
+rtcore_v04_semantic_handoff_chunk_stats_for(uint32_t tag_set,
+                                            unsigned chunk) {
+  rtcore_v04_semantic_validate_handoff_tag_set(tag_set);
+  if (!rtcore_v04_semantic_tag_set_is_handoff_only(tag_set) || chunk >= 4u) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=handoff_chunk_key_invalid tag_set=0x%08x chunk=%u\n",
+            tag_set, chunk);
+    fflush(stderr);
+    abort();
+  }
+  rtcore_v04_handoff_chunk_key key = {};
+  key.tag_set = tag_set;
+  key.chunk = static_cast<uint8_t>(chunk);
+  std::map<rtcore_v04_handoff_chunk_key,
+           rtcore_v04_handoff_chunk_stats>::iterator found =
+      g_rtcore_v04_handoff_chunk_stats.find(key);
+  if (found == g_rtcore_v04_handoff_chunk_stats.end()) {
+    if (g_rtcore_v04_handoff_chunk_stats.size() >= 256u) abort();
+    found = g_rtcore_v04_handoff_chunk_stats
+                .insert(std::make_pair(
+                    key, rtcore_v04_handoff_chunk_stats()))
+                .first;
+  }
+  return found->second;
+}
+
+static unsigned rtcore_v04_semantic_handoff_chunk_for_snapshot(
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  const uint32_t tag_set = snapshot.v04_semantic_memory.tag_set;
+  rtcore_v04_semantic_validate_handoff_tag_set(tag_set);
+  if (!rtcore_v04_semantic_tag_set_is_handoff_only(tag_set)) {
+    return kRtcoreV04InvalidHandoffChunk;
+  }
+  unsigned chunk = kRtcoreV04InvalidHandoffChunk;
+  if (snapshot.v04_dispatch_handoff_read.valid == 1 &&
+      snapshot.access_kind == RTCORE_V02_LSU_ACCESS_HANDOFF_DISPATCH_READ) {
+    chunk = snapshot.v04_dispatch_handoff_read.lane_slot_chunk;
+  } else if (snapshot.v04_live_handoff_acquire.valid == 1 &&
+             snapshot.access_kind == RTCORE_V02_LSU_ACCESS_HANDOFF_ACQUIRE) {
+    chunk = snapshot.chunk_id;
+  } else if (snapshot.v04_handoff_publication.valid == 1 &&
+             rtcore_handoff_publication_access_kind(snapshot.access_kind)) {
+    chunk = snapshot.v04_handoff_publication.publication_chunk;
+  } else if (snapshot.access_kind ==
+                 RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE &&
+             rtcore_v04_live_publication_memory_op_seq(
+                 snapshot.memory_op_seq)) {
+    chunk = snapshot.memory_op_seq -
+            RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE;
+  }
+  if (chunk >= 4u) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=handoff_snapshot_chunk_missing tag_set=0x%08x "
+            "access_kind=%u chunk=%u\n",
+            tag_set, snapshot.access_kind, chunk);
+    fflush(stderr);
+    abort();
+  }
+  return chunk;
+}
+
+static unsigned rtcore_v04_semantic_handoff_chunk_for_mem_fetch(
+    const mem_fetch *mf) {
+  if (mf == NULL || !mf->has_rtcore_v04_semantic_tag_set()) {
+    return kRtcoreV04InvalidHandoffChunk;
+  }
+  const uint32_t tag_set = mf->get_rtcore_v04_semantic_tag_set();
+  rtcore_v04_semantic_validate_handoff_tag_set(tag_set);
+  const bool handoff = rtcore_v04_semantic_tag_set_is_handoff_only(tag_set);
+  if (handoff != mf->has_rtcore_v04_handoff_chunk()) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=mem_fetch_handoff_chunk_mismatch tag_set=0x%08x "
+            "chunk=%u\n",
+            tag_set, mf->get_rtcore_v04_handoff_chunk());
+    fflush(stderr);
+    abort();
+  }
+  return handoff ? mf->get_rtcore_v04_handoff_chunk()
+                 : kRtcoreV04InvalidHandoffChunk;
+}
+
 static rtcore_v04_semantic_logical_key rtcore_v04_semantic_logical_key_for(
     const rtcore_memory_unit_request_snapshot &snapshot) {
   rtcore_v04_semantic_logical_key key = {};
@@ -3370,12 +3511,11 @@ static bool rtcore_v04_semantic_operation_key_for(
     key->epoch =
         snapshot.v04_handoff_publication.producer_commit_epoch;
   } else if (snapshot.access_kind ==
-             RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE) {
+                 RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE &&
+             rtcore_v04_live_publication_memory_op_seq(
+                 snapshot.memory_op_seq)) {
     key->kind = 6;
-    key->sequence = snapshot.memory_op_seq >=
-                            RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE
-                        ? RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE
-                        : snapshot.memory_op_seq;
+    key->sequence = RTCORE_V04_LIVE_PUBLICATION_OP_SEQ_BASE;
   } else if (snapshot.v04_dispatch_handoff_read.valid == 1 &&
              snapshot.access_kind ==
                  RTCORE_V02_LSU_ACCESS_HANDOFF_DISPATCH_READ) {
@@ -3407,12 +3547,15 @@ rtcore_v04_semantic_observe_logical(
   }
   const rtcore_v04_semantic_logical_key key =
       rtcore_v04_semantic_logical_key_for(snapshot);
+  const unsigned handoff_chunk =
+      rtcore_v04_semantic_handoff_chunk_for_snapshot(snapshot);
   std::map<rtcore_v04_semantic_logical_key,
            rtcore_v04_semantic_logical_state>::iterator found =
       g_rtcore_v04_semantic_active_logical.find(key);
   if (found != g_rtcore_v04_semantic_active_logical.end()) {
     if (found->second.tag_set != snapshot.v04_semantic_memory.tag_set ||
-        found->second.ready_cycle != snapshot.issue_cycle) {
+        found->second.ready_cycle != snapshot.issue_cycle ||
+        found->second.handoff_chunk != handoff_chunk) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
               "fault=logical_identity_collision\n");
@@ -3424,6 +3567,7 @@ rtcore_v04_semantic_observe_logical(
   rtcore_v04_semantic_logical_state state = {};
   state.ready_cycle = snapshot.issue_cycle;
   state.tag_set = snapshot.v04_semantic_memory.tag_set;
+  state.handoff_chunk = static_cast<uint8_t>(handoff_chunk);
   found = g_rtcore_v04_semantic_active_logical.insert(
       std::make_pair(key, state)).first;
   rtcore_v04_semantic_tag_set_stats &tag_set_stats =
@@ -3431,6 +3575,16 @@ rtcore_v04_semantic_observe_logical(
   tag_set_stats.logical_access++;
   tag_set_stats.logical_requested_bytes +=
       RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+  if (handoff_chunk < 4u) {
+    rtcore_v04_handoff_chunk_stats &chunk_stats =
+        rtcore_v04_semantic_handoff_chunk_stats_for(state.tag_set,
+                                                    handoff_chunk);
+    chunk_stats.lifecycle.logical_access++;
+    chunk_stats.lifecycle.logical_requested_bytes +=
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    chunk_stats.useful_bytes += rtcore_v04_semantic_popcount(
+        snapshot.v04_semantic_memory.useful_byte_mask);
+  }
   g_rtcore_v04_semantic_logical_total++;
   for (unsigned index = 0;
        index < snapshot.v04_semantic_memory.slice_count; ++index) {
@@ -3450,6 +3604,11 @@ static void rtcore_v04_semantic_record_issue_attempt(
   rtcore_v04_semantic_logical_state &logical =
       rtcore_v04_semantic_observe_logical(snapshot);
   rtcore_v04_semantic_tag_set_stats_for(logical.tag_set).issue_attempt++;
+  if (logical.handoff_chunk < 4u) {
+    rtcore_v04_semantic_handoff_chunk_stats_for(
+        logical.tag_set, logical.handoff_chunk)
+        .lifecycle.issue_attempt++;
+  }
 }
 
 static void rtcore_v04_semantic_record_frontend_blocked(
@@ -3458,6 +3617,11 @@ static void rtcore_v04_semantic_record_frontend_blocked(
       rtcore_v04_semantic_observe_logical(snapshot);
   rtcore_v04_semantic_tag_set_stats_for(logical.tag_set)
       .frontend_blocked++;
+  if (logical.handoff_chunk < 4u) {
+    rtcore_v04_semantic_handoff_chunk_stats_for(
+        logical.tag_set, logical.handoff_chunk)
+        .lifecycle.frontend_blocked++;
+  }
 }
 
 static void rtcore_v04_semantic_record_cache_lookup(
@@ -3465,6 +3629,11 @@ static void rtcore_v04_semantic_record_cache_lookup(
   rtcore_v04_semantic_logical_state &logical =
       rtcore_v04_semantic_observe_logical(snapshot);
   rtcore_v04_semantic_tag_set_stats_for(logical.tag_set).cache_lookup++;
+  if (logical.handoff_chunk < 4u) {
+    rtcore_v04_semantic_handoff_chunk_stats_for(
+        logical.tag_set, logical.handoff_chunk)
+        .lifecycle.cache_lookup++;
+  }
 }
 
 static void rtcore_v04_semantic_record_cache_retry(
@@ -3478,6 +3647,11 @@ static void rtcore_v04_semantic_record_cache_retry(
   if (access_status == RESERVATION_FAIL ||
       (probe_status == HIT_RESERVED && access_status == HIT_RESERVED)) {
     stats.reservation_fail_retry++;
+    if (logical.handoff_chunk < 4u) {
+      rtcore_v04_semantic_handoff_chunk_stats_for(
+          logical.tag_set, logical.handoff_chunk)
+          .lifecycle.reservation_fail_retry++;
+    }
   } else {
     fprintf(stderr,
             "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
@@ -3511,6 +3685,13 @@ static void rtcore_v04_semantic_record_accept(
       rtcore_v04_semantic_tag_set_stats_for(logical.tag_set);
   rtcore_v04_semantic_histogram_observe(
       &tag_set_stats.ready_to_accept, latency);
+  if (logical.handoff_chunk < 4u) {
+    rtcore_v04_semantic_histogram_observe(
+        &rtcore_v04_semantic_handoff_chunk_stats_for(
+             logical.tag_set, logical.handoff_chunk)
+             .lifecycle.ready_to_accept,
+        latency);
+  }
   for (unsigned index = 0;
        index < snapshot->v04_semantic_memory.slice_count; ++index) {
     rtcore_v04_semantic_histogram_observe(
@@ -3530,6 +3711,31 @@ static uint32_t rtcore_v04_semantic_waiter_tag_set(
     tag_set |= it->v04_semantic_memory.tag_set;
   }
   return tag_set;
+}
+
+static unsigned rtcore_v04_semantic_waiter_handoff_chunk(
+    const std::vector<rtcore_memory_unit_request_snapshot> &waiters) {
+  unsigned chunk = kRtcoreV04InvalidHandoffChunk;
+  for (std::vector<rtcore_memory_unit_request_snapshot>::const_iterator it =
+           waiters.begin();
+       it != waiters.end(); ++it) {
+    const unsigned waiter_chunk =
+        rtcore_v04_semantic_handoff_chunk_for_snapshot(*it);
+    if (waiter_chunk >= 4u) {
+      if (chunk < 4u) abort();
+      continue;
+    }
+    if (chunk < 4u && chunk != waiter_chunk) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+              "fault=physical_cross_handoff_chunk_merge first=%u next=%u\n",
+              chunk, waiter_chunk);
+      fflush(stderr);
+      abort();
+    }
+    chunk = waiter_chunk;
+  }
+  return chunk;
 }
 
 static unsigned rtcore_v04_semantic_expected_operation_arrivals(
@@ -3644,6 +3850,17 @@ static void rtcore_v04_semantic_finalize_physical(
   }
   const uint32_t tag_set =
       rtcore_v04_semantic_waiter_tag_set(transaction.waiters);
+  const unsigned handoff_chunk =
+      rtcore_v04_semantic_waiter_handoff_chunk(transaction.waiters);
+  rtcore_v04_semantic_validate_handoff_tag_set(tag_set);
+  if (rtcore_v04_semantic_tag_set_is_handoff_only(tag_set) !=
+      (handoff_chunk < 4u)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=physical_handoff_chunk_classification_mismatch\n");
+    fflush(stderr);
+    abort();
+  }
   rtcore_v04_semantic_tag_set_stats &stats =
       rtcore_v04_semantic_tag_set_stats_for(tag_set);
   stats.accepted_physical++;
@@ -3664,6 +3881,31 @@ static void rtcore_v04_semantic_finalize_physical(
       transaction.waiters.front().is_write,
       transaction.no_write_allocate,
       transaction.first_touch_miss, transaction.repeat_miss);
+  if (handoff_chunk < 4u) {
+    rtcore_v04_semantic_tag_set_stats &chunk_stats =
+        rtcore_v04_semantic_handoff_chunk_stats_for(tag_set,
+                                                    handoff_chunk)
+            .lifecycle;
+    chunk_stats.accepted_physical++;
+    chunk_stats.physical_requested_bytes +=
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    chunk_stats.physical_completion++;
+    chunk_stats.lower_read += transaction.lower_read ? 1u : 0u;
+    chunk_stats.lower_write += transaction.lower_write ? 1u : 0u;
+    chunk_stats.lower_write_allocate +=
+        transaction.lower_write_allocate ? 1u : 0u;
+    chunk_stats.lower_any +=
+        transaction.lower_read || transaction.lower_write ||
+                transaction.lower_write_allocate
+            ? 1u
+            : 0u;
+    chunk_stats.response_or_ack_fanout += transaction.waiters.size();
+    rtcore_v04_semantic_classify_physical(
+        &chunk_stats, transaction.probe_status, transaction.access_status,
+        transaction.waiters.front().is_write,
+        transaction.no_write_allocate, transaction.first_touch_miss,
+        transaction.repeat_miss);
+  }
   rtcore_v04_semantic_record_region_physical_participation(
       tag_set, transaction.probe_status, transaction.access_status,
       transaction.waiters.front().is_write, transaction.lower_read,
@@ -3674,6 +3916,7 @@ static void rtcore_v04_semantic_finalize_physical(
   g_rtcore_v04_semantic_fanout_total += transaction.waiters.size();
   rtcore_v04_semantic_completed_physical completing = {};
   completing.tag_set = tag_set;
+  completing.handoff_chunk = static_cast<uint8_t>(handoff_chunk);
   g_rtcore_v04_semantic_completing_physical[physical_uid] = completing;
   (void)response_cycle;
 }
@@ -3764,6 +4007,20 @@ static void rtcore_v04_semantic_record_logical_response(
   if (snapshot.is_write) {
     rtcore_v04_semantic_histogram_observe(
         &tag_set_stats.write_ack, accept_to_response);
+  }
+  if (found->second.handoff_chunk < 4u) {
+    rtcore_v04_semantic_tag_set_stats &chunk_stats =
+        rtcore_v04_semantic_handoff_chunk_stats_for(
+            found->second.tag_set, found->second.handoff_chunk)
+            .lifecycle;
+    rtcore_v04_semantic_histogram_observe(
+        &chunk_stats.accept_to_response, accept_to_response);
+    rtcore_v04_semantic_histogram_observe(
+        &chunk_stats.ready_to_response, ready_to_response);
+    if (snapshot.is_write) {
+      rtcore_v04_semantic_histogram_observe(
+          &chunk_stats.write_ack, accept_to_response);
+    }
   }
   for (unsigned index = 0;
        index < snapshot.v04_semantic_memory.slice_count; ++index) {
@@ -3904,9 +4161,19 @@ void rtcore_v04_record_l2_service_access(
   rtcore_v04_semantic_tag_set_stats &stats =
       rtcore_v04_semantic_tag_set_stats_for(
           mf->get_rtcore_v04_semantic_tag_set());
+  const unsigned handoff_chunk =
+      rtcore_v04_semantic_handoff_chunk_for_mem_fetch(mf);
+  rtcore_v04_semantic_tag_set_stats *chunk_stats = NULL;
+  if (handoff_chunk < 4u) {
+    chunk_stats = &rtcore_v04_semantic_handoff_chunk_stats_for(
+                       mf->get_rtcore_v04_semantic_tag_set(), handoff_chunk)
+                       .lifecycle;
+  }
   stats.l2_access++;
+  if (chunk_stats != NULL) chunk_stats->l2_access++;
   if (status == RESERVATION_FAIL) {
     stats.l2_reservation_fail_retry++;
+    if (chunk_stats != NULL) chunk_stats->l2_reservation_fail_retry++;
     return;
   }
   const bool explicit_lower_request =
@@ -3914,14 +4181,18 @@ void rtcore_v04_record_l2_service_access(
   const bool write_allocate_operation = was_writeallocate_sent(events);
   if (status == HIT) {
     stats.l2_hit++;
+    if (chunk_stats != NULL) chunk_stats->l2_hit++;
   } else if (mf->get_is_write() && status == MISS &&
              !explicit_lower_request && !write_allocate_operation) {
     stats.l2_local_write_allocate++;
+    if (chunk_stats != NULL) chunk_stats->l2_local_write_allocate++;
   } else if (observation.probe_status == HIT_RESERVED && status == MISS &&
              !explicit_lower_request) {
     stats.l2_accepted_mshr_merge++;
+    if (chunk_stats != NULL) chunk_stats->l2_accepted_mshr_merge++;
   } else if (explicit_lower_request || write_allocate_operation) {
     stats.l2_miss_to_dram++;
+    if (chunk_stats != NULL) chunk_stats->l2_miss_to_dram++;
   } else {
     fprintf(stderr,
             "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
@@ -3941,6 +4212,13 @@ void rtcore_v04_record_dram_service_request(mem_fetch *mf,
   rtcore_v04_semantic_tag_set_stats_for(
       mf->get_rtcore_v04_semantic_tag_set())
       .dram_request++;
+  const unsigned handoff_chunk =
+      rtcore_v04_semantic_handoff_chunk_for_mem_fetch(mf);
+  if (handoff_chunk < 4u) {
+    rtcore_v04_semantic_handoff_chunk_stats_for(
+        mf->get_rtcore_v04_semantic_tag_set(), handoff_chunk)
+        .lifecycle.dram_request++;
+  }
 }
 
 void rtcore_v04_record_dram_service_response(mem_fetch *mf,
@@ -3955,6 +4233,17 @@ void rtcore_v04_record_dram_service_response(mem_fetch *mf,
   stats.dram_response++;
   rtcore_v04_semantic_histogram_observe(
       &stats.dram_request_to_response, latency);
+  const unsigned handoff_chunk =
+      rtcore_v04_semantic_handoff_chunk_for_mem_fetch(mf);
+  if (handoff_chunk < 4u) {
+    rtcore_v04_semantic_tag_set_stats &chunk_stats =
+        rtcore_v04_semantic_handoff_chunk_stats_for(
+            mf->get_rtcore_v04_semantic_tag_set(), handoff_chunk)
+            .lifecycle;
+    chunk_stats.dram_response++;
+    rtcore_v04_semantic_histogram_observe(
+        &chunk_stats.dram_request_to_response, latency);
+  }
 }
 
 namespace {
@@ -4028,14 +4317,234 @@ extern "C" void rtcore_record_v04_global384_semantic_last_arrival(
     stats.last_arrival_closer_cycles += closer;
     rtcore_v04_semantic_histogram_observe(
         &stats.last_arrival_closer, closer);
+    if (physical->second.handoff_chunk < 4u) {
+      rtcore_v04_semantic_tag_set_stats &chunk_stats =
+          rtcore_v04_semantic_handoff_chunk_stats_for(
+              physical->second.tag_set,
+              physical->second.handoff_chunk)
+              .lifecycle;
+      chunk_stats.last_arrival_closer_count++;
+      chunk_stats.last_arrival_closer_cycles += closer;
+      rtcore_v04_semantic_histogram_observe(
+          &chunk_stats.last_arrival_closer, closer);
+    }
     physical->second.closer_claimed = true;
   } else {
     stats.last_arrival_co_closure_suppressed++;
+    if (physical->second.handoff_chunk < 4u) {
+      rtcore_v04_semantic_handoff_chunk_stats_for(
+          physical->second.tag_set,
+          physical->second.handoff_chunk)
+          .lifecycle.last_arrival_co_closure_suppressed++;
+    }
   }
   g_rtcore_v04_semantic_active_operations.erase(operation);
 }
 
+static void rtcore_v04_semantic_add_histogram(
+    rtcore_v04_semantic_latency_histogram *sum,
+    const rtcore_v04_semantic_latency_histogram &value) {
+  if (sum == NULL) abort();
+  sum->count += value.count;
+  sum->total += value.total;
+  for (unsigned index = 0;
+       index < rtcore_v04_semantic_latency_histogram::kBucketCount;
+       ++index) {
+    sum->buckets[index] += value.buckets[index];
+  }
+}
+
+static bool rtcore_v04_semantic_histogram_equal(
+    const rtcore_v04_semantic_latency_histogram &left,
+    const rtcore_v04_semantic_latency_histogram &right) {
+  if (left.count != right.count || left.total != right.total) return false;
+  for (unsigned index = 0;
+       index < rtcore_v04_semantic_latency_histogram::kBucketCount;
+       ++index) {
+    if (left.buckets[index] != right.buckets[index]) return false;
+  }
+  return true;
+}
+
+#define RTCORE_V04_SEMANTIC_SCALAR_FIELDS(F) \
+  F(logical_access)                          \
+  F(logical_requested_bytes)                 \
+  F(issue_attempt)                           \
+  F(frontend_blocked)                        \
+  F(cache_lookup)                            \
+  F(reservation_fail_retry)                  \
+  F(same_cycle_merged_child)                 \
+  F(accepted_physical)                       \
+  F(physical_requested_bytes)                \
+  F(physical_completion)                     \
+  F(lower_read)                              \
+  F(lower_write)                             \
+  F(lower_write_allocate)                    \
+  F(lower_any)                               \
+  F(immediate_read_hit)                      \
+  F(pending_write_hit)                       \
+  F(line_miss)                               \
+  F(sector_miss)                             \
+  F(accepted_mshr_merge)                     \
+  F(write_no_allocate_miss)                  \
+  F(first_touch_miss)                        \
+  F(repeat_miss_unclassified)                \
+  F(l2_access)                               \
+  F(l2_reservation_fail_retry)               \
+  F(l2_hit)                                  \
+  F(l2_local_write_allocate)                 \
+  F(l2_accepted_mshr_merge)                  \
+  F(l2_miss_to_dram)                         \
+  F(dram_request)                            \
+  F(dram_response)                           \
+  F(response_or_ack_fanout)                  \
+  F(last_arrival_closer_count)               \
+  F(last_arrival_closer_cycles)              \
+  F(last_arrival_co_closure_suppressed)
+
+static void rtcore_v04_semantic_add_stats(
+    rtcore_v04_semantic_tag_set_stats *sum,
+    const rtcore_v04_semantic_tag_set_stats &value) {
+  if (sum == NULL) abort();
+#define RTCORE_V04_ADD_FIELD(field) sum->field += value.field;
+  RTCORE_V04_SEMANTIC_SCALAR_FIELDS(RTCORE_V04_ADD_FIELD)
+#undef RTCORE_V04_ADD_FIELD
+  rtcore_v04_semantic_add_histogram(&sum->ready_to_accept,
+                                    value.ready_to_accept);
+  rtcore_v04_semantic_add_histogram(&sum->accept_to_response,
+                                    value.accept_to_response);
+  rtcore_v04_semantic_add_histogram(&sum->ready_to_response,
+                                    value.ready_to_response);
+  rtcore_v04_semantic_add_histogram(&sum->write_ack, value.write_ack);
+  rtcore_v04_semantic_add_histogram(&sum->last_arrival_closer,
+                                    value.last_arrival_closer);
+  rtcore_v04_semantic_add_histogram(&sum->dram_request_to_response,
+                                    value.dram_request_to_response);
+}
+
+static bool rtcore_v04_semantic_stats_equal(
+    const rtcore_v04_semantic_tag_set_stats &left,
+    const rtcore_v04_semantic_tag_set_stats &right) {
+#define RTCORE_V04_COMPARE_FIELD(field) \
+  if (left.field != right.field) return false;
+  RTCORE_V04_SEMANTIC_SCALAR_FIELDS(RTCORE_V04_COMPARE_FIELD)
+#undef RTCORE_V04_COMPARE_FIELD
+  return rtcore_v04_semantic_histogram_equal(left.ready_to_accept,
+                                             right.ready_to_accept) &&
+         rtcore_v04_semantic_histogram_equal(left.accept_to_response,
+                                             right.accept_to_response) &&
+         rtcore_v04_semantic_histogram_equal(left.ready_to_response,
+                                             right.ready_to_response) &&
+         rtcore_v04_semantic_histogram_equal(left.write_ack,
+                                             right.write_ack) &&
+         rtcore_v04_semantic_histogram_equal(left.last_arrival_closer,
+                                             right.last_arrival_closer) &&
+         rtcore_v04_semantic_histogram_equal(
+             left.dram_request_to_response,
+             right.dram_request_to_response);
+}
+
+#undef RTCORE_V04_SEMANTIC_SCALAR_FIELDS
+
+static void rtcore_v04_semantic_reconcile_handoff_chunks() {
+  for (std::map<uint32_t, rtcore_v04_semantic_tag_set_stats>::const_iterator
+           aggregate = g_rtcore_v04_semantic_tag_set_stats.begin();
+       aggregate != g_rtcore_v04_semantic_tag_set_stats.end(); ++aggregate) {
+    rtcore_v04_semantic_validate_handoff_tag_set(aggregate->first);
+    if (!rtcore_v04_semantic_tag_set_is_handoff_only(aggregate->first)) {
+      continue;
+    }
+    rtcore_v04_semantic_tag_set_stats sum = {};
+    for (unsigned chunk = 0; chunk < 4u; ++chunk) {
+      rtcore_v04_handoff_chunk_key key = {};
+      key.tag_set = aggregate->first;
+      key.chunk = static_cast<uint8_t>(chunk);
+      std::map<rtcore_v04_handoff_chunk_key,
+               rtcore_v04_handoff_chunk_stats>::const_iterator found =
+          g_rtcore_v04_handoff_chunk_stats.find(key);
+      if (found != g_rtcore_v04_handoff_chunk_stats.end()) {
+        rtcore_v04_semantic_add_stats(&sum, found->second.lifecycle);
+      }
+    }
+    if (!rtcore_v04_semantic_stats_equal(sum, aggregate->second)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+              "fault=handoff_chunk_reconciliation_failed "
+              "tag_set=0x%08x\n",
+              aggregate->first);
+      fflush(stderr);
+      abort();
+    }
+  }
+}
+
+static void rtcore_v04_semantic_report_handoff_chunks() {
+  for (std::map<rtcore_v04_handoff_chunk_key,
+                rtcore_v04_handoff_chunk_stats>::const_iterator it =
+           g_rtcore_v04_handoff_chunk_stats.begin();
+       it != g_rtcore_v04_handoff_chunk_stats.end(); ++it) {
+    const rtcore_v04_semantic_tag_set_stats &s = it->second.lifecycle;
+    const std::string names =
+        rtcore_v04_semantic_tag_set_name(it->first.tag_set);
+    printf("GPGPU-Sim RTCORE_V04_HANDOFF_CHUNK "
+           "tag_set=0x%08x tags=%s chunk=H%u useful_bytes=%llu "
+           "logical_access=%llu logical_requested_bytes=%llu "
+           "issue_attempt=%llu frontend_blocked=%llu cache_lookup=%llu "
+           "reservation_fail_retry=%llu same_cycle_merged_child=%llu "
+           "accepted_physical=%llu physical_requested_bytes=%llu "
+           "physical_completion=%llu lower_read=%llu lower_write=%llu "
+           "lower_write_allocate=%llu lower_any=%llu "
+           "immediate_read_hit=%llu pending_write_hit=%llu "
+           "line_miss=%llu sector_miss=%llu accepted_mshr_merge=%llu "
+           "write_no_allocate_miss=%llu first_touch_miss=%llu "
+           "repeat_miss_unclassified=%llu l2_access=%llu "
+           "l2_reservation_fail_retry=%llu l2_hit=%llu "
+           "l2_local_write_allocate=%llu l2_accepted_mshr_merge=%llu "
+           "l2_miss_to_dram=%llu dram_request=%llu dram_response=%llu "
+           "dram_request_to_response_count=%llu "
+           "dram_request_to_response_mean=%llu "
+           "response_or_ack_fanout=%llu ready_to_accept_count=%llu "
+           "ready_to_accept_mean=%llu accept_to_response_count=%llu "
+           "accept_to_response_mean=%llu ready_to_response_count=%llu "
+           "ready_to_response_mean=%llu write_ack_count=%llu "
+           "write_ack_mean=%llu last_arrival_closer_count=%llu "
+           "last_arrival_closer_cycles=%llu "
+           "last_arrival_closer_mean=%llu "
+           "last_arrival_co_closure_suppressed=%llu\n",
+           it->first.tag_set, names.c_str(), it->first.chunk,
+           it->second.useful_bytes, s.logical_access,
+           s.logical_requested_bytes, s.issue_attempt,
+           s.frontend_blocked, s.cache_lookup,
+           s.reservation_fail_retry, s.same_cycle_merged_child,
+           s.accepted_physical, s.physical_requested_bytes,
+           s.physical_completion, s.lower_read, s.lower_write,
+           s.lower_write_allocate, s.lower_any, s.immediate_read_hit,
+           s.pending_write_hit, s.line_miss, s.sector_miss,
+           s.accepted_mshr_merge, s.write_no_allocate_miss,
+           s.first_touch_miss, s.repeat_miss_unclassified,
+           s.l2_access, s.l2_reservation_fail_retry, s.l2_hit,
+           s.l2_local_write_allocate, s.l2_accepted_mshr_merge,
+           s.l2_miss_to_dram, s.dram_request, s.dram_response,
+           s.dram_request_to_response.count,
+           rtcore_v04_semantic_histogram_mean(
+               s.dram_request_to_response),
+           s.response_or_ack_fanout, s.ready_to_accept.count,
+           rtcore_v04_semantic_histogram_mean(s.ready_to_accept),
+           s.accept_to_response.count,
+           rtcore_v04_semantic_histogram_mean(s.accept_to_response),
+           s.ready_to_response.count,
+           rtcore_v04_semantic_histogram_mean(s.ready_to_response),
+           s.write_ack.count,
+           rtcore_v04_semantic_histogram_mean(s.write_ack),
+           s.last_arrival_closer_count,
+           s.last_arrival_closer_cycles,
+           rtcore_v04_semantic_histogram_mean(s.last_arrival_closer),
+           s.last_arrival_co_closure_suppressed);
+  }
+}
+
 static void rtcore_report_v04_global384_semantic_accounting() {
+  rtcore_v04_semantic_reconcile_handoff_chunks();
   unsigned long long semantic_pending_physical = 0;
   unsigned long long semantic_pending_waiters = 0;
   for (std::map<unsigned, rtcore_v04_pending_memory_transaction>::const_iterator
@@ -4075,6 +4584,7 @@ static void rtcore_report_v04_global384_semantic_accounting() {
          semantic_pending_physical, semantic_pending_waiters,
          g_rtcore_v04_semantic_completing_physical.size(),
          context_setup_access, context_setup_bytes);
+  rtcore_v04_semantic_report_handoff_chunks();
   for (std::map<uint32_t, rtcore_v04_semantic_tag_set_stats>::const_iterator
            it = g_rtcore_v04_semantic_tag_set_stats.begin();
        it != g_rtcore_v04_semantic_tag_set_stats.end(); ++it) {
@@ -4101,13 +4611,17 @@ static void rtcore_report_v04_global384_semantic_accounting() {
            "dram_request_to_response_p50=%llu "
            "dram_request_to_response_p95=%llu "
            "dram_request_to_response_p99=%llu "
-           "response_or_ack_fanout=%llu ready_to_accept_mean=%llu "
+           "response_or_ack_fanout=%llu ready_to_accept_count=%llu "
+           "ready_to_accept_mean=%llu "
            "ready_to_accept_p50=%llu ready_to_accept_p95=%llu "
-           "ready_to_accept_p99=%llu accept_to_response_mean=%llu "
+           "ready_to_accept_p99=%llu accept_to_response_count=%llu "
+           "accept_to_response_mean=%llu "
            "accept_to_response_p50=%llu accept_to_response_p95=%llu "
-           "accept_to_response_p99=%llu ready_to_response_mean=%llu "
+           "accept_to_response_p99=%llu ready_to_response_count=%llu "
+           "ready_to_response_mean=%llu "
            "ready_to_response_p50=%llu ready_to_response_p95=%llu "
-           "ready_to_response_p99=%llu write_ack_mean=%llu "
+           "ready_to_response_p99=%llu write_ack_count=%llu "
+           "write_ack_mean=%llu "
            "write_ack_p50=%llu write_ack_p95=%llu write_ack_p99=%llu "
            "last_arrival_closer_count=%llu last_arrival_closer_cycles=%llu "
            "last_arrival_closer_mean=%llu last_arrival_closer_p50=%llu "
@@ -4137,18 +4651,22 @@ static void rtcore_report_v04_global384_semantic_accounting() {
            rtcore_v04_semantic_histogram_quantile(
                s.dram_request_to_response, 99),
            s.response_or_ack_fanout,
+           s.ready_to_accept.count,
            rtcore_v04_semantic_histogram_mean(s.ready_to_accept),
            rtcore_v04_semantic_histogram_quantile(s.ready_to_accept, 50),
            rtcore_v04_semantic_histogram_quantile(s.ready_to_accept, 95),
            rtcore_v04_semantic_histogram_quantile(s.ready_to_accept, 99),
+           s.accept_to_response.count,
            rtcore_v04_semantic_histogram_mean(s.accept_to_response),
            rtcore_v04_semantic_histogram_quantile(s.accept_to_response, 50),
            rtcore_v04_semantic_histogram_quantile(s.accept_to_response, 95),
            rtcore_v04_semantic_histogram_quantile(s.accept_to_response, 99),
+           s.ready_to_response.count,
            rtcore_v04_semantic_histogram_mean(s.ready_to_response),
            rtcore_v04_semantic_histogram_quantile(s.ready_to_response, 50),
            rtcore_v04_semantic_histogram_quantile(s.ready_to_response, 95),
            rtcore_v04_semantic_histogram_quantile(s.ready_to_response, 99),
+           s.write_ack.count,
            rtcore_v04_semantic_histogram_mean(s.write_ack),
            rtcore_v04_semantic_histogram_quantile(s.write_ack, 50),
            rtcore_v04_semantic_histogram_quantile(s.write_ack, 95),
@@ -6690,11 +7208,34 @@ static bool rtcore_try_merge_memory_unit_same_cycle_32b(
     rtcore_v04_semantic_observe_logical(*snapshot);
     rtcore_v04_semantic_record_accept(
         snapshot, source_mf->get_request_uid(), result.cycle);
+    const unsigned source_handoff_chunk =
+        rtcore_v04_semantic_handoff_chunk_for_mem_fetch(source_mf);
+    const unsigned child_handoff_chunk =
+        rtcore_v04_semantic_handoff_chunk_for_snapshot(*snapshot);
+    if ((source_handoff_chunk < 4u) != (child_handoff_chunk < 4u) ||
+        (source_handoff_chunk < 4u &&
+         source_handoff_chunk != child_handoff_chunk)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+              "fault=same_cycle_merge_cross_handoff_chunk source=%u "
+              "child=%u\n",
+              source_handoff_chunk, child_handoff_chunk);
+      fflush(stderr);
+      abort();
+    }
     source_mf->merge_rtcore_v04_semantic_tag_set(
         snapshot->v04_semantic_memory.tag_set);
+    if (child_handoff_chunk < 4u) {
+      source_mf->merge_rtcore_v04_handoff_chunk(child_handoff_chunk);
+    }
     rtcore_v04_semantic_tag_set_stats_for(
         snapshot->v04_semantic_memory.tag_set)
         .same_cycle_merged_child++;
+    if (child_handoff_chunk < 4u) {
+      rtcore_v04_semantic_handoff_chunk_stats_for(
+          snapshot->v04_semantic_memory.tag_set, child_handoff_chunk)
+          .lifecycle.same_cycle_merged_child++;
+    }
     if (!pending_it->second.semantic_valid) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
@@ -7018,6 +7559,11 @@ rtcore_maybe_accept_memory_unit_l1d_client(
       RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write, result.cycle);
   mf->set_raytrace();
   if (semantic_accounting) {
+    const unsigned handoff_chunk =
+        rtcore_v04_semantic_handoff_chunk_for_snapshot(snapshot);
+    if (handoff_chunk < 4u) {
+      mf->set_rtcore_v04_handoff_chunk(handoff_chunk);
+    }
     mf->set_rtcore_v04_semantic_tag_set(
         snapshot.v04_semantic_memory.tag_set);
   }
@@ -13650,7 +14196,21 @@ static void rtcore_v04_attach_ordinary_semantic_tag(
     mem_fetch *mf, const rtcore_v04_publication_preflight &preflight) {
   if (mf == NULL) abort();
   const uint32_t tag_set = rtcore_v04_ordinary_semantic_tag_set(preflight);
-  if (tag_set != 0) mf->set_rtcore_v04_semantic_tag_set(tag_set);
+  if (tag_set != 0) {
+    if (preflight.lane_slot_chunk >= 4u ||
+        preflight.handoff_lane_base +
+                static_cast<uint64_t>(preflight.lane_slot_chunk) *
+                    RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES !=
+            mf->get_addr()) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+              "fault=ordinary_lsu_handoff_chunk_invalid\n");
+      fflush(stderr);
+      abort();
+    }
+    mf->set_rtcore_v04_handoff_chunk(preflight.lane_slot_chunk);
+    mf->set_rtcore_v04_semantic_tag_set(tag_set);
+  }
 }
 
 rtcore_v04_ordinary_semantic_key rtcore_v04_ordinary_semantic_key_for(
@@ -13679,6 +14239,8 @@ rtcore_v04_ordinary_semantic_key rtcore_v04_ordinary_semantic_key_for(
     key.aligned_32b_addr = store.aligned_32b_address;
     key.byte_mask = store.byte_mask;
   }
+  key.handoff_lane_base = preflight.handoff_lane_base;
+  key.handoff_chunk = preflight.lane_slot_chunk;
   return key;
 }
 
@@ -13691,7 +14253,7 @@ rtcore_v04_ordinary_semantic_operation_key_for(
   operation.window_generation = logical.window_generation;
   operation.lane_id = logical.lane_id;
   operation.access = logical.access;
-  operation.handoff_lane_base = logical.aligned_32b_addr & ~uint64_t{127};
+  operation.handoff_lane_base = logical.handoff_lane_base;
   return operation;
 }
 
@@ -13747,9 +14309,7 @@ void rtcore_v04_observe_ordinary_semantic_operation(
   if (logical.access == static_cast<unsigned>(
                             rtcore::v04::address_range_registry::
                                 kAccessHandoffShaderTraceInputPublish)) {
-    const unsigned chunk = static_cast<unsigned>(
-        (logical.aligned_32b_addr & 127u) /
-        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES);
+    const unsigned chunk = logical.handoff_chunk;
     uint32_t expected_masks[4] = {};
     rtcore_v04_trace_input_expected_byte_masks(expected_masks);
     if (chunk >= 4 ||
@@ -13804,6 +14364,19 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
     fflush(stderr);
     abort();
   }
+  if (rtcore_v04_semantic_handoff_chunk_for_mem_fetch(mf) !=
+          key.handoff_chunk ||
+      key.handoff_chunk >= 4u ||
+      key.handoff_lane_base +
+              static_cast<uint64_t>(key.handoff_chunk) *
+                  RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES !=
+          key.aligned_32b_addr) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+            "fault=ordinary_lsu_handoff_chunk_identity_mismatch\n");
+    fflush(stderr);
+    abort();
+  }
   std::map<rtcore_v04_ordinary_semantic_key,
            rtcore_v04_ordinary_semantic_state>::iterator found =
       g_rtcore_v04_semantic_active_ordinary.find(key);
@@ -13812,6 +14385,7 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
     state.ready_cycle = mf->get_timestamp();
     state.tag_set = expected_tag_set;
     state.useful_byte_mask = key.byte_mask;
+    state.handoff_chunk = key.handoff_chunk;
     found = g_rtcore_v04_semantic_active_ordinary
                 .insert(std::make_pair(key, state))
                 .first;
@@ -13820,6 +14394,14 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
     stats.logical_access++;
     stats.logical_requested_bytes +=
         RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    rtcore_v04_handoff_chunk_stats &chunk_stats =
+        rtcore_v04_semantic_handoff_chunk_stats_for(
+            state.tag_set, state.handoff_chunk);
+    chunk_stats.lifecycle.logical_access++;
+    chunk_stats.lifecycle.logical_requested_bytes +=
+        RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+    chunk_stats.useful_bytes +=
+        rtcore_v04_semantic_popcount(state.useful_byte_mask);
     rtcore_v04_semantic_region_stats &region =
         g_rtcore_v04_semantic_region_stats[tag];
     region.logical_access_participation++;
@@ -13839,7 +14421,8 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
   rtcore_v04_ordinary_semantic_state &state = found->second;
   if (state.accepted || cycle < state.ready_cycle ||
       state.tag_set != expected_tag_set ||
-      state.useful_byte_mask != key.byte_mask) {
+      state.useful_byte_mask != key.byte_mask ||
+      state.handoff_chunk != key.handoff_chunk) {
     fprintf(stderr,
             "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
             "fault=ordinary_lsu_logical_identity_invalid\n");
@@ -13848,10 +14431,17 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
   }
   rtcore_v04_semantic_tag_set_stats &stats =
       rtcore_v04_semantic_tag_set_stats_for(state.tag_set);
+  rtcore_v04_semantic_tag_set_stats &chunk_stats =
+      rtcore_v04_semantic_handoff_chunk_stats_for(
+          state.tag_set, state.handoff_chunk)
+          .lifecycle;
   stats.issue_attempt++;
   stats.cache_lookup++;
+  chunk_stats.issue_attempt++;
+  chunk_stats.cache_lookup++;
   if (status == RESERVATION_FAIL) {
     stats.reservation_fail_retry++;
+    chunk_stats.reservation_fail_retry++;
     return;
   }
 
@@ -13897,10 +14487,22 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
   stats.lower_write_allocate += lower_write_allocate ? 1u : 0u;
   stats.lower_any +=
       lower_read || lower_write || lower_write_allocate ? 1u : 0u;
+  chunk_stats.accepted_physical++;
+  chunk_stats.physical_requested_bytes +=
+      RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES;
+  chunk_stats.lower_read += lower_read ? 1u : 0u;
+  chunk_stats.lower_write += lower_write ? 1u : 0u;
+  chunk_stats.lower_write_allocate += lower_write_allocate ? 1u : 0u;
+  chunk_stats.lower_any +=
+      lower_read || lower_write || lower_write_allocate ? 1u : 0u;
   rtcore_v04_semantic_classify_physical(
       &stats, observation.probe_status, observation.access_status,
       mf->get_is_write(), observation.no_write_allocate,
       first_touch_miss, repeat_miss);
+  rtcore_v04_semantic_classify_physical(
+      &chunk_stats, observation.probe_status,
+      observation.access_status, mf->get_is_write(),
+      observation.no_write_allocate, first_touch_miss, repeat_miss);
   rtcore_v04_semantic_record_region_physical_participation(
       state.tag_set, observation.probe_status,
       observation.access_status, mf->get_is_write(), lower_read,
@@ -13909,6 +14511,8 @@ void rtcore_v04_record_ordinary_semantic_cache_attempt(
   const unsigned long long ready_to_accept = cycle - state.ready_cycle;
   rtcore_v04_semantic_histogram_observe(
       &stats.ready_to_accept, ready_to_accept);
+  rtcore_v04_semantic_histogram_observe(
+      &chunk_stats.ready_to_accept, ready_to_accept);
   rtcore_v04_semantic_histogram_observe(
       &g_rtcore_v04_semantic_region_stats[tag].ready_to_accept,
       ready_to_accept);
@@ -13956,6 +14560,9 @@ void rtcore_v04_complete_ordinary_semantic_transaction(
       logical->first.window_generation != token.window_generation ||
       logical->first.lane_id != token.lane_id ||
       logical->first.access != static_cast<unsigned>(token.access) ||
+      logical->second.handoff_chunk != logical->first.handoff_chunk ||
+      rtcore_v04_semantic_handoff_chunk_for_mem_fetch(mf) !=
+          logical->second.handoff_chunk ||
       token.object != rtcore::v04::address_range_registry::kObjectHandoff ||
       cycle < logical->second.accept_cycle ||
       cycle < logical->second.ready_cycle) {
@@ -13967,19 +14574,31 @@ void rtcore_v04_complete_ordinary_semantic_transaction(
   }
   rtcore_v04_semantic_tag_set_stats &stats =
       rtcore_v04_semantic_tag_set_stats_for(logical->second.tag_set);
+  rtcore_v04_semantic_tag_set_stats &chunk_stats =
+      rtcore_v04_semantic_handoff_chunk_stats_for(
+          logical->second.tag_set, logical->second.handoff_chunk)
+          .lifecycle;
   const unsigned long long accept_to_response =
       cycle - logical->second.accept_cycle;
   const unsigned long long ready_to_response =
       cycle - logical->second.ready_cycle;
   stats.physical_completion++;
   stats.response_or_ack_fanout++;
+  chunk_stats.physical_completion++;
+  chunk_stats.response_or_ack_fanout++;
   rtcore_v04_semantic_histogram_observe(
       &stats.accept_to_response, accept_to_response);
   rtcore_v04_semantic_histogram_observe(
       &stats.ready_to_response, ready_to_response);
+  rtcore_v04_semantic_histogram_observe(
+      &chunk_stats.accept_to_response, accept_to_response);
+  rtcore_v04_semantic_histogram_observe(
+      &chunk_stats.ready_to_response, ready_to_response);
   if (mf->get_is_write()) {
     rtcore_v04_semantic_histogram_observe(
         &stats.write_ack, accept_to_response);
+    rtcore_v04_semantic_histogram_observe(
+        &chunk_stats.write_ack, accept_to_response);
   }
   if (!shader_builtin_read) {
     const rtcore_v04_ordinary_semantic_operation_key operation_key =
@@ -14001,9 +14620,7 @@ void rtcore_v04_complete_ordinary_semantic_transaction(
       abort();
     }
     if (trace_input_publish) {
-      const unsigned chunk = static_cast<unsigned>(
-          (logical->first.aligned_32b_addr & 127u) /
-          RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES);
+      const unsigned chunk = logical->first.handoff_chunk;
       if (chunk >= 4 ||
           (operation->second.completed_byte_masks[chunk] &
            logical->first.byte_mask) != 0 ||
@@ -14046,6 +14663,10 @@ void rtcore_v04_complete_ordinary_semantic_transaction(
       stats.last_arrival_closer_cycles += closer;
       rtcore_v04_semantic_histogram_observe(
           &stats.last_arrival_closer, closer);
+      chunk_stats.last_arrival_closer_count++;
+      chunk_stats.last_arrival_closer_cycles += closer;
+      rtcore_v04_semantic_histogram_observe(
+          &chunk_stats.last_arrival_closer, closer);
       g_rtcore_v04_semantic_active_ordinary_operations.erase(operation);
     }
   }

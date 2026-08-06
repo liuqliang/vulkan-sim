@@ -76,13 +76,25 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   }
   m_israytrace = false;
   m_rtcore_v04_semantic_tag_set = 0;
+  m_rtcore_v04_handoff_chunk = 0xffu;
   if (m_original_mf) {
     m_rtcore_v04_semantic_tag_set |=
         m_original_mf->get_rtcore_v04_semantic_tag_set();
+    if (m_original_mf->has_rtcore_v04_handoff_chunk()) {
+      m_rtcore_v04_handoff_chunk = static_cast<uint8_t>(
+          m_original_mf->get_rtcore_v04_handoff_chunk());
+    }
   }
   if (m_original_wr_mf) {
     m_rtcore_v04_semantic_tag_set |=
         m_original_wr_mf->get_rtcore_v04_semantic_tag_set();
+    if (m_original_wr_mf->has_rtcore_v04_handoff_chunk()) {
+      assert(m_rtcore_v04_handoff_chunk == 0xffu ||
+             m_rtcore_v04_handoff_chunk ==
+                 m_original_wr_mf->get_rtcore_v04_handoff_chunk());
+      m_rtcore_v04_handoff_chunk = static_cast<uint8_t>(
+          m_original_wr_mf->get_rtcore_v04_handoff_chunk());
+    }
   }
   m_rtcore_v04_dram_service_started = false;
   m_rtcore_v04_dram_service_completed = false;
@@ -109,6 +121,19 @@ void mem_fetch::merge_rtcore_v04_semantic_tag_set(uint32_t tag_set) {
   assert(tag_set != 0);
   assert(!m_rtcore_v04_dram_service_started);
   m_rtcore_v04_semantic_tag_set |= tag_set;
+}
+
+void mem_fetch::set_rtcore_v04_handoff_chunk(unsigned chunk) {
+  assert(chunk < 4u);
+  assert(m_rtcore_v04_handoff_chunk == 0xffu ||
+         m_rtcore_v04_handoff_chunk == chunk);
+  m_rtcore_v04_handoff_chunk = static_cast<uint8_t>(chunk);
+}
+
+void mem_fetch::merge_rtcore_v04_handoff_chunk(unsigned chunk) {
+  assert(chunk < 4u);
+  assert(m_rtcore_v04_handoff_chunk < 4u);
+  assert(m_rtcore_v04_handoff_chunk == chunk);
 }
 
 void mem_fetch::begin_rtcore_v04_dram_service(unsigned long long cycle) {

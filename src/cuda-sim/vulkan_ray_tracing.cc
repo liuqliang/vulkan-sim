@@ -6702,13 +6702,16 @@ rtcore_service_v04_global384_resubmit_handoff_acquire_before_issue(
                 RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_RESUBMIT;
 
             registry::live_access_v0 access = {};
+            uint8_t verified_lane_slot_chunk = 0xffu;
             const bridge::status_kind preflight_status =
                 bridge::shared_bridge().preflight_live_handoff_access(
                     owner_hw_sid, resident_warp_generation,
                     static_cast<uint8_t>(lane),
                     registry::kAccessHandoffRtcoreAcquire,
-                    snapshot.aligned_32b_addr, snapshot.byte_mask, &access);
-            if (preflight_status != bridge::kStatusOk) {
+                    snapshot.aligned_32b_addr, snapshot.byte_mask, &access,
+                    &verified_lane_slot_chunk);
+            if (preflight_status != bridge::kStatusOk ||
+                verified_lane_slot_chunk != chunk) {
                 for (std::vector<rtcore_memory_unit_request_snapshot>::
                          const_iterator rollback = staged.begin();
                      rollback != staged.end(); ++rollback) {
@@ -7011,13 +7014,16 @@ rtcore_service_v04_global384_initial_handoff_acquire_before_issue(
                 RTCORE_V04_HANDOFF_ACQUIRE_TRANSACTION_INITIAL;
 
             registry::live_access_v0 access = {};
+            uint8_t verified_lane_slot_chunk = 0xffu;
             const bridge::status_kind preflight_status =
                 bridge::shared_bridge().preflight_live_handoff_access(
                     owner_hw_sid, resident_warp_generation,
                     static_cast<uint8_t>(lane),
                     registry::kAccessHandoffRtcoreAcquire,
-                    snapshot.aligned_32b_addr, snapshot.byte_mask, &access);
-            if (preflight_status != bridge::kStatusOk) {
+                    snapshot.aligned_32b_addr, snapshot.byte_mask, &access,
+                    &verified_lane_slot_chunk);
+            if (preflight_status != bridge::kStatusOk ||
+                verified_lane_slot_chunk != chunk) {
                 for (std::vector<rtcore_memory_unit_request_snapshot>::
                          const_iterator rollback = staged.begin();
                      rollback != staged.end(); ++rollback) {
@@ -30240,6 +30246,36 @@ extern "C" void rtcore_enqueue_memory_unit_handoff_window_request(
                 fprintf(stderr,
                         "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
                         "fault=live_publication_snapshot_source_missing\n");
+                fflush(stderr);
+                abort();
+            }
+            namespace bridge = rtcore::v04::pre_submit_publication;
+            uint64_t canonical_lane_base = 0;
+            uint32_t canonical_resident_generation = 0;
+            uint32_t canonical_window_generation = 0;
+            uint8_t canonical_chunk = 0xffu;
+            const bridge::status_kind chunk_status =
+                bridge::shared_bridge().resolve_live_handoff_chunk(
+                    owner_hw_sid, static_cast<uint8_t>(lane_id),
+                    snapshot.aligned_32b_addr, &canonical_lane_base,
+                    &canonical_resident_generation,
+                    &canonical_window_generation, &canonical_chunk);
+            const uint64_t expected_lane_base =
+                request_it->second.handoff_window_base +
+                static_cast<uint64_t>(lane_id) *
+                    rtcore::abi_v04::kLaneSlotBytes;
+            if (chunk_status != bridge::kStatusOk ||
+                canonical_lane_base != expected_lane_base ||
+                canonical_chunk != publication_chunk ||
+                canonical_resident_generation == 0 ||
+                canonical_window_generation == 0) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+                        "fault=live_publication_chunk_identity_mismatch "
+                        "bridge_status=%s expected_chunk=%u "
+                        "canonical_chunk=%u\n",
+                        bridge::status_name(chunk_status),
+                        publication_chunk, canonical_chunk);
                 fflush(stderr);
                 abort();
             }

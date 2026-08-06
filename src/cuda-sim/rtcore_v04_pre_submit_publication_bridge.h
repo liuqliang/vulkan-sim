@@ -84,9 +84,11 @@ struct ordinary_store_preflight_v0 {
   address_range_registry::status_kind registry_status;
   address_range_registry::provisional_store_v0 store;
   address_range_registry::live_access_v0 live_access;
+  uint64_t handoff_lane_base;
   uint8_t candidate;
   uint8_t live_candidate;
-  uint8_t reserved_zero[6];
+  uint8_t lane_slot_chunk;
+  uint8_t reserved_zero[5];
 };
 
 struct provisional_group_drain_v0 {
@@ -210,7 +212,14 @@ class bridge_v0 {
       uint32_t owner_hw_sid, uint32_t resident_warp_generation,
       uint8_t lane_id, address_range_registry::access_kind access_kind,
       uint64_t aligned_32b_address, uint32_t byte_mask,
-      address_range_registry::live_access_v0 *access) const;
+      address_range_registry::live_access_v0 *access,
+      uint8_t *lane_slot_chunk = NULL) const;
+
+  status_kind resolve_live_handoff_chunk(
+      uint32_t owner_hw_sid, uint8_t lane_id,
+      uint64_t aligned_32b_address, uint64_t *lane_slot_base,
+      uint32_t *resident_warp_generation, uint32_t *window_generation,
+      uint8_t *lane_slot_chunk) const;
 
   status_kind begin_live_access_preaccept(
       const address_range_registry::live_access_v0 &access);

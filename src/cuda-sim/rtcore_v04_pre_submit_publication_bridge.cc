@@ -510,11 +510,50 @@ address_range_registry::status_kind bridge_v0::accept_live_access(
   return registry_.accept_live_access(access, token);
 }
 
+status_kind bridge_v0::resolve_live_handoff_chunk(
+    uint32_t owner_hw_sid, uint8_t lane_id,
+    uint64_t aligned_32b_address, uint64_t *lane_slot_base,
+    uint32_t *resident_warp_generation, uint32_t *window_generation,
+    uint8_t *lane_slot_chunk) const {
+  if (lane_id >= allocation_identity::kLaneCapacity ||
+      aligned_32b_address == 0 ||
+      aligned_32b_address % address_range_registry::kAddressChunkBytes != 0 ||
+      lane_slot_base == NULL || resident_warp_generation == NULL ||
+      window_generation == NULL || lane_slot_chunk == NULL) {
+    return kStatusInvalidArgument;
+  }
+  address_range_registry::provisional_range_observation_v0 observation = {};
+  const address_range_registry::status_kind observe_status =
+      registry_.observe_provisional_range(aligned_32b_address, &observation);
+  if (observe_status != address_range_registry::kStatusOk ||
+      observation.phase != address_range_registry::kPhaseLive ||
+      observation.live_owner.owner_hw_sid != owner_hw_sid ||
+      observation.lane_id != lane_id ||
+      observation.object != address_range_registry::kObjectHandoff) {
+    return kStatusRegistryRejected;
+  }
+  const uint64_t range_offset = aligned_32b_address - observation.range_base;
+  if (observation.range_byte_count !=
+          4u * address_range_registry::kAddressChunkBytes ||
+      range_offset % address_range_registry::kAddressChunkBytes != 0 ||
+      range_offset / address_range_registry::kAddressChunkBytes >= 4u) {
+    return kStatusInvalidGeometry;
+  }
+  *lane_slot_base = observation.range_base;
+  *resident_warp_generation =
+      observation.live_owner.resident_warp_generation;
+  *window_generation = observation.live_owner.window_generation;
+  *lane_slot_chunk = static_cast<uint8_t>(
+      range_offset / address_range_registry::kAddressChunkBytes);
+  return kStatusOk;
+}
+
 status_kind bridge_v0::preflight_live_handoff_access(
     uint32_t owner_hw_sid, uint32_t resident_warp_generation,
     uint8_t lane_id, address_range_registry::access_kind access_kind,
     uint64_t aligned_32b_address, uint32_t byte_mask,
-    address_range_registry::live_access_v0 *access) const {
+    address_range_registry::live_access_v0 *access,
+    uint8_t *lane_slot_chunk) const {
   const bool rtcore_acquire =
       access_kind ==
       address_range_registry::kAccessHandoffRtcoreAcquire;
@@ -529,19 +568,32 @@ status_kind bridge_v0::preflight_live_handoff_access(
     return kStatusInvalidArgument;
   }
   std::memset(access, 0, sizeof(*access));
-  address_range_registry::provisional_range_observation_v0 observation = {};
-  const address_range_registry::status_kind observe_status =
-      registry_.observe_provisional_range(aligned_32b_address, &observation);
-  if (observe_status != address_range_registry::kStatusOk ||
-      observation.phase != address_range_registry::kPhaseLive ||
-      observation.live_owner.owner_hw_sid != owner_hw_sid ||
-      observation.live_owner.resident_warp_generation !=
-          resident_warp_generation ||
-      observation.lane_id != lane_id ||
-      observation.object != address_range_registry::kObjectHandoff) {
-    return kStatusRegistryRejected;
+  uint64_t lane_slot_base = 0;
+  uint32_t observed_resident_warp_generation = 0;
+  uint32_t observed_window_generation = 0;
+  uint8_t observed_lane_slot_chunk = 0xffu;
+  const status_kind resolve_status = resolve_live_handoff_chunk(
+      owner_hw_sid, lane_id, aligned_32b_address, &lane_slot_base,
+      &observed_resident_warp_generation, &observed_window_generation,
+      &observed_lane_slot_chunk);
+  if (resolve_status != kStatusOk ||
+      observed_resident_warp_generation != resident_warp_generation) {
+    return resolve_status == kStatusOk ? kStatusRegistryRejected
+                                      : resolve_status;
   }
-  access->owner = observation.live_owner;
+  if (lane_slot_base +
+          static_cast<uint64_t>(observed_lane_slot_chunk) *
+              address_range_registry::kAddressChunkBytes !=
+      aligned_32b_address) {
+    return kStatusInvalidGeometry;
+  }
+  if (lane_slot_chunk != NULL) {
+    *lane_slot_chunk = observed_lane_slot_chunk;
+  }
+  access->owner.owner_hw_sid = owner_hw_sid;
+  access->owner.resident_warp_generation =
+      observed_resident_warp_generation;
+  access->owner.window_generation = observed_window_generation;
   access->lane_id = lane_id;
   access->object = address_range_registry::kObjectHandoff;
   access->access = access_kind;
@@ -739,18 +791,29 @@ status_kind bridge_v0::preflight_ordinary_publication_store(
         address_range_registry::kStatusWrongPhase;
     return kStatusRegistryRejected;
   }
+  const uint64_t range_offset =
+      request.aligned_32b_address - range.range_base;
+  if (range.range_byte_count !=
+          4u * address_range_registry::kAddressChunkBytes ||
+      range_offset % address_range_registry::kAddressChunkBytes != 0 ||
+      range_offset / address_range_registry::kAddressChunkBytes >= 4u) {
+    preflight->registry_status =
+        address_range_registry::kStatusInvalidRange;
+    return kStatusInvalidGeometry;
+  }
+  preflight->handoff_lane_base = range.range_base;
+  preflight->lane_slot_chunk = static_cast<uint8_t>(
+      range_offset / address_range_registry::kAddressChunkBytes);
 
   if (range.phase == address_range_registry::kPhaseLive) {
-    const uint64_t offset = request.aligned_32b_address -
-                            range.range_base;
     const uint32_t shader_return_mask = 0xffff0fffu;
     const bool valid_shader_return =
         request.is_global_write &&
-        offset == 3u * address_range_registry::kAddressChunkBytes &&
+        range_offset == 3u * address_range_registry::kAddressChunkBytes &&
         (request.byte_mask & ~shader_return_mask) == 0;
     const bool valid_shader_builtin_read =
         request.is_global_read &&
-        offset < 4u * address_range_registry::kAddressChunkBytes;
+        range_offset < 4u * address_range_registry::kAddressChunkBytes;
     if (!group->live_bound || group->release_started ||
         (!valid_shader_return && !valid_shader_builtin_read)) {
       preflight->registry_status =

@@ -116,6 +116,14 @@ class mem_fetch {
   bool has_rtcore_v04_semantic_tag_set() const {
     return m_rtcore_v04_semantic_tag_set != 0;
   }
+  void set_rtcore_v04_handoff_chunk(unsigned chunk);
+  void merge_rtcore_v04_handoff_chunk(unsigned chunk);
+  unsigned get_rtcore_v04_handoff_chunk() const {
+    return m_rtcore_v04_handoff_chunk;
+  }
+  bool has_rtcore_v04_handoff_chunk() const {
+    return m_rtcore_v04_handoff_chunk < 4u;
+  }
   void begin_rtcore_v04_dram_service(unsigned long long cycle);
   unsigned long long complete_rtcore_v04_dram_service(
       unsigned long long cycle);
@@ -211,6 +219,7 @@ class mem_fetch {
   
   bool m_israytrace;
   uint32_t m_rtcore_v04_semantic_tag_set;
+  uint8_t m_rtcore_v04_handoff_chunk;
   bool m_rtcore_v04_dram_service_started;
   bool m_rtcore_v04_dram_service_completed;
   unsigned long long m_rtcore_v04_dram_service_start_cycle;
