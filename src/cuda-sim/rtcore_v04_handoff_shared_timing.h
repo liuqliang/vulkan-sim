@@ -5,6 +5,7 @@
 #include <deque>
 
 #include "rtcore_v04_handoff_storage_profile.h"
+#include "rtcore_v04_private_placement_profile.h"
 
 namespace rtcore {
 namespace v04 {
@@ -14,6 +15,12 @@ enum client_kind : uint8_t {
   kClientInvalid = 0,
   kClientRtMemoryUnit = 1,
   kClientOrdinaryLsu = 2,
+};
+
+enum object_kind : uint8_t {
+  kObjectInvalid = 0,
+  kObjectHandoff = 1,
+  kObjectPrivate = 2,
 };
 
 enum status_kind : uint8_t {
@@ -41,6 +48,7 @@ struct config_v0 {
 struct request_v0 {
   bool valid;
   uint8_t client;
+  uint8_t object;
   uint8_t chunk;
   uint8_t is_write;
   uint32_t owner_hw_sid;
@@ -67,6 +75,8 @@ struct stats_v0 {
   uint64_t issue_notification_pop_count;
   uint64_t rt_client_count;
   uint64_t lsu_client_count;
+  uint64_t handoff_object_count;
+  uint64_t private_object_count;
   uint32_t max_ingress_depth;
   uint32_t max_outstanding_depth;
   uint32_t max_response_depth;
@@ -135,11 +145,18 @@ inline bool token_live(const state_v0 &state, uint64_t token) {
 
 inline status_kind enqueue(state_v0 *state, const request_v0 &request,
                            uint64_t enqueue_cycle) {
+  const bool valid_chunk =
+      (request.object == kObjectHandoff &&
+       request.chunk < handoff_storage::kChunkCount) ||
+      (request.object == kObjectPrivate &&
+       request.chunk < private_placement::kChunkCount);
   if (state == NULL || !state->initialized || !request.valid ||
       request.owner_hw_sid != state->owner_hw_sid || request.token == 0u ||
-      request.chunk >= handoff_storage::kChunkCount ||
+      !valid_chunk ||
       (request.client != kClientRtMemoryUnit &&
        request.client != kClientOrdinaryLsu) ||
+      (request.object == kObjectPrivate &&
+       request.client != kClientRtMemoryUnit) ||
       request.aligned_32b_address % handoff_storage::kChunkBytes != 0u) {
     return kStatusInvalidArgument;
   }
@@ -167,6 +184,11 @@ inline status_kind enqueue(state_v0 *state, const request_v0 &request,
     ++state->stats.rt_client_count;
   } else {
     ++state->stats.lsu_client_count;
+  }
+  if (queued.object == kObjectHandoff) {
+    ++state->stats.handoff_object_count;
+  } else {
+    ++state->stats.private_object_count;
   }
   if (state->ingress.size() > state->stats.max_ingress_depth) {
     state->stats.max_ingress_depth = state->ingress.size();

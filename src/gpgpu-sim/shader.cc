@@ -54,6 +54,7 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include "../cuda-sim/rtcore_v04_live_global_memory_adapter.h"
 #include "../cuda-sim/rtcore_v04_pre_submit_publication_bridge.h"
 #include "../cuda-sim/rtcore_v04_private_storage_profile.h"
+#include "../cuda-sim/rtcore_v04_private_placement_profile.h"
 #include "../cuda-sim/rtcore_v04_request_owner_binding.h"
 #include "../cuda-sim/rtcore_v04_root_node_packet.h"
 #include "../cuda-sim/rtcore_v04_shader_input.h"
@@ -211,6 +212,32 @@ namespace {
 namespace rtcore_handoff_storage = rtcore::v04::handoff_storage;
 namespace rtcore_handoff_shared_timing =
     rtcore::v04::handoff_shared_timing;
+namespace rtcore_private_placement = rtcore::v04::private_placement;
+namespace rtcore_private_storage = rtcore::v04::private_storage;
+
+static rtcore_private_storage::profile_kind
+rtcore_v04_private_storage_profile() {
+  static const rtcore_private_storage::profile_kind profile = []() {
+    rtcore_private_storage::profile_kind parsed =
+        rtcore_private_storage::kProfileLegacyShared832;
+    const char *value =
+        getenv(rtcore_private_storage::kSelectorEnvironmentName);
+    const rtcore_private_storage::status_kind status =
+        rtcore_private_storage::parse_profile(value, &parsed);
+    if (status != rtcore_private_storage::kStatusOk) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_PRIVATE_STORAGE_PROFILE_FAULT "
+              "selector=%s value=%s status=%s\n",
+              rtcore_private_storage::kSelectorEnvironmentName,
+              value != NULL ? value : "<null>",
+              rtcore_private_storage::status_name(status));
+      fflush(stderr);
+      abort();
+    }
+    return parsed;
+  }();
+  return profile;
+}
 
 static rtcore_handoff_storage::profile_kind
 rtcore_v04_handoff_storage_profile() {
@@ -234,6 +261,44 @@ rtcore_v04_handoff_storage_profile() {
     return parsed;
   }();
   return profile;
+}
+
+static rtcore_private_placement::profile_kind
+rtcore_v04_private_placement_profile() {
+  static const rtcore_private_placement::profile_kind profile = []() {
+    rtcore_private_placement::profile_kind parsed =
+        rtcore_private_placement::kProfileGlobal384;
+    const char *value =
+        getenv(rtcore_private_placement::kSelectorEnvironmentName);
+    rtcore_private_placement::status_kind status =
+        rtcore_private_placement::parse_profile(value, &parsed);
+    if (status == rtcore_private_placement::kStatusOk) {
+      status = rtcore_private_placement::validate_storage_authority(
+          parsed, rtcore_v04_private_storage_profile() ==
+                      rtcore_private_storage::kProfileGlobal384);
+    }
+    if (status != rtcore_private_placement::kStatusOk) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_PRIVATE_PLACEMENT_PROFILE_FAULT "
+              "selector=%s value=%s storage_profile=%s status=%s\n",
+              rtcore_private_placement::kSelectorEnvironmentName,
+              value != NULL ? value : "<null>",
+              rtcore_private_storage::profile_name(
+                  rtcore_v04_private_storage_profile()),
+              rtcore_private_placement::status_name(status));
+      fflush(stderr);
+      abort();
+    }
+    return parsed;
+  }();
+  return profile;
+}
+
+static bool rtcore_v04_shared_placement_active() {
+  return rtcore_v04_handoff_storage_profile() !=
+             rtcore_handoff_storage::kProfileGlobal128 ||
+         rtcore_v04_private_placement_profile() !=
+             rtcore_private_placement::kProfileGlobal384;
 }
 
 static unsigned rtcore_v04_handoff_shared_uint_config(
@@ -303,6 +368,44 @@ static unsigned rtcore_v04_handoff_shared_charge_for_lanes(
     abort();
   }
   return active_lane_count * bytes_per_lane;
+}
+
+static unsigned rtcore_v04_private_shared_charge_for_lanes(
+    unsigned active_lane_count) {
+  uint32_t bytes_per_lane = 0;
+  const rtcore_private_placement::status_kind status =
+      rtcore_private_placement::shared_bytes_per_lane(
+          rtcore_v04_private_placement_profile(), &bytes_per_lane);
+  if (status != rtcore_private_placement::kStatusOk ||
+      (bytes_per_lane != 0 &&
+       active_lane_count > UINT_MAX / bytes_per_lane)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_PRIVATE_SHARED_RESOURCE_FAULT "
+            "active_lane_count=%u bytes_per_lane=%u status=%s\n",
+            active_lane_count, bytes_per_lane,
+            rtcore_private_placement::status_name(status));
+    fflush(stderr);
+    abort();
+  }
+  return active_lane_count * bytes_per_lane;
+}
+
+static unsigned rtcore_v04_combined_shared_charge_for_lanes(
+    unsigned active_lane_count) {
+  const unsigned handoff =
+      rtcore_v04_handoff_shared_charge_for_lanes(active_lane_count);
+  const unsigned private_state =
+      rtcore_v04_private_shared_charge_for_lanes(active_lane_count);
+  if (private_state > UINT_MAX - handoff) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_SHARED_RESOURCE_FAULT "
+            "active_lane_count=%u handoff_bytes=%u private_bytes=%u "
+            "status=overflow\n",
+            active_lane_count, handoff, private_state);
+    fflush(stderr);
+    abort();
+  }
+  return handoff + private_state;
 }
 
 static bool rtcore_replay_model_preset_simple_enabled() {
@@ -3325,6 +3428,7 @@ struct rtcore_v04_handoff_shared_payload {
   mem_fetch *mf;
   bool rt_client;
   bool rt_snapshot_valid;
+  uint8_t object;
   rtcore_memory_unit_request_snapshot rt_snapshot;
   rtcore::v04::pre_submit_publication::ordinary_store_preflight_v0
       ordinary_preflight;
@@ -3338,6 +3442,8 @@ struct rtcore_v04_handoff_shared_service_state {
   unsigned long long enqueue_blocked_count;
   unsigned long long rt_enqueue_count;
   unsigned long long lsu_enqueue_count;
+  unsigned long long handoff_enqueue_count;
+  unsigned long long private_enqueue_count;
   unsigned long long issued_count;
   unsigned long long response_count;
 };
@@ -3388,6 +3494,8 @@ static unsigned long long
 static unsigned long long
     g_rtcore_v04_handoff_shared_cta_admission_stalls = 0;
 static unsigned g_rtcore_v04_handoff_shared_peak_resident_charge = 0;
+static unsigned g_rtcore_v04_handoff_shared_peak_handoff_charge = 0;
+static unsigned g_rtcore_v04_handoff_shared_peak_private_charge = 0;
 static unsigned g_rtcore_v04_handoff_shared_peak_cta_charge = 0;
 
 static void rtcore_v04_report_handoff_shared_backend();
@@ -3400,7 +3508,8 @@ static void rtcore_v04_ensure_handoff_shared_report_registered() {
 }
 
 static bool rtcore_v04_enqueue_handoff_shared_request(
-    unsigned sid, unsigned chunk, unsigned long long enqueue_cycle,
+    unsigned sid, rtcore_handoff_shared_timing::object_kind object,
+    unsigned chunk, unsigned long long enqueue_cycle,
     const rtcore_v04_handoff_shared_payload &payload);
 static void rtcore_v04_service_handoff_shared_backend(
     unsigned sid, unsigned long long cycle, ldst_unit *ldst, rt_unit *rt);
@@ -3441,12 +3550,8 @@ static bool rtcore_v04_global384_semantic_accounting_enabled() {
     abort();
   }
   if (state != RTCORE_CANDIDATE_GATE_ENABLED) return false;
-  rtcore::v04::private_storage::profile_kind profile =
-      rtcore::v04::private_storage::kProfileLegacyShared832;
-  if (rtcore::v04::private_storage::parse_profile(
-          getenv(rtcore::v04::private_storage::kSelectorEnvironmentName),
-          &profile) != rtcore::v04::private_storage::kStatusOk ||
-      profile != rtcore::v04::private_storage::kProfileGlobal384) {
+  if (rtcore_v04_private_storage_profile() !=
+      rtcore_private_storage::kProfileGlobal384) {
     fprintf(stderr,
             "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
             "fault=accounting_requires_global384_profile\n");
@@ -6743,6 +6848,53 @@ static bool rtcore_v04_global384_private_runtime_write_request(
          snapshot.v04_private_write.valid == 1;
 }
 
+static bool rtcore_v04_global384_private_read_request(
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  return snapshot.valid && !snapshot.is_write &&
+         snapshot.address_space == RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
+         snapshot.operation == RTCORE_MEMORY_OPERATION_READ &&
+         snapshot.access_kind == RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ &&
+         snapshot.v04_private_state_384_read.valid == 1 &&
+         snapshot.v04_private_state_384_read.storage_profile ==
+             rtcore_private_storage::kProfileGlobal384;
+}
+
+static bool rtcore_v04_private_shared_identity_for_snapshot(
+    const rtcore_memory_unit_request_snapshot &snapshot,
+    uint32_t *tag_set, unsigned *canonical_chunk) {
+  if (tag_set == NULL || canonical_chunk == NULL) return false;
+  const bool private_transport =
+      rtcore_v04_global384_private_init_request(snapshot) ||
+      rtcore_v04_global384_private_runtime_write_request(snapshot) ||
+      rtcore_v04_global384_private_read_request(snapshot);
+  if (!private_transport) return false;
+  if (snapshot.v04_semantic_memory.valid != 1 ||
+      !rtcore_v04_semantic_memory_snapshot_valid(
+          snapshot.v04_semantic_memory, snapshot.byte_mask) ||
+      !rtcore_private_placement::exact_private_tag_set(
+          snapshot.v04_semantic_memory.tag_set) ||
+      snapshot.v04_semantic_memory.canonical_private_chunk_valid != 1 ||
+      snapshot.v04_semantic_memory.canonical_private_chunk >=
+          rtcore_private_placement::kChunkCount) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_PRIVATE_SHARED_IDENTITY_FAULT "
+            "owner_hw_sid=%u request_key=0x%08x access_kind=%u "
+            "operation_chunk=%u tag_set=0x%08x canonical_chunk=%u "
+            "canonical_valid=%u\n",
+            snapshot.owner_hw_sid, snapshot.rt_request_id,
+            snapshot.access_kind, snapshot.chunk_id,
+            snapshot.v04_semantic_memory.tag_set,
+            snapshot.v04_semantic_memory.canonical_private_chunk,
+            snapshot.v04_semantic_memory.canonical_private_chunk_valid);
+    fflush(stderr);
+    abort();
+  }
+  *tag_set = snapshot.v04_semantic_memory.tag_set;
+  *canonical_chunk =
+      snapshot.v04_semantic_memory.canonical_private_chunk;
+  return true;
+}
+
 static void rtcore_accept_v04_global384_private_init_or_abort(
     rtcore_memory_unit_request_snapshot *snapshot,
     unsigned long long accept_cycle) {
@@ -7920,7 +8072,24 @@ rtcore_maybe_accept_memory_unit_l1d_client(
       rtcore_handoff_storage::routes_chunk_to_shared(
           rtcore_v04_handoff_storage_profile(), shared_tag_set,
           shared_chunk);
-  if (!routes_to_handoff_shared &&
+  uint32_t private_shared_tag_set = 0;
+  unsigned private_shared_chunk = rtcore_private_placement::kChunkCount;
+  const bool private_placement_active =
+      rtcore_v04_private_placement_profile() !=
+      rtcore_private_placement::kProfileGlobal384;
+  const bool has_private_shared_identity =
+      private_placement_active &&
+      rtcore_v04_private_shared_identity_for_snapshot(
+          snapshot, &private_shared_tag_set, &private_shared_chunk);
+  const bool routes_to_private_shared =
+      has_private_shared_identity &&
+      rtcore_private_placement::routes_chunk_to_shared(
+          rtcore_v04_private_placement_profile(), private_shared_tag_set,
+          private_shared_chunk);
+  const bool routes_to_shared =
+      routes_to_handoff_shared || routes_to_private_shared;
+  if (routes_to_handoff_shared && routes_to_private_shared) abort();
+  if (!routes_to_shared &&
       rtcore_try_merge_memory_unit_same_cycle_32b(result, addr, &snapshot)) {
     rtcore_record_v04_memory_conservation_or_abort(
         snapshot, false, result.cycle);
@@ -7947,14 +8116,16 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     rtcore_v04_semantic_record_issue_attempt(snapshot);
   }
 
-  if (routes_to_handoff_shared) {
+  if (routes_to_shared) {
     mem_fetch *mf = mf_allocator->alloc(
         addr, is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R,
         RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write,
         result.cycle);
     mf->set_raytrace();
     mf->set_rtcore_v04_handoff_shared_backend();
-    mf->set_rtcore_v04_handoff_chunk(shared_chunk);
+    if (routes_to_handoff_shared) {
+      mf->set_rtcore_v04_handoff_chunk(shared_chunk);
+    }
     if (semantic_accounting) {
       mf->set_rtcore_v04_semantic_tag_set(
           snapshot.v04_semantic_memory.tag_set);
@@ -7965,9 +8136,15 @@ rtcore_maybe_accept_memory_unit_l1d_client(
     payload.mf = mf;
     payload.rt_client = true;
     payload.rt_snapshot_valid = true;
+    payload.object = routes_to_handoff_shared
+                         ? rtcore_handoff_shared_timing::kObjectHandoff
+                         : rtcore_handoff_shared_timing::kObjectPrivate;
     payload.rt_snapshot = snapshot;
     if (!rtcore_v04_enqueue_handoff_shared_request(
-            sid, shared_chunk, result.cycle, payload)) {
+            sid, static_cast<rtcore_handoff_shared_timing::object_kind>(
+                     payload.object),
+            routes_to_handoff_shared ? shared_chunk : private_shared_chunk,
+            result.cycle, payload)) {
       if (semantic_accounting) {
         rtcore_v04_semantic_record_frontend_blocked(snapshot);
       }
@@ -7977,7 +8154,7 @@ rtcore_maybe_accept_memory_unit_l1d_client(
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_MEMORY_UNIT_REQUEUE_FAULT "
                 "owner_hw_sid=%u request_key=%u lane_id=%u generation=%u "
-                "fault=handoff_shared_ingress_retry_rejected\n",
+                "fault=shared_placement_ingress_retry_rejected\n",
                 snapshot.owner_hw_sid, snapshot.rt_request_id,
                 snapshot.lane_id, snapshot.request_generation);
         fflush(stderr);
@@ -11279,8 +11456,7 @@ bool shader_core_ctx::rtcore_submit_handoff_shared_capacity_available(
     const warp_inst_t &inst, unsigned warp_id,
     unsigned active_mask) const {
   if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT ||
-      rtcore_v04_handoff_storage_profile() ==
-          rtcore_handoff_storage::kProfileGlobal128) {
+      !rtcore_v04_shared_placement_active()) {
     return true;
   }
 
@@ -11313,10 +11489,13 @@ bool shader_core_ctx::rtcore_submit_handoff_shared_capacity_available(
     abort();
   }
 
-  const unsigned base_rt_charge = rtcore_v04_handoff_shared_charge_for_lanes(
-      resident_active_lanes - old_lane_count);
-  const unsigned new_rt_demand = rtcore_v04_handoff_shared_charge_for_lanes(
-      rtcore_handoff_storage::active_lane_count(active_mask));
+  const unsigned base_lane_count = resident_active_lanes - old_lane_count;
+  const unsigned new_lane_count =
+      rtcore_handoff_storage::active_lane_count(active_mask);
+  const unsigned base_rt_charge =
+      rtcore_v04_combined_shared_charge_for_lanes(base_lane_count);
+  const unsigned new_rt_demand =
+      rtcore_v04_combined_shared_charge_for_lanes(new_lane_count);
   unsigned cta_charge = m_occupied_shmem;
   if (!m_config->gpgpu_concurrent_kernel_sm && m_kernel != NULL) {
     const gpgpu_ptx_sim_info *kernel_info =
@@ -11336,6 +11515,14 @@ bool shader_core_ctx::rtcore_submit_handoff_shared_capacity_available(
   g_rtcore_v04_handoff_shared_peak_resident_charge = std::max(
       g_rtcore_v04_handoff_shared_peak_resident_charge,
       base_rt_charge + new_rt_demand);
+  g_rtcore_v04_handoff_shared_peak_handoff_charge = std::max(
+      g_rtcore_v04_handoff_shared_peak_handoff_charge,
+      rtcore_v04_handoff_shared_charge_for_lanes(base_lane_count +
+                                                  new_lane_count));
+  g_rtcore_v04_handoff_shared_peak_private_charge = std::max(
+      g_rtcore_v04_handoff_shared_peak_private_charge,
+      rtcore_v04_private_shared_charge_for_lanes(base_lane_count +
+                                                  new_lane_count));
   g_rtcore_v04_handoff_shared_peak_cta_charge =
       std::max(g_rtcore_v04_handoff_shared_peak_cta_charge, cta_charge);
   if (status == rtcore_handoff_storage::kStatusOk && available) return true;
@@ -11352,12 +11539,15 @@ bool shader_core_ctx::rtcore_submit_handoff_shared_capacity_available(
 
   ++g_rtcore_v04_handoff_shared_submit_admission_stalls;
   printf("GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_ADMISSION_STALL "
-         "kind=submit profile=%s owner_hw_sid=%u warp_id=%u "
+         "kind=submit handoff_profile=%s private_profile=%s "
+         "owner_hw_sid=%u warp_id=%u "
          "active_mask=0x%08x replacement=%u capacity_bytes=%u "
          "cta_charge_bytes=%u base_rt_charge_bytes=%u "
          "new_rt_demand_bytes=%u action=stall_before_completion_reserve\n",
          rtcore_handoff_storage::profile_name(
              rtcore_v04_handoff_storage_profile()),
+         rtcore_private_placement::profile_name(
+             rtcore_v04_private_placement_profile()),
          m_sid, warp_id, active_mask, warp_resident ? 1u : 0u,
          m_config->gpgpu_shmem_size, cta_charge, base_rt_charge,
          new_rt_demand);
@@ -11367,8 +11557,7 @@ bool shader_core_ctx::rtcore_submit_handoff_shared_capacity_available(
 
 bool shader_core_ctx::rtcore_handoff_shared_capacity_allows_cta(
     unsigned cta_shared_demand_bytes) const {
-  if (rtcore_v04_handoff_storage_profile() ==
-      rtcore_handoff_storage::kProfileGlobal128) {
+  if (!rtcore_v04_shared_placement_active()) {
     return true;
   }
 
@@ -11387,7 +11576,7 @@ bool shader_core_ctx::rtcore_handoff_shared_capacity_allows_cta(
     abort();
   }
   const unsigned rt_charge =
-      rtcore_v04_handoff_shared_charge_for_lanes(resident_active_lanes);
+      rtcore_v04_combined_shared_charge_for_lanes(resident_active_lanes);
   unsigned cta_charge = m_occupied_shmem;
   if (!m_config->gpgpu_concurrent_kernel_sm && m_kernel != NULL) {
     const gpgpu_ptx_sim_info *kernel_info =
@@ -11402,6 +11591,12 @@ bool shader_core_ctx::rtcore_handoff_shared_capacity_allows_cta(
   ++g_rtcore_v04_handoff_shared_cta_admission_checks;
   g_rtcore_v04_handoff_shared_peak_resident_charge =
       std::max(g_rtcore_v04_handoff_shared_peak_resident_charge, rt_charge);
+  g_rtcore_v04_handoff_shared_peak_handoff_charge = std::max(
+      g_rtcore_v04_handoff_shared_peak_handoff_charge,
+      rtcore_v04_handoff_shared_charge_for_lanes(resident_active_lanes));
+  g_rtcore_v04_handoff_shared_peak_private_charge = std::max(
+      g_rtcore_v04_handoff_shared_peak_private_charge,
+      rtcore_v04_private_shared_charge_for_lanes(resident_active_lanes));
   g_rtcore_v04_handoff_shared_peak_cta_charge = std::max(
       g_rtcore_v04_handoff_shared_peak_cta_charge,
       cta_charge + cta_shared_demand_bytes);
@@ -11416,11 +11611,14 @@ bool shader_core_ctx::rtcore_handoff_shared_capacity_allows_cta(
   }
   ++g_rtcore_v04_handoff_shared_cta_admission_stalls;
   printf("GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_ADMISSION_STALL "
-         "kind=cta profile=%s owner_hw_sid=%u capacity_bytes=%u "
+         "kind=cta handoff_profile=%s private_profile=%s owner_hw_sid=%u "
+         "capacity_bytes=%u "
          "cta_charge_bytes=%u rt_charge_bytes=%u "
          "cta_demand_bytes=%u action=stall_before_cta_issue\n",
          rtcore_handoff_storage::profile_name(
              rtcore_v04_handoff_storage_profile()),
+         rtcore_private_placement::profile_name(
+             rtcore_v04_private_placement_profile()),
          m_sid, m_config->gpgpu_shmem_size, cta_charge, rt_charge,
          cta_shared_demand_bytes);
   fflush(stdout);
@@ -15818,10 +16016,18 @@ void rtcore_v04_complete_publication_ticket(
 }
 
 static bool rtcore_v04_enqueue_handoff_shared_request(
-    unsigned sid, unsigned chunk, unsigned long long enqueue_cycle,
+    unsigned sid, rtcore_handoff_shared_timing::object_kind object,
+    unsigned chunk, unsigned long long enqueue_cycle,
     const rtcore_v04_handoff_shared_payload &payload) {
-  if (payload.mf == NULL || chunk >= rtcore_handoff_storage::kChunkCount ||
-      (payload.rt_client != payload.rt_snapshot_valid)) {
+  const bool valid_chunk =
+      (object == rtcore_handoff_shared_timing::kObjectHandoff &&
+       chunk < rtcore_handoff_storage::kChunkCount) ||
+      (object == rtcore_handoff_shared_timing::kObjectPrivate &&
+       chunk < rtcore_private_placement::kChunkCount);
+  if (payload.mf == NULL || !valid_chunk || payload.object != object ||
+      (payload.rt_client != payload.rt_snapshot_valid) ||
+      (object == rtcore_handoff_shared_timing::kObjectPrivate &&
+       !payload.rt_client)) {
     abort();
   }
   rtcore_v04_handoff_shared_service_state &service =
@@ -15831,6 +16037,7 @@ static bool rtcore_v04_enqueue_handoff_shared_request(
   request.client = payload.rt_client
                        ? rtcore_handoff_shared_timing::kClientRtMemoryUnit
                        : rtcore_handoff_shared_timing::kClientOrdinaryLsu;
+  request.object = object;
   request.chunk = static_cast<uint8_t>(chunk);
   request.is_write = payload.mf->get_is_write() ? 1u : 0u;
   request.owner_hw_sid = sid;
@@ -15873,6 +16080,11 @@ static bool rtcore_v04_enqueue_handoff_shared_request(
   } else {
     service.lsu_enqueue_count++;
   }
+  if (object == rtcore_handoff_shared_timing::kObjectHandoff) {
+    service.handoff_enqueue_count++;
+  } else {
+    service.private_enqueue_count++;
+  }
   return true;
 }
 
@@ -15887,11 +16099,13 @@ static void rtcore_v04_accept_handoff_shared_issue(
     abort();
   }
   rtcore_v04_handoff_shared_payload &payload = found->second;
+  if (payload.object != issued.object) abort();
   mem_fetch *mf = payload.mf;
   if (payload.rt_client) {
     rtcore_memory_unit_request_snapshot snapshot = payload.rt_snapshot;
     rtcore_accept_v04_live_handoff_acquire_or_abort(&snapshot);
     rtcore_accept_v04_dispatch_handoff_read_or_abort(&snapshot);
+    rtcore_accept_v04_global384_private_init_or_abort(&snapshot, cycle);
     rtcore_memory_unit_read_payload_snapshot read_payload = {};
     if (!mf->get_is_write() &&
         !rtcore_capture_memory_unit_read_payload(
@@ -15927,8 +16141,7 @@ static void rtcore_v04_accept_handoff_shared_issue(
 
 static void rtcore_v04_service_handoff_shared_backend(
     unsigned sid, unsigned long long cycle, ldst_unit *ldst, rt_unit *rt) {
-  if (rtcore_v04_handoff_storage_profile() ==
-      rtcore_handoff_storage::kProfileGlobal128) {
+  if (!rtcore_v04_shared_placement_active()) {
     return;
   }
   if (ldst == NULL || rt == NULL) abort();
@@ -16002,6 +16215,8 @@ static void rtcore_v04_report_handoff_shared_backend() {
   unsigned long long enqueue_blocked = 0;
   unsigned long long rt_enqueue = 0;
   unsigned long long lsu_enqueue = 0;
+  unsigned long long handoff_enqueue = 0;
+  unsigned long long private_enqueue = 0;
   unsigned long long issued = 0;
   unsigned long long response = 0;
   unsigned long long bank_blocked = 0;
@@ -16040,6 +16255,8 @@ static void rtcore_v04_report_handoff_shared_backend() {
     enqueue_blocked += service.enqueue_blocked_count;
     rt_enqueue += service.rt_enqueue_count;
     lsu_enqueue += service.lsu_enqueue_count;
+    handoff_enqueue += service.handoff_enqueue_count;
+    private_enqueue += service.private_enqueue_count;
     issued += service.issued_count;
     response += service.response_count;
     bank_blocked += stats.bank_conflict_blocked_count;
@@ -16055,10 +16272,12 @@ static void rtcore_v04_report_handoff_shared_backend() {
   const rtcore_handoff_shared_timing::config_v0 config =
       rtcore_v04_handoff_shared_config();
   printf("GPGPU-Sim RTCORE_V04_HANDOFF_SHARED_BACKEND "
-         "profile=%s service_count=%zu issue_budget=%u response_budget=%u "
+         "profile=%s handoff_profile=%s private_profile=%s service_count=%zu "
+         "issue_budget=%u response_budget=%u "
          "base_latency=%u ingress_capacity=%u outstanding_capacity=%u "
          "response_capacity=%u banks=%u bank_word_bytes=%u enqueue=%llu "
          "enqueue_blocked=%llu rt_enqueue=%llu lsu_enqueue=%llu "
+         "handoff_enqueue=%llu private_enqueue=%llu "
          "issued=%llu response=%llu bank_conflict_blocked=%llu "
          "ordinary_shared_blocked=%llu outstanding_full=%llu "
          "response_full=%llu response_hol_bypass=%llu drained=1 "
@@ -16067,15 +16286,21 @@ static void rtcore_v04_report_handoff_shared_backend() {
          "submit_admission_stalls=%llu "
          "resubmit_replacement_checks=%llu cta_admission_checks=%llu "
          "cta_admission_stalls=%llu peak_resident_charge_bytes=%u "
+         "peak_handoff_charge_bytes=%u peak_private_charge_bytes=%u "
          "peak_cta_charge_bytes=%u\n",
          rtcore_handoff_storage::profile_name(
              rtcore_v04_handoff_storage_profile()),
+         rtcore_handoff_storage::profile_name(
+             rtcore_v04_handoff_storage_profile()),
+         rtcore_private_placement::profile_name(
+             rtcore_v04_private_placement_profile()),
          g_rtcore_v04_handoff_shared_service_by_sm.size(),
          config.issue_budget, config.response_budget, config.base_latency,
          config.ingress_capacity, config.outstanding_capacity,
          config.response_capacity, config.bank_count,
          config.bank_word_bytes, enqueue, enqueue_blocked, rt_enqueue,
-         lsu_enqueue, issued, response, bank_blocked, ordinary_blocked,
+         lsu_enqueue, handoff_enqueue, private_enqueue, issued, response,
+         bank_blocked, ordinary_blocked,
          outstanding_full, response_full, response_hol_bypass, max_ingress,
          max_outstanding, max_response,
          g_rtcore_v04_handoff_shared_submit_admission_checks,
@@ -16084,6 +16309,8 @@ static void rtcore_v04_report_handoff_shared_backend() {
          g_rtcore_v04_handoff_shared_cta_admission_checks,
          g_rtcore_v04_handoff_shared_cta_admission_stalls,
          g_rtcore_v04_handoff_shared_peak_resident_charge,
+         g_rtcore_v04_handoff_shared_peak_handoff_charge,
+         g_rtcore_v04_handoff_shared_peak_private_charge,
          g_rtcore_v04_handoff_shared_peak_cta_charge);
 }
 
@@ -16272,9 +16499,11 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache(
       rtcore_v04_arm_publication_preaccept(mf, preflight);
       rtcore_v04_handoff_shared_payload payload = {};
       payload.mf = mf;
+      payload.object = rtcore_handoff_shared_timing::kObjectHandoff;
       payload.ordinary_preflight = preflight;
       if (!rtcore_v04_enqueue_handoff_shared_request(
-              m_sid, preflight.lane_slot_chunk, access_cycle, payload)) {
+              m_sid, rtcore_handoff_shared_timing::kObjectHandoff,
+              preflight.lane_slot_chunk, access_cycle, payload)) {
         rtcore_v04_cancel_publication_preaccept(mf, preflight);
         delete mf;
         return BK_CONF;
@@ -16336,9 +16565,11 @@ void ldst_unit::L1_latency_queue_cycle() {
         mf_next->set_rtcore_v04_handoff_chunk(preflight.lane_slot_chunk);
         rtcore_v04_handoff_shared_payload payload = {};
         payload.mf = mf_next;
+        payload.object = rtcore_handoff_shared_timing::kObjectHandoff;
         payload.ordinary_preflight = preflight;
         if (rtcore_v04_enqueue_handoff_shared_request(
-                m_sid, preflight.lane_slot_chunk, access_cycle, payload)) {
+                m_sid, rtcore_handoff_shared_timing::kObjectHandoff,
+                preflight.lane_slot_chunk, access_cycle, payload)) {
           l1_latency_queue[j][0] = NULL;
         }
         continue;
@@ -16510,9 +16741,11 @@ bool ldst_unit::memory_cycle(warp_inst_t &inst,
       rtcore_v04_arm_publication_preaccept(mf, preflight);
       rtcore_v04_handoff_shared_payload payload = {};
       payload.mf = mf;
+      payload.object = rtcore_handoff_shared_timing::kObjectHandoff;
       payload.ordinary_preflight = preflight;
       if (!rtcore_v04_enqueue_handoff_shared_request(
-              m_sid, preflight.lane_slot_chunk, access_cycle, payload)) {
+              m_sid, rtcore_handoff_shared_timing::kObjectHandoff,
+              preflight.lane_slot_chunk, access_cycle, payload)) {
         rtcore_v04_cancel_publication_preaccept(mf, preflight);
         delete mf;
         stall_cond = BK_CONF;

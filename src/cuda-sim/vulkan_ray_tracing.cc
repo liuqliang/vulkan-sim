@@ -45,6 +45,7 @@
 #include "rtcore_v04_private_frontier_layout.h"
 #include "rtcore_v04_private_shared_backing.h"
 #include "rtcore_v04_private_state_384_backing.h"
+#include "rtcore_v04_private_placement_profile.h"
 #include "rtcore_v04_private_storage_profile.h"
 #include "rtcore_v04_primitive_shared_transport.h"
 #include "rtcore_v04_primitive_timing_driver.h"
@@ -1472,6 +1473,56 @@ static bool rtcore_v04_global384_semantic_accounting_enabled() {
     return true;
 }
 
+static bool rtcore_v04_private_placement_provenance_enabled() {
+    static const bool enabled = []() {
+        rtcore::v04::private_placement::profile_kind placement =
+            rtcore::v04::private_placement::kProfileGlobal384;
+        rtcore::v04::private_storage::profile_kind storage =
+            rtcore::v04::private_storage::kProfileLegacyShared832;
+        rtcore::v04::private_placement::status_kind placement_status =
+            rtcore::v04::private_placement::parse_profile(
+                getenv(rtcore::v04::private_placement::
+                           kSelectorEnvironmentName),
+                &placement);
+        const rtcore::v04::private_storage::status_kind storage_status =
+            rtcore::v04::private_storage::parse_profile(
+                getenv(rtcore::v04::private_storage::
+                           kSelectorEnvironmentName),
+                &storage);
+        if (placement_status ==
+                rtcore::v04::private_placement::kStatusOk &&
+            storage_status == rtcore::v04::private_storage::kStatusOk) {
+            placement_status =
+                rtcore::v04::private_placement::validate_storage_authority(
+                    placement,
+                    storage == rtcore::v04::private_storage::kProfileGlobal384);
+        }
+        if (placement_status !=
+                rtcore::v04::private_placement::kStatusOk ||
+            storage_status != rtcore::v04::private_storage::kStatusOk) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_PRIVATE_PLACEMENT_PROFILE_FAULT "
+                    "selector=%s value=%s storage_profile=%s "
+                    "placement_status=%s storage_status=%s\n",
+                    rtcore::v04::private_placement::kSelectorEnvironmentName,
+                    getenv(rtcore::v04::private_placement::
+                               kSelectorEnvironmentName) != NULL
+                        ? getenv(rtcore::v04::private_placement::
+                                     kSelectorEnvironmentName)
+                        : "<null>",
+                    rtcore::v04::private_storage::profile_name(storage),
+                    rtcore::v04::private_placement::status_name(
+                        placement_status),
+                    rtcore::v04::private_storage::status_name(storage_status));
+            fflush(stderr);
+            abort();
+        }
+        return placement !=
+               rtcore::v04::private_placement::kProfileGlobal384;
+    }();
+    return enabled;
+}
+
 static bool rtcore_v04_private_slot_base_for_owner(
     const rtcore::v04::private_frontier::owner_binding_v0 &owner,
     uint8_t profile, uint64_t *private_slot_base_address);
@@ -1601,7 +1652,11 @@ static bool rtcore_v04_map_private_field_semantics(
 static bool rtcore_v04_prepare_global384_semantic_snapshot(
     rtcore_memory_unit_request_snapshot *snapshot) {
     if (snapshot == NULL || !snapshot->valid) return false;
-    if (!rtcore_v04_global384_semantic_accounting_enabled()) return true;
+    const bool semantic_accounting =
+        rtcore_v04_global384_semantic_accounting_enabled();
+    const bool private_placement_provenance =
+        rtcore_v04_private_placement_provenance_enabled();
+    if (!semantic_accounting && !private_placement_provenance) return true;
     if (snapshot->v04_semantic_memory.valid == 1) {
         return rtcore_v04_semantic_memory_snapshot_valid(
             snapshot->v04_semantic_memory, snapshot->byte_mask);
@@ -1610,12 +1665,14 @@ static bool rtcore_v04_prepare_global384_semantic_snapshot(
     rtcore_v04_semantic_memory_snapshot semantic = {};
     bool in_scope = false;
     bool mapped = false;
-    if (snapshot->v04_live_handoff_acquire.valid == 1) {
+    if (semantic_accounting &&
+        snapshot->v04_live_handoff_acquire.valid == 1) {
         in_scope = true;
         mapped = rtcore_v04_add_semantic_memory_slice(
             &semantic, RTCORE_V04_SEMANTIC_TAG_HANDOFF_RTCORE_ACQUIRE,
             snapshot->byte_mask);
-    } else if (snapshot->address_space ==
+    } else if (semantic_accounting &&
+               snapshot->address_space ==
                    RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
                (snapshot->access_kind ==
                     RTCORE_MEMORY_ACCESS_HANDOFF_PUBLICATION_WRITE ||
@@ -1629,6 +1686,9 @@ static bool rtcore_v04_prepare_global384_semantic_snapshot(
         in_scope = true;
         mapped = rtcore_v04_map_private_chunk_semantics(
             snapshot->chunk_id, snapshot->byte_mask, &semantic);
+        semantic.canonical_private_chunk =
+            static_cast<uint8_t>(snapshot->chunk_id);
+        semantic.canonical_private_chunk_valid = 1;
     } else if (snapshot->address_space ==
                    RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
                snapshot->access_kind ==
@@ -1659,6 +1719,11 @@ static bool rtcore_v04_prepare_global384_semantic_snapshot(
                         offset /
                         rtcore::v04::private_state_384::kChunkBytes),
                     snapshot->byte_mask, &semantic);
+            if (mapped) {
+                semantic.canonical_private_chunk = static_cast<uint8_t>(
+                    offset / rtcore::v04::private_state_384::kChunkBytes);
+                semantic.canonical_private_chunk_valid = 1;
+            }
         }
     } else if (snapshot->access_kind ==
                    RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ &&
@@ -1677,6 +1742,11 @@ static bool rtcore_v04_prepare_global384_semantic_snapshot(
                              offset /
                              rtcore::v04::private_state_384::kChunkBytes),
                          snapshot->byte_mask, &semantic);
+            if (mapped) {
+                semantic.canonical_private_chunk = static_cast<uint8_t>(
+                    offset / rtcore::v04::private_state_384::kChunkBytes);
+                semantic.canonical_private_chunk_valid = 1;
+            }
         }
     }
     if (!in_scope) return true;

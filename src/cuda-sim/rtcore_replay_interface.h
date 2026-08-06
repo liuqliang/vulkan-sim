@@ -316,7 +316,8 @@ struct rtcore_v04_semantic_memory_snapshot {
   uint32_t physical_request_uid;
   uint8_t slice_count;
   uint8_t valid;
-  uint8_t reserved_zero[2];
+  uint8_t canonical_private_chunk;
+  uint8_t canonical_private_chunk_valid;
   rtcore_v04_semantic_memory_slice_snapshot
       slices[RTCORE_V04_SEMANTIC_MAX_SLICES];
 };
@@ -355,11 +356,19 @@ inline bool rtcore_v04_add_semantic_memory_slice(
 inline bool rtcore_v04_semantic_memory_snapshot_valid(
     const rtcore_v04_semantic_memory_snapshot &semantic,
     uint32_t request_byte_mask) {
+  const uint32_t private_tag_mask =
+      ((uint32_t{1} << 14u) - 1u) & ~((uint32_t{1} << 6u) - 1u);
+  const bool private_only =
+      semantic.tag_set != 0 &&
+      (semantic.tag_set & ~private_tag_mask) == 0;
   if (semantic.valid != 1 || semantic.slice_count == 0 ||
       semantic.slice_count > RTCORE_V04_SEMANTIC_MAX_SLICES ||
       semantic.tag_set == 0 || semantic.useful_byte_mask == 0 ||
       (semantic.useful_byte_mask & ~request_byte_mask) != 0 ||
-      semantic.reserved_zero[0] != 0 || semantic.reserved_zero[1] != 0) {
+      semantic.canonical_private_chunk_valid > 1 ||
+      (semantic.canonical_private_chunk_valid == 1) != private_only ||
+      (private_only && semantic.canonical_private_chunk >= 12u) ||
+      (!private_only && semantic.canonical_private_chunk != 0u)) {
     return false;
   }
   uint32_t rebuilt_tag_set = 0;
