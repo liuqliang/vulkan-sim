@@ -20,10 +20,13 @@ bool bytes_are_zero(const void *value, size_t byte_count) {
 }
 
 bool candidate_diagnostics_enabled() {
-  const char *value =
-      std::getenv("VULKAN_SIM_RTCORE_ABI_V04_HIT_CANDIDATE_DIAGNOSTICS");
-  return value != NULL && value[0] != '\0' &&
-         std::strcmp(value, "0") != 0;
+  static const bool enabled = []() {
+    const char *value =
+        std::getenv("VULKAN_SIM_RTCORE_ABI_V04_HIT_CANDIDATE_DIAGNOSTICS");
+    return value != NULL && value[0] != '\0' &&
+           std::strcmp(value, "0") != 0;
+  }();
+  return enabled;
 }
 
 uint32_t fp32_bits(float value) {

@@ -3539,36 +3539,39 @@ rtcore_v04_handoff_shared_service_for(unsigned sid) {
 static void rtcore_report_v04_global384_semantic_accounting();
 
 static bool rtcore_v04_global384_semantic_accounting_enabled() {
-  const rtcore_candidate_gate_state state =
-      rtcore_candidate_gate_state_for(
-          "VULKAN_SIM_RTCORE_V04_GLOBAL384_SEMANTIC_ACCOUNTING");
-  if (state == RTCORE_CANDIDATE_GATE_INVALID) {
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
-            "fault=invalid_gate_value\n");
-    fflush(stderr);
-    abort();
-  }
-  if (state != RTCORE_CANDIDATE_GATE_ENABLED) return false;
-  if (rtcore_v04_private_storage_profile() !=
-      rtcore_private_storage::kProfileGlobal384) {
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
-            "fault=accounting_requires_global384_profile\n");
-    fflush(stderr);
-    abort();
-  }
-  if (!g_rtcore_v04_semantic_report_registered) {
-    if (atexit(rtcore_report_v04_global384_semantic_accounting) != 0) {
+  static const bool enabled = []() {
+    const rtcore_candidate_gate_state state =
+        rtcore_candidate_gate_state_for(
+            "VULKAN_SIM_RTCORE_V04_GLOBAL384_SEMANTIC_ACCOUNTING");
+    if (state == RTCORE_CANDIDATE_GATE_INVALID) {
       fprintf(stderr,
               "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
-              "fault=report_registration_failed\n");
+              "fault=invalid_gate_value\n");
       fflush(stderr);
       abort();
     }
-    g_rtcore_v04_semantic_report_registered = true;
-  }
-  return true;
+    if (state != RTCORE_CANDIDATE_GATE_ENABLED) return false;
+    if (rtcore_v04_private_storage_profile() !=
+        rtcore_private_storage::kProfileGlobal384) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+              "fault=accounting_requires_global384_profile\n");
+      fflush(stderr);
+      abort();
+    }
+    if (!g_rtcore_v04_semantic_report_registered) {
+      if (atexit(rtcore_report_v04_global384_semantic_accounting) != 0) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+                "fault=report_registration_failed\n");
+        fflush(stderr);
+        abort();
+      }
+      g_rtcore_v04_semantic_report_registered = true;
+    }
+    return true;
+  }();
+  return enabled;
 }
 
 static unsigned rtcore_v04_semantic_popcount(uint32_t value) {

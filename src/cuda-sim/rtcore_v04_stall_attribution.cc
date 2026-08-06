@@ -80,8 +80,9 @@ bool stall_reason_matches_stage(uint8_t reason, uint8_t stage) {
 }  // namespace
 
 bool enabled() {
-  return canonical_true(
+  static const bool value = canonical_true(
       std::getenv("VULKAN_SIM_RTCORE_V04_EXCLUSIVE_STALL_ACCOUNTING"));
+  return value;
 }
 
 bool valid_attempt(const attempt_record_v0 &record) {

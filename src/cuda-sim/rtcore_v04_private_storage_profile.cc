@@ -1,5 +1,6 @@
 #include "rtcore_v04_private_storage_profile.h"
 
+#include <cstdlib>
 #include <cstring>
 
 namespace rtcore {
@@ -106,6 +107,22 @@ status_kind parse_profile(const char *value, profile_kind *profile) {
     return kStatusOk;
   }
   return kStatusInvalidSelector;
+}
+
+status_kind process_profile(profile_kind *profile) {
+  if (profile == NULL) return kStatusInvalidArgument;
+  struct process_profile_snapshot {
+    status_kind status;
+    profile_kind profile;
+  };
+  static const process_profile_snapshot snapshot = []() {
+    process_profile_snapshot value = {kStatusOk, kProfileLegacyShared832};
+    value.status = parse_profile(std::getenv(kSelectorEnvironmentName),
+                                 &value.profile);
+    return value;
+  }();
+  *profile = snapshot.profile;
+  return snapshot.status;
 }
 
 const char *profile_name(profile_kind profile) {

@@ -55,6 +55,11 @@ struct admission_candidate_plan_v0 {
 
 status_kind parse_profile(const char *value, profile_kind *profile);
 
+// Runtime selectors are fixed before simulator workers start. This accessor
+// preserves parse_profile() for explicit/test inputs while avoiding hot-path
+// environment scans.
+status_kind process_profile(profile_kind *profile);
+
 const char *profile_name(profile_kind profile);
 
 status_kind profile_resident_charge_bytes_per_lane(

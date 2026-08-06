@@ -1447,30 +1447,32 @@ static unsigned long long
     g_rtcore_v04_global384_context_functional_setup_byte_count = 0;
 
 static bool rtcore_v04_global384_semantic_accounting_enabled() {
-    const rtcore_candidate_gate_state state =
-        rtcore_candidate_gate_state_for(
-            "VULKAN_SIM_RTCORE_V04_GLOBAL384_SEMANTIC_ACCOUNTING");
-    if (state == RTCORE_CANDIDATE_GATE_INVALID) {
-        fprintf(stderr,
-                "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
-                "fault=invalid_gate_value\n");
-        fflush(stderr);
-        abort();
-    }
-    if (state != RTCORE_CANDIDATE_GATE_ENABLED) return false;
-    rtcore::v04::private_storage::profile_kind profile =
-        rtcore::v04::private_storage::kProfileLegacyShared832;
-    if (rtcore::v04::private_storage::parse_profile(
-            getenv(rtcore::v04::private_storage::kSelectorEnvironmentName),
-            &profile) != rtcore::v04::private_storage::kStatusOk ||
-        profile != rtcore::v04::private_storage::kProfileGlobal384) {
-        fprintf(stderr,
-                "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
-                "fault=accounting_requires_global384_profile\n");
-        fflush(stderr);
-        abort();
-    }
-    return true;
+    static const bool enabled = []() {
+        const rtcore_candidate_gate_state state =
+            rtcore_candidate_gate_state_for(
+                "VULKAN_SIM_RTCORE_V04_GLOBAL384_SEMANTIC_ACCOUNTING");
+        if (state == RTCORE_CANDIDATE_GATE_INVALID) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+                    "fault=invalid_gate_value\n");
+            fflush(stderr);
+            abort();
+        }
+        if (state != RTCORE_CANDIDATE_GATE_ENABLED) return false;
+        rtcore::v04::private_storage::profile_kind profile =
+            rtcore::v04::private_storage::kProfileLegacyShared832;
+        if (rtcore::v04::private_storage::process_profile(&profile) !=
+                rtcore::v04::private_storage::kStatusOk ||
+            profile != rtcore::v04::private_storage::kProfileGlobal384) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_V04_SEMANTIC_ACCOUNTING_FAULT "
+                    "fault=accounting_requires_global384_profile\n");
+            fflush(stderr);
+            abort();
+        }
+        return true;
+    }();
+    return enabled;
 }
 
 static bool rtcore_v04_private_placement_provenance_enabled() {
@@ -3436,22 +3438,25 @@ enum rtcore_continuation_model {
 
 static rtcore_continuation_model rtcore_continuation_model_config()
 {
-    const char *value = getenv("VULKAN_SIM_RTCORE_CONTINUATION_MODEL");
-    if (value == NULL || value[0] == '\0') {
-        return rtcore_custom_path_mode_enabled()
-                   ? RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY
-                   : RTCORE_CONTINUATION_MODEL_OFF;
-    }
-    if (strcmp(value, "off") == 0) {
+    static const rtcore_continuation_model model = []() {
+        const char *value = getenv("VULKAN_SIM_RTCORE_CONTINUATION_MODEL");
+        if (value == NULL || value[0] == '\0') {
+            return rtcore_custom_path_mode_enabled()
+                       ? RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY
+                       : RTCORE_CONTINUATION_MODEL_OFF;
+        }
+        if (strcmp(value, "off") == 0) {
+            return RTCORE_CONTINUATION_MODEL_OFF;
+        }
+        if (strcmp(value, "synthetic_split") == 0) {
+            return RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT;
+        }
+        if (strcmp(value, "oracle_shader_boundary") == 0) {
+            return RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY;
+        }
         return RTCORE_CONTINUATION_MODEL_OFF;
-    }
-    if (strcmp(value, "synthetic_split") == 0) {
-        return RTCORE_CONTINUATION_MODEL_SYNTHETIC_SPLIT;
-    }
-    if (strcmp(value, "oracle_shader_boundary") == 0) {
-        return RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY;
-    }
-    return RTCORE_CONTINUATION_MODEL_OFF;
+    }();
+    return model;
 }
 
 extern "C" bool rtcore_oracle_shader_boundary_continuation_enabled()
@@ -3465,11 +3470,8 @@ extern "C" bool rtcore_custom_submit_continuation_contract_valid()
     if (!rtcore_custom_path_mode_enabled()) {
         return false;
     }
-    const char *value = getenv("VULKAN_SIM_RTCORE_CONTINUATION_MODEL");
-    if (value == NULL || value[0] == '\0') {
-        return true;
-    }
-    return strcmp(value, "oracle_shader_boundary") == 0;
+    return rtcore_continuation_model_config() ==
+           RTCORE_CONTINUATION_MODEL_ORACLE_SHADER_BOUNDARY;
 }
 
 static bool rtcore_continuation_model_enabled()
@@ -4231,9 +4233,8 @@ static bool rtcore_v04_private_storage_short_stack_contract_valid()
     namespace private_storage = rtcore::v04::private_storage;
     private_storage::profile_kind profile =
         private_storage::kProfileLegacyShared832;
-    if (private_storage::parse_profile(
-            getenv(private_storage::kSelectorEnvironmentName),
-            &profile) != private_storage::kStatusOk) {
+    if (private_storage::process_profile(&profile) !=
+        private_storage::kStatusOk) {
         return false;
     }
     const bool requires_short_stack =
@@ -4462,9 +4463,10 @@ static bool rtcore_v04_typed_instance_enter_transition_enabled()
 
 static bool rtcore_v04_tlas_binding_enforcement_gate_enabled()
 {
-    return rtcore_candidate_gate_state_for(
-               "VULKAN_SIM_RTCORE_ABI_V04_TLAS_BINDING_ENFORCEMENT") ==
-           RTCORE_CANDIDATE_GATE_ENABLED;
+    static const rtcore_candidate_gate_state state =
+        rtcore_candidate_gate_state_for(
+            "VULKAN_SIM_RTCORE_ABI_V04_TLAS_BINDING_ENFORCEMENT");
+    return state == RTCORE_CANDIDATE_GATE_ENABLED;
 }
 
 static bool rtcore_v04_instance_blas_reference_prerequisites_enabled()
@@ -4923,8 +4925,9 @@ static unsigned rtcore_replay_warp_completion_ingress_budget_config()
 
 static unsigned rtcore_replay_scoreboard_result_handoff_budget_config()
 {
-    return rtcore_replay_issue_budget_from_env(
+    static const unsigned budget = rtcore_replay_issue_budget_from_env(
         "VULKAN_SIM_RTCORE_REPLAY_SCOREBOARD_RESULT_HANDOFF_BUDGET", 1);
+    return budget;
 }
 
 static rtcore_replay_issue_budget rtcore_replay_issue_budget_config()
@@ -20533,9 +20536,8 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
 
     private_storage::profile_kind selected_profile =
         private_storage::kProfileLegacyShared832;
-    if (private_storage::parse_profile(
-            getenv(private_storage::kSelectorEnvironmentName),
-            &selected_profile) != private_storage::kStatusOk) {
+    if (private_storage::process_profile(&selected_profile) !=
+        private_storage::kStatusOk) {
         failure = "ROOT_PACKET_PRIVATE_STORAGE_SELECTOR_INVALID";
         if (failure_reason != NULL) *failure_reason = failure;
         return false;

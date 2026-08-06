@@ -8396,9 +8396,7 @@ static bool rtcore_v04_global384_profile_selected(bool *selected) {
   rtcore::v04::private_storage::profile_kind profile =
       rtcore::v04::private_storage::kProfileLegacyShared832;
   const rtcore::v04::private_storage::status_kind status =
-      rtcore::v04::private_storage::parse_profile(
-          getenv(rtcore::v04::private_storage::kSelectorEnvironmentName),
-          &profile);
+      rtcore::v04::private_storage::process_profile(&profile);
   if (status != rtcore::v04::private_storage::kStatusOk) return false;
   *selected = profile == rtcore::v04::private_storage::kProfileGlobal384;
   return true;
@@ -9457,31 +9455,34 @@ static bool rtcore_path_mode_compat_custom_enabled() {
 }
 
 static rtcore_path_mode_policy rtcore_get_path_mode_policy() {
-  const char *mode = getenv("VULKAN_SIM_RTCORE_PATH_MODE");
-  if (mode != NULL && mode[0] != '\0') {
-    if (rtcore_path_mode_is(mode, "legacy") ||
-        rtcore_path_mode_is(mode, "trace_ray") ||
-        rtcore_path_mode_is(mode, "trace-ray") ||
-        rtcore_path_mode_is(mode, "trace_ray_only") ||
-        rtcore_path_mode_is(mode, "trace-ray-only")) {
+  static const rtcore_path_mode_policy policy = []() {
+    const char *mode = getenv("VULKAN_SIM_RTCORE_PATH_MODE");
+    if (mode != NULL && mode[0] != '\0') {
+      if (rtcore_path_mode_is(mode, "legacy") ||
+          rtcore_path_mode_is(mode, "trace_ray") ||
+          rtcore_path_mode_is(mode, "trace-ray") ||
+          rtcore_path_mode_is(mode, "trace_ray_only") ||
+          rtcore_path_mode_is(mode, "trace-ray-only")) {
+        return RTCORE_PATH_MODE_POLICY_LEGACY;
+      }
+      if (rtcore_path_mode_is(mode, "custom") ||
+          rtcore_path_mode_is(mode, "forward") ||
+          rtcore_path_mode_is(mode, "forward_sideband") ||
+          rtcore_path_mode_is(mode, "forward-sideband") ||
+          rtcore_path_mode_is(mode, "sideband")) {
+        return RTCORE_PATH_MODE_POLICY_CUSTOM;
+      }
+      return RTCORE_PATH_MODE_POLICY_INVALID;
+    }
+    if (rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_LEGACY_TRACE_RAY_PATH")) {
       return RTCORE_PATH_MODE_POLICY_LEGACY;
     }
-    if (rtcore_path_mode_is(mode, "custom") ||
-        rtcore_path_mode_is(mode, "forward") ||
-        rtcore_path_mode_is(mode, "forward_sideband") ||
-        rtcore_path_mode_is(mode, "forward-sideband") ||
-        rtcore_path_mode_is(mode, "sideband")) {
+    if (rtcore_path_mode_compat_custom_enabled()) {
       return RTCORE_PATH_MODE_POLICY_CUSTOM;
     }
-    return RTCORE_PATH_MODE_POLICY_INVALID;
-  }
-  if (rtcore_env_flag_enabled("VULKAN_SIM_RTCORE_LEGACY_TRACE_RAY_PATH")) {
-    return RTCORE_PATH_MODE_POLICY_LEGACY;
-  }
-  if (rtcore_path_mode_compat_custom_enabled()) {
     return RTCORE_PATH_MODE_POLICY_CUSTOM;
-  }
-  return RTCORE_PATH_MODE_POLICY_CUSTOM;
+  }();
+  return policy;
 }
 
 static bool rtcore_path_mode_policy_legacy_path_enabled(
@@ -16182,9 +16183,7 @@ bool rtcore_v04_register_global384_provisional_publication(
   rtcore::v04::private_storage::profile_kind profile =
       rtcore::v04::private_storage::kProfileLegacyShared832;
   const rtcore::v04::private_storage::status_kind profile_status =
-      rtcore::v04::private_storage::parse_profile(
-          getenv(rtcore::v04::private_storage::kSelectorEnvironmentName),
-          &profile);
+      rtcore::v04::private_storage::process_profile(&profile);
   if (profile_status != rtcore::v04::private_storage::kStatusOk) {
     printf("GPGPU-Sim PTX: RT_PUBLISH_TRACE_CONTEXT fail-closed (%s:%u), "
            "reason=GLOBAL384_INVALID_PRIVATE_STORAGE_PROFILE, "
