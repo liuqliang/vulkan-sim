@@ -206,6 +206,42 @@ bool copy_codec_as(
   return true;
 }
 
+bool make_transition_spill_sparse_deltas(
+    const short_stack_transition::result_v0 &transition,
+    private_state_384::live_bridge::sparse_chunk_delta_v1 deltas[2]) {
+  if (transition.selected_valid != 1 || transition.terminal != 0 ||
+      deltas == NULL) {
+    return false;
+  }
+  private_state_384::transition_state_v1 projection = {};
+  projection.selected = transition.selected_entry;
+  if (!copy_codec_as(
+          transition.selected_fetch.decode_context, 0,
+          &projection.decode_context)) {
+    return false;
+  }
+  projection.pending_parent_resume =
+      transition.pending_parent_resume;
+  uint8_t payload[private_state_384::kTransitionProjectionBytes] = {};
+  if (private_state_384::encode_transition_sparse_projection(
+          projection, transition.pending_parent_resume_valid,
+          payload) != private_state_384::kStatusOk) {
+    return false;
+  }
+  for (uint8_t index = 0; index < 2; ++index) {
+    deltas[index] =
+        private_state_384::live_bridge::sparse_chunk_delta_v1();
+    deltas[index].chunk_index = static_cast<uint8_t>(8 + index);
+    deltas[index].byte_mask =
+        private_state_384::backing::kFullChunkByteMask;
+    std::memcpy(
+        deltas[index].payload,
+        payload + index * private_state_384::kChunkBytes,
+        private_state_384::kChunkBytes);
+  }
+  return true;
+}
+
 void copy_sparse_chunk(
     uint8_t chunk_index, uint32_t byte_mask,
     const private_state_384::image_v1 &image,
@@ -629,11 +665,6 @@ status_kind begin_transition_commit(
     input.commit_epoch = commit_epoch;
     input.bvh_format_profile_id =
         private_state_384::kGenRtBvhFormatProfileId;
-    input.expected_write_ack_count =
-        entry->input.private_storage_profile ==
-                private_storage::kProfileGlobal384
-            ? 0
-            : entry->transition.write_plan.access_count;
     input.storage_profile = entry->input.private_storage_profile;
     const bool instance_enter =
         entry->input.operation_kind ==
@@ -661,6 +692,11 @@ status_kind begin_transition_commit(
                   : make_stack_sparse_deltas(
                         entry->transition.persistent_state, deltas,
                         &delta_count);
+    input.expected_write_ack_count =
+        entry->input.private_storage_profile ==
+                private_storage::kProfileGlobal384
+            ? 0
+            : delta_count;
     if (!deltas_valid ||
         private_state_384::live_bridge::stage_sparse_commit(
             input, deltas, delta_count,
@@ -675,6 +711,8 @@ status_kind begin_transition_commit(
   return kStatusOk;
 }
 
+uint8_t modeled_write_count(const operation_entry_v0 &entry);
+
 status_kind enqueue_transition_write(
     operation_entry_v0 *entry, uint8_t chunk_index,
     timing_driver::state_v0 *timing_state,
@@ -683,7 +721,7 @@ status_kind enqueue_transition_write(
   if (entry == NULL || timing_state == NULL || private_backing == NULL ||
       entry->phase != kPhaseWriting ||
       chunk_index >= kMaxWriteChunkCount ||
-      chunk_index >= entry->transition.write_plan.access_count ||
+      chunk_index >= modeled_write_count(*entry) ||
       (entry->enqueued_write_mask & (1u << chunk_index)) != 0) {
     return kStatusInvalidArgument;
   }
@@ -698,40 +736,50 @@ status_kind enqueue_transition_write(
   }
   timing_driver::state_v0 staged_timing = *timing_state;
   private_shared::backing_state_v0 staged_backing = *private_backing;
-  const uint64_t slot_base = private_slot_base(entry->input.owner);
-  const private_frontier::shared_chunk_access_v0 &access =
-      entry->transition.write_plan.accesses[chunk_index];
-  if (access.access_kind != private_frontier::kAccessWrite ||
-      access.aligned_32b_address < slot_base ||
-      access.aligned_32b_address - slot_base >
-          private_frontier::kPrivateDataSlotBytes -
-              private_frontier::kSharedAccessChunkBytes ||
-      access.byte_mask == 0) {
-    return kStatusSharedPlanRejected;
-  }
-  const uint32_t chunk_offset = static_cast<uint32_t>(
-      access.aligned_32b_address - slot_base);
   private_shared::shared_write_v0 write = {};
-  write.valid = true;
-  write.address_space = private_shared::kAddressSpaceShared;
-  write.address_mode = private_shared::kAddressModePrivateField;
-  write.access_operation = private_shared::kAccessOperationWrite;
-  write.destination = private_shared::kDestinationPrivateCommitAck;
-  write.owner = entry->input.owner;
-  write.operation_seq = entry->reservation.operation_seq;
-  write.commit_epoch = entry->commit_epoch;
-  write.memory_op_seq = chunk_index + 1;
-  write.chunk_id = chunk_index;
-  write.chunk_count =
-      entry->transition.write_plan.access_count;
-  write.field_kind = access.field_kind;
-  write.aligned_32b_address = access.aligned_32b_address;
-  write.byte_mask = access.byte_mask;
-  for (unsigned byte = 0; byte < sizeof(write.payload); ++byte) {
-    if ((write.byte_mask & (uint32_t{1} << byte)) != 0) {
-      write.payload[byte] =
-          entry->transition.updated_slot.bytes[
-              chunk_offset + byte];
+  const bool compressed =
+      entry->input.private_storage_profile ==
+      private_storage::kProfileCompressedShared384;
+  if (compressed) {
+    if (private_state_384::live_bridge::prepare_modeled_write(
+            entry->private_state_384_commit, chunk_index,
+            service_cycle, &write) !=
+        private_state_384::live_bridge::kStatusOk) {
+      return kStatusSharedPlanRejected;
+    }
+  } else {
+    const uint64_t slot_base = private_slot_base(entry->input.owner);
+    const private_frontier::shared_chunk_access_v0 &access =
+        entry->transition.write_plan.accesses[chunk_index];
+    if (access.access_kind != private_frontier::kAccessWrite ||
+        access.aligned_32b_address < slot_base ||
+        access.aligned_32b_address - slot_base >
+            private_frontier::kPrivateDataSlotBytes -
+                private_frontier::kSharedAccessChunkBytes ||
+        access.byte_mask == 0) {
+      return kStatusSharedPlanRejected;
+    }
+    const uint32_t chunk_offset = static_cast<uint32_t>(
+        access.aligned_32b_address - slot_base);
+    write.valid = true;
+    write.address_space = private_shared::kAddressSpaceShared;
+    write.address_mode = private_shared::kAddressModePrivateField;
+    write.access_operation = private_shared::kAccessOperationWrite;
+    write.destination = private_shared::kDestinationPrivateCommitAck;
+    write.owner = entry->input.owner;
+    write.operation_seq = entry->reservation.operation_seq;
+    write.commit_epoch = entry->commit_epoch;
+    write.memory_op_seq = chunk_index + 1;
+    write.chunk_id = chunk_index;
+    write.chunk_count = entry->transition.write_plan.access_count;
+    write.field_kind = access.field_kind;
+    write.aligned_32b_address = access.aligned_32b_address;
+    write.byte_mask = access.byte_mask;
+    for (unsigned byte = 0; byte < sizeof(write.payload); ++byte) {
+      if ((write.byte_mask & (uint32_t{1} << byte)) != 0) {
+        write.payload[byte] =
+            entry->transition.updated_slot.bytes[chunk_offset + byte];
+      }
     }
   }
   write.enqueue_cycle = service_cycle;
@@ -745,8 +793,7 @@ status_kind enqueue_transition_write(
   }
   private_state_384::live_bridge::pending_sparse_commit_v1
       staged_private_commit = entry->private_state_384_commit;
-  if (entry->input.private_storage_profile ==
-          private_storage::kProfileCompressedShared384 &&
+  if (compressed &&
       private_state_384::live_bridge::register_modeled_write(
           write, &staged_private_commit) !=
           private_state_384::live_bridge::kStatusOk) {
@@ -761,8 +808,10 @@ status_kind enqueue_transition_write(
 }
 
 uint8_t modeled_write_count(const operation_entry_v0 &entry) {
-  return entry.input.private_storage_profile ==
-                 private_storage::kProfileGlobal384
+  return (entry.input.private_storage_profile ==
+              private_storage::kProfileGlobal384 ||
+          entry.input.private_storage_profile ==
+              private_storage::kProfileCompressedShared384)
              ? entry.private_state_384_commit.expected_write_ack_count
              : entry.transition.write_plan.access_count;
 }
@@ -2499,6 +2548,63 @@ status_kind transfer_next_global_write(
   return kStatusOk;
 }
 
+status_kind stage_ready_transition_spill(
+    engine_state_v0 *state, const ready_result_v0 &ready) {
+  if (state == NULL || state->initialized != 1 || !ready.valid ||
+      ready.transition_spilled != 0 ||
+      ready.slot_index >= state->config.capacity ||
+      (ready.private_storage_profile !=
+           private_storage::kProfileCompressedShared384 &&
+       ready.private_storage_profile !=
+           private_storage::kProfileGlobal384)) {
+    return kStatusInvalidArgument;
+  }
+  engine_state_v0 staged = *state;
+  operation_entry_v0 &entry = staged.slots[ready.slot_index];
+  if (entry.valid == 0 || entry.phase != kPhaseResultReady ||
+      entry.transition_spilled != 0 ||
+      entry.reservation.reservation_id != ready.reservation_id ||
+      entry.reservation.operation_seq != ready.operation_seq ||
+      entry.commit_epoch != ready.commit_epoch ||
+      !private_frontier::owners_equal(entry.input.owner, ready.owner)) {
+    return kStatusNoReadyResult;
+  }
+  private_state_384::live_bridge::sparse_chunk_delta_v1 deltas[2] = {};
+  if (!make_transition_spill_sparse_deltas(entry.transition, deltas)) {
+    return kStatusSharedPlanRejected;
+  }
+  private_state_384::live_bridge::write_commit_input_v1 input = {};
+  input.owner = entry.input.owner;
+  input.private_slot_base_address =
+      entry.input.private_slot_base_address;
+  input.operation_sequence = entry.reservation.operation_seq;
+  input.commit_epoch = entry.commit_epoch;
+  input.bvh_format_profile_id =
+      private_state_384::kGenRtBvhFormatProfileId;
+  input.expected_write_ack_count =
+      ready.private_storage_profile ==
+              private_storage::kProfileCompressedShared384
+          ? 2
+          : 0;
+  input.storage_profile = ready.private_storage_profile;
+  input.producer = private_state_384::operand_plan::
+      kProducerStackTransitionSpill;
+  private_state_384::live_bridge::pending_sparse_commit_v1 pending = {};
+  if (private_state_384::live_bridge::stage_sparse_commit(
+          input, deltas, 2, &pending) !=
+      private_state_384::live_bridge::kStatusOk ||
+      pending.expected_write_ack_count != 2) {
+    return kStatusSharedPlanRejected;
+  }
+  entry.private_state_384_commit = pending;
+  entry.enqueued_write_mask = 0;
+  entry.acknowledged_write_mask = 0;
+  entry.transition_spilled = 1;
+  entry.phase = kPhaseWriting;
+  *state = staged;
+  return kStatusOk;
+}
+
 bool owns_ack(const engine_state_v0 &state,
               const private_shared::runtime_write_ack_v0 &ack) {
   if (state.initialized != 1 || !ack.valid ||
@@ -2564,7 +2670,7 @@ status_kind accept_write_ack(
       entry.acknowledged_write_mask |
       (1u << (ack.memory_operation_seq - 1)));
   if (entry.acknowledged_write_mask ==
-      all_write_chunks(entry.transition.write_plan.access_count)) {
+      all_write_chunks(modeled_write_count(entry))) {
     entry.phase = kPhaseResultReady;
   }
   *state = staged_state;
@@ -2634,14 +2740,15 @@ status_kind accept_write_ack_with_private_state_384(
       entry.acknowledged_write_mask |
       (1u << (ack.memory_operation_seq - 1)));
   if (entry.acknowledged_write_mask ==
-      all_write_chunks(entry.transition.write_plan.access_count)) {
+      all_write_chunks(modeled_write_count(entry))) {
     if (!canonical_committed ||
-        timing_driver::commit_private_recovery_target_state(
-            &staged_timing, request_binding,
-            entry.reservation.operation_seq, entry.commit_epoch,
-            entry.transition.persistent_state
-                .recovery_target_inflight) !=
-            timing_driver::kStatusOk) {
+        (entry.transition_spilled == 0 &&
+         timing_driver::commit_private_recovery_target_state(
+             &staged_timing, request_binding,
+             entry.reservation.operation_seq, entry.commit_epoch,
+             entry.transition.persistent_state
+                 .recovery_target_inflight) !=
+             timing_driver::kStatusOk)) {
       return kStatusAckRejected;
     }
     if (entry.transition.terminal != 0) {
@@ -2717,12 +2824,13 @@ status_kind accept_global_write_ack(
       all_write_chunks(modeled_write_count(entry));
   if (entry.acknowledged_write_mask == expected_mask) {
     if (!all_acknowledged || expected_mask == 0 ||
-        timing_driver::commit_private_recovery_target_state(
-            &staged_timing, request_binding,
-            entry.reservation.operation_seq, entry.commit_epoch,
-            entry.transition.persistent_state
-                .recovery_target_inflight) !=
-            timing_driver::kStatusOk) {
+        (entry.transition_spilled == 0 &&
+         timing_driver::commit_private_recovery_target_state(
+             &staged_timing, request_binding,
+             entry.reservation.operation_seq, entry.commit_epoch,
+             entry.transition.persistent_state
+                 .recovery_target_inflight) !=
+             timing_driver::kStatusOk)) {
       return kStatusAckRejected;
     }
     if (entry.transition.terminal != 0) {
@@ -2774,6 +2882,7 @@ status_kind peek_ready_result(const engine_state_v0 &state,
       entry.reservation.slot_generation;
   result->private_storage_profile =
       entry.input.private_storage_profile;
+  result->transition_spilled = entry.transition_spilled;
   if ((entry.input.private_storage_profile ==
            private_storage::kProfileCompressedShared384 ||
        entry.input.private_storage_profile ==

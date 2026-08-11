@@ -171,6 +171,7 @@ struct operation_entry_v0 {
   uint8_t private_state_384_completion_reason;
   uint8_t return_instance_projection_valid;
   uint8_t return_transition_state_carry_valid;
+  uint8_t transition_spilled;
   uint8_t valid;
 };
 
@@ -214,6 +215,7 @@ struct ready_result_v0 {
   uint8_t slot_index;
   uint8_t private_storage_profile;
   uint8_t terminal_committed_hit_valid;
+  uint8_t transition_spilled;
   uint8_t valid;
   private_frontier::committed_hit_projection_v0
       terminal_committed_hit;
@@ -302,6 +304,9 @@ status_kind transfer_next_global_write(
     engine_state_v0 *state, timing_driver::state_v0 *timing_state,
     uint64_t service_cycle,
     private_shared::shared_write_v0 *write);
+
+status_kind stage_ready_transition_spill(
+    engine_state_v0 *state, const ready_result_v0 &ready);
 
 bool owns_ack(const engine_state_v0 &state,
               const private_shared::runtime_write_ack_v0 &ack);

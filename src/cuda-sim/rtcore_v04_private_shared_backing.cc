@@ -237,6 +237,34 @@ static bool field_contains_offset(uint8_t field_kind, uint32_t offset) {
   }
 }
 
+static bool compressed_field_contains_chunk(uint8_t field_kind,
+                                            uint8_t chunk) {
+  switch (field_kind) {
+    case private_frontier::kFieldMutableRayState:
+      return chunk == 0;
+    case private_frontier::kFieldAsDecodeContext:
+      return chunk == 1;
+    case private_frontier::kFieldCommittedHit:
+      return chunk == 2 || chunk == 3;
+    case private_frontier::kFieldCurrentInstance:
+      return chunk == 3;
+    case private_frontier::kFieldFrontierMetadata:
+      return chunk == 4;
+    case private_frontier::kFieldFrontierEntry:
+      return chunk >= 5 && chunk <= 7;
+    case private_frontier::kFieldRetainedCandidate:
+      return chunk == 8;
+    case private_frontier::kFieldPrimitiveResume:
+      return chunk == 9;
+    case private_frontier::kFieldTransitionSpill:
+      return chunk == 8 || chunk == 9;
+    case private_frontier::kFieldParentFrame:
+      return chunk == 10 || chunk == 11;
+    default:
+      return false;
+  }
+}
+
 static bool runtime_operation_structure_is_valid(
     const shared_write_v0 &operation) {
   if (!write_envelope_is_valid(operation) ||
@@ -249,20 +277,36 @@ static bool runtime_operation_structure_is_valid(
       operation.byte_mask == 0) {
     return false;
   }
-  const uint64_t slot_base = private_slot_base(operation.owner);
-  if (operation.aligned_32b_address < slot_base ||
-      operation.aligned_32b_address >
-          slot_base + private_frontier::kPrivateDataSlotBytes -
-              private_frontier::kSharedAccessChunkBytes) {
+  const uint64_t legacy_base = private_slot_base(operation.owner);
+  const uint64_t compressed_base =
+      compressed_private_slot_base(operation.owner);
+  const bool legacy =
+      operation.aligned_32b_address >= legacy_base &&
+      operation.aligned_32b_address <=
+          legacy_base + private_frontier::kPrivateDataSlotBytes -
+                            private_frontier::kSharedAccessChunkBytes;
+  const bool compressed =
+      operation.aligned_32b_address >= compressed_base &&
+      operation.aligned_32b_address <=
+          compressed_base + private_state_384::kSlotBytes -
+                                private_state_384::kChunkBytes;
+  if (legacy == compressed) {
     return false;
   }
+  const uint64_t slot_base = legacy ? legacy_base : compressed_base;
   const uint32_t chunk_offset =
       static_cast<uint32_t>(operation.aligned_32b_address - slot_base);
+  const uint8_t compact_chunk = static_cast<uint8_t>(
+      chunk_offset / private_state_384::kChunkBytes);
   for (unsigned byte = 0; byte < private_frontier::kSharedAccessChunkBytes;
        ++byte) {
     const bool selected = (operation.byte_mask & (uint32_t{1} << byte)) != 0;
     if (selected &&
-        !field_contains_offset(operation.field_kind, chunk_offset + byte)) {
+        !(legacy
+              ? field_contains_offset(
+                    operation.field_kind, chunk_offset + byte)
+              : compressed_field_contains_chunk(
+                    operation.field_kind, compact_chunk))) {
       return false;
     }
     if (!selected && operation.payload[byte] != 0) return false;
@@ -1023,13 +1067,19 @@ status_kind detail::commit_runtime_write_ack(backing_state_v0 *state,
   resident_warp_state_v0 &warp =
       state->resident_warps[operation.owner.resident_warp_id];
   lane_slot_state_v0 &lane = warp.lanes[operation.owner.lane_id];
-  const uint64_t slot_base = private_slot_base(operation.owner);
-  const uint32_t chunk_offset =
-      static_cast<uint32_t>(operation.aligned_32b_address - slot_base);
-  for (unsigned byte = 0; byte < private_frontier::kSharedAccessChunkBytes;
-       ++byte) {
-    if ((operation.byte_mask & (uint32_t{1} << byte)) != 0) {
-      lane.canonical_slot.bytes[chunk_offset + byte] = operation.payload[byte];
+  const uint64_t legacy_base = private_slot_base(operation.owner);
+  if (operation.aligned_32b_address >= legacy_base &&
+      operation.aligned_32b_address <=
+          legacy_base + private_frontier::kPrivateDataSlotBytes -
+                            private_frontier::kSharedAccessChunkBytes) {
+    const uint32_t chunk_offset = static_cast<uint32_t>(
+        operation.aligned_32b_address - legacy_base);
+    for (unsigned byte = 0;
+         byte < private_frontier::kSharedAccessChunkBytes; ++byte) {
+      if ((operation.byte_mask & (uint32_t{1} << byte)) != 0) {
+        lane.canonical_slot.bytes[chunk_offset + byte] =
+            operation.payload[byte];
+      }
     }
   }
   state->outstanding.pop_front();

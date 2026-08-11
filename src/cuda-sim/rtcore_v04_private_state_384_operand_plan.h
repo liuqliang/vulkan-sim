@@ -63,6 +63,7 @@ enum producer_kind : uint8_t {
   kProducerStackCrossAsReturn,
   kProducerResubmitApply,
   kProducerCompletionPublisher,
+  kProducerStackTransitionSpill,
 };
 
 struct read_request_v1 {

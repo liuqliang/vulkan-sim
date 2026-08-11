@@ -42,6 +42,7 @@ struct lane_slot_v1 {
   private_frontier::owner_binding_v0 owner;
   uint32_t valid_byte_masks[kChunkCount];
   uint32_t last_committed_operation_sequence;
+  uint32_t last_transition_spill_operation_sequence;
   image_v1 image;
 };
 

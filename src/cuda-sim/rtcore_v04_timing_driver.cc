@@ -58,6 +58,7 @@ bool lane_is_quiescent(const lane_control_state_v0 &lane) {
          lane.live_commit_epoch == 0 &&
          lane.pending_recovery_operation_seq == 0 &&
          lane.pending_recovery_producer_operation_seq == 0 &&
+         lane.pending_recovery_build_generation == 0 &&
          lane.pending_recovery_target_kind ==
              kPendingRecoveryTargetInvalid &&
          lane.pending_recovery_route_kind ==
@@ -537,7 +538,7 @@ status_kind mark_commit_successor_pending_recovery(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
     uint32_t target_operation_seq, uint8_t target_kind,
-    uint8_t route_kind) {
+    uint8_t route_kind, uint32_t build_generation) {
   if (state == NULL || producer_operation_seq == 0 || commit_epoch == 0 ||
       target_operation_seq == 0 || !state->initialized ||
       !valid_pending_recovery_metadata(target_kind, route_kind)) {
@@ -553,6 +554,7 @@ status_kind mark_commit_successor_pending_recovery(
       control->live_target_operation_seq != target_operation_seq ||
       control->pending_recovery_operation_seq != 0 ||
       control->pending_recovery_producer_operation_seq != 0 ||
+      control->pending_recovery_build_generation != 0 ||
       control->pending_recovery_target_kind !=
           kPendingRecoveryTargetInvalid ||
       control->pending_recovery_route_kind !=
@@ -564,6 +566,7 @@ status_kind mark_commit_successor_pending_recovery(
   control->pending_recovery_operation_seq = target_operation_seq;
   control->pending_recovery_producer_operation_seq =
       producer_operation_seq;
+  control->pending_recovery_build_generation = build_generation;
   control->pending_recovery_target_kind = target_kind;
   control->pending_recovery_route_kind = route_kind;
   ++state->mutation_epoch;
@@ -623,6 +626,7 @@ status_kind complete_pending_recovery_request_retention(
   }
   control->pending_recovery_operation_seq = 0;
   control->pending_recovery_producer_operation_seq = 0;
+  control->pending_recovery_build_generation = 0;
   control->pending_recovery_target_kind =
       kPendingRecoveryTargetInvalid;
   control->pending_recovery_route_kind =
@@ -673,6 +677,8 @@ status_kind find_pending_recovery(
         control.pending_recovery_operation_seq;
     snapshot->producer_operation_seq =
         control.pending_recovery_producer_operation_seq;
+    snapshot->build_generation =
+        control.pending_recovery_build_generation;
     snapshot->request_control_slot = slot;
     snapshot->target_kind =
         control.pending_recovery_target_kind;

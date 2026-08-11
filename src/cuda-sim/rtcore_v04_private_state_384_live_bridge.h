@@ -147,6 +147,10 @@ status_kind prepare_global_modeled_write(
     const pending_sparse_commit_v1 &pending, uint8_t write_index,
     uint64_t enqueue_cycle, private_shared::shared_write_v0 *write);
 
+status_kind prepare_modeled_write(
+    const pending_sparse_commit_v1 &pending, uint8_t write_index,
+    uint64_t enqueue_cycle, private_shared::shared_write_v0 *write);
+
 status_kind accept_global_write_ack(
     const private_shared::shared_write_v0 &write,
     const private_shared::runtime_write_ack_v0 &ack,

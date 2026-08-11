@@ -102,6 +102,7 @@ struct result_v0 {
   private_frontier::access_plan_v0 write_plan;
   short_stack_shared::persistent_state_v0 persistent_state;
   typed_node::selected_child_fetch_work_item_v0 selected_fetch;
+  short_stack::entry_v0 selected_entry;
   typed_node::replay_cursor_v0 replay_cursor;
   short_stack::entry_v0 pending_parent_resume;
   typed_blas::as_decode_context_v0 parent_lookup_decode_context;

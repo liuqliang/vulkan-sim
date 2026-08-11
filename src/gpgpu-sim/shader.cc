@@ -106,6 +106,10 @@ extern "C" bool rtcore_retire_lifecycle_busy_for_owner(
     unsigned owner_hw_sid);
 extern "C" bool rtcore_reserve_retire_lifecycle_frontend(
     unsigned owner_hw_sid);
+extern "C" bool rtcore_query_resident_rt_warp_record(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned *current_warp_uid,
+    unsigned *active_mask, unsigned *resident_generation,
+    unsigned *resident_occupancy);
 
 extern "C" bool rtcore_symbolic_submit_issue_resources_available(
     unsigned warp_id, unsigned owner_hw_sid, unsigned active_mask,
@@ -3170,6 +3174,232 @@ struct rtcore_replay_cycle_hook_consumer_stats {
 static rtcore_replay_cycle_hook_consumer_stats
     g_rtcore_replay_cycle_hook_consumer_stats = {};
 
+struct rtcore_v04_multiwarp_stats {
+  static const unsigned kBucketCount = 65;
+
+  bool measurement_active;
+  bool cycle_valid;
+  unsigned configured_capacity;
+  unsigned max_active_submit_warps;
+  unsigned max_resident_context_warps;
+  unsigned latest_active_submit_warps;
+  unsigned long long cycle;
+  unsigned long long measured_cycles;
+  unsigned long long active_submit_warp_cycles;
+  unsigned long long resident_context_warp_cycles;
+  unsigned long long active_submit_histogram[kBucketCount];
+  unsigned long long resident_context_histogram[kBucketCount];
+  unsigned long long distinct_progress_histogram[kBucketCount];
+  std::set<unsigned> progressed_warp_ids;
+  unsigned long long admission_evaluations;
+  unsigned long long admission_allowed;
+  unsigned long long admission_blocked_cycles;
+  unsigned long long last_admission_blocked_cycle;
+  bool admission_blocked_cycle_valid;
+  unsigned long long submit_arrivals;
+  unsigned long long submit_completions;
+  unsigned long long replay_progress_observations;
+  unsigned long long memory_issue_progress_observations;
+  unsigned long long scheduled_warp_progress_observations;
+  unsigned long long memory_response_progress_observations;
+  unsigned long long l1_immediate_read_hit[kBucketCount];
+  unsigned long long l1_pending_write_hit[kBucketCount];
+  unsigned long long l1_line_miss[kBucketCount];
+  unsigned long long l1_sector_miss[kBucketCount];
+  unsigned long long l1_accepted_mshr_merge[kBucketCount];
+  unsigned long long l1_reservation_retry[kBucketCount];
+  unsigned long long same_cycle_merge_same_warp;
+  unsigned long long same_cycle_merge_cross_warp;
+};
+
+static std::map<unsigned, rtcore_v04_multiwarp_stats>
+    g_rtcore_v04_multiwarp_stats;
+static bool g_rtcore_v04_multiwarp_report_registered = false;
+
+static bool rtcore_v04_multiwarp_stats_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_REPLAY_V04_MULTIWARP_STATS");
+    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static unsigned rtcore_v04_multiwarp_bucket(unsigned value) {
+  return std::min(value, rtcore_v04_multiwarp_stats::kBucketCount - 1);
+}
+
+static void rtcore_v04_multiwarp_finalize_cycle(
+    rtcore_v04_multiwarp_stats *stats) {
+  if (stats == NULL || !stats->cycle_valid) return;
+  const unsigned progressed = rtcore_v04_multiwarp_bucket(
+      static_cast<unsigned>(stats->progressed_warp_ids.size()));
+  stats->distinct_progress_histogram[progressed]++;
+  stats->progressed_warp_ids.clear();
+  stats->cycle_valid = false;
+}
+
+static void rtcore_v04_multiwarp_report() {
+  if (!rtcore_v04_multiwarp_stats_enabled()) return;
+  for (std::map<unsigned, rtcore_v04_multiwarp_stats>::iterator it =
+           g_rtcore_v04_multiwarp_stats.begin();
+       it != g_rtcore_v04_multiwarp_stats.end(); ++it) {
+    rtcore_v04_multiwarp_stats &stats = it->second;
+    rtcore_v04_multiwarp_finalize_cycle(&stats);
+    printf("GPGPU-Sim RTCORE_V04_MULTIWARP_SUMMARY "
+           "owner_hw_sid=%u configured_capacity=%u measured_cycles=%llu "
+           "active_submit_warp_cycles=%llu "
+           "resident_context_warp_cycles=%llu "
+           "max_active_submit_warps=%u max_resident_context_warps=%u "
+           "admission_evaluations=%llu admission_allowed=%llu "
+           "admission_blocked_cycles=%llu submit_arrivals=%llu "
+           "submit_completions=%llu replay_progress=%llu "
+           "memory_issue_progress=%llu scheduled_warp_progress=%llu "
+           "memory_response_progress=%llu "
+           "same_cycle_merge_same_warp=%llu "
+           "same_cycle_merge_cross_warp=%llu\n",
+           it->first, stats.configured_capacity, stats.measured_cycles,
+           stats.active_submit_warp_cycles,
+           stats.resident_context_warp_cycles,
+           stats.max_active_submit_warps,
+           stats.max_resident_context_warps,
+           stats.admission_evaluations, stats.admission_allowed,
+           stats.admission_blocked_cycles, stats.submit_arrivals,
+           stats.submit_completions,
+           stats.replay_progress_observations,
+           stats.memory_issue_progress_observations,
+           stats.scheduled_warp_progress_observations,
+           stats.memory_response_progress_observations,
+           stats.same_cycle_merge_same_warp,
+           stats.same_cycle_merge_cross_warp);
+    printf("GPGPU-Sim RTCORE_V04_MULTIWARP_HISTOGRAM owner_hw_sid=%u",
+           it->first);
+    for (unsigned bucket = 0; bucket < 9; ++bucket) {
+      printf(" active_submit_%u=%llu resident_context_%u=%llu "
+             "distinct_progress_%u=%llu",
+             bucket, stats.active_submit_histogram[bucket], bucket,
+             stats.resident_context_histogram[bucket], bucket,
+             stats.distinct_progress_histogram[bucket]);
+    }
+    printf("\n");
+    printf("GPGPU-Sim RTCORE_V04_MULTIWARP_L1_BY_ACTIVE_OCCUPANCY "
+           "owner_hw_sid=%u",
+           it->first);
+    for (unsigned bucket = 0; bucket < 9; ++bucket) {
+      printf(" hit_%u=%llu pending_write_%u=%llu line_miss_%u=%llu "
+             "sector_miss_%u=%llu mshr_merge_%u=%llu "
+             "reservation_retry_%u=%llu",
+             bucket, stats.l1_immediate_read_hit[bucket], bucket,
+             stats.l1_pending_write_hit[bucket], bucket,
+             stats.l1_line_miss[bucket], bucket,
+             stats.l1_sector_miss[bucket], bucket,
+             stats.l1_accepted_mshr_merge[bucket], bucket,
+             stats.l1_reservation_retry[bucket]);
+    }
+    printf("\n");
+  }
+  fflush(stdout);
+}
+
+static rtcore_v04_multiwarp_stats &rtcore_v04_multiwarp_stats_for(
+    unsigned owner_hw_sid) {
+  if (!g_rtcore_v04_multiwarp_report_registered) {
+    g_rtcore_v04_multiwarp_report_registered = true;
+    if (atexit(rtcore_v04_multiwarp_report) != 0) abort();
+  }
+  return g_rtcore_v04_multiwarp_stats[owner_hw_sid];
+}
+
+static void rtcore_v04_multiwarp_begin_cycle(
+    unsigned owner_hw_sid, unsigned long long cycle,
+    unsigned active_submit_warps, unsigned resident_context_warps,
+    unsigned configured_capacity) {
+  if (!rtcore_v04_multiwarp_stats_enabled()) return;
+  rtcore_v04_multiwarp_stats &stats =
+      rtcore_v04_multiwarp_stats_for(owner_hw_sid);
+  if (stats.cycle_valid && stats.cycle == cycle) return;
+  rtcore_v04_multiwarp_finalize_cycle(&stats);
+  if (active_submit_warps == 0 && resident_context_warps == 0 &&
+      !stats.measurement_active) {
+    return;
+  }
+  stats.measurement_active =
+      active_submit_warps != 0 || resident_context_warps != 0;
+  stats.cycle_valid = true;
+  stats.cycle = cycle;
+  stats.configured_capacity = configured_capacity;
+  stats.latest_active_submit_warps = active_submit_warps;
+  stats.measured_cycles++;
+  stats.active_submit_warp_cycles += active_submit_warps;
+  stats.resident_context_warp_cycles += resident_context_warps;
+  stats.max_active_submit_warps =
+      std::max(stats.max_active_submit_warps, active_submit_warps);
+  stats.max_resident_context_warps =
+      std::max(stats.max_resident_context_warps, resident_context_warps);
+  stats.active_submit_histogram[
+      rtcore_v04_multiwarp_bucket(active_submit_warps)]++;
+  stats.resident_context_histogram[
+      rtcore_v04_multiwarp_bucket(resident_context_warps)]++;
+}
+
+static void rtcore_v04_multiwarp_mark_progress(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned long long *observation_counter) {
+  if (!rtcore_v04_multiwarp_stats_enabled()) return;
+  rtcore_v04_multiwarp_stats &stats =
+      rtcore_v04_multiwarp_stats_for(owner_hw_sid);
+  if (!stats.cycle_valid) return;
+  stats.progressed_warp_ids.insert(warp_id);
+  if (observation_counter != NULL) (*observation_counter)++;
+}
+
+static void rtcore_v04_multiwarp_record_admission_probe(
+    unsigned owner_hw_sid, unsigned occupancy, unsigned capacity,
+    bool allowed) {
+  if (!rtcore_v04_multiwarp_stats_enabled()) return;
+  rtcore_v04_multiwarp_stats &stats =
+      rtcore_v04_multiwarp_stats_for(owner_hw_sid);
+  stats.configured_capacity = capacity;
+  stats.admission_evaluations++;
+  if (allowed) {
+    stats.admission_allowed++;
+  } else if (stats.cycle_valid &&
+             (!stats.admission_blocked_cycle_valid ||
+              stats.last_admission_blocked_cycle != stats.cycle)) {
+    stats.admission_blocked_cycles++;
+    stats.last_admission_blocked_cycle = stats.cycle;
+    stats.admission_blocked_cycle_valid = true;
+  }
+  stats.max_active_submit_warps =
+      std::max(stats.max_active_submit_warps, occupancy);
+}
+
+static void rtcore_v04_multiwarp_record_cache_outcome(
+    const rtcore_memory_unit_request_snapshot &snapshot,
+    enum cache_request_status probe_status,
+    enum cache_request_status access_status, bool is_write) {
+  if (!rtcore_v04_multiwarp_stats_enabled()) return;
+  rtcore_v04_multiwarp_stats &stats =
+      rtcore_v04_multiwarp_stats_for(snapshot.owner_hw_sid);
+  const unsigned bucket =
+      rtcore_v04_multiwarp_bucket(stats.latest_active_submit_warps);
+  if (access_status == RESERVATION_FAIL ||
+      (probe_status == HIT_RESERVED && access_status == HIT_RESERVED)) {
+    stats.l1_reservation_retry[bucket]++;
+  } else if (probe_status == HIT && access_status == HIT && !is_write) {
+    stats.l1_immediate_read_hit[bucket]++;
+  } else if (probe_status == HIT && access_status == HIT && is_write) {
+    stats.l1_pending_write_hit[bucket]++;
+  } else if (probe_status == MISS && access_status == MISS) {
+    stats.l1_line_miss[bucket]++;
+  } else if (probe_status == SECTOR_MISS &&
+             (access_status == MISS || access_status == SECTOR_MISS)) {
+    stats.l1_sector_miss[bucket]++;
+  } else if (probe_status == HIT_RESERVED && access_status == MISS) {
+    stats.l1_accepted_mshr_merge[bucket]++;
+  }
+}
+
 struct rtcore_v04_semantic_latency_histogram {
   static const unsigned kBucketCount = 65;
   unsigned long long count;
@@ -4122,6 +4352,8 @@ static void rtcore_v04_semantic_record_cache_retry(
     const rtcore_memory_unit_request_snapshot &snapshot,
     enum cache_request_status probe_status,
     enum cache_request_status access_status) {
+  rtcore_v04_multiwarp_record_cache_outcome(
+      snapshot, probe_status, access_status, snapshot.is_write);
   rtcore_v04_semantic_logical_state &logical =
       rtcore_v04_semantic_observe_logical(snapshot);
   rtcore_v04_semantic_tag_set_stats &stats =
@@ -4607,6 +4839,9 @@ static void rtcore_v04_semantic_prepare_physical_transaction(
   transaction->lower_write = lower_write;
   transaction->lower_write_allocate = lower_write_allocate;
   transaction->no_write_allocate = observation.no_write_allocate;
+  rtcore_v04_multiwarp_record_cache_outcome(
+      *snapshot, observation.probe_status, observation.access_status,
+      snapshot->is_write);
   if (transaction->semantic_valid) {
     if (!observation.valid) {
       fprintf(stderr,
@@ -7383,6 +7618,41 @@ static void rtcore_record_v02_lsu_sideband_response_completion(
     return;
   }
   if (snapshot.destination ==
+          RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
+      snapshot.access_kind ==
+          RTCORE_MEMORY_ACCESS_STACK_SPILL_RECOVERY_READ &&
+      snapshot.v04_target_raw_read.private_storage_profile ==
+          rtcore::v04::private_storage::kProfileGlobal384) {
+    const bool response_valid =
+        snapshot.address_space == RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL &&
+        snapshot.operation == RTCORE_MEMORY_OPERATION_READ &&
+        !snapshot.is_write &&
+        response_address == snapshot.aligned_32b_addr &&
+        bound_read_payload != NULL &&
+        bound_read_payload_bytes ==
+            rtcore::v04::private_state_384::kChunkBytes;
+    if (!response_valid ||
+        !rtcore_accept_v04_stack_spill_recovery_read_response(
+            &snapshot, bound_read_payload, bound_read_payload_bytes,
+            response_cycle)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_GLOBAL384_TRANSITION_RECOVERY_FAULT "
+              "owner_hw_sid=%u request_key=0x%08x generation=%u "
+              "target_operation_seq=%u chunk_id=%u chunk_count=%u "
+              "response_addr=0x%llx expected_addr=0x%llx\n",
+              snapshot.owner_hw_sid, snapshot.rt_request_id,
+              snapshot.request_generation,
+              snapshot.v04_target_raw_read.target_operation_seq,
+              snapshot.chunk_id, snapshot.chunk_count,
+              response_address, snapshot.aligned_32b_addr);
+      fflush(stderr);
+      abort();
+    }
+    rtcore_record_v04_memory_conservation_or_abort(
+        snapshot, true, response_cycle);
+    return;
+  }
+  if (snapshot.destination ==
       RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL) {
     uint8_t response_payload[
         rtcore::v04::target_memory::kRawReadChunkBytes] = {};
@@ -7786,6 +8056,24 @@ static bool rtcore_try_merge_memory_unit_same_cycle_32b(
     return false;
   }
   if (snapshot == NULL) return false;
+  if (rtcore_v04_multiwarp_stats_enabled()) {
+    bool cross_warp = false;
+    for (std::vector<rtcore_memory_unit_request_snapshot>::const_iterator it =
+             pending_it->second.waiters.begin();
+         it != pending_it->second.waiters.end(); ++it) {
+      if (it->resident_warp_id != snapshot->resident_warp_id) {
+        cross_warp = true;
+        break;
+      }
+    }
+    rtcore_v04_multiwarp_stats &stats =
+        rtcore_v04_multiwarp_stats_for(snapshot->owner_hw_sid);
+    if (cross_warp) {
+      stats.same_cycle_merge_cross_warp++;
+    } else {
+      stats.same_cycle_merge_same_warp++;
+    }
+  }
   rtcore_accept_v04_live_handoff_acquire_or_abort(snapshot);
   rtcore_accept_v04_dispatch_handoff_read_or_abort(snapshot);
   if (rtcore_v04_global384_semantic_accounting_enabled() &&
@@ -7985,6 +8273,8 @@ rtcore_maybe_accept_memory_unit_l1d_client(
           RTCORE_MEMORY_ACCESS_TARGET_RAW_READ ||
       result.lsu_sideband_access_kind ==
           RTCORE_MEMORY_ACCESS_PRIVATE_STATE_384_READ ||
+      result.lsu_sideband_access_kind ==
+          RTCORE_MEMORY_ACCESS_STACK_SPILL_RECOVERY_READ ||
       result.lsu_sideband_access_kind ==
           RTCORE_MEMORY_ACCESS_SHORT_STACK_RETURN_INSTANCE_READ;
   const bool shader_continuation_sbt_access =
@@ -11639,9 +11929,20 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
   if (!rtcore_symbolic_submit_issue_resource_backpressure_is_enabled()) {
     return true;
   }
-  const rtcore_resident_warp_demand_snapshot snapshot =
+  rtcore_resident_warp_demand_snapshot snapshot =
       m_rt_unit->rtcore_make_resident_warp_demand_snapshot(
           rt_core_out_pending_warps);
+  unsigned resident_context_warps = 0;
+  const bool candidate_already_resident =
+      rtcore_query_resident_rt_warp_record(
+          m_sid, warp_id, NULL, NULL, NULL, &resident_context_warps);
+  snapshot.resident_live_warps =
+      std::max(snapshot.resident_live_warps, resident_context_warps);
+  snapshot.resident_live_plus_demand_warps =
+      snapshot.resident_live_warps + (candidate_already_resident ? 0 : 1);
+  snapshot.capacity_available =
+      snapshot.zero_capacity_fail_closed || candidate_already_resident ||
+      snapshot.resident_live_warps < snapshot.resident_rt_warp_capacity;
   return m_rt_unit->rtcore_resident_warp_capacity_available(
       inst, warp_id, m_sid, inst.pc, snapshot, materialized_input_provenance);
 }
@@ -17110,7 +17411,9 @@ bool rt_unit::can_issue(const warp_inst_t &inst) const {
     return false;
   }
   if (!m_retire_transactions.empty()) return false;
-  if (n_warps >= (m_config->m_rt_max_warps)) return false;
+  const bool resident_capacity_available =
+      n_warps < m_config->m_rt_max_warps;
+  if (!resident_capacity_available) return false;
   if (!rtcore_warp_completion_entry_has_capacity(inst)) return false;
   return m_dispatch_reg->empty() && !occupied.test(inst.latency);
 }
@@ -17164,6 +17467,9 @@ bool rt_unit::rtcore_resident_warp_capacity_available(
   if (snapshot.zero_capacity_fail_closed) {
     return true;
   }
+  rtcore_v04_multiwarp_record_admission_probe(
+      owner_hw_sid, snapshot.resident_live_warps,
+      snapshot.resident_rt_warp_capacity, snapshot.capacity_available);
   if (!snapshot.capacity_available) {
     printf("GPGPU-Sim PTX: RT_SUBMIT resident-warp-backpressure, "
            "diagnostic=RT_SUBMIT issue-resource-snapshot, warp_id=%u, "
@@ -20634,6 +20940,13 @@ void rt_unit::cycle() {
   unsigned long long current_cycle =  m_core->get_gpu()->gpu_sim_cycle +
                                       m_core->get_gpu()->gpu_tot_sim_cycle;
 
+  unsigned resident_context_warps = 0;
+  (void)rtcore_query_resident_rt_warp_record(
+      m_sid, 0, NULL, NULL, NULL, &resident_context_warps);
+  rtcore_v04_multiwarp_begin_cycle(
+      m_sid, current_cycle, n_warps, resident_context_warps,
+      m_config->m_rt_max_warps);
+
   rtcore_replay_cycle_hook_result replay_cycle_result =
       rtcore_maybe_service_replay_cycle_from_rt_unit(m_sid, current_cycle);
   rtcore_consume_replay_cycle_hook_result_from_rt_unit(
@@ -20655,6 +20968,9 @@ void rt_unit::cycle() {
     pipe_reg.set_start_cycle(current_cycle);
     pipe_reg.set_thread_end_cycle(current_cycle);
     if (pipe_reg.rt_subop == RT_CORE_SUBOP_SUBMIT) {
+      if (rtcore_v04_multiwarp_stats_enabled()) {
+        rtcore_v04_multiwarp_stats_for(m_sid).submit_arrivals++;
+      }
       enqueue_synthetic_completion(pipe_reg, current_cycle);
     } else if (pipe_reg.rt_subop == RT_CORE_SUBOP_RETIRE_CONTEXT) {
       enqueue_retire_transaction(pipe_reg, current_cycle);
@@ -20671,6 +20987,23 @@ void rt_unit::cycle() {
       }
       m_ray_coherence_engine->insert(pipe_reg);
     }
+  }
+
+  if (replay_cycle_result.progressed &&
+      replay_cycle_result.identity_valid &&
+      replay_cycle_result.identity_has_warp_metadata) {
+    rtcore_v04_multiwarp_stats &stats =
+        rtcore_v04_multiwarp_stats_for(m_sid);
+    rtcore_v04_multiwarp_mark_progress(
+        m_sid, replay_cycle_result.identity_warp_id,
+        &stats.replay_progress_observations);
+  }
+  if (replay_cycle_result.lsu_sideband_valid) {
+    rtcore_v04_multiwarp_stats &stats =
+        rtcore_v04_multiwarp_stats_for(m_sid);
+    rtcore_v04_multiwarp_mark_progress(
+        m_sid, replay_cycle_result.memory_unit_snapshot.resident_warp_id,
+        &stats.memory_issue_progress_observations);
   }
 
   service_retire_transaction(current_cycle);
@@ -20725,6 +21058,13 @@ void rt_unit::cycle() {
     // Retrieve mf from response fifo
     mem_fetch *mf = m_response_fifo.front();
     m_response_fifo.pop_front();
+    if (rtcore_v04_multiwarp_stats_enabled()) {
+      rtcore_v04_multiwarp_stats &stats =
+          rtcore_v04_multiwarp_stats_for(m_sid);
+      rtcore_v04_multiwarp_mark_progress(
+          m_sid, mf->get_wid(),
+          &stats.memory_response_progress_observations);
+    }
     new_addr_type addr = mf->get_addr();
  
     new_addr_type uncoalesced_base_addr = mf->get_uncoalesced_base_addr();
@@ -20831,6 +21171,13 @@ void rt_unit::cycle() {
   }
 
   // Schedule next memory request
+  if (!rt_inst.empty() && rtcore_v04_multiwarp_stats_enabled()) {
+    rtcore_v04_multiwarp_stats &stats =
+        rtcore_v04_multiwarp_stats_for(m_sid);
+    rtcore_v04_multiwarp_mark_progress(
+        m_sid, rt_inst.warp_id(),
+        &stats.scheduled_warp_progress_observations);
+  }
   memory_cycle(rt_inst);
 
   // Place warp back
@@ -21173,6 +21520,10 @@ void rt_unit::cycle() {
         m_core->dec_inst_in_pipeline(it->second.warp_id());
 
         // Track number of warps in RT core
+        if (it->second.rt_subop == RT_CORE_SUBOP_SUBMIT &&
+            rtcore_v04_multiwarp_stats_enabled()) {
+          rtcore_v04_multiwarp_stats_for(m_sid).submit_completions++;
+        }
         n_warps--;
         assert(n_warps >= 0 && n_warps <= m_config->m_rt_max_warps);
 

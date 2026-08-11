@@ -229,6 +229,12 @@ bool recovery_reservation_identity_valid(
            : 0));
   return valid_owner(input.owner) &&
          input.target_operation_seq != 0 &&
+         input.private_storage_profile <=
+             private_storage::kProfileGlobal384 &&
+         (input.private_storage_profile ==
+                  private_storage::kProfileLegacyShared832
+              ? input.build_generation == 0
+              : input.build_generation != 0) &&
          input.target_kind >= kTargetNode &&
          input.target_kind <= kTargetInstance &&
          input.required_operand_mask == expected_operand_mask &&
@@ -402,8 +408,7 @@ status_kind reserve_recovery_in_queue(
       private_frontier::kLayoutProfileId;
   metadata.bvh_format_profile_id =
       typed_node::kGenRtDerivedProfileId;
-  metadata.private_storage_profile =
-      private_storage::kProfileLegacyShared832;
+  metadata.private_storage_profile = input.private_storage_profile;
   metadata.raw_payload_bytes = raw_payload_bytes;
   metadata.target_kind = target;
   metadata.operation_kind = kOperationFetchTarget;
@@ -420,7 +425,12 @@ status_kind reserve_recovery_in_queue(
   metadata.producer_commit_complete = 1;
   metadata.recovery_descriptor_pending = 1;
   metadata.pending_recovery_descriptor_response_count =
-      kStackSpillRecoveryChunks;
+      input.private_storage_profile ==
+              private_storage::kProfileLegacyShared832
+          ? kStackSpillRecoveryChunks
+          : kPrivateState384TransitionRecoveryChunks;
+  metadata.target_reference.build_generation =
+      input.build_generation;
 
   consume_reservation_budget(window, cycle);
   build_receipt(metadata, static_cast<uint8_t>(slot_index), receipt);
@@ -905,8 +915,9 @@ status_kind configure_private_state_384_slot_in_queue(
   }
   slot_metadata_v0 &metadata = slot.metadata;
   if (metadata.operation_kind != kOperationFetchTarget ||
-      metadata.private_storage_profile !=
-          private_storage::kProfileLegacyShared832 ||
+      (metadata.private_storage_profile !=
+           private_storage::kProfileLegacyShared832 &&
+       metadata.private_storage_profile != key.storage_profile) ||
       metadata.received_private_chunk_mask != 0 ||
       metadata.private_state_384_projection_valid != 0 ||
       collector.initialized != 1 || collector.failed != 0 ||
@@ -1136,6 +1147,147 @@ status_kind fill_recovery_descriptor_chunk_in_queue(
   *selected_fetch = decoded;
   return maybe_make_ready(&slot.metadata, fifo, capacity,
                           reservation.slot_index);
+}
+
+template <typename Slot>
+status_kind fill_private_state_384_transition_chunk_in_queue(
+    Slot *slots, uint8_t capacity, ready_fifo_v0 *fifo,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes],
+    reservation_receipt_v0 *updated_reservation,
+    typed_node::selected_child_fetch_work_item_v0 *selected_fetch) {
+  if (reservation.slot_index >= capacity) return kStatusUnknownReservation;
+  Slot &slot = slots[reservation.slot_index];
+  if (!receipt_matches(slot.metadata, reservation)) {
+    return slot.metadata.state == kSlotFree ? kStatusUnknownReservation
+                                            : kStatusStaleReservation;
+  }
+  slot_metadata_v0 &metadata = slot.metadata;
+  const bool private_state_384 =
+      metadata.private_storage_profile ==
+          private_storage::kProfileCompressedShared384 ||
+      metadata.private_storage_profile ==
+          private_storage::kProfileGlobal384;
+  if (!private_state_384 ||
+      metadata.recovery_descriptor_pending != 1 ||
+      chunk_count != kPrivateState384TransitionRecoveryChunks ||
+      chunk_id >= chunk_count ||
+      slot_chunk_offset !=
+          static_cast<uint16_t>(
+              private_state_384::kBoundaryTransitionOffset +
+              chunk_id * private_state_384::kChunkBytes) ||
+      byte_mask != private_state_384::backing::kFullChunkByteMask) {
+    return kStatusRecoveryDescriptorShapeMismatch;
+  }
+  const uint8_t chunk_bit = static_cast<uint8_t>(1u << chunk_id);
+  if ((metadata.received_recovery_descriptor_chunk_mask & chunk_bit) != 0) {
+    return kStatusDuplicateRecoveryDescriptorChunk;
+  }
+  std::memcpy(
+      metadata.recovery_descriptor_bytes +
+          chunk_id * private_state_384::kChunkBytes,
+      payload, private_state_384::kChunkBytes);
+  metadata.received_recovery_descriptor_chunk_mask |= chunk_bit;
+  if (metadata.pending_recovery_descriptor_response_count == 0) {
+    return kStatusReadyFifoInvariant;
+  }
+  --metadata.pending_recovery_descriptor_response_count;
+  const uint8_t complete_mask = static_cast<uint8_t>(
+      (1u << kPrivateState384TransitionRecoveryChunks) - 1u);
+  if (metadata.received_recovery_descriptor_chunk_mask != complete_mask) {
+    return kStatusOk;
+  }
+  if (metadata.pending_recovery_descriptor_response_count != 0) {
+    return kStatusRecoveryDescriptorShapeMismatch;
+  }
+
+  private_state_384::transition_state_v1 transition = {};
+  uint8_t pending_parent_resume_valid = 0;
+  if (private_state_384::decode_transition_sparse_projection(
+          metadata.recovery_descriptor_bytes, &transition,
+          &pending_parent_resume_valid) != private_state_384::kStatusOk) {
+    return kStatusRecoveryDescriptorShapeMismatch;
+  }
+  typed_node::selected_child_fetch_work_item_v0 decoded = {};
+  decoded.child.payload_offset = transition.selected.payload_offset;
+  decoded.child.near_t_bits = transition.selected.near_t_bits;
+  decoded.child.payload_byte_count =
+      transition.selected.payload_byte_count;
+  decoded.child.payload_kind = transition.selected.payload_kind;
+  decoded.child.child_slot =
+      short_stack::control_child_anchor(transition.selected.control);
+  decoded.decode_context.bvh_format_profile_id =
+      private_state_384::kGenRtBvhFormatProfileId;
+  decoded.decode_context.as_object.object_id =
+      transition.decode_context.as_object_id;
+  decoded.decode_context.as_object.generation =
+      transition.decode_context.as_object_generation;
+  decoded.decode_context.as_object.as_type =
+      transition.decode_context.as_type;
+  decoded.decode_context.device_base =
+      transition.decode_context.device_base;
+  decoded.decode_context.device_range_bytes =
+      transition.decode_context.device_range_bytes;
+  target_kind decoded_target = kTargetInvalid;
+  uint16_t decoded_raw_bytes = 0;
+  if (classify_selected_fetch(
+          decoded, &decoded_target, &decoded_raw_bytes) != kStatusOk ||
+      decoded_target != static_cast<target_kind>(metadata.target_kind) ||
+      decoded_raw_bytes != metadata.raw_payload_bytes ||
+      metadata.target_reference.build_generation == 0 ||
+      transition.decode_context.device_base >
+          UINT64_MAX - transition.selected.payload_offset) {
+    return kStatusRecoveryDescriptorKindMismatch;
+  }
+  typed_node::replay_cursor_v0 replay = {};
+  const short_stack::entry_kind entry_kind =
+      short_stack::control_kind(transition.selected.control);
+  if (entry_kind == short_stack::kEntrySameNodeReplay ||
+      entry_kind == short_stack::kEntryParentResume) {
+    replay.child_anchor =
+        short_stack::control_child_anchor(transition.selected.control);
+    replay.anchor_valid = short_stack::control_anchor_valid(
+                              transition.selected.control)
+                              ? 1
+                              : 0;
+    replay.inclusive = short_stack::control_inclusive(
+                           transition.selected.control)
+                           ? 1
+                           : 0;
+  }
+  if (!encode_replay_cursor(
+          replay, &metadata.target_reference.replay_control)) {
+    return kStatusRecoveryDescriptorKindMismatch;
+  }
+  metadata.target_reference.payload_offset =
+      transition.selected.payload_offset;
+  metadata.target_reference.near_t_bits =
+      transition.selected.near_t_bits;
+  metadata.target_reference.payload_byte_count = decoded_raw_bytes;
+  metadata.target_reference.payload_kind =
+      transition.selected.payload_kind;
+  metadata.target_reference.level =
+      transition.decode_context.as_type == 1
+          ? typed_node::kLevelTlas
+          : typed_node::kLevelBlas;
+  metadata.target_reference.source_kind =
+      kTargetReferenceSelectedFetchCompatibilityAdapter;
+  metadata.target_reference.proxy_delegated = 1;
+  metadata.raw_payload_base_address =
+      transition.decode_context.device_base +
+      transition.selected.payload_offset;
+  metadata.pending_parent_resume =
+      transition.pending_parent_resume;
+  metadata.pending_parent_resume_valid =
+      pending_parent_resume_valid;
+  metadata.valid_operand_mask |= kOperandTargetReferenceValid;
+  metadata.recovery_descriptor_pending = 0;
+  build_receipt(metadata, reservation.slot_index, updated_reservation);
+  *selected_fetch = decoded;
+  return maybe_make_ready(
+      &metadata, fifo, capacity, reservation.slot_index);
 }
 
 template <typename Slot>
@@ -2143,6 +2295,52 @@ status_kind fill_recovery_descriptor_chunk(
       break;
     case kTargetInstance:
       status = fill_recovery_descriptor_chunk_in_queue(
+          staged.instance_slots, staged.config.instance_capacity,
+          &staged.instance_ready, reservation, chunk_id, chunk_count,
+          slot_chunk_offset, byte_mask, payload, updated_reservation,
+          selected_fetch);
+      break;
+    case kTargetInvalid:
+      return kStatusInvalidArgument;
+  }
+  if (status == kStatusOk) *state = staged;
+  return status;
+}
+
+status_kind fill_private_state_384_transition_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes],
+    reservation_receipt_v0 *updated_reservation,
+    typed_node::selected_child_fetch_work_item_v0 *selected_fetch) {
+  if (state == NULL || payload == NULL ||
+      updated_reservation == NULL || selected_fetch == NULL ||
+      state->initialized != 1 || reservation.valid != 1) {
+    return kStatusInvalidArgument;
+  }
+  *updated_reservation = reservation_receipt_v0();
+  *selected_fetch = typed_node::selected_child_fetch_work_item_v0();
+  engine_state_v0 staged = *state;
+  status_kind status = kStatusInvalidArgument;
+  switch (static_cast<target_kind>(reservation.target_kind)) {
+    case kTargetNode:
+      status = fill_private_state_384_transition_chunk_in_queue(
+          staged.node_slots, staged.config.node_capacity,
+          &staged.node_ready, reservation, chunk_id, chunk_count,
+          slot_chunk_offset, byte_mask, payload, updated_reservation,
+          selected_fetch);
+      break;
+    case kTargetPrimitive:
+      status = fill_private_state_384_transition_chunk_in_queue(
+          staged.primitive_slots, staged.config.primitive_capacity,
+          &staged.primitive_ready, reservation, chunk_id, chunk_count,
+          slot_chunk_offset, byte_mask, payload, updated_reservation,
+          selected_fetch);
+      break;
+    case kTargetInstance:
+      status = fill_private_state_384_transition_chunk_in_queue(
           staged.instance_slots, staged.config.instance_capacity,
           &staged.instance_ready, reservation, chunk_id, chunk_count,
           slot_chunk_offset, byte_mask, payload, updated_reservation,

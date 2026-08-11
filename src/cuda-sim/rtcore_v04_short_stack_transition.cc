@@ -255,6 +255,10 @@ static status_kind prepare_node_transition_impl(
   result->overflowed_bottom = pushed.overflowed_bottom;
   if (pushed.selected_valid != 0) {
     result->selected_fetch = pushed.selected;
+    result->selected_entry = direct_entry_from_fetch(
+        pushed.selected,
+        static_cast<short_stack::domain_kind>(
+            persistent.stack.active_domain));
     result->selected_valid = 1;
     result->next_build_generation = build_generation;
   } else if (persistent.stack.cross_as != 0 &&
@@ -322,6 +326,7 @@ static status_kind prepare_node_transition_impl(
             &result->selected_fetch, &result->replay_cursor)) {
       return kStatusShortStackRejected;
     }
+    result->selected_entry = popped.entry;
     result->selected_valid = 1;
     result->next_build_generation = build_generation;
   }
@@ -486,6 +491,7 @@ static status_kind prepare_resume_transition_impl(
         return kStatusShortStackRejected;
       }
       result->selected_valid = 1;
+      result->selected_entry = popped.entry;
     }
 
     private_frontier::access_plan_v0 stack_plan = {};
@@ -551,6 +557,7 @@ static status_kind prepare_resume_transition_impl(
           &result->selected_fetch, &result->replay_cursor)) {
     return kStatusShortStackRejected;
   }
+  result->selected_entry = popped.entry;
   result->selected_valid = 1;
   result->next_build_generation = build_generation;
   return finalize_persistent_state(
@@ -664,6 +671,7 @@ static status_kind prepare_enter_blas_transition_impl(
   persistent.blas_build_generation =
       input.blas_build_generation;
   result->selected_valid = 1;
+  result->selected_entry = popped.entry;
   result->next_build_generation =
       input.blas_build_generation;
   return finalize_persistent_state(

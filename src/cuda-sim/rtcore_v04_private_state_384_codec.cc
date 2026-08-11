@@ -432,7 +432,8 @@ static status_kind validate_transition(
       short_stack::control_kind(state.transition.selected.control);
   if (!short_stack::validate_entry(state.transition.selected) ||
       (selected_kind != short_stack::kEntryDirectTarget &&
-       selected_kind != short_stack::kEntrySameNodeReplay) ||
+       selected_kind != short_stack::kEntrySameNodeReplay &&
+       selected_kind != short_stack::kEntryParentResume) ||
       short_stack::control_domain(state.transition.selected.control) !=
           (state.transition.decode_context.as_type == kAsTypeTlas
                ? short_stack::kDomainTlas
@@ -458,6 +459,45 @@ static status_kind validate_transition(
             pending.payload_byte_count)) {
       return kStatusInvalidTransition;
     }
+  }
+  return kStatusOk;
+}
+
+static status_kind validate_transition_sparse_projection(
+    const transition_state_v1 &transition,
+    uint8_t pending_parent_resume_valid) {
+  status_kind status =
+      validate_as_context(transition.decode_context, false);
+  if (status != kStatusOk) return kStatusInvalidTransition;
+  const short_stack::entry_kind selected_kind =
+      short_stack::control_kind(transition.selected.control);
+  if (!short_stack::validate_entry(transition.selected) ||
+      (selected_kind != short_stack::kEntryDirectTarget &&
+       selected_kind != short_stack::kEntrySameNodeReplay &&
+       selected_kind != short_stack::kEntryParentResume) ||
+      short_stack::control_domain(transition.selected.control) !=
+          (transition.decode_context.as_type == kAsTypeTlas
+               ? short_stack::kDomainTlas
+               : short_stack::kDomainBlas) ||
+      !relative_range_contains(
+          transition.decode_context,
+          transition.selected.payload_offset,
+          transition.selected.payload_byte_count)) {
+    return kStatusInvalidTransition;
+  }
+  if (pending_parent_resume_valid != 0) {
+    const short_stack::entry_v0 &pending =
+        transition.pending_parent_resume;
+    if (!short_stack::validate_entry(pending) ||
+        short_stack::control_kind(pending.control) !=
+            short_stack::kEntryParentResume) {
+      return kStatusInvalidTransition;
+    }
+  } else if (!bytes_are_zero(
+                 reinterpret_cast<const uint8_t *>(
+                     &transition.pending_parent_resume),
+                 sizeof(transition.pending_parent_resume))) {
+    return kStatusInvalidTransition;
   }
   return kStatusOk;
 }
@@ -966,6 +1006,44 @@ status_kind encode_boundary_sparse_projection(
   status = validate_boundary(validation, control);
   if (status != kStatusOk) return status;
   encode_boundary(payload, boundary, reason);
+  return kStatusOk;
+}
+
+status_kind encode_transition_sparse_projection(
+    const transition_state_v1 &transition,
+    uint8_t pending_parent_resume_valid,
+    uint8_t payload[kTransitionProjectionBytes]) {
+  if (payload == NULL || pending_parent_resume_valid > 1) {
+    return kStatusInvalidArgument;
+  }
+  const status_kind status = validate_transition_sparse_projection(
+      transition, pending_parent_resume_valid);
+  if (status != kStatusOk) return status;
+  std::memset(payload, 0, kTransitionProjectionBytes);
+  encode_transition(payload, transition,
+                    pending_parent_resume_valid != 0);
+  return kStatusOk;
+}
+
+status_kind decode_transition_sparse_projection(
+    const uint8_t payload[kTransitionProjectionBytes],
+    transition_state_v1 *transition,
+    uint8_t *pending_parent_resume_valid) {
+  if (payload == NULL || transition == NULL ||
+      pending_parent_resume_valid == NULL) {
+    return kStatusInvalidArgument;
+  }
+  const bool pending_valid =
+      !bytes_are_zero(payload + 48, sizeof(short_stack::entry_v0));
+  transition_state_v1 decoded = {};
+  status_kind status =
+      decode_transition(payload, pending_valid, &decoded);
+  if (status != kStatusOk) return status;
+  status = validate_transition_sparse_projection(
+      decoded, pending_valid ? 1 : 0);
+  if (status != kStatusOk) return status;
+  *transition = decoded;
+  *pending_parent_resume_valid = pending_valid ? 1 : 0;
   return kStatusOk;
 }
 

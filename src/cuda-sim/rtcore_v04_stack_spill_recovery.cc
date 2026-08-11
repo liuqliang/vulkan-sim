@@ -34,6 +34,7 @@ static const uint8_t kCullMaskOffsetInChunk =
         kHandoffRayPolicyChunkOffset);
 static const uint32_t kSpillMemoryOpSeqBase = 0x20;
 static const uint32_t kHandoffMemoryOpSeq = 0x30;
+static const uint32_t kPrivateState384SpillMemoryOpSeqBase = 0x40;
 
 bool bytes_are_zero(const uint8_t *bytes, size_t count) {
   for (size_t index = 0; index < count; ++index) {
@@ -147,6 +148,89 @@ bool common_transport_valid(
                         sizeof(request.v04_target_raw_read.reserved_zero));
 }
 
+uint8_t private_state_384_consumer(uint8_t target_kind) {
+  switch (static_cast<fetch_target::target_kind>(target_kind)) {
+    case fetch_target::kTargetNode:
+      return private_state_384::operand_plan::kConsumerNode;
+    case fetch_target::kTargetPrimitive:
+      return private_state_384::operand_plan::kConsumerPrimitive;
+    case fetch_target::kTargetInstance:
+      return private_state_384::operand_plan::kConsumerInstance;
+    case fetch_target::kTargetInvalid:
+      return private_state_384::operand_plan::kConsumerInvalid;
+  }
+  return private_state_384::operand_plan::kConsumerInvalid;
+}
+
+bool private_state_384_transport_valid(
+    const rtcore_memory_unit_request_snapshot &request) {
+  const uint8_t profile =
+      request.v04_target_raw_read.private_storage_profile;
+  return request.valid &&
+         request.operation == RTCORE_MEMORY_OPERATION_READ &&
+         request.destination ==
+             RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL &&
+         request.response_target == kResponseTargetRtcore &&
+         request.rt_request_id != 0 && request.lane_id < 32 &&
+         request.resident_warp_id < request_owner::kResidentWarpCapacity &&
+         request.request_generation != 0 &&
+         request.private_slot_id < request_owner::kRequestControlCapacity &&
+         !request.is_write &&
+         request.v04_target_raw_read.valid == 1 &&
+         request.v04_target_raw_read.reservation_id != 0 &&
+         request.v04_target_raw_read.reservation_age != 0 &&
+         request.v04_target_raw_read.target_operation_seq != 0 &&
+         request.v04_target_raw_read.target_slot_generation != 0 &&
+         request.v04_target_raw_read.private_layout_profile_id ==
+             private_state_384::kPrivateLayoutProfileId &&
+         request.v04_target_raw_read.bvh_format_profile_id ==
+             private_state_384::kGenRtBvhFormatProfileId &&
+         (profile == private_storage::kProfileCompressedShared384 ||
+          profile == private_storage::kProfileGlobal384) &&
+         request.v04_target_raw_read.producer_commit_required == 0 &&
+         request.v04_target_raw_read.producer_operation_seq == 0 &&
+         request.v04_target_raw_read.producer_commit_epoch == 0 &&
+         request.v04_target_raw_read.transfer_bytes ==
+             private_state_384::kChunkBytes &&
+         bytes_are_zero(request.v04_target_raw_read.reserved_zero,
+                        sizeof(request.v04_target_raw_read.reserved_zero));
+}
+
+void reconstruct_reservation_transport(
+    const rtcore_memory_unit_request_snapshot &request,
+    fetch_target::reservation_receipt_v0 *reservation) {
+  const rtcore_v04_target_raw_read_transport_snapshot &extension =
+      request.v04_target_raw_read;
+  *reservation = fetch_target::reservation_receipt_v0();
+  reservation->owner.owner_hw_sid = request.owner_hw_sid;
+  reservation->owner.resident_warp_id = request.resident_warp_id;
+  reservation->owner.request_identity = request.rt_request_id;
+  reservation->owner.generation = request.request_generation;
+  reservation->owner.private_slot_id = request.private_slot_id;
+  reservation->owner.lane_id = request.lane_id;
+  reservation->reservation_id = extension.reservation_id;
+  reservation->reservation_age = extension.reservation_age;
+  reservation->raw_payload_base_address =
+      extension.raw_payload_base_address;
+  reservation->target_operation_seq = extension.target_operation_seq;
+  reservation->producer_operation_seq = extension.producer_operation_seq;
+  reservation->producer_commit_epoch = extension.producer_commit_epoch;
+  reservation->slot_generation = extension.target_slot_generation;
+  reservation->private_layout_profile_id =
+      extension.private_layout_profile_id;
+  reservation->bvh_format_profile_id = extension.bvh_format_profile_id;
+  reservation->raw_payload_bytes = extension.raw_payload_bytes;
+  reservation->target_kind = extension.target_kind;
+  reservation->slot_index = extension.target_slot_index;
+  reservation->raw_chunk_count = static_cast<uint8_t>(
+      extension.raw_payload_bytes / private_frontier::kSharedAccessChunkBytes);
+  reservation->private_chunk_count = extension.private_chunk_count;
+  reservation->producer_commit_required = extension.producer_commit_required;
+  reservation->operation_kind = extension.operation_kind;
+  reservation->private_storage_profile = extension.private_storage_profile;
+  reservation->valid = 1;
+}
+
 uint32_t read_le_u32(const uint8_t *bytes) {
   return static_cast<uint32_t>(bytes[0]) |
          (static_cast<uint32_t>(bytes[1]) << 8) |
@@ -201,45 +285,7 @@ bool reconstruct_reservation(
   if (reservation == NULL || !common_transport_valid(request)) {
     return false;
   }
-  const rtcore_v04_target_raw_read_transport_snapshot &extension =
-      request.v04_target_raw_read;
-  *reservation = fetch_target::reservation_receipt_v0();
-  reservation->owner.owner_hw_sid = request.owner_hw_sid;
-  reservation->owner.resident_warp_id = request.resident_warp_id;
-  reservation->owner.request_identity = request.rt_request_id;
-  reservation->owner.generation = request.request_generation;
-  reservation->owner.private_slot_id = request.private_slot_id;
-  reservation->owner.lane_id = request.lane_id;
-  reservation->reservation_id = extension.reservation_id;
-  reservation->reservation_age = extension.reservation_age;
-  reservation->raw_payload_base_address =
-      extension.raw_payload_base_address;
-  reservation->target_operation_seq =
-      extension.target_operation_seq;
-  reservation->producer_operation_seq =
-      extension.producer_operation_seq;
-  reservation->producer_commit_epoch =
-      extension.producer_commit_epoch;
-  reservation->slot_generation =
-      extension.target_slot_generation;
-  reservation->private_layout_profile_id =
-      extension.private_layout_profile_id;
-  reservation->bvh_format_profile_id =
-      extension.bvh_format_profile_id;
-  reservation->raw_payload_bytes = extension.raw_payload_bytes;
-  reservation->target_kind = extension.target_kind;
-  reservation->slot_index = extension.target_slot_index;
-  reservation->raw_chunk_count = static_cast<uint8_t>(
-      extension.raw_payload_bytes /
-      private_frontier::kSharedAccessChunkBytes);
-  reservation->private_chunk_count =
-      extension.private_chunk_count;
-  reservation->producer_commit_required =
-      extension.producer_commit_required;
-  reservation->operation_kind = extension.operation_kind;
-  reservation->private_storage_profile =
-      extension.private_storage_profile;
-  reservation->valid = 1;
+  reconstruct_reservation_transport(request, reservation);
   return true;
 }
 
@@ -443,6 +489,156 @@ status_kind try_reserve_and_prepare_initial_requests(
   return kStatusOk;
 }
 
+status_kind try_reserve_and_prepare_private_state_384_requests(
+    fetch_target::engine_state_v0 *target_state,
+    timing_driver::state_v0 *timing_state,
+    const timing_driver::pending_recovery_snapshot_v0 &pending,
+    const private_frontier::owner_binding_v0 &private_owner,
+    uint64_t private_slot_base_address, uint8_t private_storage_profile,
+    uint64_t reservation_cycle,
+    private_state_384_initial_request_plan_v1 *plan) {
+  const bool compressed =
+      private_storage_profile ==
+      private_storage::kProfileCompressedShared384;
+  const bool global =
+      private_storage_profile == private_storage::kProfileGlobal384;
+  if (target_state == NULL || timing_state == NULL || plan == NULL ||
+      pending.valid != 1 || pending.target_operation_seq == 0 ||
+      pending.build_generation == 0 ||
+      (!compressed && !global) || private_slot_base_address == 0 ||
+      private_slot_base_address % private_state_384::kChunkBytes != 0) {
+    return kStatusInvalidArgument;
+  }
+  *plan = private_state_384_initial_request_plan_v1();
+  if (!owners_match(pending.owner, private_owner)) {
+    return kStatusOwnerMismatch;
+  }
+  if (pending.route_kind !=
+      timing_driver::kPendingRecoveryRouteStackSelectedFetch) {
+    return kStatusUnsupportedRoute;
+  }
+
+  fetch_target::engine_state_v0 staged_target = *target_state;
+  timing_driver::state_v0 staged_timing = *timing_state;
+  fetch_target::recovery_reservation_input_v0 input = {};
+  input.owner = private_owner;
+  input.target_operation_seq = pending.target_operation_seq;
+  input.build_generation = pending.build_generation;
+  input.target_kind = pending.target_kind;
+  input.private_storage_profile = private_storage_profile;
+  input.required_operand_mask = static_cast<uint8_t>(
+      kRecoveryBaseRequiredOperandMask |
+      (pending.target_kind == fetch_target::kTargetPrimitive
+           ? fetch_target::kOperandCurrentInstanceValid
+           : 0));
+  fetch_target::reservation_receipt_v0 reservation = {};
+  const fetch_target::status_kind reserve_status =
+      fetch_target::try_reserve_recovery(
+          &staged_target, input, reservation_cycle, &reservation);
+  if (reserve_status == fetch_target::kStatusCapacityBackpressure ||
+      reserve_status ==
+          fetch_target::kStatusReservationBudgetBackpressure) {
+    return kStatusTargetBackpressure;
+  }
+  if (reserve_status != fetch_target::kStatusOk) {
+    return kStatusTargetReservationRejected;
+  }
+
+  const uint8_t consumer =
+      private_state_384_consumer(pending.target_kind);
+  if (consumer == private_state_384::operand_plan::kConsumerInvalid) {
+    return kStatusPrivateReadPlanRejected;
+  }
+  private_state_384::live_bridge::read_input_v1 read_input = {};
+  read_input.owner = private_owner;
+  read_input.private_slot_base_address = private_slot_base_address;
+  read_input.issue_cycle = reservation_cycle;
+  read_input.operation_sequence = pending.target_operation_seq;
+  read_input.bvh_format_profile_id =
+      private_state_384::kGenRtBvhFormatProfileId;
+  read_input.reservation_generation = reservation.slot_generation;
+  read_input.storage_profile = private_storage_profile;
+  read_input.consumer = consumer;
+  read_input.operation =
+      private_state_384::operand_plan::kOperationDefault;
+  read_input.completion_reason =
+      private_state_384::operand_plan::kCompletionReasonNone;
+  read_input.destination = RTCORE_MEMORY_DESTINATION_TARGET_QUEUE_FILL;
+  read_input.memory_op_seq_base = 1;
+  private_state_384::live_bridge::read_request_plan_v1 private_reads = {};
+  fetch_target::reservation_receipt_v0 updated_reservation = {};
+  if (private_state_384::live_bridge::prepare_read_requests(
+          read_input, &private_reads) !=
+          private_state_384::live_bridge::kStatusOk ||
+      target_private_state_384::configure_read(
+          &staged_target, reservation, private_reads,
+          &updated_reservation) != target_private_state_384::kStatusOk) {
+    return kStatusPrivateReadPlanRejected;
+  }
+  reservation = updated_reservation;
+
+  for (uint8_t index = 0;
+       index < kPrivateState384TransitionReadCount; ++index) {
+    rtcore_memory_unit_request_snapshot &request =
+        plan->requests[index];
+    populate_common_request(reservation, reservation_cycle, &request);
+    request.address_space =
+        compressed ? RTCORE_MEMORY_ADDRESS_SPACE_SHARED
+                   : RTCORE_MEMORY_ADDRESS_SPACE_GLOBAL;
+    request.memory_op_seq =
+        kPrivateState384SpillMemoryOpSeqBase + index;
+    request.chunk_id = index;
+    request.chunk_count = kPrivateState384TransitionReadCount;
+    request.access_kind =
+        RTCORE_MEMORY_ACCESS_STACK_SPILL_RECOVERY_READ;
+    request.v04_target_raw_read.slot_chunk_offset =
+        static_cast<uint16_t>(
+            private_state_384::kBoundaryTransitionOffset +
+            index * private_state_384::kChunkBytes);
+    request.aligned_32b_addr =
+        private_slot_base_address +
+        request.v04_target_raw_read.slot_chunk_offset;
+    request.byte_mask =
+        private_state_384::backing::kFullChunkByteMask;
+    request.v04_target_raw_read.operand_kind =
+        RTCORE_MEMORY_TARGET_OPERAND_STACK_SPILL;
+    request.v04_target_raw_read.field_kind =
+        private_frontier::kFieldTransitionSpill;
+    if (!private_state_384_transport_valid(request)) {
+      return kStatusTransportPlanRejected;
+    }
+  }
+  std::memcpy(
+      plan->requests + kPrivateState384TransitionReadCount,
+      private_reads.requests,
+      sizeof(private_reads.requests[0]) * private_reads.request_count);
+  const uint8_t request_count = static_cast<uint8_t>(
+      kPrivateState384TransitionReadCount +
+      private_reads.request_count);
+  for (uint8_t index = 0; index < request_count; ++index) {
+    if (timing_driver::begin_memory_transaction(
+            &staged_timing, pending.owner,
+            pending.target_operation_seq) != timing_driver::kStatusOk) {
+      return kStatusTimingRejected;
+    }
+  }
+  if (timing_driver::mark_pending_recovery_reservation_retained(
+          &staged_timing, pending.owner,
+          pending.target_operation_seq, pending.target_kind,
+          pending.route_kind) != timing_driver::kStatusOk) {
+    return kStatusTimingRejected;
+  }
+  plan->reservation = reservation;
+  plan->request_count = request_count;
+  plan->transition_read_count =
+      kPrivateState384TransitionReadCount;
+  plan->private_read_count = private_reads.request_count;
+  plan->valid = 1;
+  *target_state = staged_target;
+  *timing_state = staged_timing;
+  return kStatusOk;
+}
+
 status_kind accept_spill_read_response(
     const private_shared::backing_state_v0 &backing,
     fetch_target::engine_state_v0 *target_state,
@@ -498,6 +694,47 @@ status_kind accept_spill_read_response(
              request.v04_target_raw_read.slot_chunk_offset,
              request.byte_mask, payload, updated_reservation,
              selected_fetch) == fetch_target::kStatusOk
+             ? kStatusOk
+             : kStatusTargetFillRejected;
+}
+
+status_kind accept_private_state_384_transition_read_response(
+    fetch_target::engine_state_v0 *target_state,
+    const rtcore_memory_unit_request_snapshot &request,
+    const uint8_t *response_payload, uint8_t response_bytes,
+    fetch_target::reservation_receipt_v0 *updated_reservation,
+    typed_node::selected_child_fetch_work_item_v0 *selected_fetch) {
+  if (target_state == NULL || response_payload == NULL ||
+      updated_reservation == NULL || selected_fetch == NULL ||
+      response_bytes != private_state_384::kChunkBytes ||
+      !private_state_384_transport_valid(request) ||
+      request.access_kind !=
+          RTCORE_MEMORY_ACCESS_STACK_SPILL_RECOVERY_READ ||
+      request.v04_target_raw_read.operand_kind !=
+          RTCORE_MEMORY_TARGET_OPERAND_STACK_SPILL ||
+      request.v04_target_raw_read.field_kind !=
+          private_frontier::kFieldTransitionSpill ||
+      request.chunk_count != kPrivateState384TransitionReadCount ||
+      request.chunk_id >= request.chunk_count ||
+      request.memory_op_seq !=
+          kPrivateState384SpillMemoryOpSeqBase + request.chunk_id ||
+      request.v04_target_raw_read.slot_chunk_offset !=
+          private_state_384::kBoundaryTransitionOffset +
+              request.chunk_id * private_state_384::kChunkBytes ||
+      request.byte_mask !=
+          private_state_384::backing::kFullChunkByteMask) {
+    return kStatusMalformedTransport;
+  }
+  fetch_target::reservation_receipt_v0 reservation = {};
+  reconstruct_reservation_transport(request, &reservation);
+  return fetch_target::fill_private_state_384_transition_chunk(
+             target_state, reservation,
+             static_cast<uint8_t>(request.chunk_id),
+             static_cast<uint8_t>(request.chunk_count),
+             request.v04_target_raw_read.slot_chunk_offset,
+             request.byte_mask, response_payload,
+             updated_reservation, selected_fetch) ==
+             fetch_target::kStatusOk
              ? kStatusOk
              : kStatusTargetFillRejected;
 }

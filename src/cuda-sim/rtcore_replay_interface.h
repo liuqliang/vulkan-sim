@@ -603,6 +603,11 @@ bool rtcore_accept_v04_stack_spill_recovery_shared_read(
     const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle);
 
+bool rtcore_accept_v04_stack_spill_recovery_read_response(
+    const rtcore_memory_unit_request_snapshot *request,
+    const unsigned char *response_bytes, unsigned response_byte_count,
+    unsigned long long response_cycle);
+
 bool rtcore_accept_v04_handoff_ray_policy_shared_read(
     const rtcore_memory_unit_request_snapshot *request,
     unsigned long long response_cycle);

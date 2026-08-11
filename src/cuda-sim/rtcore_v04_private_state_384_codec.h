@@ -23,6 +23,7 @@ static const uint64_t kSharedPlacementBase = UINT64_C(0xfe00000000000000);
 static const uint64_t kSharedPlacementOwnerStride = UINT64_C(0x1000000);
 static const uint8_t kCommittedHitProjectionBytes = 56;
 static const uint8_t kBoundaryProjectionBytes = 64;
+static const uint8_t kTransitionProjectionBytes = 64;
 static const uint8_t kCurrentInstanceProjectionBytes = 20;
 static const uint8_t kParentRestoreProjectionBytes = 64;
 
@@ -210,6 +211,16 @@ status_kind encode_boundary_sparse_projection(
     const boundary_state_v1 &boundary, uint8_t reason,
     const as_context_v1 &active_as,
     uint8_t payload[kBoundaryProjectionBytes]);
+
+status_kind encode_transition_sparse_projection(
+    const transition_state_v1 &transition,
+    uint8_t pending_parent_resume_valid,
+    uint8_t payload[kTransitionProjectionBytes]);
+
+status_kind decode_transition_sparse_projection(
+    const uint8_t payload[kTransitionProjectionBytes],
+    transition_state_v1 *transition,
+    uint8_t *pending_parent_resume_valid);
 
 status_kind encode_ray_sparse_projection(
     const ray_v1 &ray, uint8_t payload[kChunkBytes]);

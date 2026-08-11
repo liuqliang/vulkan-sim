@@ -103,7 +103,7 @@ static void append_read(uint8_t chunk, read_plan_v1 *plan) {
 
 static bool producer_is_valid(uint8_t producer) {
   return producer > kProducerInvalid &&
-         producer <= kProducerCompletionPublisher;
+         producer <= kProducerStackTransitionSpill;
 }
 
 static uint32_t producer_allowed_byte_mask(uint8_t producer,
@@ -148,6 +148,8 @@ static uint32_t producer_allowed_byte_mask(uint8_t producer,
                kStackMetadata;
       }
       return 0;
+    case kProducerStackTransitionSpill:
+      return chunk == 8 || chunk == 9 ? kFull : 0;
     case kProducerInvalid:
       break;
   }

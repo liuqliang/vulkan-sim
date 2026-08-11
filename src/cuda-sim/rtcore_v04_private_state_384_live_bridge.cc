@@ -132,6 +132,11 @@ uint8_t global_write_field_kind(uint8_t producer, uint8_t chunk_index) {
         return private_frontier::kFieldParentFrame;
       }
       break;
+    case operand_plan::kProducerStackTransitionSpill:
+      if (chunk_index == 8 || chunk_index == 9) {
+        return private_frontier::kFieldTransitionSpill;
+      }
+      break;
     default:
       break;
   }
@@ -616,13 +621,18 @@ status_kind register_modeled_write(
   return kStatusOk;
 }
 
-status_kind prepare_global_modeled_write(
+status_kind prepare_modeled_write(
     const pending_sparse_commit_v1 &pending, uint8_t write_index,
     uint64_t enqueue_cycle, private_shared::shared_write_v0 *write) {
+  const bool compressed =
+      pending.key.storage_profile ==
+      private_storage::kProfileCompressedShared384;
+  const bool global =
+      pending.key.storage_profile ==
+      private_storage::kProfileGlobal384;
   if (write == NULL || pending.valid != 1 || pending.committed != 0 ||
       !operation_key_valid(pending.key) ||
-      pending.key.storage_profile !=
-          private_storage::kProfileGlobal384 ||
+      (!compressed && !global) ||
       pending.producer == operand_plan::kProducerInvalid ||
       pending.expected_write_ack_count !=
           pending.merged_write_plan.write_count ||
@@ -646,7 +656,8 @@ status_kind prepare_global_modeled_write(
   }
   *write = private_shared::shared_write_v0();
   write->valid = true;
-  write->address_space = private_shared::kAddressSpaceGlobal;
+  write->address_space = global ? private_shared::kAddressSpaceGlobal
+                                : private_shared::kAddressSpaceShared;
   write->address_mode = private_shared::kAddressModePrivateField;
   write->access_operation = private_shared::kAccessOperationWrite;
   write->destination = private_shared::kDestinationPrivateCommitAck;
@@ -665,6 +676,17 @@ status_kind prepare_global_modeled_write(
               sizeof(write->payload));
   write->enqueue_cycle = enqueue_cycle;
   return kStatusOk;
+}
+
+status_kind prepare_global_modeled_write(
+    const pending_sparse_commit_v1 &pending, uint8_t write_index,
+    uint64_t enqueue_cycle, private_shared::shared_write_v0 *write) {
+  if (pending.key.storage_profile !=
+      private_storage::kProfileGlobal384) {
+    return kStatusInvalidCommit;
+  }
+  return prepare_modeled_write(
+      pending, write_index, enqueue_cycle, write);
 }
 
 status_kind accept_global_write_ack(

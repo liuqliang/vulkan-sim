@@ -241,13 +241,15 @@ bridge_v0::bridge_v0()
     : authority_(),
       registry_(),
       publication_identity_observations_(),
-      registered_groups_() {}
+      registered_groups_(),
+      accepted_publication_stores_() {}
 
 void bridge_v0::reset() {
   authority_.reset();
   registry_.reset();
   publication_identity_observations_.clear();
   registered_groups_.clear();
+  accepted_publication_stores_.clear();
 }
 
 status_kind bridge_v0::observe_initial_publication(
@@ -362,6 +364,10 @@ status_kind bridge_v0::observe_initial_publication(
       request.handoff_allowed_publication_masks,
       request.handoff_allowed_publication_masks +
           request.handoff_allowed_publication_mask_count);
+  group.completed_publication_masks.assign(
+      request.capacity_lane_slots,
+      std::vector<uint32_t>(
+          request.handoff_allowed_publication_mask_count, 0));
   group.fence_armed = 1;
   registered_groups_[observation.identity.record_id] = group;
   result->provisional_group_registered = 1;
@@ -392,6 +398,31 @@ status_kind bridge_v0::make_registered_group_ranges(
              : geometry;
 }
 
+bool bridge_v0::publication_coverage_complete(
+    const registered_group_v0 &group) const {
+  if (group.completed_publication_masks.size() !=
+      group.capacity_lane_slots) {
+    return false;
+  }
+  for (uint32_t lane = 0; lane < group.capacity_lane_slots; ++lane) {
+    if ((group.active_mask & (uint32_t{1} << lane)) == 0) continue;
+    if (group.completed_publication_masks[lane].size() !=
+        group.handoff_allowed_publication_masks.size()) {
+      return false;
+    }
+    for (size_t chunk = 0;
+         chunk < group.handoff_allowed_publication_masks.size(); ++chunk) {
+      const uint32_t required =
+          group.handoff_allowed_publication_masks[chunk];
+      if ((group.completed_publication_masks[lane][chunk] & required) !=
+          required) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 status_kind bridge_v0::lookup_registered_group_for_submit(
     const allocation_identity::allocation_slot_v0 &slot,
     const allocation_identity::owner_v0 &owner, uint32_t active_mask,
@@ -417,12 +448,75 @@ status_kind bridge_v0::lookup_registered_group_for_submit(
 address_range_registry::status_kind bridge_v0::accept_publication_store(
     const address_range_registry::provisional_store_v0 &store,
     address_range_registry::transaction_token_v0 *token) {
-  return registry_.accept_provisional_publication_store(store, token);
+  const address_range_registry::status_kind status =
+      registry_.accept_provisional_publication_store(store, token);
+  if (status != address_range_registry::kStatusOk) return status;
+  if (!accepted_publication_stores_
+           .insert(std::make_pair(token->transaction_id, store))
+           .second) {
+    registry_.complete_transaction(*token);
+    return address_range_registry::kStatusStaleTransaction;
+  }
+  return address_range_registry::kStatusOk;
 }
 
 address_range_registry::status_kind bridge_v0::complete_publication_store(
     const address_range_registry::transaction_token_v0 &token) {
-  return registry_.complete_transaction(token);
+  if (token.access != address_range_registry::
+                          kAccessHandoffShaderTraceInputPublish) {
+    return registry_.complete_transaction(token);
+  }
+  std::map<uint64_t, publication_store_v0>::iterator pending =
+      accepted_publication_stores_.find(token.transaction_id);
+  if (pending == accepted_publication_stores_.end()) {
+    return address_range_registry::kStatusTransactionNotFound;
+  }
+  const publication_store_v0 store = pending->second;
+  registered_group_v0 *group = NULL;
+  for (std::map<uint64_t, registered_group_v0>::iterator it =
+           registered_groups_.begin();
+       it != registered_groups_.end(); ++it) {
+    if (!same_provisional_owner(it->second.provisional_owner,
+                                store.owner)) {
+      continue;
+    }
+    if (group != NULL) {
+      return address_range_registry::kStatusDuplicateOwner;
+    }
+    group = &it->second;
+  }
+  if (group == NULL) return address_range_registry::kStatusRecordNotFound;
+  if (store.lane_id >= group->capacity_lane_slots ||
+      store.lane_id >= group->completed_publication_masks.size()) {
+    return address_range_registry::kStatusLaneMismatch;
+  }
+  uint64_t lane_base = 0;
+  if (!checked_lane_address(group->allocation_ranges.handoff_base,
+                            group->handoff_lane_stride_bytes,
+                            store.lane_id, &lane_base) ||
+      store.aligned_32b_address < lane_base) {
+    return address_range_registry::kStatusInvalidRange;
+  }
+  const uint64_t offset = store.aligned_32b_address - lane_base;
+  if (offset >= group->handoff_lane_stride_bytes ||
+      offset % address_range_registry::kAddressChunkBytes != 0) {
+    return address_range_registry::kStatusInvalidRange;
+  }
+  const size_t chunk = static_cast<size_t>(
+      offset / address_range_registry::kAddressChunkBytes);
+  if (chunk >= group->handoff_allowed_publication_masks.size() ||
+      chunk >= group->completed_publication_masks[store.lane_id].size() ||
+      (store.byte_mask &
+       ~group->handoff_allowed_publication_masks[chunk]) != 0) {
+    return address_range_registry::kStatusByteMaskMismatch;
+  }
+  const address_range_registry::status_kind status =
+      registry_.complete_transaction(token);
+  if (status != address_range_registry::kStatusOk) return status;
+  group->completed_publication_masks[store.lane_id][chunk] |=
+      store.byte_mask;
+  accepted_publication_stores_.erase(pending);
+  return address_range_registry::kStatusOk;
 }
 
 status_kind bridge_v0::begin_publication_store_preaccept(
@@ -498,6 +592,12 @@ status_kind bridge_v0::accept_preaccepted_publication_store(
   const address_range_registry::status_kind status =
       registry_.accept_provisional_publication_store(store, token);
   if (status != address_range_registry::kStatusOk) {
+    return kStatusRegistryRejected;
+  }
+  if (!accepted_publication_stores_
+           .insert(std::make_pair(token->transaction_id, store))
+           .second) {
+    registry_.complete_transaction(*token);
     return kStatusRegistryRejected;
   }
   --group->preaccept_pending;
@@ -889,6 +989,8 @@ status_kind bridge_v0::service_provisional_publication_fence(
   drain->registered = 1;
   drain->fence_armed = group->fence_armed;
   drain->preaccept_pending = group->preaccept_pending;
+  drain->publication_coverage_complete =
+      publication_coverage_complete(*group);
   if (!group->fence_armed) return kStatusOk;
   drain->registry_status =
       registry_.provisional_group_outstanding(
@@ -900,7 +1002,8 @@ status_kind bridge_v0::service_provisional_publication_fence(
   }
   drain->wait_required =
       drain->preaccept_pending != 0 ||
-      drain->outstanding_transactions != 0;
+      drain->outstanding_transactions != 0 ||
+      !drain->publication_coverage_complete;
   if (!drain->wait_required) {
     group->fence_armed = 0;
     drain->fence_consumed = 1;
@@ -965,6 +1068,8 @@ status_kind bridge_v0::begin_or_poll_first_submit_live_bind(
   result->bind_started = group.bind_started;
   result->live_bound = group.live_bound;
   result->resident_warp_generation = group.resident_warp_generation;
+  result->publication_coverage_complete =
+      publication_coverage_complete(group);
 
   std::vector<std::vector<uint32_t> > owned_masks;
   std::vector<address_range_registry::range_spec_v0> ranges;
@@ -981,6 +1086,12 @@ status_kind bridge_v0::begin_or_poll_first_submit_live_bind(
     return result->registry_status == address_range_registry::kStatusOk
                ? kStatusOk
                : kStatusRegistryRejected;
+  }
+
+  if (!result->publication_coverage_complete) {
+    result->registry_status = address_range_registry::kStatusOk;
+    result->wait_required = 1;
+    return kStatusOk;
   }
 
   if (group.preaccept_pending != 0) {
@@ -1037,6 +1148,13 @@ status_kind bridge_v0::commit_first_submit_live_bind(
   result->preaccept_pending = group.preaccept_pending;
   result->resident_warp_generation = group.resident_warp_generation;
   result->live_bound = group.live_bound;
+  result->publication_coverage_complete =
+      publication_coverage_complete(group);
+  if (!result->publication_coverage_complete) {
+    result->registry_status = address_range_registry::kStatusOk;
+    result->wait_required = 1;
+    return kStatusOk;
+  }
   if (!group.bind_started || group.preaccept_pending != 0) {
     result->wait_required = group.preaccept_pending != 0;
     return group.bind_started ? kStatusOk : kStatusGroupConflict;

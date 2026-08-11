@@ -100,9 +100,17 @@ status_kind try_accept_direct(
       private_storage::kProfileGlobal384;
   const bool private_state_384_profile =
       compressed_profile || global_profile;
+  const bool preallocated_successor =
+      input.target_operation_seq != 0;
   if (timing_state == NULL || target_state == NULL || accepted == NULL ||
       !timing_state->initialized || target_state->initialized != 1 ||
       input.producer_operation_seq == 0 ||
+      input.producer_commit_required > 1 ||
+      (preallocated_successor
+           ? input.producer_commit_required != 1 ||
+                 input.producer_commit_epoch == 0
+           : input.producer_commit_required != 0 ||
+                 input.producer_commit_epoch != 0) ||
       (!legacy_profile && !private_state_384_profile) ||
       !bytes_are_zero(input.reserved_zero,
                       sizeof(input.reserved_zero))) {
@@ -128,10 +136,23 @@ status_kind try_accept_direct(
 
   timing_driver::state_v0 staged_timing = *timing_state;
   fetch_target::engine_state_v0 staged_target = *target_state;
-  uint32_t target_operation_seq = 0;
-  if (timing_driver::allocate_target_operation(
-          &staged_timing, request_binding,
-          &target_operation_seq) != timing_driver::kStatusOk) {
+  uint32_t target_operation_seq = input.target_operation_seq;
+  if (preallocated_successor) {
+    const timing_driver::lane_control_state_v0 *control =
+        timing_driver::find_live_lane_control(
+            staged_timing, request_binding);
+    if (control == NULL ||
+        control->live_target_operation_seq != target_operation_seq ||
+        control->live_commit_producer_operation_seq !=
+            input.producer_operation_seq ||
+        control->live_commit_epoch != input.producer_commit_epoch ||
+        control->live_target_reservation_id != 0 ||
+        control->live_memory_transaction_count != 0) {
+      return kStatusTimingControlRejected;
+    }
+  } else if (timing_driver::allocate_target_operation(
+                 &staged_timing, request_binding,
+                 &target_operation_seq) != timing_driver::kStatusOk) {
     return kStatusTimingControlRejected;
   }
   if (target_operation_seq == input.producer_operation_seq) {
@@ -144,6 +165,10 @@ status_kind try_accept_direct(
   reservation_input.selected_fetch = input.selected_fetch;
   reservation_input.forwarded_ray_policy = input.ray_policy;
   reservation_input.target_operation_seq = target_operation_seq;
+  reservation_input.producer_operation_seq =
+      preallocated_successor ? input.producer_operation_seq : 0;
+  reservation_input.producer_commit_epoch =
+      preallocated_successor ? input.producer_commit_epoch : 0;
   reservation_input.build_generation = input.build_generation;
   if (!fetch_target::encode_replay_cursor(
           input.replay_cursor,
@@ -154,7 +179,8 @@ status_kind try_accept_direct(
       input.pending_parent_resume;
   reservation_input.pending_parent_resume_valid =
       input.pending_parent_resume_valid;
-  reservation_input.producer_commit_required = 0;
+  reservation_input.producer_commit_required =
+      input.producer_commit_required;
   reservation_input.required_operand_mask = static_cast<uint8_t>(
       fetch_target::kOperandTargetReferenceValid |
       fetch_target::kOperandRawPayloadValid |

@@ -32,11 +32,14 @@ struct direct_transition_input_v0 {
   typed_node::replay_cursor_v0 replay_cursor;
   short_stack::entry_v0 pending_parent_resume;
   uint32_t producer_operation_seq;
+  uint32_t target_operation_seq;
+  uint32_t producer_commit_epoch;
   uint32_t build_generation;
   uint64_t reservation_cycle;
   uint8_t pending_parent_resume_valid;
   uint8_t private_storage_profile;
-  uint8_t reserved_zero[2];
+  uint8_t producer_commit_required;
+  uint8_t reserved_zero[1];
 };
 
 struct accepted_transition_v0 {

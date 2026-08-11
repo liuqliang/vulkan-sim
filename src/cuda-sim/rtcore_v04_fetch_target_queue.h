@@ -20,6 +20,7 @@ static const uint16_t kPrimitiveRawPayloadBytes = 64;
 static const uint16_t kInstanceRawPayloadBytes = 128;
 static const uint16_t kMaxRawPayloadBytes = kInstanceRawPayloadBytes;
 static const uint8_t kStackSpillRecoveryChunks = 5;
+static const uint8_t kPrivateState384TransitionRecoveryChunks = 2;
 
 enum status_kind : uint8_t {
   kStatusOk = 0,
@@ -153,9 +154,11 @@ struct instance_blas_root_reservation_input_v0 {
 struct recovery_reservation_input_v0 {
   private_frontier::owner_binding_v0 owner;
   uint32_t target_operation_seq;
+  uint32_t build_generation;
   uint8_t target_kind;
   uint8_t required_operand_mask;
-  uint8_t reserved_zero[6];
+  uint8_t private_storage_profile;
+  uint8_t reserved_zero[5];
 };
 
 struct instance_restore_reservation_input_v0 {
@@ -411,6 +414,15 @@ status_kind publish_private_state_384_projection(
         &current_instance_projection);
 
 status_kind fill_recovery_descriptor_chunk(
+    engine_state_v0 *state,
+    const reservation_receipt_v0 &reservation, uint8_t chunk_id,
+    uint8_t chunk_count, uint16_t slot_chunk_offset,
+    uint32_t byte_mask,
+    const uint8_t payload[private_frontier::kSharedAccessChunkBytes],
+    reservation_receipt_v0 *updated_reservation,
+    typed_node::selected_child_fetch_work_item_v0 *selected_fetch);
+
+status_kind fill_private_state_384_transition_chunk(
     engine_state_v0 *state,
     const reservation_receipt_v0 &reservation, uint8_t chunk_id,
     uint8_t chunk_count, uint16_t slot_chunk_offset,

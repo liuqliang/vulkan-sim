@@ -99,7 +99,8 @@ struct provisional_group_drain_v0 {
   uint8_t fence_armed;
   uint8_t wait_required;
   uint8_t fence_consumed;
-  uint8_t reserved_zero[4];
+  uint8_t publication_coverage_complete;
+  uint8_t reserved_zero[3];
 };
 
 struct first_submit_bind_request_v0 {
@@ -137,7 +138,8 @@ struct first_submit_bind_result_v0 {
   uint8_t bind_started;
   uint8_t wait_required;
   uint8_t live_bound;
-  uint8_t reserved_zero[5];
+  uint8_t publication_coverage_complete;
+  uint8_t reserved_zero[4];
 };
 
 struct resubmit_live_validation_result_v0 {
@@ -279,6 +281,7 @@ class bridge_v0 {
     uint32_t context_lane_stride_bytes;
     uint32_t handoff_lane_stride_bytes;
     std::vector<uint32_t> handoff_allowed_publication_masks;
+    std::vector<std::vector<uint32_t> > completed_publication_masks;
     uint64_t preaccept_pending;
     uint32_t resident_warp_generation;
     uint8_t fence_armed;
@@ -298,11 +301,15 @@ class bridge_v0 {
            publication_identity_observation_v0>
       publication_identity_observations_;
   std::map<uint64_t, registered_group_v0> registered_groups_;
+  std::map<uint64_t, publication_store_v0> accepted_publication_stores_;
 
   status_kind make_registered_group_ranges(
       const registered_group_v0 &group,
       std::vector<std::vector<uint32_t> > *owned_masks,
       std::vector<address_range_registry::range_spec_v0> *ranges) const;
+
+  bool publication_coverage_complete(
+      const registered_group_v0 &group) const;
 
   bridge_v0(const bridge_v0 &);
   bridge_v0 &operator=(const bridge_v0 &);

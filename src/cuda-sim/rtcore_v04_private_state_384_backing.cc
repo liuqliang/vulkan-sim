@@ -480,8 +480,18 @@ status_kind apply_sparse_deltas(
       !operation_identity_matches(slot.owner, identity)) {
     return kStatusOwnerMismatch;
   }
-  if (identity.operation_sequence <=
-      slot.last_committed_operation_sequence) {
+  const bool transition_spill_extension =
+      request.producer ==
+          operand_plan::kProducerStackTransitionSpill &&
+      identity.operation_sequence ==
+          slot.last_committed_operation_sequence &&
+      slot.last_transition_spill_operation_sequence !=
+          identity.operation_sequence;
+  if (identity.operation_sequence <
+          slot.last_committed_operation_sequence ||
+      (identity.operation_sequence ==
+           slot.last_committed_operation_sequence &&
+       !transition_spill_extension)) {
     return kStatusOperationSequenceStale;
   }
   operand_plan::unit_sparse_write_plan_v1 write_plan = {};
@@ -519,8 +529,18 @@ status_kind apply_sparse_deltas(
     }
     slot.valid_byte_masks[chunk] |= write.byte_mask;
   }
-  slot.last_committed_operation_sequence =
-      identity.operation_sequence;
+  if (transition_spill_extension) {
+    slot.last_transition_spill_operation_sequence =
+        identity.operation_sequence;
+  } else {
+    slot.last_committed_operation_sequence =
+        identity.operation_sequence;
+    if (request.producer ==
+        operand_plan::kProducerStackTransitionSpill) {
+      slot.last_transition_spill_operation_sequence =
+          identity.operation_sequence;
+    }
+  }
   ++state->mutation_epoch;
   return kStatusOk;
 }

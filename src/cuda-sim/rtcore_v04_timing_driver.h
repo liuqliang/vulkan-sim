@@ -78,6 +78,7 @@ struct lane_control_state_v0 {
   uint32_t live_commit_epoch;
   uint32_t pending_recovery_operation_seq;
   uint32_t pending_recovery_producer_operation_seq;
+  uint32_t pending_recovery_build_generation;
   uint8_t pending_recovery_target_kind;
   uint8_t pending_recovery_route_kind;
   uint8_t pending_recovery_reservation_retained;
@@ -93,6 +94,7 @@ struct pending_recovery_snapshot_v0 {
   request_owner::lane_binding_v0 owner;
   uint32_t target_operation_seq;
   uint32_t producer_operation_seq;
+  uint32_t build_generation;
   uint16_t request_control_slot;
   uint8_t target_kind;
   uint8_t route_kind;
@@ -199,7 +201,7 @@ status_kind mark_commit_successor_pending_recovery(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t producer_operation_seq, uint32_t commit_epoch,
     uint32_t target_operation_seq, uint8_t target_kind,
-    uint8_t route_kind);
+    uint8_t route_kind, uint32_t build_generation = 0);
 status_kind complete_pending_recovery_request_retention(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t target_operation_seq, uint8_t target_kind,
