@@ -6332,6 +6332,7 @@ static std::map<unsigned, rtcore_v02_lsu_shared_frontend_normal_lsu_observation>
 static bool g_rtcore_memory_unit_same_cycle_32b_merge_map_initialized = false;
 static unsigned long long g_rtcore_memory_unit_same_cycle_32b_merge_map_cycle = 0;
 static unsigned g_rtcore_memory_unit_request_offer_stats_logs_emitted = 0;
+static bool g_rtcore_v04_dse_memory_unit_final_report_registered = false;
 static unsigned g_rtcore_v03_shader_only_ldst_observation_logs_emitted = 0;
 
 struct rtcore_shared_l1d_request_arbiter_stats {
@@ -6416,6 +6417,46 @@ static unsigned rtcore_memory_unit_issue_budget_per_cycle() {
     return static_cast<unsigned>(parsed);
   }();
   return budget;
+}
+
+static bool rtcore_v04_dse_runner_evidence_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V04_DSE_RUNNER_EVIDENCE");
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled != 0;
+}
+
+static void rtcore_v04_dse_memory_unit_final_report() {
+  if (!rtcore_v04_dse_runner_evidence_enabled()) return;
+  printf(
+      "GPGPU-Sim RTCORE_V04_DSE_MEMORY_UNIT_FINAL "
+      "schema=1 scope=global snapshot_kind=final "
+      "issue_bandwidth_gate_enabled=%u issue_budget_per_cycle=%u "
+      "issue_bandwidth_issued_count=%llu "
+      "issue_bandwidth_budget_exhausted_count=%llu "
+      "issue_bandwidth_deferred_count=%llu pending_request_count=%llu\n",
+      rtcore_memory_unit_issue_bandwidth_gate_enabled() ? 1u : 0u,
+      rtcore_memory_unit_issue_budget_per_cycle(),
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_issue_bandwidth_issued_count,
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_issue_bandwidth_budget_exhausted_count,
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_issue_bandwidth_deferred_count,
+      g_rtcore_replay_cycle_hook_consumer_stats
+          .v02_lsu_sideband_pending_request_count);
+  fflush(stdout);
+}
+
+static void rtcore_register_v04_dse_memory_unit_final_report() {
+  if (!rtcore_v04_dse_runner_evidence_enabled() ||
+      g_rtcore_v04_dse_memory_unit_final_report_registered) {
+    return;
+  }
+  g_rtcore_v04_dse_memory_unit_final_report_registered = true;
+  if (atexit(rtcore_v04_dse_memory_unit_final_report) != 0) abort();
 }
 
 static bool rtcore_shared_lsu_frontend_arbiter_gate_enabled() {
@@ -7127,6 +7168,7 @@ static void rtcore_log_explicit_shared_l1d_request_arbiter_stats(
 
 static void rtcore_maybe_log_memory_unit_request_offer_stats(
     unsigned owner_hw_sid) {
+  rtcore_register_v04_dse_memory_unit_final_report();
   if (!rtcore_memory_unit_request_offer_log_enabled()) {
     return;
   }
