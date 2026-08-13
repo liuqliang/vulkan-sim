@@ -79,6 +79,12 @@ void rtcore_v04_record_dram_service_request(mem_fetch *mf,
                                              unsigned long long cycle);
 void rtcore_v04_record_dram_service_response(mem_fetch *mf,
                                               unsigned long long cycle);
+bool rtcore_v04_storage_attribution_enabled();
+void rtcore_v04_record_storage_l1_access(
+    mem_fetch *mf, uint32_t class_set,
+    const cache_access_observation &observation,
+    enum cache_request_status status, const std::list<cache_event> &events,
+    unsigned long long cycle);
 
 class gpgpu_context;
 

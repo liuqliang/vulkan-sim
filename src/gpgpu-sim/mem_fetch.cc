@@ -75,6 +75,7 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     m_raw_addr.sub_partition = m_original_mf->get_tlx_addr().sub_partition;
   }
   m_israytrace = false;
+  m_rtcore_v04_storage_traffic_class_set = 0;
   m_rtcore_v04_semantic_tag_set = 0;
   m_rtcore_v04_handoff_chunk = 0xffu;
   m_rtcore_v04_handoff_cache_policy_tag_set = 0;
@@ -82,6 +83,8 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   m_rtcore_v04_handoff_cache_policy_eligible = false;
   m_rtcore_v04_handoff_shared_backend = false;
   if (m_original_mf) {
+    m_rtcore_v04_storage_traffic_class_set |=
+        m_original_mf->get_rtcore_v04_storage_traffic_class_set();
     m_rtcore_v04_semantic_tag_set |=
         m_original_mf->get_rtcore_v04_semantic_tag_set();
     if (m_original_mf->has_rtcore_v04_handoff_chunk()) {
@@ -90,6 +93,8 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     }
   }
   if (m_original_wr_mf) {
+    m_rtcore_v04_storage_traffic_class_set |=
+        m_original_wr_mf->get_rtcore_v04_storage_traffic_class_set();
     m_rtcore_v04_semantic_tag_set |=
         m_original_wr_mf->get_rtcore_v04_semantic_tag_set();
     if (m_original_wr_mf->has_rtcore_v04_handoff_chunk()) {
@@ -114,17 +119,70 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
   m_rtcore_v04_live_access_preaccept_valid = false;
 }
 
+void mem_fetch::set_rtcore_v04_storage_traffic_class(
+    unsigned traffic_class) {
+  assert(traffic_class > RTCORE_V04_STORAGE_TRAFFIC_INVALID &&
+         traffic_class < RTCORE_V04_STORAGE_TRAFFIC_COUNT);
+  const uint32_t class_bit = uint32_t{1} << (traffic_class - 1u);
+  assert(m_rtcore_v04_storage_traffic_class_set == 0 ||
+         m_rtcore_v04_storage_traffic_class_set == class_bit);
+  m_rtcore_v04_storage_traffic_class_set = class_bit;
+}
+
+void mem_fetch::merge_rtcore_v04_storage_traffic_class_set(
+    uint32_t class_set) {
+  const uint32_t valid_mask =
+      (uint32_t{1} << (RTCORE_V04_STORAGE_TRAFFIC_COUNT - 1u)) - 1u;
+  assert(class_set != 0 && (class_set & ~valid_mask) == 0);
+  m_rtcore_v04_storage_traffic_class_set |= class_set;
+}
+
+void mem_fetch::ensure_rtcore_v04_storage_traffic_class() {
+  if (has_rtcore_v04_storage_traffic_class()) return;
+  if (israytrace()) {
+    set_rtcore_v04_storage_traffic_class(
+        get_is_write() ? RTCORE_V04_STORAGE_TRAFFIC_LEGACY_RT_RESULT
+                       : RTCORE_V04_STORAGE_TRAFFIC_LEGACY_BVH);
+    return;
+  }
+  switch (get_access_type()) {
+    case GLOBAL_ACC_R:
+    case GLOBAL_ACC_W:
+    case LOCAL_ACC_R:
+    case LOCAL_ACC_W:
+      set_rtcore_v04_storage_traffic_class(
+          RTCORE_V04_STORAGE_TRAFFIC_ORDINARY_LSU);
+      return;
+    case L1_WRBK_ACC:
+    case L2_WRBK_ACC:
+    case L1_WR_ALLOC_R:
+    case L2_WR_ALLOC_R:
+      set_rtcore_v04_storage_traffic_class(
+          RTCORE_V04_STORAGE_TRAFFIC_CACHE_INTERNAL);
+      return;
+    default:
+      set_rtcore_v04_storage_traffic_class(
+          RTCORE_V04_STORAGE_TRAFFIC_OTHER_GPU);
+      return;
+  }
+}
+
 void mem_fetch::set_rtcore_v04_semantic_tag_set(uint32_t tag_set) {
   assert(tag_set != 0);
   assert(m_rtcore_v04_semantic_tag_set == 0 ||
          m_rtcore_v04_semantic_tag_set == tag_set);
   m_rtcore_v04_semantic_tag_set = tag_set;
+  set_rtcore_v04_storage_traffic_class(
+      RTCORE_V04_STORAGE_TRAFFIC_V04_STORAGE);
 }
 
 void mem_fetch::merge_rtcore_v04_semantic_tag_set(uint32_t tag_set) {
   assert(tag_set != 0);
   assert(!m_rtcore_v04_dram_service_started);
   m_rtcore_v04_semantic_tag_set |= tag_set;
+  merge_rtcore_v04_storage_traffic_class_set(
+      uint32_t{1}
+      << (RTCORE_V04_STORAGE_TRAFFIC_V04_STORAGE - 1u));
 }
 
 void mem_fetch::set_rtcore_v04_handoff_chunk(unsigned chunk) {
@@ -153,7 +211,8 @@ void mem_fetch::set_rtcore_v04_handoff_cache_policy_eligibility(
 }
 
 void mem_fetch::begin_rtcore_v04_dram_service(unsigned long long cycle) {
-  assert(has_rtcore_v04_semantic_tag_set());
+  assert(has_rtcore_v04_semantic_tag_set() ||
+         has_rtcore_v04_storage_traffic_class());
   assert(!m_rtcore_v04_dram_service_started &&
          !m_rtcore_v04_dram_service_completed);
   m_rtcore_v04_dram_service_started = true;
@@ -162,7 +221,8 @@ void mem_fetch::begin_rtcore_v04_dram_service(unsigned long long cycle) {
 
 unsigned long long mem_fetch::complete_rtcore_v04_dram_service(
     unsigned long long cycle) {
-  assert(has_rtcore_v04_semantic_tag_set());
+  assert(has_rtcore_v04_semantic_tag_set() ||
+         has_rtcore_v04_storage_traffic_class());
   assert(m_rtcore_v04_dram_service_started &&
          !m_rtcore_v04_dram_service_completed);
   assert(cycle >= m_rtcore_v04_dram_service_start_cycle);

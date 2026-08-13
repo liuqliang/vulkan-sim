@@ -56,6 +56,19 @@ enum mf_type {
 class memory_config;
 class mem_fetch {
  public:
+  enum rtcore_v04_storage_traffic_class {
+    RTCORE_V04_STORAGE_TRAFFIC_INVALID = 0,
+    RTCORE_V04_STORAGE_TRAFFIC_V04_STORAGE = 1,
+    RTCORE_V04_STORAGE_TRAFFIC_V04_BVH = 2,
+    RTCORE_V04_STORAGE_TRAFFIC_CONTINUATION_METADATA = 3,
+    RTCORE_V04_STORAGE_TRAFFIC_LEGACY_BVH = 4,
+    RTCORE_V04_STORAGE_TRAFFIC_ORDINARY_LSU = 5,
+    RTCORE_V04_STORAGE_TRAFFIC_CACHE_INTERNAL = 6,
+    RTCORE_V04_STORAGE_TRAFFIC_LEGACY_RT_RESULT = 7,
+    RTCORE_V04_STORAGE_TRAFFIC_OTHER_GPU = 8,
+    RTCORE_V04_STORAGE_TRAFFIC_COUNT = 9,
+  };
+
   mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
             unsigned ctrl_size, unsigned wid, unsigned sid, unsigned tpc,
             const memory_config *config, unsigned long long cycle,
@@ -108,6 +121,16 @@ class mem_fetch {
   bool isatomic() const;
   bool israytrace() const { return m_israytrace || (!m_inst.empty() && m_inst.op == RT_CORE_OP); }
   void set_raytrace() {m_israytrace = true; }
+
+  void set_rtcore_v04_storage_traffic_class(unsigned traffic_class);
+  void merge_rtcore_v04_storage_traffic_class_set(uint32_t class_set);
+  void ensure_rtcore_v04_storage_traffic_class();
+  uint32_t get_rtcore_v04_storage_traffic_class_set() const {
+    return m_rtcore_v04_storage_traffic_class_set;
+  }
+  bool has_rtcore_v04_storage_traffic_class() const {
+    return m_rtcore_v04_storage_traffic_class_set != 0;
+  }
 
   void set_rtcore_v04_semantic_tag_set(uint32_t tag_set);
   void merge_rtcore_v04_semantic_tag_set(uint32_t tag_set);
@@ -236,6 +259,7 @@ class mem_fetch {
   warp_inst_t m_inst;
   
   bool m_israytrace;
+  uint32_t m_rtcore_v04_storage_traffic_class_set;
   uint32_t m_rtcore_v04_semantic_tag_set;
   uint8_t m_rtcore_v04_handoff_chunk;
   uint32_t m_rtcore_v04_handoff_cache_policy_tag_set;

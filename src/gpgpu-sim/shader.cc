@@ -3872,6 +3872,38 @@ struct rtcore_v04_handoff_shared_service_state {
 
 static std::map<unsigned, rtcore_v04_pending_memory_transaction>
     g_rtcore_v02_lsu_pending_memory_requests;
+struct rtcore_v04_storage_layer_stats {
+  unsigned long long l1_access;
+  unsigned long long l1_hit;
+  unsigned long long l1_accepted_mshr_merge;
+  unsigned long long l1_line_miss;
+  unsigned long long l1_sector_miss;
+  unsigned long long l1_write_no_allocate_miss;
+  unsigned long long l1_reservation_fail_retry;
+  unsigned long long l1_access_bytes;
+  unsigned long long l2_access;
+  unsigned long long l2_hit;
+  unsigned long long l2_accepted_mshr_merge;
+  unsigned long long l2_local_write_allocate;
+  unsigned long long l2_miss_to_dram;
+  unsigned long long l2_reservation_fail_retry;
+  unsigned long long l2_access_bytes;
+  unsigned long long dram_request;
+  unsigned long long dram_response;
+  unsigned long long dram_transaction_bytes;
+  rtcore_v04_semantic_latency_histogram dram_request_to_response;
+};
+
+struct rtcore_v04_storage_dram_pending {
+  uint32_t class_set;
+  unsigned bytes;
+};
+
+static std::map<uint32_t, rtcore_v04_storage_layer_stats>
+    g_rtcore_v04_storage_layer_stats;
+static std::map<unsigned, rtcore_v04_storage_dram_pending>
+    g_rtcore_v04_storage_dram_pending;
+static bool g_rtcore_v04_storage_attribution_report_registered = false;
 static std::map<uint32_t, rtcore_v04_semantic_tag_set_stats>
     g_rtcore_v04_semantic_tag_set_stats;
 static std::map<rtcore_v04_handoff_chunk_key,
@@ -3959,6 +3991,34 @@ rtcore_v04_handoff_shared_service_for(unsigned sid) {
 }
 
 static void rtcore_report_v04_global384_semantic_accounting();
+static void rtcore_report_v04_storage_attribution();
+
+static bool rtcore_v04_storage_attribution_enabled_impl() {
+  static const bool enabled = []() {
+    const rtcore_candidate_gate_state state = rtcore_candidate_gate_state_for(
+        "VULKAN_SIM_RTCORE_V04_STORAGE_ATTRIBUTION");
+    if (state == RTCORE_CANDIDATE_GATE_INVALID) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+              "fault=invalid_gate_value\n");
+      fflush(stderr);
+      abort();
+    }
+    if (state != RTCORE_CANDIDATE_GATE_ENABLED) return false;
+    if (!g_rtcore_v04_storage_attribution_report_registered) {
+      if (atexit(rtcore_report_v04_storage_attribution) != 0) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+                "fault=report_registration_failed\n");
+        fflush(stderr);
+        abort();
+      }
+      g_rtcore_v04_storage_attribution_report_registered = true;
+    }
+    return true;
+  }();
+  return enabled;
+}
 
 static bool rtcore_v04_global384_semantic_accounting_enabled() {
   static const bool enabled = []() {
@@ -5162,12 +5222,177 @@ static unsigned long long rtcore_v04_semantic_histogram_mean(
 
 }  // namespace
 
+bool rtcore_v04_storage_attribution_enabled() {
+  return rtcore_v04_storage_attribution_enabled_impl();
+}
+
+static const char *rtcore_v04_storage_traffic_class_name(unsigned cls) {
+  switch (cls) {
+    case mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_V04_STORAGE:
+      return "v04_storage";
+    case mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_V04_BVH:
+      return "v04_bvh_target";
+    case mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_CONTINUATION_METADATA:
+      return "continuation_metadata";
+    case mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_LEGACY_BVH:
+      return "legacy_bvh";
+    case mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_ORDINARY_LSU:
+      return "ordinary_lsu";
+    case mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_CACHE_INTERNAL:
+      return "cache_internal";
+    case mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_LEGACY_RT_RESULT:
+      return "legacy_rt_result";
+    case mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_OTHER_GPU:
+      return "other_gpu";
+    default:
+      return "invalid";
+  }
+}
+
+static std::string rtcore_v04_storage_traffic_class_set_name(
+    uint32_t class_set) {
+  std::string result;
+  for (unsigned cls = 1;
+       cls < mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_COUNT; ++cls) {
+    if ((class_set & (uint32_t{1} << (cls - 1u))) == 0) continue;
+    if (!result.empty()) result += "+";
+    result += rtcore_v04_storage_traffic_class_name(cls);
+  }
+  return result.empty() ? "invalid" : result;
+}
+
+static uint32_t rtcore_v04_storage_class_set_for(mem_fetch *mf) {
+  if (mf == NULL) abort();
+  mf->ensure_rtcore_v04_storage_traffic_class();
+  const uint32_t class_set = mf->get_rtcore_v04_storage_traffic_class_set();
+  const uint32_t valid_mask =
+      (uint32_t{1}
+       << (mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_COUNT - 1u)) -
+      1u;
+  if (class_set == 0 || (class_set & ~valid_mask) != 0) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+            "fault=invalid_class_set class_set=0x%08x\n",
+            class_set);
+    fflush(stderr);
+    abort();
+  }
+  return class_set;
+}
+
+static void rtcore_v04_storage_validate_class_set(uint32_t class_set) {
+  const uint32_t valid_mask =
+      (uint32_t{1}
+       << (mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_COUNT - 1u)) -
+      1u;
+  if (class_set == 0 || (class_set & ~valid_mask) != 0) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+            "fault=invalid_class_set class_set=0x%08x\n",
+            class_set);
+    fflush(stderr);
+    abort();
+  }
+}
+
+static void rtcore_v04_storage_classify_l1(
+    rtcore_v04_storage_layer_stats *stats,
+    const cache_access_observation &observation,
+    enum cache_request_status status, const std::list<cache_event> &events,
+    bool is_write) {
+  if (stats == NULL || !observation.valid ||
+      observation.access_status != status) {
+    abort();
+  }
+  if (status == RESERVATION_FAIL) {
+    stats->l1_reservation_fail_retry++;
+  } else if (observation.probe_status == HIT && status == HIT) {
+    stats->l1_hit++;
+  } else if (is_write && observation.no_write_allocate && status == MISS) {
+    stats->l1_write_no_allocate_miss++;
+  } else if (observation.probe_status == MISS && status == MISS) {
+    stats->l1_line_miss++;
+  } else if (observation.probe_status == SECTOR_MISS &&
+             (status == MISS || status == SECTOR_MISS)) {
+    stats->l1_sector_miss++;
+  } else if (observation.probe_status == HIT_RESERVED && status == MISS &&
+             !was_read_sent(events)) {
+    stats->l1_accepted_mshr_merge++;
+  } else {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+            "fault=l1_class_invalid probe=%u access=%u write=%u\n",
+            static_cast<unsigned>(observation.probe_status),
+            static_cast<unsigned>(status), is_write ? 1u : 0u);
+    fflush(stderr);
+    abort();
+  }
+}
+
+void rtcore_v04_record_storage_l1_access(
+    mem_fetch *mf, uint32_t class_set,
+    const cache_access_observation &observation,
+    enum cache_request_status status, const std::list<cache_event> &events,
+    unsigned long long cycle) {
+  (void)cycle;
+  if (!rtcore_v04_storage_attribution_enabled()) return;
+  if (mf == NULL) abort();
+  rtcore_v04_storage_validate_class_set(class_set);
+  rtcore_v04_storage_layer_stats &stats =
+      g_rtcore_v04_storage_layer_stats[class_set];
+  stats.l1_access++;
+  stats.l1_access_bytes += mf->get_access_size();
+  rtcore_v04_storage_classify_l1(&stats, observation, status, events,
+                                 mf->get_is_write());
+}
+
 void rtcore_v04_record_l2_service_access(
     mem_fetch *mf, const cache_access_observation &observation,
     enum cache_request_status status, const std::list<cache_event> &events,
     unsigned long long cycle) {
   (void)cycle;
-  if (mf == NULL || !mf->has_rtcore_v04_semantic_tag_set()) return;
+  if (mf == NULL) return;
+  if (rtcore_v04_storage_attribution_enabled()) {
+    const uint32_t class_set = rtcore_v04_storage_class_set_for(mf);
+    rtcore_v04_storage_layer_stats &storage =
+        g_rtcore_v04_storage_layer_stats[class_set];
+    if (!observation.valid || observation.access_status != status) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+              "fault=l2_service_observation_invalid\n");
+      fflush(stderr);
+      abort();
+    }
+    storage.l2_access++;
+    storage.l2_access_bytes += mf->get_access_size();
+    if (status == RESERVATION_FAIL) {
+      storage.l2_reservation_fail_retry++;
+    } else {
+      const bool explicit_lower_request =
+          was_read_sent(events) || was_write_sent(events);
+      const bool write_allocate_operation = was_writeallocate_sent(events);
+      if (status == HIT) {
+        storage.l2_hit++;
+      } else if (mf->get_is_write() && status == MISS &&
+                 !explicit_lower_request && !write_allocate_operation) {
+        storage.l2_local_write_allocate++;
+      } else if (observation.probe_status == HIT_RESERVED && status == MISS &&
+                 !explicit_lower_request) {
+        storage.l2_accepted_mshr_merge++;
+      } else if (explicit_lower_request || write_allocate_operation) {
+        storage.l2_miss_to_dram++;
+      } else {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+                "fault=l2_service_class_invalid probe=%u access=%u\n",
+                static_cast<unsigned>(observation.probe_status),
+                static_cast<unsigned>(status));
+        fflush(stderr);
+        abort();
+      }
+    }
+  }
+  if (!mf->has_rtcore_v04_semantic_tag_set()) return;
   if (!rtcore_v04_global384_semantic_accounting_enabled() ||
       !observation.valid || observation.access_status != status) {
     fprintf(stderr,
@@ -5224,9 +5449,29 @@ void rtcore_v04_record_l2_service_access(
 
 void rtcore_v04_record_dram_service_request(mem_fetch *mf,
                                              unsigned long long cycle) {
-  if (mf == NULL || !mf->has_rtcore_v04_semantic_tag_set()) return;
-  if (!rtcore_v04_global384_semantic_accounting_enabled()) abort();
+  if (mf == NULL) return;
+  const bool storage = rtcore_v04_storage_attribution_enabled();
+  const bool semantic = mf->has_rtcore_v04_semantic_tag_set();
+  if (!storage && !semantic) return;
+  if (semantic && !rtcore_v04_global384_semantic_accounting_enabled()) abort();
   mf->begin_rtcore_v04_dram_service(cycle);
+  if (storage) {
+    const uint32_t class_set = rtcore_v04_storage_class_set_for(mf);
+    rtcore_v04_storage_dram_pending pending = {};
+    pending.class_set = class_set;
+    pending.bytes = mf->get_data_size();
+    if (!g_rtcore_v04_storage_dram_pending
+             .insert(std::make_pair(mf->get_request_uid(), pending))
+             .second) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+              "fault=duplicate_dram_request uid=%u\n",
+              mf->get_request_uid());
+      fflush(stderr);
+      abort();
+    }
+  }
+  if (!semantic) return;
   rtcore_v04_semantic_tag_set_stats_for(
       mf->get_rtcore_v04_semantic_tag_set())
       .dram_request++;
@@ -5241,10 +5486,43 @@ void rtcore_v04_record_dram_service_request(mem_fetch *mf,
 
 void rtcore_v04_record_dram_service_response(mem_fetch *mf,
                                               unsigned long long cycle) {
-  if (mf == NULL || !mf->has_rtcore_v04_semantic_tag_set()) return;
-  if (!rtcore_v04_global384_semantic_accounting_enabled()) abort();
+  if (mf == NULL) return;
+  const bool storage = rtcore_v04_storage_attribution_enabled();
+  const bool semantic = mf->has_rtcore_v04_semantic_tag_set();
+  if (!storage && !semantic) return;
+  if (semantic && !rtcore_v04_global384_semantic_accounting_enabled()) abort();
   const unsigned long long latency =
       mf->complete_rtcore_v04_dram_service(cycle);
+  if (storage) {
+    std::map<unsigned, rtcore_v04_storage_dram_pending>::iterator pending =
+        g_rtcore_v04_storage_dram_pending.find(mf->get_request_uid());
+    if (pending == g_rtcore_v04_storage_dram_pending.end()) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+              "fault=dram_response_without_request uid=%u\n",
+              mf->get_request_uid());
+      fflush(stderr);
+      abort();
+    }
+    const uint32_t class_set = rtcore_v04_storage_class_set_for(mf);
+    if ((class_set | pending->second.class_set) != class_set) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+              "fault=dram_class_set_lost request=0x%08x response=0x%08x\n",
+              pending->second.class_set, class_set);
+      fflush(stderr);
+      abort();
+    }
+    rtcore_v04_storage_layer_stats &storage_stats =
+        g_rtcore_v04_storage_layer_stats[class_set];
+    storage_stats.dram_request++;
+    storage_stats.dram_response++;
+    storage_stats.dram_transaction_bytes += pending->second.bytes;
+    rtcore_v04_semantic_histogram_observe(
+        &storage_stats.dram_request_to_response, latency);
+    g_rtcore_v04_storage_dram_pending.erase(pending);
+  }
+  if (!semantic) return;
   rtcore_v04_semantic_tag_set_stats &stats =
       rtcore_v04_semantic_tag_set_stats_for(
           mf->get_rtcore_v04_semantic_tag_set());
@@ -5561,6 +5839,152 @@ static void rtcore_v04_semantic_report_handoff_chunks() {
            rtcore_v04_semantic_histogram_mean(s.last_arrival_closer),
            s.last_arrival_co_closure_suppressed);
   }
+}
+
+static void rtcore_v04_storage_accumulate(
+    rtcore_v04_storage_layer_stats *sum,
+    const rtcore_v04_storage_layer_stats &value) {
+  if (sum == NULL) abort();
+  sum->l1_access += value.l1_access;
+  sum->l1_hit += value.l1_hit;
+  sum->l1_accepted_mshr_merge += value.l1_accepted_mshr_merge;
+  sum->l1_line_miss += value.l1_line_miss;
+  sum->l1_sector_miss += value.l1_sector_miss;
+  sum->l1_write_no_allocate_miss += value.l1_write_no_allocate_miss;
+  sum->l1_reservation_fail_retry += value.l1_reservation_fail_retry;
+  sum->l1_access_bytes += value.l1_access_bytes;
+  sum->l2_access += value.l2_access;
+  sum->l2_hit += value.l2_hit;
+  sum->l2_accepted_mshr_merge += value.l2_accepted_mshr_merge;
+  sum->l2_local_write_allocate += value.l2_local_write_allocate;
+  sum->l2_miss_to_dram += value.l2_miss_to_dram;
+  sum->l2_reservation_fail_retry += value.l2_reservation_fail_retry;
+  sum->l2_access_bytes += value.l2_access_bytes;
+  sum->dram_request += value.dram_request;
+  sum->dram_response += value.dram_response;
+  sum->dram_transaction_bytes += value.dram_transaction_bytes;
+  sum->dram_request_to_response.count +=
+      value.dram_request_to_response.count;
+  sum->dram_request_to_response.total +=
+      value.dram_request_to_response.total;
+  for (unsigned bucket = 0;
+       bucket < rtcore_v04_semantic_latency_histogram::kBucketCount;
+       ++bucket) {
+    sum->dram_request_to_response.buckets[bucket] +=
+        value.dram_request_to_response.buckets[bucket];
+  }
+}
+
+static void rtcore_v04_storage_validate(
+    uint32_t class_set, const rtcore_v04_storage_layer_stats &stats) {
+  const unsigned long long l1_classified =
+      stats.l1_hit + stats.l1_accepted_mshr_merge + stats.l1_line_miss +
+      stats.l1_sector_miss + stats.l1_write_no_allocate_miss +
+      stats.l1_reservation_fail_retry;
+  const unsigned long long l2_classified =
+      stats.l2_hit + stats.l2_accepted_mshr_merge +
+      stats.l2_local_write_allocate + stats.l2_miss_to_dram +
+      stats.l2_reservation_fail_retry;
+  if (stats.l1_access != l1_classified ||
+      stats.l2_access != l2_classified ||
+      stats.dram_request != stats.dram_response ||
+      stats.dram_response != stats.dram_request_to_response.count) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+            "fault=layer_conservation class_set=0x%08x "
+            "l1_access=%llu l1_classified=%llu l2_access=%llu "
+            "l2_classified=%llu dram_request=%llu dram_response=%llu "
+            "dram_latency_count=%llu\n",
+            class_set, stats.l1_access, l1_classified, stats.l2_access,
+            l2_classified, stats.dram_request, stats.dram_response,
+            stats.dram_request_to_response.count);
+    fflush(stderr);
+    abort();
+  }
+}
+
+static void rtcore_v04_storage_print_row(
+    const char *marker, uint32_t class_set, const char *classes,
+    const rtcore_v04_storage_layer_stats &stats) {
+  printf("GPGPU-Sim %s class_set=0x%08x classes=%s "
+         "l1_access=%llu l1_hit=%llu l1_accepted_mshr_merge=%llu "
+         "l1_line_miss=%llu l1_sector_miss=%llu "
+         "l1_write_no_allocate_miss=%llu "
+         "l1_reservation_fail_retry=%llu l1_access_bytes=%llu "
+         "l2_access=%llu l2_hit=%llu l2_accepted_mshr_merge=%llu "
+         "l2_local_write_allocate=%llu l2_miss_to_dram=%llu "
+         "l2_reservation_fail_retry=%llu l2_access_bytes=%llu "
+         "dram_request=%llu dram_response=%llu "
+         "dram_transaction_bytes=%llu dram_latency_count=%llu "
+         "dram_latency_mean=%llu dram_latency_p50=%llu "
+         "dram_latency_p95=%llu dram_latency_p99=%llu\n",
+         marker, class_set, classes, stats.l1_access, stats.l1_hit,
+         stats.l1_accepted_mshr_merge, stats.l1_line_miss,
+         stats.l1_sector_miss, stats.l1_write_no_allocate_miss,
+         stats.l1_reservation_fail_retry, stats.l1_access_bytes,
+         stats.l2_access, stats.l2_hit, stats.l2_accepted_mshr_merge,
+         stats.l2_local_write_allocate, stats.l2_miss_to_dram,
+         stats.l2_reservation_fail_retry, stats.l2_access_bytes,
+         stats.dram_request, stats.dram_response,
+         stats.dram_transaction_bytes, stats.dram_request_to_response.count,
+         rtcore_v04_semantic_histogram_mean(
+             stats.dram_request_to_response),
+         rtcore_v04_semantic_histogram_quantile(
+             stats.dram_request_to_response, 50),
+         rtcore_v04_semantic_histogram_quantile(
+             stats.dram_request_to_response, 95),
+         rtcore_v04_semantic_histogram_quantile(
+             stats.dram_request_to_response, 99));
+}
+
+static void rtcore_report_v04_storage_attribution() {
+  if (!g_rtcore_v04_storage_dram_pending.empty()) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_FAULT "
+            "fault=pending_dram_at_exit count=%zu\n",
+            g_rtcore_v04_storage_dram_pending.size());
+    fflush(stderr);
+    abort();
+  }
+  rtcore_v04_storage_layer_stats total = {};
+  rtcore_v04_storage_layer_stats participation[
+      mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_COUNT] = {};
+  for (std::map<uint32_t, rtcore_v04_storage_layer_stats>::const_iterator it =
+           g_rtcore_v04_storage_layer_stats.begin();
+       it != g_rtcore_v04_storage_layer_stats.end(); ++it) {
+    rtcore_v04_storage_validate(it->first, it->second);
+    rtcore_v04_storage_accumulate(&total, it->second);
+    for (unsigned cls = 1;
+         cls < mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_COUNT; ++cls) {
+      if ((it->first & (uint32_t{1} << (cls - 1u))) != 0) {
+        rtcore_v04_storage_accumulate(&participation[cls], it->second);
+      }
+    }
+  }
+  rtcore_v04_storage_validate(0, total);
+  printf("GPGPU-Sim RTCORE_V04_STORAGE_ATTRIBUTION_TOTAL gate=1 "
+         "exact_class_set_count=%zu pending_dram=0 "
+         "context_mode=functional_setup_not_modeled "
+         "participation_is_non_additive=1\n",
+         g_rtcore_v04_storage_layer_stats.size());
+  rtcore_v04_storage_print_row("RTCORE_V04_STORAGE_LAYER_TOTAL", 0,
+                              "all_exact_sets", total);
+  for (std::map<uint32_t, rtcore_v04_storage_layer_stats>::const_iterator it =
+           g_rtcore_v04_storage_layer_stats.begin();
+       it != g_rtcore_v04_storage_layer_stats.end(); ++it) {
+    const std::string name =
+        rtcore_v04_storage_traffic_class_set_name(it->first);
+    rtcore_v04_storage_print_row("RTCORE_V04_STORAGE_EXACT_CLASS_SET",
+                                it->first, name.c_str(), it->second);
+  }
+  for (unsigned cls = 1;
+       cls < mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_COUNT; ++cls) {
+    rtcore_v04_storage_print_row(
+        "RTCORE_V04_STORAGE_CLASS_PARTICIPATION",
+        uint32_t{1} << (cls - 1u),
+        rtcore_v04_storage_traffic_class_name(cls), participation[cls]);
+  }
+  fflush(stdout);
 }
 
 static void rtcore_report_v04_global384_semantic_accounting() {
@@ -8272,6 +8696,22 @@ static new_addr_type rtcore_memory_unit_effective_addr(
           0x1000ull);
 }
 
+static unsigned rtcore_v04_storage_traffic_class_for_sideband(
+    const rtcore_memory_unit_request_snapshot &snapshot) {
+  if (snapshot.v04_semantic_memory.valid == 1) {
+    return mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_V04_STORAGE;
+  }
+  if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_SBT_METADATA) {
+    return mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_CONTINUATION_METADATA;
+  }
+  if (snapshot.access_kind == RTCORE_V02_LSU_ACCESS_NODE_FETCH ||
+      snapshot.access_kind == RTCORE_V02_LSU_ACCESS_PRIMITIVE_FETCH ||
+      snapshot.access_kind == RTCORE_MEMORY_ACCESS_TARGET_RAW_READ) {
+    return mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_V04_BVH;
+  }
+  return mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_V04_STORAGE;
+}
+
 static void rtcore_memory_unit_refresh_same_cycle_32b_merge_map(
     unsigned long long cycle) {
   if (!g_rtcore_memory_unit_same_cycle_32b_merge_map_initialized ||
@@ -8314,6 +8754,12 @@ static bool rtcore_try_merge_memory_unit_same_cycle_32b(
     return false;
   }
   if (snapshot == NULL) return false;
+  if (rtcore_v04_storage_attribution_enabled()) {
+    const unsigned cls =
+        rtcore_v04_storage_traffic_class_for_sideband(*snapshot);
+    source_mf->merge_rtcore_v04_storage_traffic_class_set(
+        uint32_t{1} << (cls - 1u));
+  }
   if (rtcore_v04_multiwarp_stats_enabled()) {
     bool cross_warp = false;
     for (std::vector<rtcore_memory_unit_request_snapshot>::const_iterator it =
@@ -8673,6 +9119,10 @@ rtcore_maybe_accept_memory_unit_l1d_client(
         RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write,
         result.cycle);
     mf->set_raytrace();
+    if (rtcore_v04_storage_attribution_enabled()) {
+      mf->set_rtcore_v04_storage_traffic_class(
+          rtcore_v04_storage_traffic_class_for_sideband(snapshot));
+    }
     mf->set_rtcore_v04_handoff_shared_backend();
     if (routes_to_handoff_shared) {
       mf->set_rtcore_v04_handoff_chunk(shared_chunk);
@@ -8773,6 +9223,10 @@ rtcore_maybe_accept_memory_unit_l1d_client(
       addr, is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R,
       RTCORE_V02_LSU_MEMORY_REQUEST_GRANULE_BYTES, is_write, result.cycle);
   mf->set_raytrace();
+  if (rtcore_v04_storage_attribution_enabled()) {
+    mf->set_rtcore_v04_storage_traffic_class(
+        rtcore_v04_storage_traffic_class_for_sideband(snapshot));
+  }
   uint32_t handoff_policy_tag_set = 0;
   unsigned handoff_policy_chunk = kRtcoreV04InvalidHandoffChunk;
   if (rtcore_v04_handoff_cache_policy_identity_for_snapshot(
@@ -15697,6 +16151,10 @@ static void rtcore_v04_attach_ordinary_semantic_tag(
       fflush(stderr);
       abort();
     }
+  }
+  if (handoff_tag_set != 0 && rtcore_v04_storage_attribution_enabled()) {
+    mf->set_rtcore_v04_storage_traffic_class(
+        mem_fetch::RTCORE_V04_STORAGE_TRAFFIC_V04_STORAGE);
   }
   if (tag_set != 0) {
     mf->set_rtcore_v04_handoff_chunk(preflight.lane_slot_chunk);

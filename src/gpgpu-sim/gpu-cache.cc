@@ -32,6 +32,13 @@
 #include "hashing.h"
 #include "stat-tool.h"
 
+bool rtcore_v04_storage_attribution_enabled();
+void rtcore_v04_record_storage_l1_access(
+    mem_fetch *mf, uint32_t class_set,
+    const cache_access_observation &observation,
+    enum cache_request_status status, const std::list<cache_event> &events,
+    unsigned long long cycle);
+
 // used to allocate memory that is large enough to adapt the changes in cache
 // size across kernels
 
@@ -527,6 +534,22 @@ bool mshr_table::full(new_addr_type block_addr) const {
 /// Add or merge this access
 void mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
   assert(mf != NULL); //if (mf == NULL) return; TIMING_TODO: WHY bug?
+  if (rtcore_v04_storage_attribution_enabled() &&
+      !m_data[block_addr].m_list.empty()) {
+    uint32_t class_set = mf->get_rtcore_v04_storage_traffic_class_set();
+    // All waiters carry the same accumulated union once attribution is active.
+    class_set |= m_data[block_addr]
+                     .m_list.front()
+                     ->get_rtcore_v04_storage_traffic_class_set();
+    if (class_set != 0) {
+      mf->merge_rtcore_v04_storage_traffic_class_set(class_set);
+      for (std::list<mem_fetch *>::iterator it =
+               m_data[block_addr].m_list.begin();
+           it != m_data[block_addr].m_list.end(); ++it) {
+        (*it)->merge_rtcore_v04_storage_traffic_class_set(class_set);
+      }
+    }
+  }
   m_data[block_addr].m_list.push_back(mf);
   assert(m_data.size() <= m_num_entries);
   assert(m_data[block_addr].m_list.size() <= m_max_merged);
@@ -1759,6 +1782,12 @@ enum cache_request_status data_cache::access_with_policy_observation(
     std::list<cache_event> &events, cache_access_observation *observation,
     enum cache_request_policy_hint policy_hint) {
   assert(mf->get_data_size() <= m_config.get_atom_sz());
+  uint32_t storage_request_class_set = 0;
+  if (rtcore_v04_storage_attribution_enabled()) {
+    mf->ensure_rtcore_v04_storage_traffic_class();
+    storage_request_class_set =
+        mf->get_rtcore_v04_storage_traffic_class_set();
+  }
   bool wr = mf->get_is_write();
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
@@ -1775,6 +1804,22 @@ enum cache_request_status data_cache::access_with_policy_observation(
         policy_hint != CACHE_REQUEST_POLICY_WRITE_ALLOCATE_RETAIN &&
         m_config.m_write_alloc_policy == NO_WRITE_ALLOCATE;
     observation->request_policy_hint = policy_hint;
+  }
+  if (m_wrbk_type == L1_WRBK_ACC && m_name.compare(0, 3, "L1D") == 0) {
+    cache_access_observation recorded = observation != NULL
+                                            ? *observation
+                                            : cache_access_observation();
+    if (observation == NULL) {
+      recorded.valid = true;
+      recorded.probe_status = probe_status;
+      recorded.access_status = access_status;
+      recorded.no_write_allocate =
+          policy_hint != CACHE_REQUEST_POLICY_WRITE_ALLOCATE_RETAIN &&
+          m_config.m_write_alloc_policy == NO_WRITE_ALLOCATE;
+      recorded.request_policy_hint = policy_hint;
+    }
+    rtcore_v04_record_storage_l1_access(
+        mf, storage_request_class_set, recorded, access_status, events, time);
   }
   m_stats.inc_stats(mf->get_access_type(),
                     m_stats.select_stats_status(probe_status, access_status));
