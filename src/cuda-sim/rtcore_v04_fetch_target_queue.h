@@ -352,6 +352,14 @@ status_kind try_reserve(
     engine_state_v0 *state, const reservation_input_v0 &input,
     uint64_t reservation_cycle, reservation_receipt_v0 *receipt);
 
+// Whole-mask staged admission may span reservation cycles. This helper uses
+// the earliest cycle at or after earliest_cycle without weakening capacity or
+// identity checks; ordinary runtime requests must continue to use try_reserve.
+status_kind try_reserve_staged_admission(
+    engine_state_v0 *state, const reservation_input_v0 &input,
+    uint64_t earliest_cycle, uint64_t *accepted_cycle,
+    reservation_receipt_v0 *receipt);
+
 status_kind try_reserve_selected_fetch(
     engine_state_v0 *state,
     const selected_fetch_reservation_input_v0 &input,

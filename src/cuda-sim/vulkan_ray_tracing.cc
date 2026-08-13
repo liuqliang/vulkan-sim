@@ -20726,6 +20726,8 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
     unsigned raw_request_count = 0;
     unsigned private_read_request_count = 0;
     unsigned lane_ordinal = 0;
+    unsigned long long modeled_reservation_cycle = issue_cycle;
+    const unsigned long long first_modeled_reservation_cycle = issue_cycle;
     for (unsigned lane = 0; lane < root_packet::kLaneCapacity; ++lane) {
         const unsigned lane_mask = 1u << lane;
         if ((input->active_mask & lane_mask) == 0) continue;
@@ -20765,12 +20767,11 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
             fetch_target::kOperandCommittedHitValid);
         reservation_input.forwarded_operand_mask =
             fetch_target::kOperandRayPolicyValid;
-        const unsigned long long modeled_reservation_cycle =
-            issue_cycle + lane_ordinal / 8u;
         fetch_target::status_kind target_status =
-            fetch_target::try_reserve(
+            fetch_target::try_reserve_staged_admission(
                 &staged_target, reservation_input,
-                modeled_reservation_cycle, &reservations[lane]);
+                modeled_reservation_cycle, &modeled_reservation_cycle,
+                &reservations[lane]);
         if (target_status != fetch_target::kStatusOk) {
             failure = fetch_target::status_name(target_status);
             break;
@@ -20973,6 +20974,8 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
            "resident_slot=%u lanes=%u raw_global_requests=%u "
            "private_global_requests=%u "
+           "reservation_first_cycle=%llu reservation_last_cycle=%llu "
+           "reservation_span_cycles=%llu "
            "private_init_chunks_per_lane=%u producer_commit_required=0 "
            "private_storage_profile=%s "
            "private_charge_bytes_per_lane=%u "
@@ -20983,6 +20986,8 @@ extern "C" bool rtcore_admit_v04_root_node_packet(
            input->owner_hw_sid, input->warp_uid, input->warp_id,
            input->active_mask, timing_plan.owner_plan.resident_warp_slot,
            lane_ordinal, raw_request_count, private_read_request_count,
+           first_modeled_reservation_cycle, modeled_reservation_cycle,
+           modeled_reservation_cycle - first_modeled_reservation_cycle + 1,
            private_init_chunks_per_lane,
            private_storage::profile_name(
                static_cast<private_storage::profile_kind>(

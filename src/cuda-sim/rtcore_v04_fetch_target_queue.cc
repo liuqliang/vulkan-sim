@@ -1816,6 +1816,46 @@ status_kind try_reserve(
                               false);
 }
 
+status_kind try_reserve_staged_admission(
+    engine_state_v0 *state, const reservation_input_v0 &input,
+    uint64_t earliest_cycle, uint64_t *accepted_cycle,
+    reservation_receipt_v0 *receipt) {
+  if (state == NULL || accepted_cycle == NULL || receipt == NULL) {
+    return kStatusInvalidArgument;
+  }
+
+  uint64_t cycle = earliest_cycle;
+  const reservation_window_v0 *window = NULL;
+  switch (static_cast<target_kind>(input.target_kind)) {
+    case kTargetNode:
+      window = &state->node_window;
+      break;
+    case kTargetPrimitive:
+      window = &state->primitive_window;
+      break;
+    case kTargetInstance:
+      window = &state->instance_window;
+      break;
+    case kTargetInvalid:
+      break;
+  }
+  if (window != NULL && window->last_cycle_valid != 0 &&
+      window->last_cycle > cycle) {
+    cycle = window->last_cycle;
+  }
+
+  for (;;) {
+    const status_kind status =
+        try_reserve(state, input, cycle, receipt);
+    if (status != kStatusReservationBudgetBackpressure) {
+      if (status == kStatusOk) *accepted_cycle = cycle;
+      return status;
+    }
+    if (cycle == std::numeric_limits<uint64_t>::max()) return status;
+    ++cycle;
+  }
+}
+
 status_kind try_reserve_selected_fetch(
     engine_state_v0 *state,
     const selected_fetch_reservation_input_v0 &selected_input,
