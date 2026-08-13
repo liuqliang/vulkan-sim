@@ -6399,9 +6399,6 @@ static bool rtcore_memory_unit_issue_bandwidth_gate_enabled() {
 }
 
 static unsigned rtcore_memory_unit_issue_budget_per_cycle() {
-  if (rtcore_v04_private_frontier_live_init_memory_issue_profile_active()) {
-    return 1u;
-  }
   static unsigned budget = []() {
     const char *value =
         getenv("VULKAN_SIM_RTCORE_REPLAY_MEMORY_UNIT_ISSUE_BUDGET_PER_CYCLE");
