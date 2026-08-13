@@ -128,6 +128,8 @@ class shd_warp_t {
     m_rtcore_v04_initial_publication_fence_pc = 0;
     m_rtcore_v04_initial_publication_fence_pc_valid = false;
     m_rtcore_v04_initial_publication_membar = false;
+    m_rtcore_v04_live_publication_membar = false;
+    m_rtcore_v04_live_publication_round = {};
     m_done_exit = true;
     m_last_fetch = 0;
     m_next = 0;
@@ -195,18 +197,33 @@ class shd_warp_t {
     m_rtcore_v04_initial_publication_fence_pc_valid = false;
     return true;
   }
-  void set_membar(bool rtcore_v04_initial_publication = false) {
+  void set_membar(
+      bool rtcore_v04_initial_publication = false,
+      const rtcore::v04::pre_submit_publication::
+          live_publication_round_request_v0 *live_round = NULL) {
     m_membar = true;
     m_rtcore_v04_initial_publication_membar =
         rtcore_v04_initial_publication;
+    m_rtcore_v04_live_publication_membar = live_round != NULL;
+    if (live_round != NULL) m_rtcore_v04_live_publication_round = *live_round;
   }
   void clear_membar() {
     m_membar = false;
     m_rtcore_v04_initial_publication_membar = false;
+    m_rtcore_v04_live_publication_membar = false;
+    m_rtcore_v04_live_publication_round = {};
   }
   bool get_membar() const { return m_membar; }
   bool get_rtcore_v04_initial_publication_membar() const {
     return m_rtcore_v04_initial_publication_membar;
+  }
+  bool get_rtcore_v04_live_publication_membar() const {
+    return m_rtcore_v04_live_publication_membar;
+  }
+  const rtcore::v04::pre_submit_publication::
+      live_publication_round_request_v0 &
+  get_rtcore_v04_live_publication_round() const {
+    return m_rtcore_v04_live_publication_round;
   }
   virtual address_type get_pc() const { return m_next_pc; }
   void set_next_pc(address_type pc) { m_next_pc = pc; }
@@ -313,6 +330,9 @@ class shd_warp_t {
   address_type m_rtcore_v04_initial_publication_fence_pc;
   bool m_rtcore_v04_initial_publication_fence_pc_valid;
   bool m_rtcore_v04_initial_publication_membar;
+  bool m_rtcore_v04_live_publication_membar;
+  rtcore::v04::pre_submit_publication::live_publication_round_request_v0
+      m_rtcore_v04_live_publication_round;
 
   bool m_done_exit;  // true once thread exit has been registered for threads in
                      // this warp

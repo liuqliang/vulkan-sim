@@ -840,6 +840,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
         handoff_selection_materialized(false),
         call_inflight(false),
         current_call_requires_handoff_return(false),
+        current_call_live_publication_fence_issued(false),
         return_pc(0),
         return_rpc(0),
         current_cohort_index(UINT_MAX),
@@ -856,6 +857,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
         pending_shader_terminal_mask(0),
         conservation_next_cohort_seq(1),
         conservation_inflight_cohort_seq(0) {
+    live_publication_round = {};
     for (unsigned index = 0; index < 32; ++index) {
       cohort_lane_masks[index] = 0;
       cohort_shader_ids[index] = UINT_MAX;
@@ -918,6 +920,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   bool handoff_selection_materialized;
   bool call_inflight;
   bool current_call_requires_handoff_return;
+  bool current_call_live_publication_fence_issued;
   unsigned return_pc;
   unsigned return_rpc;
   unsigned current_cohort_index;
@@ -945,6 +948,8 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   unsigned pending_shader_terminal_mask;
   unsigned conservation_next_cohort_seq;
   unsigned conservation_inflight_cohort_seq;
+  rtcore::v04::pre_submit_publication::live_publication_round_request_v0
+      live_publication_round;
   unsigned long long lane_v04_context_ptrs[32];
   unsigned long long lane_v04_handoff_window_bases[32];
   unsigned lane_v04_token_ids[32];
@@ -2272,6 +2277,16 @@ rtcore_service_shader_continuation_pseudo_op(
     }
     unsigned shader_terminal_lane_mask = 0;
     if (entry.current_call_requires_handoff_return) {
+      if (rtcore_v04_direct_completion(entry) &&
+          !entry.current_call_live_publication_fence_issued) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                "cohort_index=%u fault=return_without_epilogue_fence\n",
+                owner_hw_sid, entry.warp_uid, entry.warp_id,
+                completed_cohort_index);
+        abort();
+      }
       for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
         const unsigned lane_mask = 1u << lane;
         if ((completed_lane_mask & lane_mask) == 0) continue;
@@ -2392,6 +2407,7 @@ rtcore_service_shader_continuation_pseudo_op(
             : completed_lane_mask & ~shader_terminal_lane_mask;
     entry.call_inflight = false;
     entry.current_call_requires_handoff_return = false;
+    entry.current_call_live_publication_fence_issued = false;
     entry.current_cohort_index = UINT_MAX;
     entry.metadata_lookup_state =
         RTCORE_SHADER_CONTINUATION_SBT_METADATA_NOT_REQUESTED;
@@ -2709,6 +2725,7 @@ rtcore_service_shader_continuation_pseudo_op(
     if (rtcore_v04_direct_completion(entry) &&
         rtcore_shader_continuation_requires_handoff_return(
             cohort_reason)) {
+      unsigned live_window_generation = 0;
       const uint32_t default_effect =
           cohort_reason ==
                   RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED
@@ -2735,6 +2752,19 @@ rtcore_service_shader_continuation_pseudo_op(
             source_inst->operand_lookup(2);
         const ptx_reg_t handoff_value =
             thread->get_reg(handoff_operand.get_symbol());
+        const unsigned lane_window_generation =
+            entry.lane_v04_live_window_generations[lane];
+        if (lane_window_generation == 0 ||
+            (live_window_generation != 0 &&
+             live_window_generation != lane_window_generation)) {
+          fprintf(stderr,
+                  "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
+                  "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                  "fault=null_shader_window_generation_mismatch\n",
+                  owner_hw_sid, entry.warp_uid, entry.warp_id, lane);
+          abort();
+        }
+        live_window_generation = lane_window_generation;
         const unsigned long long effect_address =
             handoff_value.u64 +
             static_cast<unsigned long long>(lane) *
@@ -2744,13 +2774,41 @@ rtcore_service_shader_continuation_pseudo_op(
         thread->get_global_memory()->write_simulator_backing(
             effect_address, sizeof(default_effect), &default_effect);
       }
+      rtcore::v04::pre_submit_publication::
+          live_publication_round_request_v0 no_shader = {};
+      no_shader.owner_hw_sid = owner_hw_sid;
+      no_shader.dynamic_warp_id = dynamic_warp_id;
+      no_shader.warp_id = warp_id;
+      no_shader.resident_warp_generation =
+          entry.v04_native_resident_generation;
+      no_shader.window_generation = live_window_generation;
+      no_shader.completion_transaction_generation =
+          entry.v04_native_completion_transaction_generation;
+      no_shader.cohort_index = cohort_index;
+      no_shader.expected_lane_mask = cohort_lane_mask;
+      const rtcore::v04::pre_submit_publication::status_kind no_shader_status =
+          rtcore::v04::pre_submit_publication::shared_bridge()
+              .authorize_no_shader_live_publication(no_shader);
+      if (no_shader_status !=
+          rtcore::v04::pre_submit_publication::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+                "fault=null_shader_authorization_rejected status=%s\n",
+                owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index,
+                rtcore::v04::pre_submit_publication::status_name(
+                    no_shader_status));
+        abort();
+      }
       printf("GPGPU-Sim RTCORE_V04_NATIVE_NO_SHADER_RETURN "
              "owner_hw_sid=%u warp_uid=%u warp_id=%u "
              "cohort_lane_mask=0x%08x reason=%u effect=0x%08x "
-             "policy_source=sbt_null_shader return_cycle=%llu\n",
+             "policy_source=sbt_null_shader "
+             "publication_contract=no_shader_no_lsu_transaction "
+             "completion_generation=%u return_cycle=%llu\n",
              owner_hw_sid, entry.warp_uid, entry.warp_id,
              cohort_lane_mask, cohort_reason, default_effect,
-             current_cycle);
+             no_shader.completion_transaction_generation, current_cycle);
       fflush(stdout);
     }
     const bool terminated_final_no_shader =
@@ -2939,6 +2997,66 @@ rtcore_service_shader_continuation_pseudo_op(
   assert(shader->rtcore_launch_shader_continuation_cohort(
       warp_id, cohort_lane_mask, target_func, handoff_window_base,
       default_hit_result, requires_handoff_return, &return_pc, &return_rpc));
+  if (requires_handoff_return && rtcore_v04_direct_completion(entry)) {
+    unsigned live_window_generation = 0;
+    for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
+      if ((cohort_lane_mask & (1u << lane)) == 0) continue;
+      const unsigned lane_generation =
+          entry.lane_v04_live_window_generations[lane];
+      if (lane_generation == 0 ||
+          (live_window_generation != 0 &&
+           live_window_generation != lane_generation)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                "fault=cohort_window_generation_mismatch\n",
+                owner_hw_sid, entry.warp_uid, entry.warp_id, lane);
+        abort();
+      }
+      live_window_generation = lane_generation;
+    }
+    rtcore::v04::pre_submit_publication::
+        live_publication_round_request_v0 round = {};
+    round.owner_hw_sid = owner_hw_sid;
+    round.dynamic_warp_id = dynamic_warp_id;
+    round.warp_id = warp_id;
+    round.resident_warp_generation =
+        entry.v04_native_resident_generation;
+    round.window_generation = live_window_generation;
+    round.completion_transaction_generation =
+        entry.v04_native_completion_transaction_generation;
+    round.cohort_index = cohort_index;
+    round.expected_lane_mask = cohort_lane_mask;
+    round.expected_return_byte_mask = 0x0000000fu;
+    const rtcore::v04::pre_submit_publication::status_kind arm_status =
+        rtcore::v04::pre_submit_publication::shared_bridge()
+            .arm_live_publication_round(round);
+    if (arm_status !=
+        rtcore::v04::pre_submit_publication::kStatusOk) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+              "completion_generation=%u fault=round_arm_rejected "
+              "status=%s\n",
+              owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index,
+              round.completion_transaction_generation,
+              rtcore::v04::pre_submit_publication::status_name(arm_status));
+      abort();
+    }
+    entry.live_publication_round = round;
+    printf("GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_ROUND_ARM "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u dynamic_warp_id=%u "
+           "resident_generation=%u window_generation=%u "
+           "completion_generation=%u cohort_index=%u "
+           "expected_lane_mask=0x%08x expected_return_byte_mask=0x%08x "
+           "arm_cycle=%llu\n",
+           owner_hw_sid, entry.warp_uid, entry.warp_id, dynamic_warp_id,
+           round.resident_warp_generation, round.window_generation,
+           round.completion_transaction_generation, round.cohort_index,
+           round.expected_lane_mask, round.expected_return_byte_mask,
+           current_cycle);
+    fflush(stdout);
+  }
   const unsigned conservation_cohort_seq =
       entry.conservation_next_cohort_seq++;
   rtcore_record_v04_conservation_cohort_event_or_abort(
@@ -2949,6 +3067,7 @@ rtcore_service_shader_continuation_pseudo_op(
       conservation_cohort_seq;
   entry.call_inflight = true;
   entry.current_call_requires_handoff_return = requires_handoff_return;
+  entry.current_call_live_publication_fence_issued = false;
   entry.return_pc = return_pc;
   entry.return_rpc = return_rpc;
   entry.current_cohort_index = cohort_index;
@@ -3035,6 +3154,44 @@ static bool rtcore_shader_continuation_call_inflight(
   return it != g_rtcore_shader_continuation_dispatcher_pending.end() &&
          it->second.valid && it->second.call_inflight &&
          it->second.dynamic_warp_id == dynamic_warp_id;
+}
+
+static bool rtcore_claim_shader_continuation_live_publication_fence(
+    gpgpu_context *context, unsigned owner_hw_sid, unsigned warp_id,
+    unsigned dynamic_warp_id, address_type pc,
+    rtcore::v04::pre_submit_publication::
+        live_publication_round_request_v0 *round) {
+  if (context == NULL || round == NULL) return false;
+  rtcore_shader_continuation_dispatcher_pending_key key;
+  key.owner_hw_sid = owner_hw_sid;
+  key.warp_id = warp_id;
+  std::map<rtcore_shader_continuation_dispatcher_pending_key,
+           rtcore_shader_continuation_dispatcher_pending_entry>::iterator
+      it = g_rtcore_shader_continuation_dispatcher_pending.find(key);
+  if (it == g_rtcore_shader_continuation_dispatcher_pending.end() ||
+      !it->second.valid || !it->second.call_inflight ||
+      !it->second.current_call_requires_handoff_return ||
+      it->second.current_call_live_publication_fence_issued ||
+      !rtcore_v04_direct_completion(it->second) ||
+      it->second.dynamic_warp_id != dynamic_warp_id) {
+    return false;
+  }
+  const ptx_instruction *fence = context->pc_to_instruction(pc);
+  const ptx_instruction *next =
+      fence != NULL
+          ? context->pc_to_instruction(pc + fence->inst_size())
+          : NULL;
+  if (fence == NULL || fence->get_opcode() != MEMBAR_OP ||
+      !fence->is_global_membar() || next == NULL ||
+      (next->get_opcode() != RET_OP && next->get_opcode() != RETP_OP)) {
+    return false;
+  }
+  *round = it->second.live_publication_round;
+  const bool valid =
+      round->completion_transaction_generation != 0 &&
+      round->cohort_index == it->second.current_cohort_index;
+  if (valid) it->second.current_call_live_publication_fence_issued = true;
+  return valid;
 }
 
 struct rtcore_replay_cycle_hook_result {
@@ -3933,12 +4090,18 @@ static rtcore::v04::handoff_cache_policy::profile_kind
 
 struct rtcore_v04_publication_membar_stats {
   unsigned long long release_ack_retain;
+  unsigned long long live_release_ack_retain;
   unsigned long long ordinary_invalidate_release;
   unsigned long long publication_drain_wait_cycles;
   unsigned long long publication_preaccept_wait_cycles;
   unsigned long long publication_outstanding_ack_wait_cycles;
   unsigned long long publication_coverage_wait_cycles;
   unsigned long long publication_scoreboard_wait_cycles;
+  unsigned long long live_drain_wait_cycles;
+  unsigned long long live_preaccept_wait_cycles;
+  unsigned long long live_outstanding_ack_wait_cycles;
+  unsigned long long live_coverage_wait_cycles;
+  unsigned long long live_scoreboard_wait_cycles;
 };
 
 static rtcore_v04_publication_membar_stats
@@ -3960,17 +4123,26 @@ static void rtcore_v04_report_publication_membar_stats() {
       g_rtcore_v04_publication_membar_stats;
   printf("GPGPU-Sim RTCORE_V04_PUBLICATION_MEMBAR "
          "release_ack_retain=%llu ordinary_invalidate_release=%llu "
+         "live_release_ack_retain=%llu "
          "publication_drain_wait_cycles=%llu "
          "publication_preaccept_wait_cycles=%llu "
          "publication_outstanding_ack_wait_cycles=%llu "
          "publication_coverage_wait_cycles=%llu "
-         "publication_scoreboard_wait_cycles=%llu\n",
+         "publication_scoreboard_wait_cycles=%llu "
+         "live_drain_wait_cycles=%llu live_preaccept_wait_cycles=%llu "
+         "live_outstanding_ack_wait_cycles=%llu "
+         "live_coverage_wait_cycles=%llu "
+         "live_scoreboard_wait_cycles=%llu\n",
          s.release_ack_retain, s.ordinary_invalidate_release,
+         s.live_release_ack_retain,
          s.publication_drain_wait_cycles,
          s.publication_preaccept_wait_cycles,
          s.publication_outstanding_ack_wait_cycles,
          s.publication_coverage_wait_cycles,
-         s.publication_scoreboard_wait_cycles);
+         s.publication_scoreboard_wait_cycles,
+         s.live_drain_wait_cycles, s.live_preaccept_wait_cycles,
+         s.live_outstanding_ack_wait_cycles,
+         s.live_coverage_wait_cycles, s.live_scoreboard_wait_cycles);
 }
 
 static void rtcore_v04_ensure_publication_membar_report_registered() {
@@ -12159,9 +12331,28 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       }
     }
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
-    m_warp[warp_id]->set_membar(
+    const bool initial_rt_publication =
         m_warp[warp_id]->claim_rtcore_v04_initial_publication_fence(
-            next_inst->pc));
+            next_inst->pc);
+    rtcore::v04::pre_submit_publication::
+        live_publication_round_request_v0 live_round = {};
+    const bool live_rt_publication =
+        rtcore_claim_shader_continuation_live_publication_fence(
+            m_gpu->gpgpu_ctx, m_sid, warp_id,
+            m_warp[warp_id]->get_dynamic_warp_id(), next_inst->pc,
+            &live_round);
+    if (initial_rt_publication && live_rt_publication) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
+              "owner_hw_sid=%u warp_id=%u pc=0x%llx "
+              "fault=initial_and_live_fence_alias\n",
+              m_sid, warp_id,
+              static_cast<unsigned long long>(next_inst->pc));
+      abort();
+    }
+    m_warp[warp_id]->set_membar(
+        initial_rt_publication,
+        live_rt_publication ? &live_round : NULL);
   }
 
   updateSIMTDivergenceStructures(warp_id, *pipe_reg);
@@ -16375,11 +16566,13 @@ void rtcore_v04_attach_accepted_publication_ticket(
     printf("GPGPU-Sim RTCORE_V04_LIVE_SHADER_RETURN_TICKET_ACCEPT "
            "owner_hw_sid=%u warp_id=%u dynamic_warp_id=%u "
            "transaction_id=%llu resident_generation=%u "
-           "window_generation=%u lane_id=%u address=0x%llx\n",
+           "window_generation=%u completion_generation=%u "
+           "cohort_index=%u lane_id=%u address=0x%llx\n",
            mf->get_sid(), mf->get_wid(),
            mf->get_inst().dynamic_warp_id(),
            static_cast<unsigned long long>(token.transaction_id),
            token.owner_generation, token.window_generation,
+           token.completion_transaction_generation, token.cohort_index,
            token.lane_id,
            static_cast<unsigned long long>(mf->get_addr()));
     fflush(stdout);
@@ -16409,11 +16602,12 @@ void rtcore_v04_complete_publication_ticket(
     printf("GPGPU-Sim RTCORE_V04_LIVE_SHADER_RETURN_TICKET_COMPLETE "
            "owner_hw_sid=%u warp_id=%u transaction_id=%llu "
            "resident_generation=%u window_generation=%u lane_id=%u "
-           "address=0x%llx\n",
+           "completion_generation=%u cohort_index=%u address=0x%llx\n",
            mf->get_sid(), mf->get_wid(),
            static_cast<unsigned long long>(token.transaction_id),
            token.owner_generation, token.window_generation,
-           token.lane_id,
+           token.lane_id, token.completion_transaction_generation,
+           token.cohort_index,
            static_cast<unsigned long long>(mf->get_addr()));
     fflush(stdout);
   }
@@ -23771,6 +23965,9 @@ bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
   const bool scoreboard_wait = m_scoreboard->pendingWrites(warp_id);
   const bool initial_rt_publication =
       m_warp[warp_id]->get_rtcore_v04_initial_publication_membar();
+  const bool live_rt_publication =
+      m_warp[warp_id]->get_rtcore_v04_live_publication_membar();
+  if (initial_rt_publication && live_rt_publication) abort();
   rtcore::v04::pre_submit_publication::
       provisional_group_drain_v0 drain = {};
   rtcore::v04::pre_submit_publication::status_kind drain_status =
@@ -23783,11 +23980,28 @@ bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
                 m_warp[warp_id]->get_dynamic_warp_id(),
                 warp_id, scoreboard_wait ? 0 : 1, &drain);
   }
+  rtcore::v04::pre_submit_publication::
+      live_publication_round_drain_v0 live_drain = {};
+  rtcore::v04::pre_submit_publication::status_kind live_drain_status =
+      rtcore::v04::pre_submit_publication::kStatusOk;
+  if (live_rt_publication) {
+    live_drain_status =
+        rtcore::v04::pre_submit_publication::shared_bridge()
+            .service_live_publication_fence(
+                m_warp[warp_id]->get_rtcore_v04_live_publication_round(),
+                scoreboard_wait ? 0 : 1, &live_drain);
+  }
   if (drain_status !=
       rtcore::v04::pre_submit_publication::kStatusOk) {
     rtcore_v04_publication_ticket_fail_closed(
         "membar-drain", drain_status, drain.registry_status,
         NULL);
+  }
+  if (live_drain_status !=
+      rtcore::v04::pre_submit_publication::kStatusOk) {
+    rtcore_v04_publication_ticket_fail_closed(
+        "live-membar-drain", live_drain_status,
+        live_drain.registry_status, NULL);
   }
   if (initial_rt_publication &&
       (!drain.registered || !drain.fence_armed)) {
@@ -23812,21 +24026,67 @@ bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
     }
     return true;
   }
+  if (live_rt_publication && (!live_drain.armed ||
+                              live_drain.wait_required)) {
+    if (rtcore_v04_publication_membar_stats_enabled()) {
+      rtcore_v04_publication_membar_stats &stats =
+          g_rtcore_v04_publication_membar_stats;
+      stats.live_drain_wait_cycles++;
+      if (live_drain.preaccept_pending != 0) {
+        stats.live_preaccept_wait_cycles++;
+      }
+      if (live_drain.outstanding_transactions != 0) {
+        stats.live_outstanding_ack_wait_cycles++;
+      }
+      if (live_drain.completed_lane_mask !=
+          live_drain.expected_lane_mask) {
+        stats.live_coverage_wait_cycles++;
+      }
+    }
+    return true;
+  }
   if (initial_rt_publication && scoreboard_wait &&
       rtcore_v04_publication_membar_stats_enabled()) {
     g_rtcore_v04_publication_membar_stats
         .publication_scoreboard_wait_cycles++;
   }
+  if (live_rt_publication && scoreboard_wait &&
+      rtcore_v04_publication_membar_stats_enabled()) {
+    g_rtcore_v04_publication_membar_stats.live_scoreboard_wait_cycles++;
+  }
   if (!scoreboard_wait) {
-    m_warp[warp_id]->clear_membar();
     const bool release_ack_retain =
-        drain.fence_consumed &&
-        drain.release_kind ==
-            rtcore::v04::pre_submit_publication::kFenceReleaseAckRetain;
+        (drain.fence_consumed &&
+         drain.release_kind ==
+             rtcore::v04::pre_submit_publication::kFenceReleaseAckRetain) ||
+        (live_drain.fence_consumed &&
+         live_drain.release_kind ==
+             rtcore::v04::pre_submit_publication::kFenceReleaseAckRetain);
     if (release_ack_retain &&
         rtcore_v04_publication_membar_stats_enabled()) {
       g_rtcore_v04_publication_membar_stats.release_ack_retain++;
+      if (live_drain.fence_consumed) {
+        g_rtcore_v04_publication_membar_stats.live_release_ack_retain++;
+      }
     }
+    if (live_drain.fence_consumed) {
+      const rtcore::v04::pre_submit_publication::
+          live_publication_round_request_v0 &round =
+              m_warp[warp_id]->get_rtcore_v04_live_publication_round();
+      printf("GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FENCE_RELEASE "
+             "owner_hw_sid=%u warp_id=%u dynamic_warp_id=%u "
+             "resident_generation=%u window_generation=%u "
+             "completion_generation=%u cohort_index=%u "
+             "released_lane_mask=0x%08x release=ack_retain "
+             "release_cycle=%llu\n",
+             round.owner_hw_sid, round.warp_id, round.dynamic_warp_id,
+             round.resident_warp_generation, round.window_generation,
+             round.completion_transaction_generation, round.cohort_index,
+             round.expected_lane_mask,
+             m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+      fflush(stdout);
+    }
+    m_warp[warp_id]->clear_membar();
     if (m_gpu->get_config().flush_l1() && !release_ack_retain) {
       if (rtcore_v04_publication_membar_stats_enabled()) {
         g_rtcore_v04_publication_membar_stats

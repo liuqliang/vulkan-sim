@@ -659,6 +659,11 @@ bool rtcore_query_resident_rt_warp_active_lane_state(
     unsigned *resident_active_lane_count, unsigned *warp_active_mask,
     bool *warp_resident);
 
+bool rtcore_query_v04_resident_completion_generation(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned resident_generation,
+    unsigned *completion_transaction_generation);
+
 bool rtcore_commit_v04_functional_shader_visible_resubmit_admission(
     const ptx_instruction *pI, unsigned owner_hw_sid,
     unsigned new_warp_uid, unsigned warp_id,

@@ -89,6 +89,22 @@ static bool same_allocation_ranges(
          lhs.handoff_byte_count == rhs.handoff_byte_count;
 }
 
+static bool same_live_publication_round(
+    const live_publication_round_request_v0 &lhs,
+    const live_publication_round_request_v0 &rhs) {
+  return lhs.owner_hw_sid == rhs.owner_hw_sid &&
+         lhs.dynamic_warp_id == rhs.dynamic_warp_id &&
+         lhs.warp_id == rhs.warp_id &&
+         lhs.resident_warp_generation == rhs.resident_warp_generation &&
+         lhs.window_generation == rhs.window_generation &&
+         lhs.completion_transaction_generation ==
+             rhs.completion_transaction_generation &&
+         lhs.cohort_index == rhs.cohort_index &&
+         lhs.expected_lane_mask == rhs.expected_lane_mask &&
+         lhs.expected_return_byte_mask ==
+             rhs.expected_return_byte_mask;
+}
+
 static uint8_t first_active_lane(uint32_t active_mask) {
   for (uint8_t lane = 0; lane < allocation_identity::kLaneCapacity; ++lane) {
     if ((active_mask & (uint32_t{1} << lane)) != 0) return lane;
@@ -250,6 +266,7 @@ void bridge_v0::reset() {
   publication_identity_observations_.clear();
   registered_groups_.clear();
   accepted_publication_stores_.clear();
+  accepted_live_accesses_.clear();
 }
 
 status_kind bridge_v0::observe_initial_publication(
@@ -462,6 +479,10 @@ address_range_registry::status_kind bridge_v0::accept_publication_store(
 
 address_range_registry::status_kind bridge_v0::complete_publication_store(
     const address_range_registry::transaction_token_v0 &token) {
+  if (token.access ==
+      address_range_registry::kAccessHandoffShaderReturn) {
+    return complete_live_access(token);
+  }
   if (token.access != address_range_registry::
                           kAccessHandoffShaderTraceInputPublish) {
     return registry_.complete_transaction(token);
@@ -607,7 +628,19 @@ status_kind bridge_v0::accept_preaccepted_publication_store(
 address_range_registry::status_kind bridge_v0::accept_live_access(
     const address_range_registry::live_access_v0 &access,
     address_range_registry::transaction_token_v0 *token) {
-  return registry_.accept_live_access(access, token);
+  const address_range_registry::status_kind status =
+      registry_.accept_live_access(access, token);
+  if (status != address_range_registry::kStatusOk ||
+      access.access != address_range_registry::kAccessHandoffShaderReturn) {
+    return status;
+  }
+  if (!accepted_live_accesses_
+           .insert(std::make_pair(token->transaction_id, access))
+           .second) {
+    registry_.complete_transaction(*token);
+    return address_range_registry::kStatusStaleTransaction;
+  }
+  return address_range_registry::kStatusOk;
 }
 
 status_kind bridge_v0::resolve_live_handoff_chunk(
@@ -796,13 +829,65 @@ status_kind bridge_v0::accept_preaccepted_live_access(
   if (status != address_range_registry::kStatusOk) {
     return kStatusRegistryRejected;
   }
+  if (access.access ==
+          address_range_registry::kAccessHandoffShaderReturn &&
+      !accepted_live_accesses_
+           .insert(std::make_pair(token->transaction_id, access))
+           .second) {
+    registry_.complete_transaction(*token);
+    return kStatusRegistryRejected;
+  }
   --group->preaccept_pending;
   return kStatusOk;
 }
 
 address_range_registry::status_kind bridge_v0::complete_live_access(
     const address_range_registry::transaction_token_v0 &token) {
-  return registry_.complete_transaction(token);
+  if (token.access !=
+      address_range_registry::kAccessHandoffShaderReturn) {
+    return registry_.complete_transaction(token);
+  }
+  std::map<uint64_t, live_access_v0>::iterator pending =
+      accepted_live_accesses_.find(token.transaction_id);
+  if (pending == accepted_live_accesses_.end()) {
+    return address_range_registry::kStatusTransactionNotFound;
+  }
+  const live_access_v0 access = pending->second;
+  registered_group_v0 *group = NULL;
+  for (std::map<uint64_t, registered_group_v0>::iterator it =
+           registered_groups_.begin();
+       it != registered_groups_.end(); ++it) {
+    address_range_registry::live_owner_v0 owner = {};
+    owner.owner_hw_sid = it->second.execution_owner.owner_hw_sid;
+    owner.resident_warp_generation = it->second.resident_warp_generation;
+    owner.window_generation = it->second.provisional_owner.window_generation;
+    if (!same_live_owner(owner, access.owner)) continue;
+    if (group != NULL) return address_range_registry::kStatusDuplicateOwner;
+    group = &it->second;
+  }
+  if (group == NULL || !group->live_publication_round_armed ||
+      group->live_publication_round.completion_transaction_generation !=
+          access.completion_transaction_generation ||
+      group->live_publication_round.cohort_index != access.cohort_index ||
+      (group->live_publication_round.expected_lane_mask &
+       (uint32_t{1} << access.lane_id)) == 0 ||
+      (access.byte_mask & ~0xffff0fffu) != 0 ||
+      token.completion_transaction_generation !=
+          access.completion_transaction_generation ||
+      token.cohort_index != access.cohort_index) {
+    return address_range_registry::kStatusStaleTransaction;
+  }
+  const address_range_registry::status_kind status =
+      registry_.complete_transaction(token);
+  if (status != address_range_registry::kStatusOk) return status;
+  if ((access.byte_mask &
+       group->live_publication_round.expected_return_byte_mask) ==
+      group->live_publication_round.expected_return_byte_mask) {
+    group->live_publication_completed_lane_mask |=
+        uint32_t{1} << access.lane_id;
+  }
+  accepted_live_accesses_.erase(pending);
+  return address_range_registry::kStatusOk;
 }
 
 status_kind bridge_v0::preflight_ordinary_publication_store(
@@ -927,6 +1012,25 @@ status_kind bridge_v0::preflight_ordinary_publication_store(
         valid_shader_builtin_read
             ? address_range_registry::kAccessHandoffShaderBuiltinRead
             : address_range_registry::kAccessHandoffShaderReturn;
+    if (valid_shader_return) {
+      if (!group->live_publication_round_armed ||
+          group->live_publication_round.owner_hw_sid !=
+              request.owner_hw_sid ||
+          group->live_publication_round.dynamic_warp_id !=
+              request.dynamic_warp_id ||
+          group->live_publication_round.warp_id != request.warp_id ||
+          (group->live_publication_round.expected_lane_mask &
+           (uint32_t{1} << range.lane_id)) == 0) {
+        preflight->registry_status =
+            address_range_registry::kStatusOwnerMismatch;
+        return kStatusRegistryRejected;
+      }
+      preflight->live_access.completion_transaction_generation =
+          group->live_publication_round
+              .completion_transaction_generation;
+      preflight->live_access.cohort_index =
+          group->live_publication_round.cohort_index;
+    }
     preflight->live_access.aligned_32b_address =
         request.aligned_32b_address;
     preflight->live_access.byte_mask = request.byte_mask;
@@ -1007,6 +1111,176 @@ status_kind bridge_v0::service_provisional_publication_fence(
       !drain->publication_coverage_complete;
   if (!drain->wait_required && release_ready) {
     group->fence_armed = 0;
+    drain->fence_consumed = 1;
+    drain->release_kind = kFenceReleaseAckRetain;
+  }
+  return kStatusOk;
+}
+
+status_kind bridge_v0::arm_live_publication_round(
+    const live_publication_round_request_v0 &request) {
+  if (request.resident_warp_generation == 0 ||
+      request.window_generation == 0 ||
+      request.completion_transaction_generation == 0 ||
+      request.cohort_index >= allocation_identity::kLaneCapacity ||
+      request.expected_lane_mask == 0 ||
+      request.expected_return_byte_mask == 0) {
+    return kStatusInvalidArgument;
+  }
+  registered_group_v0 *group = NULL;
+  for (std::map<uint64_t, registered_group_v0>::iterator it =
+           registered_groups_.begin();
+       it != registered_groups_.end(); ++it) {
+    const registered_group_v0 &candidate = it->second;
+    if (!candidate.live_bound || candidate.release_started ||
+        candidate.execution_owner.owner_hw_sid != request.owner_hw_sid ||
+        candidate.execution_owner.dynamic_warp_id !=
+            request.dynamic_warp_id ||
+        candidate.execution_owner.warp_id != request.warp_id ||
+        candidate.resident_warp_generation !=
+            request.resident_warp_generation ||
+        candidate.provisional_owner.window_generation !=
+            request.window_generation) {
+      continue;
+    }
+    if (group != NULL) return kStatusGroupConflict;
+    group = &it->second;
+  }
+  if (group == NULL) return kStatusGroupNotRegistered;
+  if (group->live_publication_round_armed ||
+      group->preaccept_pending != 0 ||
+      (request.expected_lane_mask & ~group->active_mask) != 0) {
+    return kStatusGroupConflict;
+  }
+  uint64_t outstanding = 0;
+  address_range_registry::live_owner_v0 owner = {};
+  owner.owner_hw_sid = request.owner_hw_sid;
+  owner.resident_warp_generation = request.resident_warp_generation;
+  owner.window_generation = request.window_generation;
+  const address_range_registry::status_kind outstanding_status =
+      registry_.live_group_outstanding(owner, &outstanding);
+  if (outstanding_status != address_range_registry::kStatusOk) {
+    return kStatusRegistryRejected;
+  }
+  if (outstanding != 0) return kStatusGroupConflict;
+  if (group->live_publication_released_generation !=
+      request.completion_transaction_generation) {
+    group->live_publication_released_generation =
+        request.completion_transaction_generation;
+    group->live_publication_released_lane_mask = 0;
+    group->live_publication_no_shader_lane_mask = 0;
+  }
+  group->live_publication_required_generation =
+      request.completion_transaction_generation;
+  group->live_publication_round = request;
+  group->live_publication_completed_lane_mask = 0;
+  group->live_publication_round_armed = 1;
+  return kStatusOk;
+}
+
+status_kind bridge_v0::authorize_no_shader_live_publication(
+    const live_publication_round_request_v0 &request) {
+  if (request.resident_warp_generation == 0 ||
+      request.window_generation == 0 ||
+      request.completion_transaction_generation == 0 ||
+      request.cohort_index >= allocation_identity::kLaneCapacity ||
+      request.expected_lane_mask == 0 ||
+      request.expected_return_byte_mask != 0) {
+    return kStatusInvalidArgument;
+  }
+  registered_group_v0 *group = NULL;
+  for (std::map<uint64_t, registered_group_v0>::iterator it =
+           registered_groups_.begin();
+       it != registered_groups_.end(); ++it) {
+    const registered_group_v0 &candidate = it->second;
+    if (!candidate.live_bound || candidate.release_started ||
+        candidate.execution_owner.owner_hw_sid != request.owner_hw_sid ||
+        candidate.execution_owner.dynamic_warp_id !=
+            request.dynamic_warp_id ||
+        candidate.execution_owner.warp_id != request.warp_id ||
+        candidate.resident_warp_generation !=
+            request.resident_warp_generation ||
+        candidate.provisional_owner.window_generation !=
+            request.window_generation) {
+      continue;
+    }
+    if (group != NULL) return kStatusGroupConflict;
+    group = &it->second;
+  }
+  if (group == NULL) return kStatusGroupNotRegistered;
+  if (group->live_publication_round_armed ||
+      group->preaccept_pending != 0 ||
+      (request.expected_lane_mask & ~group->active_mask) != 0) {
+    return kStatusGroupConflict;
+  }
+  address_range_registry::live_owner_v0 owner = {};
+  owner.owner_hw_sid = request.owner_hw_sid;
+  owner.resident_warp_generation = request.resident_warp_generation;
+  owner.window_generation = request.window_generation;
+  uint64_t outstanding = 0;
+  if (registry_.live_group_outstanding(owner, &outstanding) !=
+          address_range_registry::kStatusOk ||
+      outstanding != 0) {
+    return kStatusRegistryRejected;
+  }
+  if (group->live_publication_released_generation !=
+      request.completion_transaction_generation) {
+    group->live_publication_released_generation =
+        request.completion_transaction_generation;
+    group->live_publication_released_lane_mask = 0;
+    group->live_publication_no_shader_lane_mask = 0;
+  }
+  group->live_publication_required_generation =
+      request.completion_transaction_generation;
+  group->live_publication_no_shader_lane_mask |=
+      request.expected_lane_mask;
+  return kStatusOk;
+}
+
+status_kind bridge_v0::service_live_publication_fence(
+    const live_publication_round_request_v0 &request,
+    uint8_t release_ready, live_publication_round_drain_v0 *drain) {
+  if (drain == NULL) return kStatusInvalidArgument;
+  std::memset(drain, 0, sizeof(*drain));
+  drain->registry_status = address_range_registry::kStatusOk;
+  registered_group_v0 *group = NULL;
+  for (std::map<uint64_t, registered_group_v0>::iterator it =
+           registered_groups_.begin();
+       it != registered_groups_.end(); ++it) {
+    if (!it->second.live_publication_round_armed ||
+        !same_live_publication_round(
+            it->second.live_publication_round, request)) {
+      continue;
+    }
+    if (group != NULL) return kStatusGroupConflict;
+    group = &it->second;
+  }
+  if (group == NULL) return kStatusGroupNotRegistered;
+  drain->armed = 1;
+  drain->preaccept_pending = group->preaccept_pending;
+  drain->expected_lane_mask = request.expected_lane_mask;
+  drain->completed_lane_mask =
+      group->live_publication_completed_lane_mask;
+  drain->completion_transaction_generation =
+      request.completion_transaction_generation;
+  drain->cohort_index = request.cohort_index;
+  address_range_registry::live_owner_v0 owner = {};
+  owner.owner_hw_sid = request.owner_hw_sid;
+  owner.resident_warp_generation = request.resident_warp_generation;
+  owner.window_generation = request.window_generation;
+  drain->registry_status = registry_.live_group_outstanding(
+      owner, &drain->outstanding_transactions);
+  if (drain->registry_status != address_range_registry::kStatusOk) {
+    return kStatusRegistryRejected;
+  }
+  drain->wait_required =
+      drain->preaccept_pending != 0 ||
+      drain->outstanding_transactions != 0 ||
+      drain->completed_lane_mask != drain->expected_lane_mask;
+  if (!drain->wait_required && release_ready) {
+    group->live_publication_round_armed = 0;
+    group->live_publication_released_lane_mask |=
+        request.expected_lane_mask;
     drain->fence_consumed = 1;
     drain->release_kind = kFenceReleaseAckRetain;
   }
@@ -1268,6 +1542,7 @@ status_kind bridge_v0::validate_first_submit_live_bind(
 status_kind bridge_v0::validate_resubmit_live_subset(
     const first_submit_bind_request_v0 &selected_request,
     uint32_t previous_active_mask, uint32_t resident_warp_generation,
+    uint32_t completion_transaction_generation,
     resubmit_live_validation_result_v0 *result) const {
   if (result == NULL) return kStatusInvalidArgument;
   std::memset(result, 0, sizeof(*result));
@@ -1331,8 +1606,17 @@ status_kind bridge_v0::validate_resubmit_live_subset(
   if (found == registered_groups_.end()) return kStatusGroupNotRegistered;
   const registered_group_v0 &group = found->second;
   if (!group.live_bound || group.release_started ||
+      group.live_publication_round_armed ||
       group.preaccept_pending != 0 ||
       group.resident_warp_generation != resident_warp_generation ||
+      (completion_transaction_generation != 0 &&
+       (group.live_publication_required_generation !=
+            completion_transaction_generation ||
+        group.live_publication_released_generation !=
+            completion_transaction_generation ||
+        (selected_request.active_mask &
+         ~(group.live_publication_released_lane_mask |
+           group.live_publication_no_shader_lane_mask)) != 0)) ||
       (previous_active_mask & ~group.active_mask) != 0 ||
       (selected_request.active_mask & ~group.active_mask) != 0) {
     return kStatusGroupConflict;

@@ -606,10 +606,17 @@ status_kind registry_v0::validate_live_group(
 
 status_kind registry_v0::validate_live_access(
     const live_access_v0 &access) const {
+  const bool shader_return =
+      access.access == kAccessHandoffShaderReturn;
   if (!valid_live_owner(access.owner) ||
       access.lane_id >= kLaneCapacity ||
       !access_matches_object(access.access, access.object) ||
       access.access == kAccessHandoffShaderTraceInputPublish ||
+      access.reserved_zero != 0 ||
+      (shader_return !=
+       (access.completion_transaction_generation != 0)) ||
+      (shader_return && access.cohort_index >= kLaneCapacity) ||
+      (!shader_return && access.cohort_index != 0) ||
       access.aligned_32b_address % kAddressChunkBytes != 0 ||
       access.byte_mask == 0) {
     return kStatusInvalidArgument;
@@ -692,12 +699,40 @@ status_kind registry_v0::accept_live_access(
   prepared.lane_id = access.lane_id;
   prepared.object = access.object;
   prepared.access = access.access;
+  prepared.completion_transaction_generation =
+      access.completion_transaction_generation;
+  prepared.cohort_index = access.cohort_index;
   transaction_record_v0 transaction = {};
   transaction.token = prepared;
   transactions_[prepared.transaction_id] = transaction;
   ++match->outstanding_transactions;
   *token = prepared;
   return kStatusOk;
+}
+
+status_kind registry_v0::live_group_outstanding(
+    const live_owner_v0 &owner,
+    uint64_t *outstanding_transactions) const {
+  if (!valid_live_owner(owner) || outstanding_transactions == NULL) {
+    return kStatusInvalidArgument;
+  }
+  *outstanding_transactions = 0;
+  bool found = false;
+  for (std::map<uint64_t, range_record_v0>::const_iterator it =
+           records_.begin();
+       it != records_.end(); ++it) {
+    const range_record_v0 &record = it->second;
+    if (!same_live_owner(record.live_owner, owner)) continue;
+    if (record.phase != kPhaseLive) return kStatusWrongPhase;
+    found = true;
+    if (record.outstanding_transactions >
+        std::numeric_limits<uint64_t>::max() -
+            *outstanding_transactions) {
+      return kStatusOutstandingTransactions;
+    }
+    *outstanding_transactions += record.outstanding_transactions;
+  }
+  return found ? kStatusOk : kStatusRecordNotFound;
 }
 
 status_kind registry_v0::complete_transaction(

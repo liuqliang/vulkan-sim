@@ -109,6 +109,33 @@ struct provisional_group_drain_v0 {
   uint8_t reserved_zero[2];
 };
 
+struct live_publication_round_request_v0 {
+  uint32_t owner_hw_sid;
+  uint32_t dynamic_warp_id;
+  uint32_t warp_id;
+  uint32_t resident_warp_generation;
+  uint32_t window_generation;
+  uint32_t completion_transaction_generation;
+  uint32_t cohort_index;
+  uint32_t expected_lane_mask;
+  uint32_t expected_return_byte_mask;
+};
+
+struct live_publication_round_drain_v0 {
+  address_range_registry::status_kind registry_status;
+  uint64_t preaccept_pending;
+  uint64_t outstanding_transactions;
+  uint32_t expected_lane_mask;
+  uint32_t completed_lane_mask;
+  uint32_t completion_transaction_generation;
+  uint32_t cohort_index;
+  uint8_t armed;
+  uint8_t wait_required;
+  uint8_t fence_consumed;
+  fence_release_kind release_kind;
+  uint8_t reserved_zero[4];
+};
+
 struct first_submit_bind_request_v0 {
   allocation_identity::allocation_slot_v0 slot;
   allocation_identity::owner_v0 owner;
@@ -251,6 +278,16 @@ class bridge_v0 {
       uint32_t warp_id, uint8_t release_ready,
       provisional_group_drain_v0 *drain);
 
+  status_kind arm_live_publication_round(
+      const live_publication_round_request_v0 &request);
+
+  status_kind authorize_no_shader_live_publication(
+      const live_publication_round_request_v0 &request);
+
+  status_kind service_live_publication_fence(
+      const live_publication_round_request_v0 &request,
+      uint8_t release_ready, live_publication_round_drain_v0 *drain);
+
   status_kind begin_or_poll_first_submit_live_bind(
       const first_submit_bind_request_v0 &request,
       first_submit_bind_result_v0 *result);
@@ -268,7 +305,17 @@ class bridge_v0 {
   status_kind validate_resubmit_live_subset(
       const first_submit_bind_request_v0 &selected_request,
       uint32_t previous_active_mask, uint32_t resident_warp_generation,
+      uint32_t completion_transaction_generation,
       resubmit_live_validation_result_v0 *result) const;
+
+  status_kind validate_resubmit_live_subset(
+      const first_submit_bind_request_v0 &selected_request,
+      uint32_t previous_active_mask, uint32_t resident_warp_generation,
+      resubmit_live_validation_result_v0 *result) const {
+    return validate_resubmit_live_subset(
+        selected_request, previous_active_mask,
+        resident_warp_generation, 0, result);
+  }
 
   status_kind begin_or_poll_retire_live_release(
       const first_submit_bind_request_v0 &request,
@@ -289,12 +336,19 @@ class bridge_v0 {
     uint32_t handoff_lane_stride_bytes;
     std::vector<uint32_t> handoff_allowed_publication_masks;
     std::vector<std::vector<uint32_t> > completed_publication_masks;
+    live_publication_round_request_v0 live_publication_round;
     uint64_t preaccept_pending;
+    uint32_t live_publication_completed_lane_mask;
+    uint32_t live_publication_released_lane_mask;
+    uint32_t live_publication_no_shader_lane_mask;
+    uint32_t live_publication_required_generation;
+    uint32_t live_publication_released_generation;
     uint32_t resident_warp_generation;
     uint8_t fence_armed;
     uint8_t bind_started;
     uint8_t live_bound;
     uint8_t release_started;
+    uint8_t live_publication_round_armed;
   };
 
   struct publication_identity_observation_v0 {
@@ -309,6 +363,7 @@ class bridge_v0 {
       publication_identity_observations_;
   std::map<uint64_t, registered_group_v0> registered_groups_;
   std::map<uint64_t, publication_store_v0> accepted_publication_stores_;
+  std::map<uint64_t, live_access_v0> accepted_live_accesses_;
 
   status_kind make_registered_group_ranges(
       const registered_group_v0 &group,

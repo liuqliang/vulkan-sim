@@ -15153,6 +15153,36 @@ extern "C" bool rtcore_query_resident_rt_warp_record(
     return true;
 }
 
+extern "C" bool rtcore_query_v04_resident_completion_generation(
+    unsigned owner_hw_sid, unsigned warp_id,
+    unsigned resident_generation,
+    unsigned *completion_transaction_generation)
+{
+    if (resident_generation == 0 ||
+        completion_transaction_generation == NULL) {
+        return false;
+    }
+    const rtcore_resident_rt_warp_record_key key =
+        rtcore_make_resident_rt_warp_record_key(owner_hw_sid, warp_id);
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::const_iterator it =
+        g_rtcore_resident_rt_warp_records.find(key);
+    if (it == g_rtcore_resident_rt_warp_records.end() ||
+        !it->second.valid ||
+        it->second.resident_generation != resident_generation ||
+        !it->second.v04_continuation_lifecycle.initialized ||
+        it->second.v04_continuation_lifecycle.resident_generation !=
+            resident_generation ||
+        it->second.v04_continuation_lifecycle
+                .completion_transaction_generation == 0) {
+        return false;
+    }
+    *completion_transaction_generation =
+        it->second.v04_continuation_lifecycle
+            .completion_transaction_generation;
+    return true;
+}
+
 extern "C" bool rtcore_query_resident_rt_warp_active_lane_state(
     unsigned owner_hw_sid, unsigned warp_id,
     unsigned *resident_active_lane_count, unsigned *warp_active_mask,

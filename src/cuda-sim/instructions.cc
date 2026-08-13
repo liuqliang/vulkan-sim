@@ -17295,11 +17295,18 @@ static bool rtcore_validate_v04_global384_resubmit_live_internal(
   }
   rtcore::v04::pre_submit_publication::resubmit_live_validation_result_v0
       result = {};
+  unsigned completion_transaction_generation = 0;
+  if (!rtcore_query_v04_resident_completion_generation(
+          owner_hw_sid, warp_id, resident_warp_generation,
+          &completion_transaction_generation)) {
+    return false;
+  }
   const rtcore::v04::pre_submit_publication::status_kind status =
       rtcore::v04::pre_submit_publication::shared_bridge()
           .validate_resubmit_live_subset(
               material.request, previous_active_mask,
-              resident_warp_generation, &result);
+              resident_warp_generation,
+              completion_transaction_generation, &result);
   const bool valid =
       status == rtcore::v04::pre_submit_publication::kStatusOk &&
       result.live_bound && result.public_active_mask != 0 &&
@@ -17313,13 +17320,15 @@ static bool rtcore_validate_v04_global384_resubmit_live_internal(
          "owner_hw_sid=%u dynamic_warp_id=%u previous_warp_uid=%u "
          "warp_uid=%u warp_id=%u public_active_mask=0x%08x "
          "previous_active_mask=0x%08x next_active_mask=0x%08x "
-         "resident_generation=%u allocation_record_id=%llu "
+         "resident_generation=%u completion_transaction_generation=%u "
+         "allocation_record_id=%llu "
          "launch_generation=%u window_generation=%u "
          "bridge_status=%s authority_status=%s registry_status=%s "
          "functional_reads_started=0 memory_traffic_started=0 result=%s\n",
          owner_hw_sid, dynamic_warp_id, previous_warp_uid, warp_uid,
          warp_id, result.public_active_mask, previous_active_mask,
          active_mask, resident_warp_generation,
+         completion_transaction_generation,
          static_cast<unsigned long long>(result.identity.record_id),
          result.identity.launch_allocation_generation,
          result.identity.window_generation,

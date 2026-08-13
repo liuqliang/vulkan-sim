@@ -110,6 +110,9 @@ struct live_access_v0 {
   uint8_t lane_id;
   object_kind object;
   access_kind access;
+  uint8_t reserved_zero;
+  uint32_t completion_transaction_generation;
+  uint32_t cohort_index;
   uint64_t aligned_32b_address;
   uint32_t byte_mask;
 };
@@ -124,6 +127,8 @@ struct transaction_token_v0 {
   object_kind object;
   access_kind access;
   uint8_t reserved_zero;
+  uint32_t completion_transaction_generation;
+  uint32_t cohort_index;
 };
 
 struct registry_snapshot_v0 {
@@ -167,6 +172,10 @@ class registry_v0 {
 
   status_kind provisional_group_outstanding(
       const provisional_owner_v0 &owner,
+      uint64_t *outstanding_transactions) const;
+
+  status_kind live_group_outstanding(
+      const live_owner_v0 &owner,
       uint64_t *outstanding_transactions) const;
 
   status_kind begin_live_bind(
