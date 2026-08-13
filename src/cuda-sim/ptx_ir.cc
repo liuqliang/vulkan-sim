@@ -1578,6 +1578,10 @@ void ptx_instruction::print_insn() const {
   fflush(stdout);
 }
 
+bool ptx_instruction::is_global_membar() const {
+  return m_opcode == MEMBAR_OP && m_membar_level == GLOBAL_OPTION;
+}
+
 void ptx_instruction::print_insn(FILE *fp) const {
   fprintf(fp, "%s", to_string().c_str());
 }

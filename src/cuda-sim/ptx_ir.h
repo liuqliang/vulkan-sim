@@ -1210,6 +1210,7 @@ class ptx_instruction : public warp_inst_t {
   enum vote_mode_t vote_mode() const { return m_vote_mode; }
 
   int membar_level() const { return m_membar_level; }
+  bool is_global_membar() const;
 
   bool has_memory_read() const {
     if (m_opcode == LD_OP || m_opcode == LDU_OP || m_opcode == TEX_OP ||

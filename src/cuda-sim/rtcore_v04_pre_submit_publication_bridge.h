@@ -32,6 +32,11 @@ enum status_kind : uint8_t {
   kStatusGroupConflict,
 };
 
+enum fence_release_kind : uint8_t {
+  kFenceReleaseNone = 0,
+  kFenceReleaseAckRetain,
+};
+
 struct lane_publication_request_v0 {
   allocation_identity::allocation_slot_v0 slot;
   allocation_identity::owner_v0 owner;
@@ -100,7 +105,8 @@ struct provisional_group_drain_v0 {
   uint8_t wait_required;
   uint8_t fence_consumed;
   uint8_t publication_coverage_complete;
-  uint8_t reserved_zero[3];
+  fence_release_kind release_kind;
+  uint8_t reserved_zero[2];
 };
 
 struct first_submit_bind_request_v0 {
@@ -242,7 +248,8 @@ class bridge_v0 {
 
   status_kind service_provisional_publication_fence(
       uint32_t owner_hw_sid, uint32_t dynamic_warp_id,
-      uint32_t warp_id, provisional_group_drain_v0 *drain);
+      uint32_t warp_id, uint8_t release_ready,
+      provisional_group_drain_v0 *drain);
 
   status_kind begin_or_poll_first_submit_live_bind(
       const first_submit_bind_request_v0 &request,

@@ -966,7 +966,8 @@ status_kind bridge_v0::preflight_ordinary_publication_store(
 
 status_kind bridge_v0::service_provisional_publication_fence(
     uint32_t owner_hw_sid, uint32_t dynamic_warp_id,
-    uint32_t warp_id, provisional_group_drain_v0 *drain) {
+    uint32_t warp_id, uint8_t release_ready,
+    provisional_group_drain_v0 *drain) {
   if (drain == NULL) return kStatusInvalidArgument;
   std::memset(drain, 0, sizeof(*drain));
   drain->registry_status =
@@ -1004,9 +1005,10 @@ status_kind bridge_v0::service_provisional_publication_fence(
       drain->preaccept_pending != 0 ||
       drain->outstanding_transactions != 0 ||
       !drain->publication_coverage_complete;
-  if (!drain->wait_required) {
+  if (!drain->wait_required && release_ready) {
     group->fence_armed = 0;
     drain->fence_consumed = 1;
+    drain->release_kind = kFenceReleaseAckRetain;
   }
   return kStatusOk;
 }

@@ -765,6 +765,41 @@ static bool rtcore_shared_lsu_frontend_arbiter_gate_enabled();
 static bool rtcore_explicit_shared_l1d_request_arbiter_gate_enabled();
 static bool rtcore_replay_memory_unit_l1d_client_enabled();
 
+static bool rtcore_v04_find_initial_publication_fence_pc(
+    gpgpu_context *context, address_type publication_pc,
+    address_type *fence_pc) {
+  if (context == NULL || fence_pc == NULL) return false;
+  const ptx_instruction *publication =
+      context->pc_to_instruction(publication_pc);
+  if (publication == NULL ||
+      publication->get_opcode() != RT_PUBLISH_TRACE_CONTEXT_OP) {
+    return false;
+  }
+
+  bool found_fence = false;
+  address_type pc = publication_pc + publication->inst_size();
+  for (unsigned distance = 0; distance < 4096; ++distance) {
+    const ptx_instruction *instruction = context->pc_to_instruction(pc);
+    if (instruction == NULL) return false;
+    if (instruction->get_opcode() == RT_SUBMIT_OP) {
+      return found_fence;
+    }
+    if (instruction->get_opcode() == RT_PUBLISH_TRACE_CONTEXT_OP ||
+        instruction->get_opcode() == RT_RETIRE_CONTEXT_OP) {
+      return false;
+    }
+    if (instruction->get_opcode() == MEMBAR_OP) {
+      if (found_fence || !instruction->is_global_membar()) {
+        return false;
+      }
+      *fence_pc = pc;
+      found_fence = true;
+    }
+    pc += instruction->inst_size();
+  }
+  return false;
+}
+
 struct rtcore_shader_continuation_dispatcher_pending_key {
   unsigned owner_hw_sid;
   unsigned warp_id;
@@ -3895,6 +3930,57 @@ static bool g_rtcore_v04_handoff_cache_policy_report_registered = false;
 static rtcore::v04::handoff_cache_policy::profile_kind
     g_rtcore_v04_handoff_cache_policy_profile =
         rtcore::v04::handoff_cache_policy::kProfileBaseline;
+
+struct rtcore_v04_publication_membar_stats {
+  unsigned long long release_ack_retain;
+  unsigned long long ordinary_invalidate_release;
+  unsigned long long publication_drain_wait_cycles;
+  unsigned long long publication_preaccept_wait_cycles;
+  unsigned long long publication_outstanding_ack_wait_cycles;
+  unsigned long long publication_coverage_wait_cycles;
+  unsigned long long publication_scoreboard_wait_cycles;
+};
+
+static rtcore_v04_publication_membar_stats
+    g_rtcore_v04_publication_membar_stats = {};
+static bool g_rtcore_v04_publication_membar_report_registered = false;
+
+static bool rtcore_v04_publication_membar_stats_enabled() {
+  static const bool enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_V04_PUBLICATION_MEMBAR_STATS");
+    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+  }();
+  return enabled;
+}
+
+static void rtcore_v04_report_publication_membar_stats() {
+  if (!rtcore_v04_publication_membar_stats_enabled()) return;
+  const rtcore_v04_publication_membar_stats &s =
+      g_rtcore_v04_publication_membar_stats;
+  printf("GPGPU-Sim RTCORE_V04_PUBLICATION_MEMBAR "
+         "release_ack_retain=%llu ordinary_invalidate_release=%llu "
+         "publication_drain_wait_cycles=%llu "
+         "publication_preaccept_wait_cycles=%llu "
+         "publication_outstanding_ack_wait_cycles=%llu "
+         "publication_coverage_wait_cycles=%llu "
+         "publication_scoreboard_wait_cycles=%llu\n",
+         s.release_ack_retain, s.ordinary_invalidate_release,
+         s.publication_drain_wait_cycles,
+         s.publication_preaccept_wait_cycles,
+         s.publication_outstanding_ack_wait_cycles,
+         s.publication_coverage_wait_cycles,
+         s.publication_scoreboard_wait_cycles);
+}
+
+static void rtcore_v04_ensure_publication_membar_report_registered() {
+  if (!rtcore_v04_publication_membar_stats_enabled() ||
+      g_rtcore_v04_publication_membar_report_registered) {
+    return;
+  }
+  if (atexit(rtcore_v04_report_publication_membar_stats) != 0) abort();
+  g_rtcore_v04_publication_membar_report_registered = true;
+}
 
 static void rtcore_v04_report_handoff_cache_policy() {
   if (!g_rtcore_v04_handoff_cache_policy_initialized) return;
@@ -12036,6 +12122,18 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                      sch_id, reserved_uid);  // dynamic instruction information
   m_stats->shader_cycle_distro[2 + (*pipe_reg)->active_count()]++;
   func_exec_inst(**pipe_reg);
+  const ptx_instruction *issued_ptx =
+      m_gpu->gpgpu_ctx->pc_to_instruction(next_inst->pc);
+  if (issued_ptx != NULL &&
+      issued_ptx->get_opcode() == RT_PUBLISH_TRACE_CONTEXT_OP) {
+    address_type publication_fence_pc = 0;
+    if (rtcore_v04_find_initial_publication_fence_pc(
+            m_gpu->gpgpu_ctx, next_inst->pc,
+            &publication_fence_pc)) {
+      m_warp[warp_id]->arm_rtcore_v04_initial_publication_fence(
+          publication_fence_pc);
+    }
+  }
   bool split_reaches_barrier = false;
 
   if (next_inst->op == BARRIER_OP) {
@@ -12061,7 +12159,9 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
       }
     }
   } else if (next_inst->op == MEMORY_BARRIER_OP) {
-    m_warp[warp_id]->set_membar();
+    m_warp[warp_id]->set_membar(
+        m_warp[warp_id]->claim_rtcore_v04_initial_publication_fence(
+            next_inst->pc));
   }
 
   updateSIMTDivergenceStructures(warp_id, *pipe_reg);
@@ -23667,27 +23767,71 @@ int shader_core_ctx::get_cta_id(unsigned warp_id) {
 
 bool shader_core_ctx::warp_waiting_at_mem_barrier(unsigned warp_id) {
   if (!m_warp[warp_id]->get_membar()) return false;
+  rtcore_v04_ensure_publication_membar_report_registered();
+  const bool scoreboard_wait = m_scoreboard->pendingWrites(warp_id);
+  const bool initial_rt_publication =
+      m_warp[warp_id]->get_rtcore_v04_initial_publication_membar();
   rtcore::v04::pre_submit_publication::
       provisional_group_drain_v0 drain = {};
-  const rtcore::v04::pre_submit_publication::status_kind
-      drain_status =
-          rtcore::v04::pre_submit_publication::shared_bridge()
-              .service_provisional_publication_fence(
-                  m_sid,
-                  m_warp[warp_id]->get_dynamic_warp_id(),
-                  warp_id, &drain);
+  rtcore::v04::pre_submit_publication::status_kind drain_status =
+      rtcore::v04::pre_submit_publication::kStatusOk;
+  if (initial_rt_publication) {
+    drain_status =
+        rtcore::v04::pre_submit_publication::shared_bridge()
+            .service_provisional_publication_fence(
+                m_sid,
+                m_warp[warp_id]->get_dynamic_warp_id(),
+                warp_id, scoreboard_wait ? 0 : 1, &drain);
+  }
   if (drain_status !=
       rtcore::v04::pre_submit_publication::kStatusOk) {
     rtcore_v04_publication_ticket_fail_closed(
         "membar-drain", drain_status, drain.registry_status,
         NULL);
   }
-  if (drain.registered && drain.wait_required) {
+  if (initial_rt_publication &&
+      (!drain.registered || !drain.fence_armed)) {
+    rtcore_v04_publication_ticket_fail_closed(
+        "membar-identity", drain_status, drain.registry_status,
+        NULL);
+  }
+  if (initial_rt_publication && drain.wait_required) {
+    if (rtcore_v04_publication_membar_stats_enabled()) {
+      rtcore_v04_publication_membar_stats &stats =
+          g_rtcore_v04_publication_membar_stats;
+      stats.publication_drain_wait_cycles++;
+      if (drain.preaccept_pending != 0) {
+        stats.publication_preaccept_wait_cycles++;
+      }
+      if (drain.outstanding_transactions != 0) {
+        stats.publication_outstanding_ack_wait_cycles++;
+      }
+      if (!drain.publication_coverage_complete) {
+        stats.publication_coverage_wait_cycles++;
+      }
+    }
     return true;
   }
-  if (!m_scoreboard->pendingWrites(warp_id)) {
+  if (initial_rt_publication && scoreboard_wait &&
+      rtcore_v04_publication_membar_stats_enabled()) {
+    g_rtcore_v04_publication_membar_stats
+        .publication_scoreboard_wait_cycles++;
+  }
+  if (!scoreboard_wait) {
     m_warp[warp_id]->clear_membar();
-    if (m_gpu->get_config().flush_l1()) {
+    const bool release_ack_retain =
+        drain.fence_consumed &&
+        drain.release_kind ==
+            rtcore::v04::pre_submit_publication::kFenceReleaseAckRetain;
+    if (release_ack_retain &&
+        rtcore_v04_publication_membar_stats_enabled()) {
+      g_rtcore_v04_publication_membar_stats.release_ack_retain++;
+    }
+    if (m_gpu->get_config().flush_l1() && !release_ack_retain) {
+      if (rtcore_v04_publication_membar_stats_enabled()) {
+        g_rtcore_v04_publication_membar_stats
+            .ordinary_invalidate_release++;
+      }
       // Mahmoud fixed this on Nov 2019
       // Invalidate L1 cache
       // Based on Nvidia Doc, at MEM barrier, we have to

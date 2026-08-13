@@ -125,6 +125,9 @@ class shd_warp_t {
     n_completed = m_warp_size;
     m_n_atomic = 0;
     m_membar = false;
+    m_rtcore_v04_initial_publication_fence_pc = 0;
+    m_rtcore_v04_initial_publication_fence_pc_valid = false;
+    m_rtcore_v04_initial_publication_membar = false;
     m_done_exit = true;
     m_last_fetch = 0;
     m_next = 0;
@@ -180,9 +183,31 @@ class shd_warp_t {
   void inc_n_atomic() { m_n_atomic++; }
   void dec_n_atomic(unsigned n) { m_n_atomic -= n; }
 
-  void set_membar() { m_membar = true; }
-  void clear_membar() { m_membar = false; }
+  void arm_rtcore_v04_initial_publication_fence(address_type pc) {
+    m_rtcore_v04_initial_publication_fence_pc = pc;
+    m_rtcore_v04_initial_publication_fence_pc_valid = true;
+  }
+  bool claim_rtcore_v04_initial_publication_fence(address_type pc) {
+    if (!m_rtcore_v04_initial_publication_fence_pc_valid ||
+        m_rtcore_v04_initial_publication_fence_pc != pc) {
+      return false;
+    }
+    m_rtcore_v04_initial_publication_fence_pc_valid = false;
+    return true;
+  }
+  void set_membar(bool rtcore_v04_initial_publication = false) {
+    m_membar = true;
+    m_rtcore_v04_initial_publication_membar =
+        rtcore_v04_initial_publication;
+  }
+  void clear_membar() {
+    m_membar = false;
+    m_rtcore_v04_initial_publication_membar = false;
+  }
   bool get_membar() const { return m_membar; }
+  bool get_rtcore_v04_initial_publication_membar() const {
+    return m_rtcore_v04_initial_publication_membar;
+  }
   virtual address_type get_pc() const { return m_next_pc; }
   void set_next_pc(address_type pc) { m_next_pc = pc; }
 
@@ -285,6 +310,9 @@ class shd_warp_t {
 
   unsigned m_n_atomic;  // number of outstanding atomic operations
   bool m_membar;        // if true, warp is waiting at memory barrier
+  address_type m_rtcore_v04_initial_publication_fence_pc;
+  bool m_rtcore_v04_initial_publication_fence_pc_valid;
+  bool m_rtcore_v04_initial_publication_membar;
 
   bool m_done_exit;  // true once thread exit has been registered for threads in
                      // this warp
