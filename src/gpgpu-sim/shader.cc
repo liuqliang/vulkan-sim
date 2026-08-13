@@ -12124,7 +12124,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   func_exec_inst(**pipe_reg);
   const ptx_instruction *issued_ptx =
       m_gpu->gpgpu_ctx->pc_to_instruction(next_inst->pc);
-  if (issued_ptx != NULL &&
+  if ((*pipe_reg)->active_count() != 0 && issued_ptx != NULL &&
       issued_ptx->get_opcode() == RT_PUBLISH_TRACE_CONTEXT_OP) {
     address_type publication_fence_pc = 0;
     if (rtcore_v04_find_initial_publication_fence_pc(
