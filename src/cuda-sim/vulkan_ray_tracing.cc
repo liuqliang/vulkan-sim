@@ -2646,6 +2646,8 @@ static std::map<unsigned, uint16_t>
     g_rtcore_v04_stack_spill_recovery_cursor_by_owner;
 static std::map<unsigned, uint16_t>
     g_rtcore_v04_instance_restore_recovery_cursor_by_owner;
+static bool g_rtcore_v04_dse_typed_resource_final_registered = false;
+static bool g_rtcore_v04_dse_typed_resource_final_emitted = false;
 
 static bool rtcore_v04_live_short_stack_timing_enabled();
 
@@ -2886,6 +2888,518 @@ static const char *rtcore_v04_short_stack_config_name(
                : legacy_stack_name;
 }
 
+struct rtcore_v04_dse_typed_resource_snapshot {
+    const char *target;
+    unsigned initialized_owner_count;
+    unsigned queue_owner_count;
+    unsigned config_mismatch_mask;
+    unsigned source_fallback_mask;
+    unsigned fixed_resource_mask;
+    unsigned unit_count;
+    unsigned latency;
+    unsigned initiation_interval;
+    unsigned issue_width;
+    unsigned queue_capacity;
+    unsigned queue_reservation_width;
+    unsigned result_capacity;
+    unsigned result_width;
+    unsigned batch_width;
+    unsigned batch_interval;
+    unsigned parent_lookup_latency;
+    unsigned long long service_cycles;
+    unsigned long long reservation_attempts;
+    unsigned long long reservation_accepted;
+    unsigned long long issued;
+    unsigned long long captured;
+    unsigned long long committed;
+    unsigned long long operator_invocations;
+    unsigned long long parent_lookups;
+    unsigned long long capacity_backpressure;
+    unsigned long long reservation_budget_backpressure;
+    unsigned long long unit_unavailable;
+    unsigned long long issue_width_limited;
+    unsigned long long pipeline_full;
+    unsigned long long result_capacity_backpressure;
+    unsigned long long result_accept_backpressure;
+    unsigned long long result_width_limited;
+    unsigned long long result_sink_backpressure;
+    unsigned max_ready;
+    unsigned max_active;
+    unsigned max_pending;
+    unsigned long long final_queue_active;
+    unsigned long long final_queue_ready;
+    unsigned long long final_pipeline_active;
+    unsigned long long final_result_active;
+};
+
+template <typename Config>
+static bool rtcore_v04_dse_config_equal(const Config &left,
+                                        const Config &right)
+{
+    return memcmp(&left, &right, sizeof(Config)) == 0;
+}
+
+static bool rtcore_v04_dse_typed_resource_evidence_enabled()
+{
+    const char *value = getenv("VULKAN_SIM_RTCORE_V04_DSE_RUNNER_EVIDENCE");
+    return value != NULL && strcmp(value, "1") == 0;
+}
+
+static unsigned rtcore_v04_short_stack_fallback_mask()
+{
+    static const char *const names[] = {
+        "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_CAPACITY",
+        "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_RESERVATION_WIDTH",
+        "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_UNIT_COUNT",
+        "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_LATENCY",
+        "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_INITIATION_INTERVAL",
+        "VULKAN_SIM_RTCORE_REPLAY_V04_SHORT_STACK_ISSUE_WIDTH",
+    };
+    unsigned mask = 0;
+    for (unsigned index = 0; index < sizeof(names) / sizeof(names[0]);
+         ++index) {
+        const char *value = getenv(names[index]);
+        if (value == NULL || value[0] == '\0') mask |= 1u << index;
+    }
+    return mask;
+}
+
+static void rtcore_v04_emit_dse_typed_resource_snapshot(
+    const rtcore_v04_dse_typed_resource_snapshot &snapshot)
+{
+    const unsigned route_active =
+        snapshot.issued != 0 || snapshot.committed != 0;
+    const unsigned long long final_pending =
+        snapshot.final_queue_active + snapshot.final_pipeline_active +
+        snapshot.final_result_active;
+    printf(
+        "GPGPU-Sim RTCORE_V04_DSE_TYPED_RESOURCE_FINAL "
+        "schema=1 scope=global snapshot_kind=final target=%s "
+        "initialized_owner_count=%u queue_owner_count=%u "
+        "config_mismatch_mask=%u source_fallback_mask=%u "
+        "fixed_resource_mask=%u route_active=%u "
+        "unit_count=%u latency=%u initiation_interval=%u issue_width=%u "
+        "queue_capacity=%u queue_reservation_width=%u "
+        "result_capacity=%u result_width=%u batch_width=%u "
+        "batch_interval=%u parent_lookup_latency=%u "
+        "service_cycles=%llu reservation_attempts=%llu "
+        "reservation_accepted=%llu issued=%llu captured=%llu "
+        "committed=%llu operator_invocations=%llu parent_lookups=%llu "
+        "capacity_backpressure=%llu "
+        "reservation_budget_backpressure=%llu unit_unavailable=%llu "
+        "issue_width_limited=%llu pipeline_full=%llu "
+        "result_capacity_backpressure=%llu "
+        "result_accept_backpressure=%llu result_sink_backpressure=%llu "
+        "result_width_limited=%llu "
+        "max_ready=%u max_active=%u max_pending=%u "
+        "final_queue_active=%llu final_queue_ready=%llu "
+        "final_pipeline_active=%llu final_result_active=%llu "
+        "final_pending=%llu\n",
+        snapshot.target, snapshot.initialized_owner_count,
+        snapshot.queue_owner_count, snapshot.config_mismatch_mask,
+        snapshot.source_fallback_mask, snapshot.fixed_resource_mask,
+        route_active, snapshot.unit_count, snapshot.latency,
+        snapshot.initiation_interval, snapshot.issue_width,
+        snapshot.queue_capacity, snapshot.queue_reservation_width,
+        snapshot.result_capacity, snapshot.result_width,
+        snapshot.batch_width, snapshot.batch_interval,
+        snapshot.parent_lookup_latency, snapshot.service_cycles,
+        snapshot.reservation_attempts, snapshot.reservation_accepted,
+        snapshot.issued, snapshot.captured, snapshot.committed,
+        snapshot.operator_invocations, snapshot.parent_lookups,
+        snapshot.capacity_backpressure,
+        snapshot.reservation_budget_backpressure,
+        snapshot.unit_unavailable, snapshot.issue_width_limited,
+        snapshot.pipeline_full,
+        snapshot.result_capacity_backpressure,
+        snapshot.result_accept_backpressure,
+        snapshot.result_sink_backpressure, snapshot.result_width_limited,
+        snapshot.max_ready,
+        snapshot.max_active, snapshot.max_pending,
+        snapshot.final_queue_active, snapshot.final_queue_ready,
+        snapshot.final_pipeline_active, snapshot.final_result_active,
+        final_pending);
+}
+
+static void rtcore_v04_emit_dse_typed_resource_final_summary()
+{
+    if (g_rtcore_v04_dse_typed_resource_final_emitted ||
+        !rtcore_v04_dse_typed_resource_evidence_enabled()) {
+        return;
+    }
+    g_rtcore_v04_dse_typed_resource_final_emitted = true;
+
+    namespace fetch_target = rtcore::v04::fetch_target;
+    namespace node_timing = rtcore::v04::node_timing;
+    namespace primitive_timing = rtcore::v04::primitive_timing;
+    namespace instance_timing = rtcore::v04::instance_timing;
+    namespace stack_operation = rtcore::v04::stack_operation;
+    namespace stack_timing = rtcore::v04::stack_timing;
+    namespace short_stack = rtcore::v04::short_stack_timing;
+
+    rtcore_v04_dse_typed_resource_snapshot node = {};
+    node.target = "node";
+    bool node_queue_config_valid = false;
+    fetch_target::config_v0 node_queue_config = {};
+    for (std::map<unsigned, fetch_target::engine_state_v0>::const_iterator it =
+             g_rtcore_v04_live_target_engine_by_owner.begin();
+         it != g_rtcore_v04_live_target_engine_by_owner.end(); ++it) {
+        const fetch_target::engine_state_v0 &state = it->second;
+        if (state.initialized != 1) continue;
+        ++node.queue_owner_count;
+        if (!node_queue_config_valid) {
+            node_queue_config = state.config;
+            node_queue_config_valid = true;
+            node.queue_capacity = state.config.node_capacity;
+            node.queue_reservation_width =
+                state.config.node_reservation_width;
+        } else if (!rtcore_v04_dse_config_equal(node_queue_config,
+                                                state.config)) {
+            node.config_mismatch_mask |= 1u << 1;
+        }
+        node.reservation_attempts += state.node_counters.attempts;
+        node.reservation_accepted += state.node_counters.accepted;
+        node.capacity_backpressure +=
+            state.node_counters.capacity_backpressure;
+        node.reservation_budget_backpressure +=
+            state.node_counters.reservation_budget_backpressure;
+        node.final_queue_active += fetch_target::active_slot_count(
+            state, fetch_target::kTargetNode);
+        node.final_queue_ready += fetch_target::ready_slot_count(
+            state, fetch_target::kTargetNode);
+    }
+    bool node_config_valid = false;
+    node_timing::config_v0 node_config = {};
+    for (std::map<unsigned, node_timing::state_v0>::const_iterator it =
+             g_rtcore_v04_live_node_timing_by_owner.begin();
+         it != g_rtcore_v04_live_node_timing_by_owner.end(); ++it) {
+        const node_timing::state_v0 &state = it->second;
+        if (state.initialized != 1) continue;
+        ++node.initialized_owner_count;
+        if (!node_config_valid) {
+            node_config = state.config;
+            node_config_valid = true;
+            node.unit_count = state.config.node_unit_count;
+            node.latency = state.config.node_latency;
+            node.initiation_interval =
+                state.config.node_initiation_interval;
+            node.issue_width = state.config.node_issue_width;
+            node.result_capacity = state.config.result_commit_capacity;
+            node.result_width = state.config.result_commit_width;
+        } else if (!rtcore_v04_dse_config_equal(node_config,
+                                                state.config)) {
+            node.config_mismatch_mask |= 1u;
+        }
+        node.service_cycles += state.total_service_cycles;
+        node.issued += state.total_issued;
+        node.captured += state.total_results_captured;
+        node.committed += state.total_routes_committed;
+        node.operator_invocations += state.total_operator_invocations;
+        node.unit_unavailable += state.total_stall_unit_unavailable;
+        node.issue_width_limited += state.total_issue_width_limited;
+        node.pipeline_full += state.total_stall_pipeline_full;
+        node.result_capacity_backpressure +=
+            state.total_stall_result_commit_full;
+        node.result_accept_backpressure +=
+            state.total_stall_result_commit_not_accepted;
+        node.result_width_limited += state.total_result_width_limited;
+        node.result_sink_backpressure +=
+            state.total_stall_route_sink_backpressure;
+        if (state.max_ready_node_entries > node.max_ready)
+            node.max_ready = state.max_ready_node_entries;
+        if (state.max_active_pipeline_entries > node.max_active)
+            node.max_active = state.max_active_pipeline_entries;
+        if (state.max_active_result_entries > node.max_pending)
+            node.max_pending = state.max_active_result_entries;
+        node.final_pipeline_active +=
+            node_timing::active_pipeline_count(state);
+        node.final_result_active += node_timing::active_result_count(state);
+    }
+    rtcore_v04_emit_dse_typed_resource_snapshot(node);
+
+    rtcore_v04_dse_typed_resource_snapshot primitive = {};
+    primitive.target = "primitive";
+    primitive.fixed_resource_mask = 7;
+    bool primitive_queue_config_valid = false;
+    fetch_target::config_v0 primitive_queue_config = {};
+    for (std::map<unsigned, fetch_target::engine_state_v0>::const_iterator it =
+             g_rtcore_v04_live_target_engine_by_owner.begin();
+         it != g_rtcore_v04_live_target_engine_by_owner.end(); ++it) {
+        const fetch_target::engine_state_v0 &state = it->second;
+        if (state.initialized != 1) continue;
+        ++primitive.queue_owner_count;
+        if (!primitive_queue_config_valid) {
+            primitive_queue_config = state.config;
+            primitive_queue_config_valid = true;
+            primitive.queue_capacity = state.config.primitive_capacity;
+            primitive.queue_reservation_width =
+                state.config.primitive_reservation_width;
+        } else if (!rtcore_v04_dse_config_equal(primitive_queue_config,
+                                                state.config)) {
+            primitive.config_mismatch_mask |= 1u << 1;
+        }
+        primitive.reservation_attempts += state.primitive_counters.attempts;
+        primitive.reservation_accepted += state.primitive_counters.accepted;
+        primitive.capacity_backpressure +=
+            state.primitive_counters.capacity_backpressure;
+        primitive.reservation_budget_backpressure +=
+            state.primitive_counters.reservation_budget_backpressure;
+        primitive.final_queue_active += fetch_target::active_slot_count(
+            state, fetch_target::kTargetPrimitive);
+        primitive.final_queue_ready += fetch_target::ready_slot_count(
+            state, fetch_target::kTargetPrimitive);
+    }
+    bool primitive_config_valid = false;
+    primitive_timing::config_v0 primitive_config = {};
+    for (std::map<unsigned, primitive_timing::state_v0>::const_iterator it =
+             g_rtcore_v04_live_primitive_timing_by_owner.begin();
+         it != g_rtcore_v04_live_primitive_timing_by_owner.end(); ++it) {
+        const primitive_timing::state_v0 &state = it->second;
+        if (state.initialized != 1) continue;
+        ++primitive.initialized_owner_count;
+        if (!primitive_config_valid) {
+            primitive_config = state.config;
+            primitive_config_valid = true;
+            primitive.unit_count = state.config.primitive_unit_count;
+            primitive.latency =
+                state.config.primitive_first_batch_latency;
+            primitive.issue_width = state.config.primitive_issue_width;
+            primitive.batch_width = state.config.primitive_batch_width;
+            primitive.batch_interval =
+                state.config.primitive_batch_interval;
+        } else if (!rtcore_v04_dse_config_equal(primitive_config,
+                                                state.config)) {
+            primitive.config_mismatch_mask |= 1u;
+        }
+        primitive.service_cycles += state.total_service_cycles;
+        primitive.issued += state.total_issued;
+        primitive.captured += state.total_results_captured;
+        primitive.committed += state.total_results_captured;
+        primitive.operator_invocations += state.total_operator_invocations;
+        primitive.unit_unavailable += state.total_stall_unit_unavailable;
+        primitive.issue_width_limited += state.total_issue_width_limited;
+        primitive.result_sink_backpressure +=
+            state.total_stall_result_sink_backpressure;
+        if (state.max_ready_primitive_entries > primitive.max_ready)
+            primitive.max_ready = state.max_ready_primitive_entries;
+        if (state.max_active_unit_count > primitive.max_active)
+            primitive.max_active = state.max_active_unit_count;
+        if (state.max_output_pending_count > primitive.max_pending)
+            primitive.max_pending = state.max_output_pending_count;
+        primitive.final_pipeline_active +=
+            primitive_timing::active_unit_count(state);
+    }
+    rtcore_v04_emit_dse_typed_resource_snapshot(primitive);
+
+    rtcore_v04_dse_typed_resource_snapshot instance = {};
+    instance.target = "instance";
+    instance.fixed_resource_mask = 3;
+    bool instance_queue_config_valid = false;
+    fetch_target::config_v0 instance_queue_config = {};
+    for (std::map<unsigned, fetch_target::engine_state_v0>::const_iterator it =
+             g_rtcore_v04_live_target_engine_by_owner.begin();
+         it != g_rtcore_v04_live_target_engine_by_owner.end(); ++it) {
+        const fetch_target::engine_state_v0 &state = it->second;
+        if (state.initialized != 1) continue;
+        ++instance.queue_owner_count;
+        if (!instance_queue_config_valid) {
+            instance_queue_config = state.config;
+            instance_queue_config_valid = true;
+            instance.queue_capacity = state.config.instance_capacity;
+            instance.queue_reservation_width =
+                state.config.instance_reservation_width;
+        } else if (!rtcore_v04_dse_config_equal(instance_queue_config,
+                                                state.config)) {
+            instance.config_mismatch_mask |= 1u << 1;
+        }
+        instance.reservation_attempts += state.instance_counters.attempts;
+        instance.reservation_accepted += state.instance_counters.accepted;
+        instance.capacity_backpressure +=
+            state.instance_counters.capacity_backpressure;
+        instance.reservation_budget_backpressure +=
+            state.instance_counters.reservation_budget_backpressure;
+        instance.final_queue_active += fetch_target::active_slot_count(
+            state, fetch_target::kTargetInstance);
+        instance.final_queue_ready += fetch_target::ready_slot_count(
+            state, fetch_target::kTargetInstance);
+    }
+    bool instance_config_valid = false;
+    instance_timing::config_v0 instance_config = {};
+    for (std::map<unsigned, instance_timing::state_v0>::const_iterator it =
+             g_rtcore_v04_live_instance_timing_by_owner.begin();
+         it != g_rtcore_v04_live_instance_timing_by_owner.end(); ++it) {
+        const instance_timing::state_v0 &state = it->second;
+        if (state.initialized != 1) continue;
+        ++instance.initialized_owner_count;
+        if (!instance_config_valid) {
+            instance_config = state.config;
+            instance_config_valid = true;
+            instance.unit_count = state.config.instance_unit_count;
+            instance.latency = state.config.instance_latency;
+            instance.initiation_interval =
+                state.config.instance_initiation_interval;
+            instance.issue_width = state.config.instance_issue_width;
+        } else if (!rtcore_v04_dse_config_equal(instance_config,
+                                                state.config)) {
+            instance.config_mismatch_mask |= 1u;
+        }
+        instance.service_cycles += state.total_service_cycles;
+        instance.issued += state.total_issued;
+        instance.captured += state.total_results_captured;
+        instance.committed += state.total_results_captured;
+        instance.operator_invocations += state.total_operator_invocations;
+        instance.unit_unavailable += state.total_stall_unit_unavailable;
+        instance.issue_width_limited += state.total_issue_width_limited;
+        instance.pipeline_full += state.total_stall_pipeline_full;
+        instance.result_sink_backpressure +=
+            state.total_stall_result_sink_backpressure;
+        if (state.max_ready_instance_entries > instance.max_ready)
+            instance.max_ready = state.max_ready_instance_entries;
+        if (state.max_active_pipeline_entries > instance.max_active)
+            instance.max_active = state.max_active_pipeline_entries;
+        instance.final_pipeline_active +=
+            instance_timing::active_pipeline_count(state);
+    }
+    rtcore_v04_emit_dse_typed_resource_snapshot(instance);
+
+    rtcore_v04_dse_typed_resource_snapshot stack = {};
+    stack.target = "stack";
+    stack.fixed_resource_mask = 3;
+    bool stack_queue_config_valid = false;
+    stack_operation::config_v0 stack_queue_config = {};
+    for (std::map<unsigned, stack_operation::engine_state_v0>::const_iterator it =
+             g_rtcore_v04_live_stack_operation_by_owner.begin();
+         it != g_rtcore_v04_live_stack_operation_by_owner.end(); ++it) {
+        const stack_operation::engine_state_v0 &state = it->second;
+        if (state.initialized != 1) continue;
+        ++stack.queue_owner_count;
+        if (!stack_queue_config_valid) {
+            stack_queue_config = state.config;
+            stack_queue_config_valid = true;
+            stack.queue_capacity = state.config.capacity;
+            stack.queue_reservation_width = state.config.reservation_width;
+        } else if (!rtcore_v04_dse_config_equal(stack_queue_config,
+                                                state.config)) {
+            stack.config_mismatch_mask |= 1u << 1;
+        }
+        stack.reservation_attempts += state.total_reservation_attempts;
+        stack.reservation_accepted += state.total_reservations_accepted;
+        stack.capacity_backpressure += state.total_capacity_backpressure;
+        stack.reservation_budget_backpressure +=
+            state.total_reservation_budget_backpressure;
+        stack.final_queue_active += stack_operation::active_slot_count(state);
+        stack.final_queue_ready += stack_operation::ready_slot_count(state);
+    }
+    bool stack_config_valid = false;
+    stack_timing::config_v0 stack_config = {};
+    for (std::map<unsigned, stack_timing::state_v0>::const_iterator it =
+             g_rtcore_v04_live_stack_timing_by_owner.begin();
+         it != g_rtcore_v04_live_stack_timing_by_owner.end(); ++it) {
+        const stack_timing::state_v0 &state = it->second;
+        if (state.initialized != 1) continue;
+        ++stack.initialized_owner_count;
+        if (!stack_config_valid) {
+            stack_config = state.config;
+            stack_config_valid = true;
+            stack.unit_count = state.config.stack_unit_count;
+            stack.latency = state.config.stack_latency;
+            stack.initiation_interval =
+                state.config.stack_initiation_interval;
+            stack.issue_width = state.config.stack_issue_width;
+        } else if (!rtcore_v04_dse_config_equal(stack_config,
+                                                state.config)) {
+            stack.config_mismatch_mask |= 1u;
+        }
+        stack.service_cycles += state.total_service_cycles;
+        stack.issued += state.total_issued;
+        stack.captured += state.total_results_captured;
+        stack.committed += state.total_results_captured;
+        stack.operator_invocations += state.total_operator_invocations;
+        stack.unit_unavailable += state.total_stall_unit_unavailable;
+        stack.issue_width_limited += state.total_issue_width_limited;
+        stack.pipeline_full += state.total_stall_pipeline_full;
+        stack.result_sink_backpressure +=
+            state.total_stall_result_sink_backpressure;
+        if (state.max_ready_stack_entries > stack.max_ready)
+            stack.max_ready = state.max_ready_stack_entries;
+        if (state.max_active_pipeline_entries > stack.max_active)
+            stack.max_active = state.max_active_pipeline_entries;
+        stack.final_pipeline_active +=
+            stack_timing::active_pipeline_count(state);
+    }
+    rtcore_v04_emit_dse_typed_resource_snapshot(stack);
+
+    rtcore_v04_dse_typed_resource_snapshot short_stack_snapshot = {};
+    short_stack_snapshot.target = "short_stack";
+    short_stack_snapshot.source_fallback_mask =
+        rtcore_v04_short_stack_fallback_mask();
+    bool short_stack_config_valid = false;
+    short_stack::config_v0 short_stack_config = {};
+    for (std::map<unsigned, short_stack::engine_state_v0>::const_iterator it =
+             g_rtcore_v04_live_short_stack_timing_by_owner.begin();
+         it != g_rtcore_v04_live_short_stack_timing_by_owner.end(); ++it) {
+        const short_stack::engine_state_v0 &state = it->second;
+        if (state.initialized != 1) continue;
+        ++short_stack_snapshot.initialized_owner_count;
+        ++short_stack_snapshot.queue_owner_count;
+        if (!short_stack_config_valid) {
+            short_stack_config = state.config;
+            short_stack_config_valid = true;
+            short_stack_snapshot.unit_count = state.config.unit_count;
+            short_stack_snapshot.latency = state.config.stack_latency;
+            short_stack_snapshot.initiation_interval =
+                state.config.initiation_interval;
+            short_stack_snapshot.issue_width = state.config.issue_width;
+            short_stack_snapshot.queue_capacity = state.config.capacity;
+            short_stack_snapshot.queue_reservation_width =
+                state.config.reservation_width;
+            short_stack_snapshot.parent_lookup_latency =
+                state.config.parent_lookup_latency;
+        } else if (!rtcore_v04_dse_config_equal(short_stack_config,
+                                                state.config)) {
+            short_stack_snapshot.config_mismatch_mask |= 1u;
+        }
+        short_stack_snapshot.service_cycles += state.total_service_cycles;
+        short_stack_snapshot.reservation_attempts +=
+            state.total_reservation_attempts;
+        short_stack_snapshot.reservation_accepted +=
+            state.total_reservations_accepted;
+        short_stack_snapshot.issued += state.total_issued;
+        short_stack_snapshot.captured +=
+            state.total_transitions_committed;
+        short_stack_snapshot.committed +=
+            state.total_transitions_committed;
+        short_stack_snapshot.parent_lookups +=
+            state.total_parent_lookups_completed;
+        short_stack_snapshot.capacity_backpressure +=
+            state.total_capacity_backpressure;
+        short_stack_snapshot.reservation_budget_backpressure +=
+            state.total_reservation_budget_backpressure;
+        short_stack_snapshot.unit_unavailable +=
+            state.total_unit_busy_stalls;
+        short_stack_snapshot.issue_width_limited +=
+            state.total_issue_width_limited;
+        if (state.max_ready_results > short_stack_snapshot.max_ready)
+            short_stack_snapshot.max_ready = state.max_ready_results;
+        if (state.max_active_operations > short_stack_snapshot.max_active)
+            short_stack_snapshot.max_active = state.max_active_operations;
+        short_stack_snapshot.final_queue_active +=
+            short_stack::active_operation_count(state);
+    }
+    rtcore_v04_emit_dse_typed_resource_snapshot(short_stack_snapshot);
+    fflush(stdout);
+}
+
+static void rtcore_v04_register_dse_typed_resource_final_summary()
+{
+    if (g_rtcore_v04_dse_typed_resource_final_registered ||
+        !rtcore_v04_dse_typed_resource_evidence_enabled()) {
+        return;
+    }
+    g_rtcore_v04_dse_typed_resource_final_registered = true;
+    std::atexit(rtcore_v04_emit_dse_typed_resource_final_summary);
+}
+
 static rtcore::v04::fetch_target::engine_state_v0 &
 rtcore_v04_live_target_engine_for(unsigned owner_hw_sid)
 {
@@ -2927,6 +3441,7 @@ rtcore_v04_live_target_engine_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        rtcore_v04_register_dse_typed_resource_final_summary();
         printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
                "owner_hw_sid=%u target=queue "
                "node_capacity=%u node_reservation_width=%u "
@@ -2988,6 +3503,7 @@ rtcore_v04_live_node_timing_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        rtcore_v04_register_dse_typed_resource_final_summary();
         printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
                "owner_hw_sid=%u target=node units=%u latency=%u "
                "initiation_interval=%u issue_width=%u "
@@ -3027,6 +3543,7 @@ rtcore_v04_live_stack_operation_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        rtcore_v04_register_dse_typed_resource_final_summary();
         printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
                "owner_hw_sid=%u target=stack_queue capacity=%u "
                "reservation_width=%u\n",
@@ -3071,6 +3588,7 @@ rtcore_v04_live_stack_timing_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        rtcore_v04_register_dse_typed_resource_final_summary();
         printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
                "owner_hw_sid=%u target=stack units=%u latency=%u "
                "initiation_interval=%u issue_width=%u\n",
@@ -3144,6 +3662,7 @@ rtcore_v04_live_short_stack_timing_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        rtcore_v04_register_dse_typed_resource_final_summary();
         printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
                "owner_hw_sid=%u target=short_stack capacity=%u "
                "reservation_width=%u units=%u latency=%u "
@@ -3219,6 +3738,7 @@ rtcore_v04_live_instance_timing_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        rtcore_v04_register_dse_typed_resource_final_summary();
         printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
                "owner_hw_sid=%u target=instance units=%u latency=%u "
                "initiation_interval=%u issue_width=%u\n",
@@ -3296,6 +3816,7 @@ rtcore_v04_live_primitive_timing_for(unsigned owner_hw_sid)
             fflush(stderr);
             abort();
         }
+        rtcore_v04_register_dse_typed_resource_final_summary();
         printf("GPGPU-Sim RTCORE_V04_LIVE_TIMING_CONFIG "
                "owner_hw_sid=%u target=primitive units=%u "
                "first_batch_latency=%u batch_width=%u "

@@ -920,12 +920,14 @@ status_kind reserve_impl(
     state->reservation_cycle = reservation_cycle;
     state->reservations_this_cycle = 0;
   }
+  ++state->total_reservation_attempts;
   const uint32_t attempted_operation_seq =
       input.target_operation_seq != 0
           ? input.target_operation_seq
           : input.producer_operation_seq;
   if (state->reservations_this_cycle >=
       state->config.reservation_width) {
+    ++state->total_reservation_budget_backpressure;
     emit_attempt(
         input.owner, attempted_operation_seq, reservation_cycle,
         state->reservations_this_cycle,
@@ -937,6 +939,7 @@ status_kind reserve_impl(
   }
   const int slot_index = find_free_slot(*state);
   if (slot_index < 0) {
+    ++state->total_capacity_backpressure;
     emit_attempt(
         input.owner, attempted_operation_seq, reservation_cycle,
         state->reservations_this_cycle,
@@ -1071,6 +1074,7 @@ status_kind reserve_impl(
   requests->request_count = kReadChunkCount;
   requests->valid = 1;
   ++staged_state.reservations_this_cycle;
+  ++staged_state.total_reservations_accepted;
   *reservation = entry.reservation;
   *state = staged_state;
   *timing_state = staged_timing;
@@ -1195,8 +1199,10 @@ static status_kind reserve_private_state_384_impl(
     state->reservation_cycle = reservation_cycle;
     state->reservations_this_cycle = 0;
   }
+  ++state->total_reservation_attempts;
   if (state->reservations_this_cycle >=
       state->config.reservation_width) {
+    ++state->total_reservation_budget_backpressure;
     emit_attempt(
         input.owner, input.producer_operation_seq, reservation_cycle,
         state->reservations_this_cycle,
@@ -1208,6 +1214,7 @@ static status_kind reserve_private_state_384_impl(
   }
   const int slot_index = find_free_slot(*state);
   if (slot_index < 0) {
+    ++state->total_capacity_backpressure;
     emit_attempt(
         input.owner, input.producer_operation_seq, reservation_cycle,
         state->reservations_this_cycle,
@@ -1348,6 +1355,7 @@ static status_kind reserve_private_state_384_impl(
   requests->request_count = read_plan.request_count;
   requests->valid = 1;
   ++staged_state.reservations_this_cycle;
+  ++staged_state.total_reservations_accepted;
   *reservation = entry.reservation;
   *state = staged_state;
   *timing_state = staged_timing;
@@ -2195,6 +2203,7 @@ status_kind service_cycle(
       }
     }
     if (unit_index < 0) {
+      ++state->total_unit_busy_stalls;
       const operation_entry_v0 &entry = state->slots[ready_index];
       emit_attempt(
           entry.input.owner, entry.reservation.operation_seq,
@@ -2474,6 +2483,20 @@ status_kind service_cycle(
     result->ready_results +=
         state->slots[index].valid != 0 &&
         state->slots[index].phase == kPhaseResultReady;
+  }
+  ++state->total_service_cycles;
+  state->total_issued += result->issued;
+  state->total_transitions_committed += result->transition_committed;
+  state->total_parent_lookups_completed +=
+      result->parent_lookup_completed;
+  state->total_issue_width_limited +=
+      result->issued == state->config.issue_width &&
+      find_oldest_phase(*state, kPhaseReadyToIssue, service_cycle, false) >= 0;
+  if (result->active_operations > state->max_active_operations) {
+    state->max_active_operations = result->active_operations;
+  }
+  if (result->ready_results > state->max_ready_results) {
+    state->max_ready_results = result->ready_results;
   }
   return kStatusOk;
 }

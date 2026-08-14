@@ -635,6 +635,28 @@ status_kind service_cycle(
   result->active_pipeline_entries = active_pipeline_count(*state);
   result->ready_instance_entries = fetch_target::ready_slot_count(
       *target_state, fetch_target::kTargetInstance);
+  ++state->total_service_cycles;
+  state->total_issued += result->issued_count;
+  state->total_stall_unit_unavailable +=
+      (result->stall_mask & kStallUnitUnavailable) != 0;
+  state->total_stall_pipeline_full +=
+      (result->stall_mask & kStallPipelineFull) != 0;
+  state->total_stall_result_sink_backpressure +=
+      (result->stall_mask & kStallResultSinkBackpressure) != 0;
+  state->total_issue_width_limited +=
+      result->issued_count == state->config.instance_issue_width &&
+      result->ready_instance_entries != 0 &&
+      (result->stall_mask & kStallUnitUnavailable) == 0;
+  if (result->active_pipeline_entries >
+      state->max_active_pipeline_entries) {
+    state->max_active_pipeline_entries =
+        result->active_pipeline_entries;
+  }
+  if (result->ready_instance_entries >
+      state->max_ready_instance_entries) {
+    state->max_ready_instance_entries =
+        result->ready_instance_entries;
+  }
   return kStatusOk;
 }
 

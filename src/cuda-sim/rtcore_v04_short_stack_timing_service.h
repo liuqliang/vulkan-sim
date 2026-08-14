@@ -185,6 +185,18 @@ struct engine_state_v0 {
   config_v0 config;
   uint64_t next_reservation_id;
   uint64_t next_age;
+  uint64_t total_reservation_attempts;
+  uint64_t total_reservations_accepted;
+  uint64_t total_capacity_backpressure;
+  uint64_t total_reservation_budget_backpressure;
+  uint64_t total_service_cycles;
+  uint64_t total_issued;
+  uint64_t total_transitions_committed;
+  uint64_t total_parent_lookups_completed;
+  uint64_t total_unit_busy_stalls;
+  uint64_t total_issue_width_limited;
+  uint8_t max_active_operations;
+  uint8_t max_ready_results;
   uint64_t reservation_cycle;
   uint8_t reservations_this_cycle;
   uint8_t reserved_zero1[7];

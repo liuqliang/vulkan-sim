@@ -469,12 +469,17 @@ status_kind try_reserve(
   *receipt = reservation_receipt_v0();
   if (!input_valid(input)) return kStatusInvalidRoute;
   refresh_reservation_window(state, reservation_cycle);
+  ++state->total_reservation_attempts;
   if (state->reservation_window.accepted_this_cycle >=
       state->config.reservation_width) {
+    ++state->total_reservation_budget_backpressure;
     return kStatusReservationBudgetBackpressure;
   }
   const int slot_index = find_free_slot(*state);
-  if (slot_index < 0) return kStatusCapacityBackpressure;
+  if (slot_index < 0) {
+    ++state->total_capacity_backpressure;
+    return kStatusCapacityBackpressure;
+  }
   if (state->next_reservation_id == 0 ||
       state->next_reservation_age == 0 ||
       state->next_slot_generation[slot_index] == 0) {
@@ -512,6 +517,7 @@ status_kind try_reserve(
   ++state->next_reservation_age;
   ++state->next_slot_generation[slot_index];
   ++state->reservation_window.accepted_this_cycle;
+  ++state->total_reservations_accepted;
   return kStatusOk;
 }
 

@@ -405,6 +405,31 @@ status_kind service_cycle(
   result->output_pending_count = output_pending_count(*state);
   result->ready_primitive_entries = fetch_target::ready_slot_count(
       *target_state, fetch_target::kTargetPrimitive);
+  ++state->total_service_cycles;
+  state->total_issued += result->issued_count;
+  state->total_stall_unit_unavailable +=
+      (result->stall_mask & kStallUnitUnavailable) != 0;
+  state->total_stall_result_sink_backpressure +=
+      (result->stall_mask & kStallResultSinkBackpressure) != 0;
+  state->total_issue_width_limited +=
+      result->issued_count == state->config.primitive_issue_width &&
+      result->ready_primitive_entries != 0 &&
+      (result->stall_mask & kStallUnitUnavailable) == 0;
+  if (result->active_unit_count > state->max_active_unit_count) {
+    state->max_active_unit_count = result->active_unit_count;
+  }
+  if (result->executing_unit_count >
+      state->max_executing_unit_count) {
+    state->max_executing_unit_count = result->executing_unit_count;
+  }
+  if (result->output_pending_count > state->max_output_pending_count) {
+    state->max_output_pending_count = result->output_pending_count;
+  }
+  if (result->ready_primitive_entries >
+      state->max_ready_primitive_entries) {
+    state->max_ready_primitive_entries =
+        result->ready_primitive_entries;
+  }
   return kStatusOk;
 }
 

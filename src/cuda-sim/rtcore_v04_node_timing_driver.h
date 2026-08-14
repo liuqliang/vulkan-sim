@@ -156,9 +156,22 @@ struct state_v0 {
   uint64_t last_service_cycle;
   uint64_t total_operator_invocations;
   uint64_t total_routes_committed;
+  uint64_t total_service_cycles;
+  uint64_t total_issued;
+  uint64_t total_results_captured;
+  uint64_t total_stall_unit_unavailable;
+  uint64_t total_stall_pipeline_full;
+  uint64_t total_stall_result_commit_full;
+  uint64_t total_stall_result_commit_not_accepted;
+  uint64_t total_stall_route_sink_backpressure;
+  uint64_t total_issue_width_limited;
+  uint64_t total_result_width_limited;
+  uint8_t max_active_pipeline_entries;
+  uint8_t max_active_result_entries;
+  uint8_t max_ready_node_entries;
   uint8_t initialized;
   uint8_t last_service_cycle_valid;
-  uint8_t reserved_zero[6];
+  uint8_t reserved_zero[3];
   node_unit_state_v0 node_units[kMaxNodeUnits];
   node_pipeline_entry_v0
       node_pipeline[kMaxNodePipelineEntries];

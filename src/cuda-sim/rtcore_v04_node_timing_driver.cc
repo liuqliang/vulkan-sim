@@ -616,6 +616,37 @@ status_kind service_cycle(
   result->active_result_entries = active_result_count(*state);
   result->ready_node_entries = fetch_target::ready_slot_count(
       *target_state, fetch_target::kTargetNode);
+  ++state->total_service_cycles;
+  state->total_issued += result->issued_count;
+  state->total_results_captured += result->captured_result_count;
+  state->total_stall_unit_unavailable +=
+      (result->stall_mask & kStallNodeUnitUnavailable) != 0;
+  state->total_stall_pipeline_full +=
+      (result->stall_mask & kStallNodePipelineFull) != 0;
+  state->total_stall_result_commit_full +=
+      (result->stall_mask & kStallResultCommitFull) != 0;
+  state->total_stall_result_commit_not_accepted +=
+      (result->stall_mask & kStallResultCommitNotAccepted) != 0;
+  state->total_stall_route_sink_backpressure +=
+      (result->stall_mask & kStallRouteSinkBackpressure) != 0;
+  state->total_issue_width_limited +=
+      result->issued_count == state->config.node_issue_width &&
+      result->ready_node_entries != 0 &&
+      (result->stall_mask & kStallNodeUnitUnavailable) == 0;
+  state->total_result_width_limited +=
+      result->committed_route_count == state->config.result_commit_width &&
+      result->active_result_entries > result->captured_result_count;
+  if (result->active_pipeline_entries >
+      state->max_active_pipeline_entries) {
+    state->max_active_pipeline_entries =
+        result->active_pipeline_entries;
+  }
+  if (result->active_result_entries > state->max_active_result_entries) {
+    state->max_active_result_entries = result->active_result_entries;
+  }
+  if (result->ready_node_entries > state->max_ready_node_entries) {
+    state->max_ready_node_entries = result->ready_node_entries;
+  }
   return kStatusOk;
 }
 

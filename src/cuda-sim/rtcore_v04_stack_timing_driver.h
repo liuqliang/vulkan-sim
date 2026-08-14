@@ -112,9 +112,17 @@ struct state_v0 {
   uint64_t last_service_cycle;
   uint64_t total_operator_invocations;
   uint64_t total_results_captured;
+  uint64_t total_service_cycles;
+  uint64_t total_issued;
+  uint64_t total_stall_unit_unavailable;
+  uint64_t total_stall_pipeline_full;
+  uint64_t total_stall_result_sink_backpressure;
+  uint64_t total_issue_width_limited;
+  uint8_t max_active_pipeline_entries;
+  uint8_t max_ready_stack_entries;
   uint8_t initialized;
   uint8_t last_service_cycle_valid;
-  uint8_t reserved_zero[6];
+  uint8_t reserved_zero[4];
   unit_state_v0 units[kMaxStackUnits];
   pipeline_entry_v0 pipeline[kMaxPipelineEntries];
 };

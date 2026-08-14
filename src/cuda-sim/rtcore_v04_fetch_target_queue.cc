@@ -297,6 +297,21 @@ void build_receipt(const slot_metadata_v0 &metadata, uint8_t slot_index,
   receipt->valid = 1;
 }
 
+reservation_counters_v0 *reservation_counters(
+    engine_state_v0 *state, target_kind target) {
+  if (state == NULL) return NULL;
+  switch (target) {
+    case kTargetNode:
+      return &state->node_counters;
+    case kTargetPrimitive:
+      return &state->primitive_counters;
+    case kTargetInstance:
+      return &state->instance_counters;
+    default:
+      return NULL;
+  }
+}
+
 template <typename Slot>
 status_kind reserve_in_queue(
     Slot *slots, uint8_t capacity, reservation_window_v0 *window,
@@ -304,11 +319,19 @@ status_kind reserve_in_queue(
     const reservation_input_v0 &input,
     target_kind target, uint16_t raw_payload_bytes, uint64_t cycle,
     reservation_receipt_v0 *receipt) {
+  reservation_counters_v0 *counters =
+      reservation_counters(state, target);
+  if (counters == NULL) return kStatusInvalidSelectedFetch;
+  ++counters->attempts;
   if (!reservation_budget_available(*window, reservation_width, cycle)) {
+    ++counters->reservation_budget_backpressure;
     return kStatusReservationBudgetBackpressure;
   }
   const int slot_index = find_free_slot(slots, capacity);
-  if (slot_index < 0) return kStatusCapacityBackpressure;
+  if (slot_index < 0) {
+    ++counters->capacity_backpressure;
+    return kStatusCapacityBackpressure;
+  }
   if (state->next_reservation_id == 0 ||
       state->next_reservation_age == 0 ||
       slots[slot_index].metadata.slot_generation ==
@@ -371,6 +394,7 @@ status_kind reserve_in_queue(
   build_receipt(metadata, static_cast<uint8_t>(slot_index), receipt);
   ++state->next_reservation_id;
   ++state->next_reservation_age;
+  ++counters->accepted;
   return kStatusOk;
 }
 
@@ -380,11 +404,19 @@ status_kind reserve_recovery_in_queue(
     uint8_t reservation_width, engine_state_v0 *state,
     const recovery_reservation_input_v0 &input, target_kind target,
     uint64_t cycle, reservation_receipt_v0 *receipt) {
+  reservation_counters_v0 *counters =
+      reservation_counters(state, target);
+  if (counters == NULL) return kStatusInvalidSelectedFetch;
+  ++counters->attempts;
   if (!reservation_budget_available(*window, reservation_width, cycle)) {
+    ++counters->reservation_budget_backpressure;
     return kStatusReservationBudgetBackpressure;
   }
   const int slot_index = find_free_slot(slots, capacity);
-  if (slot_index < 0) return kStatusCapacityBackpressure;
+  if (slot_index < 0) {
+    ++counters->capacity_backpressure;
+    return kStatusCapacityBackpressure;
+  }
   if (state->next_reservation_id == 0 ||
       state->next_reservation_age == 0 ||
       slots[slot_index].metadata.slot_generation ==
@@ -436,6 +468,7 @@ status_kind reserve_recovery_in_queue(
   build_receipt(metadata, static_cast<uint8_t>(slot_index), receipt);
   ++state->next_reservation_id;
   ++state->next_reservation_age;
+  ++counters->accepted;
   return kStatusOk;
 }
 
@@ -445,11 +478,17 @@ status_kind reserve_instance_restore_in_queue(
     engine_state_v0 *state,
     const instance_restore_reservation_input_v0 &input, uint64_t cycle,
     reservation_receipt_v0 *receipt) {
+  reservation_counters_v0 *counters = &state->instance_counters;
+  ++counters->attempts;
   if (!reservation_budget_available(*window, reservation_width, cycle)) {
+    ++counters->reservation_budget_backpressure;
     return kStatusReservationBudgetBackpressure;
   }
   const int slot_index = find_free_slot(slots, capacity);
-  if (slot_index < 0) return kStatusCapacityBackpressure;
+  if (slot_index < 0) {
+    ++counters->capacity_backpressure;
+    return kStatusCapacityBackpressure;
+  }
   if (state->next_reservation_id == 0 ||
       state->next_reservation_age == 0 ||
       slots[slot_index].metadata.slot_generation ==
@@ -484,6 +523,7 @@ status_kind reserve_instance_restore_in_queue(
   build_receipt(metadata, static_cast<uint8_t>(slot_index), receipt);
   ++state->next_reservation_id;
   ++state->next_reservation_age;
+  ++counters->accepted;
   return kStatusOk;
 }
 

@@ -149,6 +149,10 @@ struct engine_state_v0 {
   uint64_t next_reservation_age;
   uint32_t next_slot_generation[kMaxSlots];
   uint64_t total_ready_publications;
+  uint64_t total_reservation_attempts;
+  uint64_t total_reservations_accepted;
+  uint64_t total_capacity_backpressure;
+  uint64_t total_reservation_budget_backpressure;
   uint8_t initialized;
   uint8_t reserved_zero[7];
   reservation_window_v0 reservation_window;

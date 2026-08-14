@@ -312,6 +312,13 @@ struct reservation_window_v0 {
   uint8_t reserved_zero[6];
 };
 
+struct reservation_counters_v0 {
+  uint64_t attempts;
+  uint64_t accepted;
+  uint64_t capacity_backpressure;
+  uint64_t reservation_budget_backpressure;
+};
+
 struct engine_state_v0 {
   config_v0 config;
   uint64_t next_reservation_id;
@@ -321,6 +328,9 @@ struct engine_state_v0 {
   reservation_window_v0 node_window;
   reservation_window_v0 primitive_window;
   reservation_window_v0 instance_window;
+  reservation_counters_v0 node_counters;
+  reservation_counters_v0 primitive_counters;
+  reservation_counters_v0 instance_counters;
   node_slot_v0 node_slots[kMaxNodeSlots];
   primitive_slot_v0 primitive_slots[kMaxPrimitiveSlots];
   instance_slot_v0 instance_slots[kMaxInstanceSlots];
