@@ -6582,6 +6582,10 @@ static void rtcore_v04_dse_system_resource_final_report() {
   unsigned long long arbiter_conflict_cycles = 0;
   unsigned long long arbiter_grant_count = 0;
   unsigned long long arbiter_denied_count = 0;
+  unsigned long long arbiter_lsu_first_conflict_win_count = 0;
+  unsigned long long arbiter_rt_first_conflict_win_count = 0;
+  unsigned long long arbiter_round_robin_lsu_first_count = 0;
+  unsigned long long arbiter_round_robin_rt_first_count = 0;
   for (std::map<unsigned, rtcore_shared_l1d_request_arbiter_stats>::
            const_iterator it =
            g_rtcore_shared_l1d_request_arbiter_stats_by_sm.begin();
@@ -6592,6 +6596,30 @@ static void rtcore_v04_dse_system_resource_final_report() {
                            stats.rt_consumed_grant_count;
     arbiter_denied_count +=
         stats.lsu_denied_count + stats.rt_denied_count;
+    arbiter_lsu_first_conflict_win_count +=
+        stats.lsu_first_conflict_win_count;
+    arbiter_rt_first_conflict_win_count +=
+        stats.rt_first_conflict_win_count;
+    arbiter_round_robin_lsu_first_count +=
+        stats.round_robin_lsu_first_count;
+    arbiter_round_robin_rt_first_count +=
+        stats.round_robin_rt_first_count;
+  }
+  unsigned long long arbiter_policy_decision_count = 0;
+  switch (rtcore_explicit_shared_l1d_request_arbiter_policy_value()) {
+    case RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_LSU_FIRST:
+      arbiter_policy_decision_count =
+          arbiter_lsu_first_conflict_win_count;
+      break;
+    case RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_RT_FIRST:
+      arbiter_policy_decision_count =
+          arbiter_rt_first_conflict_win_count;
+      break;
+    case RTCORE_EXPLICIT_SHARED_L1D_REQUEST_ARBITER_ROUND_ROBIN:
+      arbiter_policy_decision_count =
+          arbiter_round_robin_lsu_first_count +
+          arbiter_round_robin_rt_first_count;
+      break;
   }
   printf(
       "GPGPU-Sim RTCORE_V04_DSE_SYSTEM_RESOURCE_FINAL "
@@ -6606,7 +6634,12 @@ static void rtcore_v04_dse_system_resource_final_report() {
       "l1d_miss_or_retry_count=%llu "
       "arbiter_enabled=%u arbiter_policy=%s arbiter_budget_per_cycle=%u "
       "arbiter_initialized_owner_count=%zu arbiter_conflict_cycles=%llu "
-      "arbiter_grant_count=%llu arbiter_denied_count=%llu\n",
+      "arbiter_grant_count=%llu arbiter_denied_count=%llu "
+      "arbiter_policy_decision_count=%llu "
+      "arbiter_lsu_first_conflict_win_count=%llu "
+      "arbiter_rt_first_conflict_win_count=%llu "
+      "arbiter_round_robin_lsu_first_count=%llu "
+      "arbiter_round_robin_rt_first_count=%llu\n",
       resident_capacity, g_rtcore_v04_multiwarp_stats.size(),
       resident_config_mismatch_count, resident_max_live_warps,
       resident_admission_allowed, resident_admission_blocked_cycles,
@@ -6617,7 +6650,12 @@ static void rtcore_v04_dse_system_resource_final_report() {
       rtcore_explicit_shared_l1d_request_arbiter_policy_name(),
       rtcore_explicit_shared_l1d_request_arbiter_budget_per_cycle(),
       g_rtcore_shared_l1d_request_arbiter_stats_by_sm.size(),
-      arbiter_conflict_cycles, arbiter_grant_count, arbiter_denied_count);
+      arbiter_conflict_cycles, arbiter_grant_count, arbiter_denied_count,
+      arbiter_policy_decision_count,
+      arbiter_lsu_first_conflict_win_count,
+      arbiter_rt_first_conflict_win_count,
+      arbiter_round_robin_lsu_first_count,
+      arbiter_round_robin_rt_first_count);
   fflush(stdout);
 }
 
