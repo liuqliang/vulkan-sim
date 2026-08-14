@@ -12817,7 +12817,13 @@ bool shader_core_ctx::rtcore_submit_resident_warp_capacity_available(
   if (inst.op != RT_CORE_OP || inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
     return true;
   }
-  if (!rtcore_symbolic_submit_issue_resource_backpressure_is_enabled()) {
+  const char *resident_capacity_gate = getenv(
+      "VULKAN_SIM_RTCORE_RESIDENT_WARP_CAPACITY_BACKPRESSURE");
+  const bool resident_capacity_gate_enabled =
+      resident_capacity_gate != NULL && *resident_capacity_gate != '\0' &&
+      strcmp(resident_capacity_gate, "0") != 0;
+  if (!resident_capacity_gate_enabled &&
+      !rtcore_symbolic_submit_issue_resource_backpressure_is_enabled()) {
     return true;
   }
   rtcore_resident_warp_demand_snapshot snapshot =
