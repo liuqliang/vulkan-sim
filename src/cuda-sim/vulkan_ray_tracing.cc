@@ -30773,6 +30773,10 @@ static bool rtcore_service_v04_live_stack_spill_recovery(
             g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid];
         live_queue.insert(live_queue.end(), plan.requests,
                           plan.requests + plan.request_count);
+        rtcore_record_v04_lane_conservation_or_abort(
+            rtcore::v04::conservation::kEventTargetReserved,
+            expected_private_owner, pending.target_operation_seq, 0, 0,
+            0, 0, pending.target_kind, service_cycle);
         cursor = static_cast<uint16_t>(
             (static_cast<uint32_t>(pending.request_control_slot) + 1) %
             rtcore::v04::request_owner::kRequestControlCapacity);
@@ -30864,6 +30868,10 @@ static bool rtcore_service_v04_live_stack_spill_recovery(
         g_rtcore_memory_unit_request_snapshots_by_owner[owner_hw_sid];
     live_queue.insert(live_queue.end(), plan.requests,
                       plan.requests + plan.request_count);
+    rtcore_record_v04_lane_conservation_or_abort(
+        rtcore::v04::conservation::kEventTargetReserved,
+        expected_private_owner, pending.target_operation_seq, 0, 0, 0, 0,
+        pending.target_kind, service_cycle);
     cursor = static_cast<uint16_t>(
         (static_cast<uint32_t>(pending.request_control_slot) + 1) %
         rtcore::v04::request_owner::kRequestControlCapacity);
