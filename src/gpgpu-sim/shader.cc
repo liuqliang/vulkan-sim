@@ -3372,9 +3372,11 @@ struct rtcore_v04_multiwarp_stats {
   bool measurement_active;
   bool cycle_valid;
   unsigned configured_capacity;
+  unsigned configured_l1d_capacity_kib;
   unsigned max_active_submit_warps;
   unsigned max_resident_context_warps;
   unsigned latest_active_submit_warps;
+  unsigned latest_resident_context_warps;
   unsigned long long cycle;
   unsigned long long measured_cycles;
   unsigned long long active_submit_warp_cycles;
@@ -3407,6 +3409,7 @@ struct rtcore_v04_multiwarp_stats {
 static std::map<unsigned, rtcore_v04_multiwarp_stats>
     g_rtcore_v04_multiwarp_stats;
 static bool g_rtcore_v04_multiwarp_report_registered = false;
+static bool g_rtcore_v04_dse_system_resource_final_report_registered = false;
 
 static bool rtcore_v04_multiwarp_stats_enabled() {
   static int enabled = []() {
@@ -3505,7 +3508,7 @@ static rtcore_v04_multiwarp_stats &rtcore_v04_multiwarp_stats_for(
 static void rtcore_v04_multiwarp_begin_cycle(
     unsigned owner_hw_sid, unsigned long long cycle,
     unsigned active_submit_warps, unsigned resident_context_warps,
-    unsigned configured_capacity) {
+    unsigned configured_capacity, unsigned configured_l1d_capacity_kib) {
   if (!rtcore_v04_multiwarp_stats_enabled()) return;
   rtcore_v04_multiwarp_stats &stats =
       rtcore_v04_multiwarp_stats_for(owner_hw_sid);
@@ -3520,7 +3523,9 @@ static void rtcore_v04_multiwarp_begin_cycle(
   stats.cycle_valid = true;
   stats.cycle = cycle;
   stats.configured_capacity = configured_capacity;
+  stats.configured_l1d_capacity_kib = configured_l1d_capacity_kib;
   stats.latest_active_submit_warps = active_submit_warps;
+  stats.latest_resident_context_warps = resident_context_warps;
   stats.measured_cycles++;
   stats.active_submit_warp_cycles += active_submit_warps;
   stats.resident_context_warp_cycles += resident_context_warps;
@@ -6529,6 +6534,102 @@ rtcore_explicit_shared_l1d_request_arbiter_policy_name() {
   return "invalid";
 }
 
+static void rtcore_v04_dse_system_resource_final_report() {
+  if (!rtcore_v04_dse_runner_evidence_enabled()) return;
+  unsigned resident_capacity = 0;
+  unsigned l1d_capacity_kib = 0;
+  unsigned resident_config_mismatch_count = 0;
+  unsigned l1d_config_mismatch_count = 0;
+  unsigned resident_max_live_warps = 0;
+  unsigned long long resident_admission_allowed = 0;
+  unsigned long long resident_admission_blocked_cycles = 0;
+  unsigned long long resident_final_active_warps = 0;
+  unsigned long long l1d_access_count = 0;
+  unsigned long long l1d_miss_or_retry_count = 0;
+  for (std::map<unsigned, rtcore_v04_multiwarp_stats>::const_iterator it =
+           g_rtcore_v04_multiwarp_stats.begin();
+       it != g_rtcore_v04_multiwarp_stats.end(); ++it) {
+    const rtcore_v04_multiwarp_stats &stats = it->second;
+    if (resident_capacity == 0) {
+      resident_capacity = stats.configured_capacity;
+    } else if (resident_capacity != stats.configured_capacity) {
+      resident_config_mismatch_count++;
+    }
+    if (l1d_capacity_kib == 0) {
+      l1d_capacity_kib = stats.configured_l1d_capacity_kib;
+    } else if (l1d_capacity_kib != stats.configured_l1d_capacity_kib) {
+      l1d_config_mismatch_count++;
+    }
+    resident_max_live_warps =
+        std::max(resident_max_live_warps,
+                 stats.max_resident_context_warps);
+    resident_admission_allowed += stats.admission_allowed;
+    resident_admission_blocked_cycles += stats.admission_blocked_cycles;
+    resident_final_active_warps += stats.latest_resident_context_warps;
+    for (unsigned bucket = 0;
+         bucket < rtcore_v04_multiwarp_stats::kBucketCount; ++bucket) {
+      l1d_access_count += stats.l1_immediate_read_hit[bucket] +
+                          stats.l1_pending_write_hit[bucket] +
+                          stats.l1_line_miss[bucket] +
+                          stats.l1_sector_miss[bucket] +
+                          stats.l1_accepted_mshr_merge[bucket] +
+                          stats.l1_reservation_retry[bucket];
+      l1d_miss_or_retry_count += stats.l1_line_miss[bucket] +
+                                 stats.l1_sector_miss[bucket] +
+                                 stats.l1_reservation_retry[bucket];
+    }
+  }
+  unsigned long long arbiter_conflict_cycles = 0;
+  unsigned long long arbiter_grant_count = 0;
+  unsigned long long arbiter_denied_count = 0;
+  for (std::map<unsigned, rtcore_shared_l1d_request_arbiter_stats>::
+           const_iterator it =
+           g_rtcore_shared_l1d_request_arbiter_stats_by_sm.begin();
+       it != g_rtcore_shared_l1d_request_arbiter_stats_by_sm.end(); ++it) {
+    const rtcore_shared_l1d_request_arbiter_stats &stats = it->second;
+    arbiter_conflict_cycles += stats.conflict_cycles;
+    arbiter_grant_count += stats.lsu_consumed_grant_count +
+                           stats.rt_consumed_grant_count;
+    arbiter_denied_count +=
+        stats.lsu_denied_count + stats.rt_denied_count;
+  }
+  printf(
+      "GPGPU-Sim RTCORE_V04_DSE_SYSTEM_RESOURCE_FINAL "
+      "schema=1 scope=global snapshot_kind=final "
+      "resident_warp_capacity=%u resident_initialized_owner_count=%zu "
+      "resident_config_mismatch_count=%u resident_max_live_warps=%u "
+      "resident_admission_allowed=%llu "
+      "resident_admission_blocked_cycles=%llu "
+      "resident_final_active_warps=%llu "
+      "l1d_capacity_kib=%u l1d_initialized_owner_count=%zu "
+      "l1d_config_mismatch_count=%u l1d_access_count=%llu "
+      "l1d_miss_or_retry_count=%llu "
+      "arbiter_enabled=%u arbiter_policy=%s arbiter_budget_per_cycle=%u "
+      "arbiter_initialized_owner_count=%zu arbiter_conflict_cycles=%llu "
+      "arbiter_grant_count=%llu arbiter_denied_count=%llu\n",
+      resident_capacity, g_rtcore_v04_multiwarp_stats.size(),
+      resident_config_mismatch_count, resident_max_live_warps,
+      resident_admission_allowed, resident_admission_blocked_cycles,
+      resident_final_active_warps, l1d_capacity_kib,
+      g_rtcore_v04_multiwarp_stats.size(), l1d_config_mismatch_count,
+      l1d_access_count, l1d_miss_or_retry_count,
+      rtcore_explicit_shared_l1d_request_arbiter_gate_enabled() ? 1u : 0u,
+      rtcore_explicit_shared_l1d_request_arbiter_policy_name(),
+      rtcore_explicit_shared_l1d_request_arbiter_budget_per_cycle(),
+      g_rtcore_shared_l1d_request_arbiter_stats_by_sm.size(),
+      arbiter_conflict_cycles, arbiter_grant_count, arbiter_denied_count);
+  fflush(stdout);
+}
+
+static void rtcore_register_v04_dse_system_resource_final_report() {
+  if (!rtcore_v04_dse_runner_evidence_enabled() ||
+      g_rtcore_v04_dse_system_resource_final_report_registered) {
+    return;
+  }
+  g_rtcore_v04_dse_system_resource_final_report_registered = true;
+  if (atexit(rtcore_v04_dse_system_resource_final_report) != 0) abort();
+}
+
 static unsigned rtcore_shared_lsu_frontend_budget_per_cycle() {
   static unsigned budget = []() {
     const char *value =
@@ -7169,6 +7270,7 @@ static void rtcore_log_explicit_shared_l1d_request_arbiter_stats(
 static void rtcore_maybe_log_memory_unit_request_offer_stats(
     unsigned owner_hw_sid) {
   rtcore_register_v04_dse_memory_unit_final_report();
+  rtcore_register_v04_dse_system_resource_final_report();
   if (!rtcore_memory_unit_request_offer_log_enabled()) {
     return;
   }
@@ -21736,7 +21838,8 @@ void rt_unit::cycle() {
       m_sid, 0, NULL, NULL, NULL, &resident_context_warps);
   rtcore_v04_multiwarp_begin_cycle(
       m_sid, current_cycle, n_warps, resident_context_warps,
-      m_config->m_rt_max_warps);
+      m_config->m_rt_max_warps,
+      m_config->m_L1D_config.get_total_size_inKB());
 
   rtcore_replay_cycle_hook_result replay_cycle_result =
       rtcore_maybe_service_replay_cycle_from_rt_unit(m_sid, current_cycle);
