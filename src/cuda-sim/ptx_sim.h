@@ -358,6 +358,15 @@ class ptx_thread_info {
   void print_reg_thread(char *fname);
   void resume_reg_thread(char *fname, symbol_table *symtab);
   ptx_reg_t get_reg(const symbol *reg);
+  size_t rtcore_prepare_register_continuation();
+  bool rtcore_commit_register_continuation();
+  bool rtcore_restore_register_continuation();
+  bool rtcore_register_continuation_prepared() const {
+    return m_rtcore_continuation_prepared;
+  }
+  bool rtcore_register_continuation_committed() const {
+    return m_rtcore_continuation_committed;
+  }
   ptx_reg_t get_operand_value(const operand_info &op, operand_info dstInfo,
                               unsigned opType, ptx_thread_info *thread,
                               int derefFlag);
@@ -591,6 +600,9 @@ class ptx_thread_info {
 
   typedef tr1_hash_map<const symbol *, ptx_reg_t> reg_map_t;
   std::list<reg_map_t> m_regs;
+  std::list<reg_map_t> m_rtcore_continuation_regs;
+  bool m_rtcore_continuation_prepared;
+  bool m_rtcore_continuation_committed;
   std::list<reg_map_t> m_debug_trace_regs_modified;
   std::list<reg_map_t> m_debug_trace_regs_read;
   bool m_enable_debug_trace;

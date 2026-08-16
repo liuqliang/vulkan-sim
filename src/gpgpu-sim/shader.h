@@ -71,6 +71,8 @@
 
 #define WRITE_MASK_SIZE 8
 
+bool rtcore_full_continuation_stack_enabled();
+
 void rtcore_v04_record_l2_service_access(
     mem_fetch *mf, const cache_access_observation &observation,
     enum cache_request_status status, const std::list<cache_event> &events,
@@ -1782,6 +1784,20 @@ class rt_unit : public pipelined_simd_unit {
 	        unsigned shader_continuation_handoff_consume_mask;
 	        unsigned shader_continuation_resume_handoff_publish_mask;
 	        unsigned long long shader_continuation_decision_cycle;
+	        bool register_continuation_enabled;
+	        bool register_continuation_prepared;
+	        bool register_continuation_spill_committed;
+	        bool register_continuation_registers_released;
+	        bool register_continuation_restore_started;
+	        bool register_continuation_restored;
+	        bool register_continuation_restore_stall_logged;
+	        unsigned register_continuation_thread_mask;
+	        unsigned long long register_continuation_saved_value_count;
+	        unsigned register_continuation_register_count;
+	        unsigned long long register_continuation_frame_bytes;
+	        unsigned register_continuation_transfer_cycles;
+	        unsigned long long register_continuation_spill_ready_cycle;
+	        unsigned long long register_continuation_restore_ready_cycle;
 	      };
       struct rtcore_retire_transaction {
         rtcore_retire_transaction()
@@ -2288,6 +2304,18 @@ class rt_unit : public pipelined_simd_unit {
                                         unsigned long long current_cycle);
       bool synthetic_completion_ready(const warp_inst_t &inst,
                                       unsigned long long current_cycle);
+      unsigned long long rtcore_continuation_stack_capacity_bytes() const;
+      unsigned rtcore_continuation_stack_bytes_per_cycle() const;
+      unsigned rtcore_continuation_transfer_cycles(
+          unsigned long long frame_bytes) const;
+      unsigned rtcore_prepare_register_continuation(
+          rtcore_synthetic_completion_event *event);
+      void rtcore_commit_register_continuation(
+          rtcore_synthetic_completion_event *event,
+          unsigned long long current_cycle);
+      bool rtcore_restore_register_continuation(
+          rtcore_synthetic_completion_event *event,
+          unsigned long long current_cycle);
       void retire_synthetic_completion(const warp_inst_t &inst);
       void enqueue_retire_transaction(const warp_inst_t &inst,
                                       unsigned long long current_cycle);
@@ -2338,6 +2366,10 @@ class rt_unit : public pipelined_simd_unit {
       std::map<unsigned, warp_inst_t> m_current_warps;
       std::map<unsigned, rtcore_synthetic_completion_event>
           m_synthetic_warp_completion_entries;
+      unsigned long long m_rtcore_continuation_stack_used_bytes;
+      unsigned long long m_rtcore_continuation_stack_peak_bytes;
+      unsigned long long m_rtcore_continuation_spill_count;
+      unsigned long long m_rtcore_continuation_restore_count;
       std::map<unsigned, rtcore_retire_transaction> m_retire_transactions;
       unsigned n_warps;
 
@@ -3631,6 +3663,12 @@ class shader_core_ctx : public core_t {
       unsigned active_mask) const;
   bool rtcore_handoff_shared_capacity_allows_cta(
       unsigned cta_shared_demand_bytes) const;
+  unsigned rtcore_register_allocation_for_warp(unsigned warp_id) const;
+  void rtcore_release_warp_register_allocation(unsigned warp_id,
+                                                unsigned warp_uid,
+                                                unsigned register_count);
+  bool rtcore_try_reacquire_warp_register_allocation(
+      unsigned warp_id, unsigned warp_uid, unsigned register_count);
 
  private:
   unsigned int m_occupied_n_threads;

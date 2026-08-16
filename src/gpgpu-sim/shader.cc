@@ -34,6 +34,7 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include <array>
 #include <ctype.h>
 #include <deque>
+#include <errno.h>
 #include <float.h>
 #include <limits>
 #include <limits.h>
@@ -77,6 +78,57 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #define PRIORITIZE_MSHR_OVER_WB 1
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
+
+bool rtcore_full_continuation_stack_enabled() {
+  static int enabled = []() {
+    const char *value =
+        getenv("VULKAN_SIM_RTCORE_FULL_CONTINUATION_STACK");
+    if (value == NULL || *value == '\0' || strcmp(value, "0") == 0) {
+      return 0;
+    }
+    if (strcmp(value, "1") == 0) {
+      return 1;
+    }
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_CONFIG_FAULT "
+            "name=VULKAN_SIM_RTCORE_FULL_CONTINUATION_STACK value=%s "
+            "reason=expected_zero_or_one\n",
+            value);
+    fflush(stderr);
+    abort();
+  }();
+  return enabled != 0;
+}
+
+static unsigned long long rtcore_register_continuation_uint64_config(
+    const char *name, unsigned long long default_value) {
+  const char *value = getenv(name);
+  if (value == NULL || *value == '\0') {
+    return default_value;
+  }
+
+  if (*value == '-') {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_CONFIG_FAULT "
+            "name=%s value=%s reason=expected_positive_integer\n",
+            name, value);
+    fflush(stderr);
+    abort();
+  }
+
+  errno = 0;
+  char *end = NULL;
+  const unsigned long long parsed = strtoull(value, &end, 10);
+  if (errno == ERANGE || end == value || *end != '\0' || parsed == 0) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_CONFIG_FAULT "
+            "name=%s value=%s reason=expected_positive_integer\n",
+            name, value);
+    fflush(stderr);
+    abort();
+  }
+  return parsed;
+}
 
 extern "C" function_info *rtcore_resolve_compatibility_shader_function(
     unsigned shaderID);
@@ -18319,6 +18371,18 @@ rt_unit::rt_unit(mem_fetch_interface *icnt,
   m_tpc = tpc;
   
   n_warps = 0;
+  m_rtcore_continuation_stack_used_bytes = 0;
+  m_rtcore_continuation_stack_peak_bytes = 0;
+  m_rtcore_continuation_spill_count = 0;
+  m_rtcore_continuation_restore_count = 0;
+
+  if (rtcore_full_continuation_stack_enabled()) {
+    printf("GPGPU-Sim RTCORE_REGISTER_CONTINUATION_CONFIG owner_hw_sid=%u "
+           "enabled=1 capacity_bytes=%llu bytes_per_cycle=%u\n",
+           m_sid, rtcore_continuation_stack_capacity_bytes(),
+           rtcore_continuation_stack_bytes_per_cycle());
+    fflush(stdout);
+  }
   
   m_L0_complet = new read_only_cache( "L0Complet", m_config->m_L0C_config, m_sid,
                                       get_shader_constant_cache_id(), icnt, 
@@ -18352,6 +18416,28 @@ bool rt_unit::can_issue(const warp_inst_t &inst) const {
       n_warps < m_config->m_rt_max_warps;
   if (!resident_capacity_available) return false;
   if (!rtcore_warp_completion_entry_has_capacity(inst)) return false;
+  if (rtcore_full_continuation_stack_enabled() &&
+      inst.rt_subop == RT_CORE_SUBOP_SUBMIT) {
+    const unsigned registers =
+        m_core->rtcore_register_allocation_for_warp(inst.warp_id());
+    const unsigned long long frame_bytes =
+        static_cast<unsigned long long>(registers) * 4ull;
+    const unsigned long long capacity =
+        rtcore_continuation_stack_capacity_bytes();
+    if (frame_bytes > capacity) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_CONFIG_FAULT "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+              "frame_bytes=%llu capacity_bytes=%llu "
+              "reason=frame_exceeds_stack_capacity\n",
+              m_sid, inst.get_uid(), inst.warp_id(), frame_bytes, capacity);
+      fflush(stderr);
+      abort();
+    }
+    if (m_rtcore_continuation_stack_used_bytes > capacity - frame_bytes) {
+      return false;
+    }
+  }
   return m_dispatch_reg->empty() && !occupied.test(inst.latency);
 }
         
@@ -20906,6 +20992,267 @@ void rt_unit::rtcore_record_shader_continuation_loop_decision(
   fflush(stdout);
 }
 
+unsigned long long rt_unit::rtcore_continuation_stack_capacity_bytes() const {
+  return rtcore_register_continuation_uint64_config(
+      "VULKAN_SIM_RTCORE_CONTINUATION_STACK_BYTES_PER_SM", 1024ull * 1024ull);
+}
+
+unsigned rt_unit::rtcore_continuation_stack_bytes_per_cycle() const {
+  const unsigned long long value = rtcore_register_continuation_uint64_config(
+      "VULKAN_SIM_RTCORE_CONTINUATION_STACK_BYTES_PER_CYCLE", 128);
+  if (value > UINT_MAX) {
+    return UINT_MAX;
+  }
+  return static_cast<unsigned>(value);
+}
+
+unsigned rt_unit::rtcore_continuation_transfer_cycles(
+    unsigned long long frame_bytes) const {
+  if (frame_bytes == 0) {
+    return 0;
+  }
+  const unsigned long long bytes_per_cycle =
+      rtcore_continuation_stack_bytes_per_cycle();
+  const unsigned long long cycles =
+      (frame_bytes + bytes_per_cycle - 1) / bytes_per_cycle;
+  return cycles > UINT_MAX ? UINT_MAX : static_cast<unsigned>(cycles);
+}
+
+unsigned rt_unit::rtcore_prepare_register_continuation(
+    rtcore_synthetic_completion_event *event) {
+  assert(event != NULL);
+  assert(event->register_continuation_enabled);
+  assert(!event->register_continuation_prepared);
+
+  event->register_continuation_register_count =
+      m_core->rtcore_register_allocation_for_warp(event->warp_id);
+  event->register_continuation_frame_bytes =
+      static_cast<unsigned long long>(
+          event->register_continuation_register_count) *
+      4ull;
+  const unsigned long long capacity =
+      rtcore_continuation_stack_capacity_bytes();
+  if (event->register_continuation_frame_bytes > capacity ||
+      m_rtcore_continuation_stack_used_bytes >
+          capacity - event->register_continuation_frame_bytes) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u phase=reserve "
+            "frame_bytes=%llu used_bytes=%llu capacity_bytes=%llu "
+            "reason=capacity_changed_after_issue\n",
+            m_sid, event->warp_uid, event->warp_id,
+            event->register_continuation_frame_bytes,
+            m_rtcore_continuation_stack_used_bytes, capacity);
+    fflush(stderr);
+    abort();
+  }
+
+  ptx_thread_info **threads = m_core->get_thread_info();
+  const unsigned warp_size = m_config->warp_size;
+  if (warp_size > 32) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u phase=prepare "
+            "warp_size=%u reason=unsupported_warp_size\n",
+            m_sid, event->warp_uid, event->warp_id, warp_size);
+    fflush(stderr);
+    abort();
+  }
+
+  unsigned prepared_mask = 0;
+  unsigned long long saved_value_count = 0;
+  for (unsigned lane = 0; lane < warp_size; ++lane) {
+    ptx_thread_info *thread =
+        threads[event->warp_id * warp_size + lane];
+    if (thread == NULL || thread->is_done()) {
+      continue;
+    }
+    saved_value_count += thread->rtcore_prepare_register_continuation();
+    if (!thread->rtcore_register_continuation_prepared()) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u lane=%u "
+              "phase=prepare reason=thread_snapshot_rejected\n",
+              m_sid, event->warp_uid, event->warp_id, lane);
+      fflush(stderr);
+      abort();
+    }
+    prepared_mask |= 1u << lane;
+  }
+  if (prepared_mask == 0) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u phase=prepare "
+            "reason=no_live_threads\n",
+            m_sid, event->warp_uid, event->warp_id);
+    fflush(stderr);
+    abort();
+  }
+
+  event->register_continuation_thread_mask = prepared_mask;
+  event->register_continuation_saved_value_count = saved_value_count;
+  event->register_continuation_transfer_cycles =
+      rtcore_continuation_transfer_cycles(
+          event->register_continuation_frame_bytes);
+  event->register_continuation_prepared = true;
+  m_rtcore_continuation_stack_used_bytes +=
+      event->register_continuation_frame_bytes;
+  m_rtcore_continuation_stack_peak_bytes =
+      std::max(m_rtcore_continuation_stack_peak_bytes,
+               m_rtcore_continuation_stack_used_bytes);
+
+  printf("GPGPU-Sim RTCORE_REGISTER_CONTINUATION_STACK_RESERVE "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u thread_mask=0x%08x "
+         "saved_value_count=%llu register_count=%u frame_bytes=%llu "
+         "used_bytes=%llu peak_bytes=%llu capacity_bytes=%llu\n",
+         m_sid, event->warp_uid, event->warp_id, prepared_mask,
+         saved_value_count, event->register_continuation_register_count,
+         event->register_continuation_frame_bytes,
+         m_rtcore_continuation_stack_used_bytes,
+         m_rtcore_continuation_stack_peak_bytes, capacity);
+  fflush(stdout);
+  return prepared_mask;
+}
+
+void rt_unit::rtcore_commit_register_continuation(
+    rtcore_synthetic_completion_event *event,
+    unsigned long long current_cycle) {
+  assert(event != NULL);
+  assert(event->register_continuation_enabled);
+  assert(event->register_continuation_prepared);
+  assert(!event->register_continuation_spill_committed);
+
+  ptx_thread_info **threads = m_core->get_thread_info();
+  const unsigned warp_size = m_config->warp_size;
+  for (unsigned lane = 0; lane < warp_size; ++lane) {
+    if ((event->register_continuation_thread_mask & (1u << lane)) == 0) {
+      continue;
+    }
+    ptx_thread_info *thread =
+        threads[event->warp_id * warp_size + lane];
+    if (thread == NULL || !thread->rtcore_commit_register_continuation()) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u lane=%u "
+              "phase=spill_commit reason=thread_commit_rejected\n",
+              m_sid, event->warp_uid, event->warp_id, lane);
+      fflush(stderr);
+      abort();
+    }
+  }
+
+  m_core->rtcore_release_warp_register_allocation(
+      event->warp_id, event->warp_uid,
+      event->register_continuation_register_count);
+  event->register_continuation_spill_committed = true;
+  event->register_continuation_registers_released = true;
+  ++m_rtcore_continuation_spill_count;
+  printf("GPGPU-Sim RTCORE_REGISTER_CONTINUATION_SPILL_COMMIT "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u thread_mask=0x%08x "
+         "register_count=%u frame_bytes=%llu transfer_cycles=%u "
+         "cycle=%llu spill_count=%llu\n",
+         m_sid, event->warp_uid, event->warp_id,
+         event->register_continuation_thread_mask,
+         event->register_continuation_register_count,
+         event->register_continuation_frame_bytes,
+         event->register_continuation_transfer_cycles, current_cycle,
+         m_rtcore_continuation_spill_count);
+  fflush(stdout);
+}
+
+bool rt_unit::rtcore_restore_register_continuation(
+    rtcore_synthetic_completion_event *event,
+    unsigned long long current_cycle) {
+  assert(event != NULL);
+  assert(event->register_continuation_enabled);
+  assert(event->register_continuation_spill_committed);
+  if (event->register_continuation_restored) {
+    return true;
+  }
+
+  if (!event->register_continuation_restore_started) {
+    if (!m_core->rtcore_try_reacquire_warp_register_allocation(
+            event->warp_id, event->warp_uid,
+            event->register_continuation_register_count)) {
+      if (!event->register_continuation_restore_stall_logged) {
+        printf("GPGPU-Sim RTCORE_REGISTER_CONTINUATION_RESTORE_STALL "
+               "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+               "register_count=%u reason=sm_register_capacity\n",
+               m_sid, event->warp_uid, event->warp_id,
+               event->register_continuation_register_count);
+        fflush(stdout);
+        event->register_continuation_restore_stall_logged = true;
+      }
+      return false;
+    }
+    event->register_continuation_registers_released = false;
+    event->register_continuation_restore_started = true;
+    event->register_continuation_restore_ready_cycle =
+        current_cycle + event->register_continuation_transfer_cycles;
+    printf("GPGPU-Sim RTCORE_REGISTER_CONTINUATION_RESTORE_BEGIN "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u register_count=%u "
+           "frame_bytes=%llu transfer_cycles=%u ready_cycle=%llu\n",
+           m_sid, event->warp_uid, event->warp_id,
+           event->register_continuation_register_count,
+           event->register_continuation_frame_bytes,
+           event->register_continuation_transfer_cycles,
+           event->register_continuation_restore_ready_cycle);
+    fflush(stdout);
+  }
+  if (current_cycle < event->register_continuation_restore_ready_cycle) {
+    return false;
+  }
+
+  ptx_thread_info **threads = m_core->get_thread_info();
+  const unsigned warp_size = m_config->warp_size;
+  for (unsigned lane = 0; lane < warp_size; ++lane) {
+    if ((event->register_continuation_thread_mask & (1u << lane)) == 0) {
+      continue;
+    }
+    ptx_thread_info *thread =
+        threads[event->warp_id * warp_size + lane];
+    if (thread == NULL || !thread->rtcore_restore_register_continuation()) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u lane=%u "
+              "phase=restore reason=thread_restore_rejected\n",
+              m_sid, event->warp_uid, event->warp_id, lane);
+      fflush(stderr);
+      abort();
+    }
+  }
+
+  if (m_rtcore_continuation_stack_used_bytes <
+      event->register_continuation_frame_bytes) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
+            "owner_hw_sid=%u warp_uid=%u warp_id=%u phase=stack_release "
+            "used_bytes=%llu frame_bytes=%llu reason=underflow\n",
+            m_sid, event->warp_uid, event->warp_id,
+            m_rtcore_continuation_stack_used_bytes,
+            event->register_continuation_frame_bytes);
+    fflush(stderr);
+    abort();
+  }
+  m_rtcore_continuation_stack_used_bytes -=
+      event->register_continuation_frame_bytes;
+  event->register_continuation_restored = true;
+  ++m_rtcore_continuation_restore_count;
+  printf("GPGPU-Sim RTCORE_REGISTER_CONTINUATION_RESTORE_COMPLETE "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u thread_mask=0x%08x "
+         "saved_value_count=%llu register_count=%u frame_bytes=%llu "
+         "used_bytes=%llu cycle=%llu restore_count=%llu\n",
+         m_sid, event->warp_uid, event->warp_id,
+         event->register_continuation_thread_mask,
+         event->register_continuation_saved_value_count,
+         event->register_continuation_register_count,
+         event->register_continuation_frame_bytes,
+         m_rtcore_continuation_stack_used_bytes, current_cycle,
+         m_rtcore_continuation_restore_count);
+  fflush(stdout);
+  return true;
+}
+
 void rt_unit::enqueue_synthetic_completion(
     const warp_inst_t &inst, unsigned long long current_cycle) {
   if (inst.rt_subop != RT_CORE_SUBOP_SUBMIT) {
@@ -20965,6 +21312,34 @@ void rt_unit::enqueue_synthetic_completion(
   event.shader_continuation_handoff_consume_mask = 0;
   event.shader_continuation_resume_handoff_publish_mask = 0;
   event.shader_continuation_decision_cycle = 0;
+  event.register_continuation_enabled =
+      rtcore_full_continuation_stack_enabled();
+  event.register_continuation_prepared = false;
+  event.register_continuation_spill_committed = false;
+  event.register_continuation_registers_released = false;
+  event.register_continuation_restore_started = false;
+  event.register_continuation_restored = false;
+  event.register_continuation_restore_stall_logged = false;
+  event.register_continuation_thread_mask = 0;
+  event.register_continuation_saved_value_count = 0;
+  event.register_continuation_register_count = 0;
+  event.register_continuation_frame_bytes = 0;
+  event.register_continuation_transfer_cycles = 0;
+  event.register_continuation_spill_ready_cycle = 0;
+  event.register_continuation_restore_ready_cycle = 0;
+  if (event.register_continuation_enabled) {
+    rtcore_prepare_register_continuation(&event);
+    event.register_continuation_spill_ready_cycle =
+        current_cycle + event.register_continuation_transfer_cycles;
+    printf("GPGPU-Sim RTCORE_REGISTER_CONTINUATION_SPILL_PREPARE "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u frame_bytes=%llu "
+           "transfer_cycles=%u ready_cycle=%llu\n",
+           m_sid, event.warp_uid, event.warp_id,
+           event.register_continuation_frame_bytes,
+           event.register_continuation_transfer_cycles,
+           event.register_continuation_spill_ready_cycle);
+    fflush(stdout);
+  }
   claim_adapter_completion_for_issue(&event);
   rtcore_completion_timing_snapshot timing_snapshot =
       rtcore_make_completion_timing_snapshot(event);
@@ -20989,6 +21364,14 @@ bool rt_unit::synthetic_completion_ready(
   if (event == m_synthetic_warp_completion_entries.end()) {
     return false;
   }
+  if (event->second.register_continuation_enabled &&
+      !event->second.register_continuation_spill_committed) {
+    if (current_cycle <
+        event->second.register_continuation_spill_ready_cycle) {
+      return false;
+    }
+    rtcore_commit_register_continuation(&event->second, current_cycle);
+  }
   if (!event->second.adapter_completion_ready) {
     const bool was_ready = event->second.adapter_completion_ready;
     claim_adapter_completion_for_issue(&event->second);
@@ -20998,8 +21381,16 @@ bool rt_unit::synthetic_completion_ready(
       rtcore_apply_completion_timing_snapshot(&event->second, timing_snapshot);
     }
   }
-  return event->second.adapter_completion_ready &&
-         current_cycle >= event->second.ready_cycle;
+  const bool rtcore_ready = event->second.adapter_completion_ready &&
+                            current_cycle >= event->second.ready_cycle;
+  if (!rtcore_ready) {
+    return false;
+  }
+  if (event->second.register_continuation_enabled &&
+      !rtcore_restore_register_continuation(&event->second, current_cycle)) {
+    return false;
+  }
+  return true;
 }
 
 void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {
@@ -21008,6 +21399,20 @@ void rt_unit::retire_synthetic_completion(const warp_inst_t &inst) {
     std::map<unsigned, rtcore_synthetic_completion_event>::const_iterator event =
         m_synthetic_warp_completion_entries.find(inst.get_uid());
     if (event != m_synthetic_warp_completion_entries.end()) {
+      if (event->second.register_continuation_enabled &&
+          (!event->second.register_continuation_restored ||
+           event->second.register_continuation_registers_released)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u phase=retire "
+                "restored=%u registers_released=%u reason=incomplete_lifecycle\n",
+                m_sid, event->second.warp_uid, event->second.warp_id,
+                event->second.register_continuation_restored ? 1u : 0u,
+                event->second.register_continuation_registers_released ? 1u
+                                                                        : 0u);
+        fflush(stderr);
+        abort();
+      }
       const bool completion_released =
           rtcore_release_replay_warp_completion_entry(
               m_sid, inst.get_uid(), inst.warp_id(),
