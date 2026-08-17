@@ -3079,6 +3079,8 @@ void core_t::updateSIMTDivergenceStructures(unsigned warpId, warp_inst_t * inst)
   simt_mask_t thread_done;
   addr_vector_t next_pc;
   unsigned wtid = warpId * m_warp_size;
+  bool runtime_shader_call = false;
+  bool runtime_non_call_lane = false;
   for (unsigned i = 0; i < m_warp_size; i++) {
     if (ptx_thread_done(wtid + i)) {
       thread_done.set(i);
@@ -3087,14 +3089,43 @@ void core_t::updateSIMTDivergenceStructures(unsigned warpId, warp_inst_t * inst)
       if (inst->reconvergence_pc == RECONVERGE_RETURN_PC)
         inst->reconvergence_pc = get_return_pc(m_thread[wtid + i]);
       next_pc.push_back(m_thread[wtid + i]->get_pc());
+      if (inst->active(i)) {
+        if (m_thread[wtid + i]->last_was_call())
+          runtime_shader_call = true;
+        else
+          runtime_non_call_lane = true;
+      }
     }
   }
 
+  op_type executed_op = inst->op;
+  if (runtime_shader_call && inst->op != CALL_OPS) {
+    // Some RT instructions decide at execution time whether they enter a
+    // shader.  ReportIntersection is the canonical case: an admissible
+    // procedural candidate synchronously invokes AnyHit, while a rejected
+    // candidate or a group without AnyHit remains an ordinary instruction.
+    // Preserve that dynamic distinction in the SIMT call stack.
+    if (runtime_non_call_lane) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_KHR_REPORT_FAULT warp_id=%u "
+              "active_mask=0x%08lx "
+              "fault=divergent_dynamic_shader_call_fail_closed\n",
+              warpId, inst->get_warp_active_mask().to_ulong());
+      abort();
+    }
+    executed_op = CALL_OPS;
+    printf("GPGPU-Sim RTCORE_KHR_DYNAMIC_SHADER_CALL warp_id=%u "
+           "active_mask=0x%08lx source_pc=0x%llx\n",
+           warpId, inst->get_warp_active_mask().to_ulong(),
+           static_cast<unsigned long long>(inst->pc));
+    fflush(stdout);
+  }
+
   if (m_gpu->simd_model() == POST_DOMINATOR) {
-    m_simt_stack[warpId]->update(thread_done, next_pc, inst->reconvergence_pc, inst->op,inst->isize, inst->pc, inst->has_pred());
+    m_simt_stack[warpId]->update(thread_done, next_pc, inst->reconvergence_pc, executed_op,inst->isize, inst->pc, inst->has_pred());
   } else {
     AWARE_DPRINTF("Updating SIMT tables for Warp %d\n", warpId);
-    m_simt_tables[warpId]->update(thread_done, next_pc, inst->reconvergence_pc, inst->op, inst->isize, inst->pc, inst->has_pred());
+    m_simt_tables[warpId]->update(thread_done, next_pc, inst->reconvergence_pc, executed_op, inst->isize, inst->pc, inst->has_pred());
   }
 }
 

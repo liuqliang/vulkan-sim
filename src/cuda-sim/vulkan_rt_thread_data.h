@@ -35,6 +35,12 @@ typedef struct callable_data_binding_entry {
     uint32_t shader_id;
 } callable_data_binding_entry;
 
+enum report_intersection_decision {
+    REPORT_INTERSECTION_ACCEPT = 0,
+    REPORT_INTERSECTION_IGNORE = 1,
+    REPORT_INTERSECTION_TERMINATE = 2,
+};
+
 typedef struct Hit_data{
     VkGeometryTypeKHR geometryType;
     uint32_t hit_kind;
@@ -76,10 +82,37 @@ typedef struct Traversal_data {
     uint32_t rtcore_primitive_tests;
 } Traversal_data;
 
+typedef struct report_intersection_frame_entry {
+    const ptx_instruction *instruction;
+    function_info *caller;
+    function_info *anyhit;
+    Traversal_data *traversal;
+    Hit_data candidate;
+    uint32_t shader_counter;
+    uint32_t shader_id;
+    uint64_t attribute_address;
+    uint32_t attribute_size;
+    std::vector<unsigned char> attribute_image;
+    size_t trace_depth;
+    size_t callable_depth;
+    report_intersection_decision decision;
+} report_intersection_frame_entry;
+
+typedef struct committed_procedural_attribute_entry {
+    Traversal_data *traversal;
+    uint64_t address;
+    uint32_t size;
+    std::vector<unsigned char> image;
+} committed_procedural_attribute_entry;
+
 
 typedef struct Vulkan_RT_thread_data {
     std::vector<variable_decleration_entry> variable_decleration_table;
     std::vector<callable_data_binding_entry> callable_data_bindings;
+    std::vector<report_intersection_frame_entry> report_intersection_frames;
+    std::vector<committed_procedural_attribute_entry>
+        committed_procedural_attributes;
+    bool last_report_intersection_terminated = false;
 
     std::vector<Traversal_data*> traversal_data;
     std::vector<Hit_data*> all_hit_data;
@@ -125,6 +158,39 @@ typedef struct Vulkan_RT_thread_data {
         }
         callable_data_bindings.pop_back();
         return true;
+    }
+
+    bool mark_report_intersection_decision(
+            function_info *callee, report_intersection_decision decision) {
+        if (callee == NULL || report_intersection_frames.empty() ||
+            report_intersection_frames.back().anyhit != callee) {
+            return false;
+        }
+        report_intersection_frames.back().decision = decision;
+        return true;
+    }
+
+    committed_procedural_attribute_entry *committed_procedural_attribute(
+            Traversal_data *traversal) {
+        for (size_t index = 0;
+             index < committed_procedural_attributes.size(); ++index) {
+            if (committed_procedural_attributes[index].traversal ==
+                traversal) {
+                return &committed_procedural_attributes[index];
+            }
+        }
+        return NULL;
+    }
+
+    void clear_committed_procedural_attribute(Traversal_data *traversal) {
+        for (std::vector<committed_procedural_attribute_entry>::iterator it =
+                 committed_procedural_attributes.begin();
+             it != committed_procedural_attributes.end(); ++it) {
+            if (it->traversal == traversal) {
+                committed_procedural_attributes.erase(it);
+                return;
+            }
+        }
     }
 
 

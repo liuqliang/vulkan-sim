@@ -2533,14 +2533,16 @@ rtcore_service_shader_continuation_pseudo_op(
           abort();
         }
       }
-      if (shader_terminal_lane_mask != 0 &&
-          completed_reason !=
-              RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED) {
+    if (shader_terminal_lane_mask != 0 &&
+        completed_reason !=
+              RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED &&
+        completed_reason !=
+              RTCORE_SHADER_CONTINUATION_REASON_INTERSECTION_REQUIRED) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_NATIVE_CONTINUATION_FAULT "
                 "owner_hw_sid=%u warp_uid=%u warp_id=%u "
                 "terminal_lane_mask=0x%08x "
-                "fault=unsupported_non_anyhit_terminate_fail_closed\n",
+                "fault=unsupported_non_hit_shader_terminate_fail_closed\n",
                 owner_hw_sid, entry.warp_uid, entry.warp_id,
                 shader_terminal_lane_mask);
         fflush(stderr);

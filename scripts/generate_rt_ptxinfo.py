@@ -42,6 +42,9 @@ RT_HARD_OPS = [
     "rt_submit",
     "rt_retire_context",
     "rt_execute_callable",
+    "rt_terminate_ray",
+    "rt_report_terminate",
+    "rt_report_active",
 ]
 
 
@@ -87,6 +90,8 @@ def write_rt_hard_op_placeholder(output, op_name, operands, symbol_table):
         write_zero_assignment(output, operands[0], symbol_table)
         for operand in operands[1:]:
             write_self_assignment(output, operand, symbol_table)
+    elif op_name in {"rt_report_terminate", "rt_report_active"} and len(operands) == 1:
+        output.write("setp.eq.u32 " + operands[0] + ", 0, 1;\n")
     else:
         for operand in operands:
             write_self_assignment(output, operand, symbol_table)

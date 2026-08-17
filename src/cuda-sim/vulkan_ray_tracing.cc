@@ -36260,6 +36260,17 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 void VulkanRayTracing::endTraceRay(const ptx_instruction *pI, ptx_thread_info *thread)
 {
     assert(thread->RT_thread_data->traversal_data.size() > 0);
+    Traversal_data *completed_traversal =
+        thread->RT_thread_data->traversal_data.back();
+    if (!thread->RT_thread_data->report_intersection_frames.empty()) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+                "fault=trace_retired_with_live_report_frame_fail_closed\n",
+                thread->get_uid());
+        abort();
+    }
+    thread->RT_thread_data->clear_committed_procedural_attribute(
+        completed_traversal);
     thread->RT_thread_data->traversal_data.pop_back();
     thread->RT_thread_data->all_hit_data.clear();
     warp_intersection_table* itable = intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
@@ -36860,7 +36871,9 @@ bool VulkanRayTracing::rtcoreLoadCompatibilitySbtShaderId(
     if (getenv("VULKAN_SIM_RTCORE_TEST_COMPAT_SBT_SHADER_ID_OOB") != NULL) {
         *shader_id = shaders.size();
     }
-    return *shader_id < shaders.size();
+    // VK_SHADER_UNUSED_KHR is a valid SBT component value.  Bounds validation
+    // protects the record access; only non-sentinel shader IDs index shaders.
+    return *shader_id == VK_SHADER_UNUSED_KHR || *shader_id < shaders.size();
 }
 
 static bool rtcore_require_compat_sbt_shader_id(
@@ -36970,6 +36983,307 @@ void VulkanRayTracing::callClosestHitShader(const ptx_instruction *pI, ptx_threa
     callShader(pI, thread, entry);
 }
 
+static uint64_t rtcore_khr_attribute_digest(
+    const std::vector<unsigned char> &image) {
+    uint64_t digest = 1469598103934665603ull;
+    for (size_t index = 0; index < image.size(); ++index) {
+        digest ^= image[index];
+        digest *= 1099511628211ull;
+    }
+    return digest;
+}
+
+static void rtcore_khr_write_attribute_image(
+    const report_intersection_frame_entry &frame, ptx_thread_info *thread) {
+    if (frame.attribute_size == 0) return;
+    if (frame.attribute_address == 0 ||
+        frame.attribute_image.size() != frame.attribute_size) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+                "fault=invalid_attribute_image_fail_closed\n",
+                thread->get_uid());
+        abort();
+    }
+    thread->get_global_memory()->write(
+        frame.attribute_address, frame.attribute_image.size(),
+        frame.attribute_image.data(), thread, frame.instruction);
+}
+
+void VulkanRayTracing::beginReportIntersection(
+    const ptx_instruction *pI, ptx_thread_info *thread, float t_hit,
+    uint32_t hit_kind) {
+    if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
+        thread->RT_thread_data->traversal_data.empty() ||
+        thread->RT_thread_data->report_intersection_frames.size() >= 32 ||
+        hit_kind > 0x7fu) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_REPORT_FAULT "
+                "fault=invalid_report_context_or_capacity_fail_closed\n");
+        abort();
+    }
+
+    Vulkan_RT_thread_data *rt = thread->RT_thread_data;
+    memory_space *mem = thread->get_global_memory();
+    Traversal_data *traversal = rt->traversal_data.back();
+    float tmin = 0.0f;
+    float tmax = 0.0f;
+    float current_t = 0.0f;
+    bool hit_geometry = false;
+    int32_t shader_counter = -1;
+    mem->read(&(traversal->Tmin), sizeof(tmin), &tmin);
+    mem->read(&(traversal->Tmax), sizeof(tmax), &tmax);
+    mem->read(&(traversal->closest_hit.world_min_thit), sizeof(current_t),
+              &current_t);
+    mem->read(&(traversal->hit_geometry), sizeof(hit_geometry),
+              &hit_geometry);
+    mem->read(&(traversal->current_shader_counter), sizeof(shader_counter),
+              &shader_counter);
+
+    const rtcore::procedural_report_ordering ordering =
+        rtcore::classify_procedural_report(
+            t_hit, tmin, tmax, hit_geometry, current_t);
+    rt->last_report_intersection_terminated = false;
+    if (ordering != rtcore::RTCORE_PROCEDURAL_REPORT_COMMIT) {
+        ptx_reg_t result = {};
+        result.pred = 1;
+        thread->set_reg(pI->dst().get_symbol(), result);
+        printf("GPGPU-Sim RTCORE_KHR_REPORT_REJECT thread_uid=%u "
+               "t_hit=%.9g hit_kind=%u ordering=%u trace_depth=%zu "
+               "callable_depth=%zu state_mutated=0\n",
+               thread->get_uid(), t_hit, hit_kind,
+               static_cast<unsigned>(ordering), rt->traversal_data.size(),
+               rt->callable_data_bindings.size());
+        fflush(stdout);
+        return;
+    }
+    if (shader_counter < 0) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+                "fault=missing_intersection_shader_identity_fail_closed\n",
+                thread->get_uid());
+        abort();
+    }
+
+    const uint32_t cta_x = thread->get_ctaid().x;
+    const uint32_t cta_y = thread->get_ctaid().y;
+    const uint32_t tid = thread->get_tid().x;
+    warp_intersection_table *table = intersection_table[cta_x][cta_y];
+    if (table == NULL || !table->shader_exists(
+            tid, static_cast<uint32_t>(shader_counter), pI, thread)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+                "fault=intersection_table_identity_missing_fail_closed\n",
+                thread->get_uid());
+        abort();
+    }
+
+    report_intersection_frame_entry frame = {};
+    frame.instruction = pI;
+    frame.caller = thread->func_info();
+    frame.traversal = traversal;
+    frame.shader_counter = static_cast<uint32_t>(shader_counter);
+    frame.trace_depth = rt->traversal_data.size();
+    frame.callable_depth = rt->callable_data_bindings.size();
+    frame.decision = REPORT_INTERSECTION_ACCEPT;
+    frame.candidate = {};
+    frame.candidate.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+    frame.candidate.hit_kind = hit_kind;
+    frame.candidate.world_min_thit = t_hit;
+    frame.candidate.hitGroupIndex = table->get_hitGroupIndex(
+        frame.shader_counter, tid, pI, thread);
+    frame.candidate.primitive_index = table->get_primitiveID(
+        frame.shader_counter, tid, pI, thread);
+    frame.candidate.instance_index = table->get_instanceID(
+        frame.shader_counter, tid, pI, thread);
+    frame.candidate.instance_id = table->get_instanceIndex(
+        frame.shader_counter, tid, pI, thread);
+    frame.candidate.geometry_index = table->get_geometryID(
+        frame.shader_counter, tid, pI, thread);
+    float3 origin = {};
+    float3 direction = {};
+    mem->read(&(traversal->ray_world_origin), sizeof(origin), &origin);
+    mem->read(&(traversal->ray_world_direction), sizeof(direction),
+              &direction);
+    frame.candidate.intersection_point =
+        origin + make_float3(direction.x * t_hit, direction.y * t_hit,
+                             direction.z * t_hit);
+
+    variable_decleration_entry *attribute = rt->get_hitAttribute();
+    if (attribute != NULL) {
+        if (attribute->address == 0 || attribute->size == 0 ||
+            attribute->size > 64) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+                    "attribute_size=%u "
+                    "fault=attribute_capacity_invalid_fail_closed\n",
+                    thread->get_uid(), attribute->size);
+            abort();
+        }
+        frame.attribute_address = attribute->address;
+        frame.attribute_size = attribute->size;
+        frame.attribute_image.resize(attribute->size);
+        mem->read(reinterpret_cast<void *>(attribute->address),
+                  frame.attribute_image.size(), frame.attribute_image.data());
+    }
+
+    const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+    uint32_t anyhit_shader_id = VK_SHADER_UNUSED_KHR;
+    if (!rtcore_require_compat_sbt_shader_id(
+            pI, "hit", metadata.hit_sbt, metadata.hit_sbt_stride,
+            metadata.hit_sbt_size,
+            static_cast<uint32_t>(frame.candidate.hitGroupIndex), 2,
+            &anyhit_shader_id)) {
+        return;
+    }
+    frame.shader_id = anyhit_shader_id;
+    if (anyhit_shader_id != VK_SHADER_UNUSED_KHR) {
+        rtcore_resident_dispatch_entry_v0 dispatch = {};
+        if (rtcoreResolveResidentDispatchEntry(
+                anyhit_shader_id, RTCORE_RESIDENT_DISPATCH_STAGE_ANY_HIT,
+                &dispatch) != 1 || dispatch.valid != 1 ||
+            dispatch.function == NULL) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+                    "shader_id=%u "
+                    "fault=unresolved_anyhit_entry_fail_closed\n",
+                    thread->get_uid(), anyhit_shader_id);
+            abort();
+        }
+        frame.anyhit = dispatch.function;
+    }
+
+    rt->report_intersection_frames.push_back(frame);
+    ptx_reg_t pending = {};
+    pending.pred = 1;
+    thread->set_reg(pI->dst().get_symbol(), pending);
+    printf("GPGPU-Sim RTCORE_KHR_REPORT_FRAME_PUSH thread_uid=%u "
+           "shader_counter=%u anyhit_shader_id=%u t_hit=%.9g hit_kind=%u "
+           "attribute_size=%u attribute_digest=0x%016llx "
+           "report_depth=%zu trace_depth=%zu callable_depth=%zu "
+           "physical_cta_admission=0 physical_warp_admission=0\n",
+           thread->get_uid(), frame.shader_counter, anyhit_shader_id, t_hit,
+           hit_kind, frame.attribute_size,
+           (unsigned long long)rtcore_khr_attribute_digest(
+               frame.attribute_image),
+           rt->report_intersection_frames.size(), frame.trace_depth,
+           frame.callable_depth);
+    fflush(stdout);
+
+    if (frame.anyhit == NULL) {
+        if (!finishReportIntersection(thread, NULL)) abort();
+        return;
+    }
+
+    const int32_t anyhit_shader_counter = shader_counter;
+    const int32_t anyhit_shader_type = 2;
+    const uint32_t anyhit_tmax = rtcore_v04_fp32_bits(t_hit);
+    const uint32_t anyhit_tmax_valid = 1;
+    mem->write(&(traversal->current_shader_counter),
+               sizeof(traversal->current_shader_counter),
+               &anyhit_shader_counter, thread, pI);
+    mem->write(&(traversal->current_shader_type),
+               sizeof(traversal->current_shader_type), &anyhit_shader_type,
+               thread, pI);
+    mem->write(&(traversal->current_shader_ray_tmax_fp32),
+               sizeof(traversal->current_shader_ray_tmax_fp32), &anyhit_tmax,
+               thread, pI);
+    mem->write(&(traversal->current_shader_ray_tmax_valid),
+               sizeof(traversal->current_shader_ray_tmax_valid),
+               &anyhit_tmax_valid, thread, pI);
+    callShader(pI, thread, frame.anyhit);
+}
+
+bool VulkanRayTracing::finishReportIntersection(
+    ptx_thread_info *thread, function_info *returning_function) {
+    if (thread == NULL || thread->RT_thread_data == NULL ||
+        thread->RT_thread_data->report_intersection_frames.empty()) {
+        return false;
+    }
+    Vulkan_RT_thread_data *rt = thread->RT_thread_data;
+    report_intersection_frame_entry frame =
+        rt->report_intersection_frames.back();
+    if ((frame.anyhit != NULL && frame.anyhit != returning_function) ||
+        frame.traversal == NULL || frame.instruction == NULL ||
+        frame.caller == NULL || frame.trace_depth != rt->traversal_data.size() ||
+        frame.callable_depth != rt->callable_data_bindings.size() ||
+        rt->traversal_data.back() != frame.traversal) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+                "fault=report_frame_identity_or_depth_mismatch_fail_closed\n",
+                thread->get_uid());
+        abort();
+    }
+    rt->report_intersection_frames.pop_back();
+
+    const bool accepted =
+        frame.decision != REPORT_INTERSECTION_IGNORE;
+    const bool terminated =
+        frame.decision == REPORT_INTERSECTION_TERMINATE;
+    memory_space *mem = thread->get_global_memory();
+    if (accepted) {
+        const bool hit_geometry = true;
+        mem->write(&(frame.traversal->hit_geometry), sizeof(hit_geometry),
+                   &hit_geometry, thread, frame.instruction);
+        mem->write(&(frame.traversal->closest_hit), sizeof(frame.candidate),
+                   &frame.candidate, thread, frame.instruction);
+        rtcore_khr_write_attribute_image(frame, thread);
+        committed_procedural_attribute_entry *committed =
+            rt->committed_procedural_attribute(frame.traversal);
+        if (committed == NULL) {
+            committed_procedural_attribute_entry entry = {};
+            entry.traversal = frame.traversal;
+            rt->committed_procedural_attributes.push_back(entry);
+            committed = &rt->committed_procedural_attributes.back();
+        }
+        committed->address = frame.attribute_address;
+        committed->size = frame.attribute_size;
+        committed->image = frame.attribute_image;
+    } else {
+        committed_procedural_attribute_entry *committed =
+            rt->committed_procedural_attribute(frame.traversal);
+        if (committed != NULL && committed->size > 0 &&
+            committed->address != 0 &&
+            committed->image.size() == committed->size) {
+            mem->write(committed->address, committed->image.size(),
+                       committed->image.data(), thread, frame.instruction);
+        }
+    }
+
+    const int32_t intersection_shader_counter =
+        static_cast<int32_t>(frame.shader_counter);
+    const int32_t intersection_shader_type = 1;
+    const uint32_t intersection_tmax_valid = 0;
+    mem->write(&(frame.traversal->current_shader_counter),
+               sizeof(frame.traversal->current_shader_counter),
+               &intersection_shader_counter, thread, frame.instruction);
+    mem->write(&(frame.traversal->current_shader_type),
+               sizeof(frame.traversal->current_shader_type),
+               &intersection_shader_type, thread, frame.instruction);
+    mem->write(&(frame.traversal->current_shader_ray_tmax_valid),
+               sizeof(frame.traversal->current_shader_ray_tmax_valid),
+               &intersection_tmax_valid, thread, frame.instruction);
+
+    ptx_reg_t result = {};
+    result.pred = accepted ? 0 : 1;
+    thread->set_reg(frame.instruction->dst().get_symbol(), result);
+    rt->last_report_intersection_terminated = terminated;
+    printf("GPGPU-Sim RTCORE_KHR_REPORT_FRAME_POP thread_uid=%u "
+           "shader_counter=%u anyhit_shader_id=%u decision=%s "
+           "report_accepted=%u terminate_search=%u attribute_size=%u "
+           "attribute_digest=0x%016llx remaining_report_depth=%zu "
+           "trace_depth=%zu callable_depth=%zu validated_lifo=1\n",
+           thread->get_uid(), frame.shader_counter, frame.shader_id,
+           terminated ? "terminate" : (accepted ? "accept" : "ignore"),
+           accepted ? 1u : 0u, terminated ? 1u : 0u,
+           frame.attribute_size,
+           (unsigned long long)rtcore_khr_attribute_digest(
+               frame.attribute_image),
+           rt->report_intersection_frames.size(), rt->traversal_data.size(),
+           rt->callable_data_bindings.size());
+    fflush(stdout);
+    return true;
+}
+
 void VulkanRayTracing::callIntersectionShader(const ptx_instruction *pI, ptx_thread_info *thread, uint32_t shader_counter) {
     VSIM_DPRINTF("gpgpusim: Calling Intersection Shader\n");
     gpgpu_context *ctx;
@@ -37025,7 +37339,7 @@ void VulkanRayTracing::callAnyHitShader(const ptx_instruction *pI, ptx_thread_in
     uint32_t shaderID = 0;
     if (!rtcore_require_compat_sbt_shader_id(
             pI, "hit", metadata.hit_sbt, metadata.hit_sbt_stride,
-            metadata.hit_sbt_size, hitGroupIndex, 1, &shaderID)) {
+            metadata.hit_sbt_size, hitGroupIndex, 2, &shaderID)) {
         return;
     }
     shader_stage_info anyhit_shader = shaders[shaderID];

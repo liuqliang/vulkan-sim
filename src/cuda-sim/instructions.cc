@@ -4946,9 +4946,17 @@ void ret_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       fflush(stdout);
     }
 
+  function_info *returning_function = thread->func_info();
+  bool returning_report_anyhit = false;
+  if (thread->RT_thread_data != NULL &&
+      !thread->RT_thread_data->report_intersection_frames.empty()) {
+    returning_report_anyhit =
+        thread->RT_thread_data->report_intersection_frames.back().anyhit ==
+        returning_function;
+  }
+
   if (thread->RT_thread_data != NULL) {
     callable_data_binding_entry binding = {};
-    function_info *returning_function = thread->func_info();
     if (thread->RT_thread_data->pop_callable_data_binding(
             returning_function, &binding)) {
       printf("GPGPU-Sim RTCORE_KHR_CALLABLE_FRAME_POP "
@@ -4963,6 +4971,15 @@ void ret_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
 
   bool empty = thread->callstack_pop();
+  if (returning_report_anyhit &&
+      !VulkanRayTracing::finishReportIntersection(
+          thread, returning_function)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+            "fault=report_frame_pop_failed_closed\n",
+            thread->get_uid());
+    abort();
+  }
   if (empty) {
     thread->set_done();
     thread->exitCore();
@@ -7230,6 +7247,23 @@ void txl_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void ignore_ray_intersection_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   VSIM_DPRINTF("gpgpusim: ignore_ray_intersection_impl\n");
 
+  if (thread != NULL && thread->RT_thread_data != NULL &&
+      !thread->RT_thread_data->report_intersection_frames.empty()) {
+    if (!thread->RT_thread_data->mark_report_intersection_decision(
+            thread->func_info(), REPORT_INTERSECTION_IGNORE)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+              "fault=ignore_wrong_report_parent_fail_closed\n",
+              thread->get_uid());
+      abort();
+    }
+    printf("GPGPU-Sim RTCORE_KHR_REPORT_ANYHIT_DECISION thread_uid=%u "
+           "decision=ignore\n",
+           thread->get_uid());
+    fflush(stdout);
+    return;
+  }
+
   if (rtcore_v04_functional_only_engine_gate_active()) {
     if (thread == NULL || thread->RT_thread_data == NULL ||
         thread->RT_thread_data->traversal_data.empty()) {
@@ -7280,6 +7314,15 @@ void report_ray_intersection_impl(const ptx_instruction *pI, ptx_thread_info *th
 
   src2_data = thread->get_operand_value(src2, dst, U32_TYPE, thread, 1);
   uint32_t hit_kind = src2_data.u32;
+
+  const char *continuation_candidate =
+      getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK");
+  if (continuation_candidate != NULL &&
+      strcmp(continuation_candidate, "1") == 0) {
+    VulkanRayTracing::beginReportIntersection(
+        pI, thread, t_hit, hit_kind);
+    return;
+  }
 
   memory_space *mem = thread->get_global_memory();
   Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
@@ -38167,6 +38210,53 @@ void rt_execute_callable_impl(const ptx_instruction *pI, ptx_thread_info *thread
       pI, thread, sbt_index.u32, callable_data.u64);
 }
 
+void rt_terminate_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
+      !thread->RT_thread_data->mark_report_intersection_decision(
+          thread->func_info(), REPORT_INTERSECTION_TERMINATE)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_REPORT_FAULT "
+            "fault=terminate_without_synchronous_report_frame_fail_closed\n");
+    abort();
+  }
+  printf("GPGPU-Sim RTCORE_KHR_REPORT_ANYHIT_DECISION thread_uid=%u "
+         "decision=terminate\n",
+         thread->get_uid());
+  fflush(stdout);
+}
+
+void rt_report_terminate_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
+      pI->get_num_operands() != 1 ||
+      !thread->RT_thread_data->report_intersection_frames.empty()) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_REPORT_FAULT "
+            "fault=terminate_query_before_report_completion_fail_closed\n");
+    abort();
+  }
+  ptx_reg_t result = {};
+  result.pred =
+      thread->RT_thread_data->last_report_intersection_terminated ? 0 : 1;
+  thread->set_operand_value(pI->dst(), result, PRED_TYPE, thread, pI);
+}
+
+void rt_report_active_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
+      pI->get_num_operands() != 1) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_REPORT_FAULT "
+            "fault=invalid_report_active_query_fail_closed\n");
+    abort();
+  }
+  const bool active =
+      !thread->RT_thread_data->report_intersection_frames.empty() &&
+      thread->RT_thread_data->report_intersection_frames.back().anyhit ==
+          thread->func_info();
+  ptx_reg_t result = {};
+  result.pred = active ? 0 : 1;
+  thread->set_operand_value(pI->dst(), result, PRED_TYPE, thread, pI);
+}
+
 void image_deref_store_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   VSIM_DPRINTF("gpgpusim: image_deref_store implementation\n");
   if(print_debug_insts)
@@ -38677,9 +38767,8 @@ void get_anyhit_shaderID_impl(const ptx_instruction *pI, ptx_thread_info *thread
   warp_intersection_table* table = VulkanRayTracing::anyhit_table[thread->get_ctaid().x][thread->get_ctaid().y];
   uint32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
 
-  // TODO: Adjust this for situations with both intersection and anyhit shaders
   data.u32 = rtcore_require_instruction_compat_sbt_shader_id(
-      pI, thread->get_kernel().vulkan_metadata, hitGroupIndex, 1);
+      pI, thread->get_kernel().vulkan_metadata, hitGroupIndex, 2);
   VSIM_DPRINTF("shader %d\n", data.u32);
   
   thread->set_operand_value(dst, data, U32_TYPE, thread, pI);

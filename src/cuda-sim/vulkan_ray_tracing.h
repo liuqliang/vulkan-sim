@@ -448,6 +448,12 @@ public:
     static void callClosestHitShader(const ptx_instruction *pI, ptx_thread_info *thread);
     static void callIntersectionShader(const ptx_instruction *pI, ptx_thread_info *thread, uint32_t shader_counter);
     static void callAnyHitShader(const ptx_instruction *pI, ptx_thread_info *thread, uint32_t shader_counter);
+    static void beginReportIntersection(const ptx_instruction *pI,
+                                        ptx_thread_info *thread,
+                                        float t_hit,
+                                        uint32_t hit_kind);
+    static bool finishReportIntersection(ptx_thread_info *thread,
+                                         function_info *returning_function);
     static void callCallableShader(const ptx_instruction *pI,
                                    ptx_thread_info *thread,
                                    uint32_t sbt_index,
