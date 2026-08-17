@@ -81,6 +81,18 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 
 extern "C" function_info *rtcore_resolve_compatibility_shader_function(
     unsigned shaderID);
+extern "C" bool rtcore_khr_lifecycle_child_admit(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned parent_invocation_id,
+    unsigned child_invocation_id, unsigned child_depth,
+    unsigned participating_mask);
+extern "C" bool rtcore_khr_lifecycle_child_return_consume_release(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned parent_invocation_id,
+    unsigned child_invocation_id, unsigned child_depth,
+    unsigned participating_mask);
+extern "C" void rtcore_khr_lifecycle_unwind_warp(
+    unsigned owner_hw_sid, unsigned warp_id, const char *reason);
+extern "C" void rtcore_khr_unwind_thread_continuation(
+    ptx_thread_info *thread, const char *reason);
 extern "C" int rtcore_prepare_compatibility_shader_continuation_context(
     const ptx_instruction *pI, ptx_thread_info *thread, unsigned reason,
     unsigned hit_record_selector, unsigned boundary_event_seq,
@@ -1117,40 +1129,153 @@ static unsigned g_rtcore_next_shader_continuation_metadata_lookup_generation =
     1;
 static unsigned g_rtcore_next_shader_continuation_handoff_read_generation = 1;
 
+extern "C" void rtcore_khr_unwind_shader_continuation_dispatcher(
+    unsigned owner_hw_sid, unsigned warp_id, const char *reason) {
+  rtcore_shader_continuation_dispatcher_pending_key key = {
+      owner_hw_sid, warp_id};
+  const size_t pending =
+      g_rtcore_shader_continuation_dispatcher_pending.erase(key);
+  size_t suspended = 0;
+  std::map<rtcore_shader_continuation_dispatcher_pending_key,
+           std::vector<rtcore_shader_continuation_dispatcher_pending_entry> >
+      ::iterator it = g_rtcore_shader_continuation_dispatcher_suspended.find(key);
+  if (it != g_rtcore_shader_continuation_dispatcher_suspended.end()) {
+    suspended = it->second.size();
+    g_rtcore_shader_continuation_dispatcher_suspended.erase(it);
+  }
+  printf("GPGPU-Sim RTCORE_KHR_DISPATCH_UNWIND owner_hw_sid=%u "
+         "warp_id=%u reason=%s released_pending=%zu "
+         "released_suspended=%zu\n",
+         owner_hw_sid, warp_id, reason != NULL ? reason : "unknown",
+         pending, suspended);
+  fflush(stdout);
+}
+
+static void rtcore_khr_unwind_shader_continuation_lanes(
+    shader_core_ctx *shader,
+    const rtcore_shader_continuation_dispatcher_pending_key &key,
+    unsigned active_mask, const char *reason) {
+  bool unwound_thread = false;
+  if (shader != NULL) {
+    ptx_thread_info **thread_info = shader->get_thread_info();
+    const unsigned warp_size = shader->get_warp_size();
+    for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
+      if ((active_mask & (1u << lane)) == 0) continue;
+      ptx_thread_info *thread =
+          thread_info[key.warp_id * warp_size + lane];
+      if (thread == NULL) continue;
+      rtcore_khr_unwind_thread_continuation(thread, reason);
+      unwound_thread = true;
+    }
+  }
+  if (!unwound_thread) {
+    rtcore_khr_lifecycle_unwind_warp(
+        key.owner_hw_sid, key.warp_id, reason);
+    rtcore_khr_unwind_shader_continuation_dispatcher(
+        key.owner_hw_sid, key.warp_id, reason);
+  }
+}
+
 static void rtcore_complete_shader_continuation_pending(
     const rtcore_shader_continuation_dispatcher_pending_key &key,
-    unsigned long long completion_cycle) {
+    unsigned long long completion_cycle, shader_core_ctx *shader) {
+  std::map<rtcore_shader_continuation_dispatcher_pending_key,
+           rtcore_shader_continuation_dispatcher_pending_entry>::iterator
+      pending = g_rtcore_shader_continuation_dispatcher_pending.find(key);
   std::map<rtcore_shader_continuation_dispatcher_pending_key,
            std::vector<rtcore_shader_continuation_dispatcher_pending_entry> >
       ::iterator suspended =
           g_rtcore_shader_continuation_dispatcher_suspended.find(key);
   if (suspended == g_rtcore_shader_continuation_dispatcher_suspended.end() ||
       suspended->second.empty()) {
-    g_rtcore_shader_continuation_dispatcher_pending.erase(key);
-    if (suspended != g_rtcore_shader_continuation_dispatcher_suspended.end()) {
-      g_rtcore_shader_continuation_dispatcher_suspended.erase(suspended);
+    if (pending == g_rtcore_shader_continuation_dispatcher_pending.end())
+      return;
+    if (pending->second.logical_trace_depth == 0 &&
+        pending->second.parent_trace_invocation_id == 0) {
+      g_rtcore_shader_continuation_dispatcher_pending.erase(pending);
+      if (suspended !=
+          g_rtcore_shader_continuation_dispatcher_suspended.end())
+        g_rtcore_shader_continuation_dispatcher_suspended.erase(suspended);
+      return;
     }
-    return;
+    const unsigned active_mask = pending->second.active_mask;
+    rtcore_khr_unwind_shader_continuation_lanes(
+        shader, key, active_mask,
+        "missing_parent_for_child_return_fail_closed");
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_FAULT "
+            "owner_hw_sid=%u warp_id=%u state_mutated_before_reject=0 "
+            "live_children=0 live_returns=0 "
+            "fault=missing_parent_for_child_return_fail_closed\n",
+            key.owner_hw_sid, key.warp_id);
+    abort();
+  }
+  if (pending == g_rtcore_shader_continuation_dispatcher_pending.end()) {
+    const unsigned active_mask = suspended->second.back().active_mask;
+    rtcore_khr_unwind_shader_continuation_lanes(
+        shader, key, active_mask,
+        "missing_child_for_parent_restore_fail_closed");
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_FAULT "
+            "owner_hw_sid=%u warp_id=%u state_mutated_before_reject=0 "
+            "fault=missing_child_for_parent_restore_fail_closed\n",
+            key.owner_hw_sid, key.warp_id);
+    abort();
   }
   const rtcore_shader_continuation_dispatcher_pending_entry child =
-      g_rtcore_shader_continuation_dispatcher_pending[key];
+      pending->second;
   rtcore_shader_continuation_dispatcher_pending_entry parent =
       suspended->second.back();
-  suspended->second.pop_back();
+  unsigned observed_parent_invocation_id = child.parent_trace_invocation_id;
+  unsigned observed_child_invocation_id = child.logical_trace_invocation_id;
+  const char *mutation =
+      getenv("VULKAN_SIM_RTCORE_TEST_CHILD_RETURN_MUTATION");
+  if (mutation != NULL && strcmp(mutation, "wrong_parent") == 0) {
+    observed_parent_invocation_id++;
+  } else if (mutation != NULL && strcmp(mutation, "stale_child") == 0) {
+    observed_child_invocation_id++;
+  }
   if (parent.logical_trace_invocation_id !=
-          child.parent_trace_invocation_id ||
+          observed_parent_invocation_id ||
       parent.logical_trace_depth + 1 != child.logical_trace_depth ||
       !parent.call_inflight) {
+    rtcore_khr_unwind_shader_continuation_lanes(
+        shader, key, child.active_mask | parent.active_mask,
+        "parent_restore_identity_mismatch_fail_closed");
     fprintf(stderr,
             "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_FAULT "
             "owner_hw_sid=%u warp_id=%u child_invocation_id=%u "
-            "parent_invocation_id=%u depth=%u "
+            "observed_child_invocation_id=%u parent_invocation_id=%u "
+            "observed_parent_invocation_id=%u depth=%u "
+            "state_mutated_before_reject=0 live_children=0 live_returns=0 "
             "fault=parent_restore_identity_mismatch_fail_closed\n",
             key.owner_hw_sid, key.warp_id,
             child.logical_trace_invocation_id,
-            child.parent_trace_invocation_id, child.logical_trace_depth);
+            observed_child_invocation_id,
+            child.parent_trace_invocation_id,
+            observed_parent_invocation_id, child.logical_trace_depth);
     abort();
   }
+  if (!rtcore_khr_lifecycle_child_return_consume_release(
+          key.owner_hw_sid, key.warp_id,
+          parent.logical_trace_invocation_id,
+          observed_child_invocation_id, child.logical_trace_depth,
+          child.active_mask)) {
+    rtcore_khr_unwind_shader_continuation_lanes(
+        shader, key, child.active_mask | parent.active_mask,
+        "child_return_release_identity_mismatch_fail_closed");
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_FAULT "
+            "owner_hw_sid=%u warp_id=%u child_invocation_id=%u "
+            "observed_child_invocation_id=%u "
+            "state_mutated_before_reject=0 live_children=0 live_returns=0 "
+            "fault=child_return_release_identity_mismatch_fail_closed\n",
+            key.owner_hw_sid, key.warp_id,
+            child.logical_trace_invocation_id,
+            observed_child_invocation_id);
+    abort();
+  }
+  suspended->second.pop_back();
   g_rtcore_shader_continuation_dispatcher_pending[key] = parent;
   if (suspended->second.empty()) {
     g_rtcore_shader_continuation_dispatcher_suspended.erase(suspended);
@@ -1537,6 +1662,18 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
     entry.parent_trace_invocation_id =
         existing->second.logical_trace_invocation_id;
     entry.logical_trace_depth = existing->second.logical_trace_depth + 1;
+    if (!rtcore_khr_lifecycle_child_admit(
+            owner_hw_sid, warp_id, entry.parent_trace_invocation_id,
+            entry.logical_trace_invocation_id, entry.logical_trace_depth,
+            active_mask)) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_FAULT "
+              "owner_hw_sid=%u warp_id=%u child_invocation_id=%u "
+              "fault=child_lifecycle_admit_rejected_fail_closed\n",
+              owner_hw_sid, warp_id,
+              entry.logical_trace_invocation_id);
+      abort();
+    }
     g_rtcore_shader_continuation_dispatcher_suspended[key].push_back(
         existing->second);
     printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_CHILD_ADMIT "
@@ -2659,7 +2796,7 @@ rtcore_service_shader_continuation_pseudo_op(
     entry.conservation_inflight_cohort_seq = 0;
     entry.body_issue_count = 0;
     if (all_cohorts_complete) {
-      rtcore_complete_shader_continuation_pending(key, current_cycle);
+      rtcore_complete_shader_continuation_pending(key, current_cycle, shader);
     }
     return result;
   }
@@ -3058,7 +3195,7 @@ rtcore_service_shader_continuation_pseudo_op(
     const bool all_cohorts_complete =
         entry.cohort_cursor >= entry.cohort_count;
     if (all_cohorts_complete) {
-      rtcore_complete_shader_continuation_pending(key, current_cycle);
+      rtcore_complete_shader_continuation_pending(key, current_cycle, shader);
     }
     result.issued = true;
     return result;

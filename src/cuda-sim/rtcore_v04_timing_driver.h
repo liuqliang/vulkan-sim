@@ -188,6 +188,13 @@ status_kind prepare_retire(
     retire_plan_v0 *plan);
 status_kind commit_retire(state_v0 *state, const retire_plan_v0 &plan);
 
+// Semantic-fault cleanup is terminal: discard any in-flight lane control and
+// release the validated owner slot without pretending that normal retirement
+// completed.  Callers must stop the affected execution context immediately.
+status_kind fault_release(
+    state_v0 *state, uint8_t resident_warp_slot, uint32_t owner_hw_sid,
+    uint32_t current_warp_uid, uint32_t warp_id);
+
 status_kind allocate_target_operation(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t *target_operation_seq);

@@ -427,6 +427,36 @@ status_kind commit_retire(state_v0 *state, const retire_plan_v0 &plan) {
   return kStatusOk;
 }
 
+status_kind fault_release(
+    state_v0 *state, uint8_t resident_warp_slot, uint32_t owner_hw_sid,
+    uint32_t current_warp_uid, uint32_t warp_id) {
+  if (state == NULL || !state->initialized) return kStatusInvalidArgument;
+  request_owner::release_warp_plan_v0 owner_plan = {};
+  const request_owner::status_kind prepare_status =
+      request_owner::prepare_release_warp(
+          state->request_control, resident_warp_slot, owner_hw_sid,
+          current_warp_uid, warp_id, &owner_plan);
+  if (prepare_status != request_owner::kStatusOk)
+    return map_request_owner_status(prepare_status);
+
+  state_v0 staged = *state;
+  const request_owner::status_kind release_status =
+      request_owner::commit_release_warp(
+          &staged.request_control, owner_plan);
+  if (release_status != request_owner::kStatusOk)
+    return map_request_owner_status(release_status);
+  for (uint32_t lane = 0; lane < request_owner::kLaneCapacity; ++lane) {
+    if ((owner_plan.identity.active_mask & lane_bit(lane)) == 0) continue;
+    lane_control_state_v0 *control =
+        find_lane_control(&staged, owner_plan.lane_bindings[lane]);
+    if (control == NULL) return kStatusOwnerMismatch;
+    std::memset(control, 0, sizeof(*control));
+  }
+  ++staged.mutation_epoch;
+  *state = staged;
+  return kStatusOk;
+}
+
 status_kind allocate_target_operation(
     state_v0 *state, const request_owner::lane_binding_v0 &owner,
     uint32_t *target_operation_seq) {

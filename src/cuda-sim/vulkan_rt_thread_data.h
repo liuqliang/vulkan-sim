@@ -105,6 +105,14 @@ typedef struct committed_procedural_attribute_entry {
     std::vector<unsigned char> image;
 } committed_procedural_attribute_entry;
 
+typedef struct continuation_frame_ledger_entry {
+    uint32_t kind;
+    uint32_t site;
+    uint32_t frame_bytes;
+    uint32_t capacity_bytes;
+    uint64_t generation;
+} continuation_frame_ledger_entry;
+
 
 typedef struct Vulkan_RT_thread_data {
     std::vector<variable_decleration_entry> variable_decleration_table;
@@ -112,6 +120,14 @@ typedef struct Vulkan_RT_thread_data {
     std::vector<report_intersection_frame_entry> report_intersection_frames;
     std::vector<committed_procedural_attribute_entry>
         committed_procedural_attributes;
+    std::vector<continuation_frame_ledger_entry> continuation_frame_ledger;
+    uint64_t continuation_live_bytes = 0;
+    uint64_t continuation_max_live_bytes = 0;
+    uint64_t continuation_push_count = 0;
+    uint64_t continuation_pop_count = 0;
+    uint64_t continuation_next_generation = 1;
+    uint32_t continuation_capacity_bytes = 0;
+    bool continuation_faulted = false;
     bool last_report_intersection_terminated = false;
 
     std::vector<Traversal_data*> traversal_data;
@@ -122,7 +138,7 @@ typedef struct Vulkan_RT_thread_data {
                                     uint32_t sbt_index,
                                     uint32_t shader_id) {
         if (address == 0 || size == 0 || callee == NULL ||
-            callable_data_bindings.size() >= 32) {
+            callable_data_bindings.size() >= 8) {
             return false;
         }
         callable_data_binding_entry entry = {};

@@ -68,6 +68,7 @@
 #include "rtcore_v04_target_shared_memory_bridge.h"
 #include "rtcore_v04_target_private_state_384_bridge.h"
 #include "rtcore_v04_timing_driver.h"
+#include <algorithm>
 #include "rtcore_v04_typed_blas_decode_context.h"
 #include "rtcore_v04_typed_diagnostic_collector.h"
 #include "rtcore_v04_typed_instance_kernel.h"
@@ -89,6 +90,9 @@
 #include <mutex>
 #include <deque>
 #include <set>
+
+extern "C" void rtcore_khr_unwind_shader_continuation_dispatcher(
+    unsigned owner_hw_sid, unsigned warp_id, const char *reason);
 #define BOOST_FILESYSTEM_VERSION 3
 #define BOOST_FILESYSTEM_NO_DEPRECATED 
 #include <boost/filesystem.hpp>
@@ -2060,9 +2064,327 @@ static std::map<rtcore_resident_rt_warp_record_key,
 static const size_t kRtcoreRecursiveOwnerStackCapacity = 8;
 static unsigned g_rtcore_khr_max_pipeline_trace_depth = 1;
 
+struct rtcore_khr_child_lifecycle_key {
+    unsigned owner_hw_sid;
+    unsigned warp_id;
+    unsigned child_invocation_id;
+
+    bool operator<(const rtcore_khr_child_lifecycle_key &other) const {
+        if (owner_hw_sid != other.owner_hw_sid)
+            return owner_hw_sid < other.owner_hw_sid;
+        if (warp_id != other.warp_id) return warp_id < other.warp_id;
+        return child_invocation_id < other.child_invocation_id;
+    }
+};
+
+struct rtcore_khr_child_lifecycle_record {
+    unsigned parent_invocation_id;
+    unsigned child_depth;
+    unsigned participating_mask;
+    unsigned lane_count;
+};
+
+struct rtcore_khr_lifecycle_stats {
+    unsigned long long frame_pushes;
+    unsigned long long frame_pops;
+    unsigned long long frame_fault_unwinds;
+    unsigned long long frame_live_bytes;
+    unsigned long long frame_max_live_bytes;
+    unsigned long long live_frames;
+    unsigned long long child_admits;
+    unsigned long long child_releases;
+    unsigned long long child_fault_unwinds;
+    unsigned long long live_children;
+    unsigned long long live_returns;
+    unsigned long long semantic_faults;
+    unsigned long long backpressure_retries;
+};
+
+static rtcore_khr_lifecycle_stats g_rtcore_khr_lifecycle_stats = {};
+static std::map<rtcore_khr_child_lifecycle_key,
+                rtcore_khr_child_lifecycle_record>
+    g_rtcore_khr_live_children;
+static std::set<rtcore_khr_child_lifecycle_key>
+    g_rtcore_khr_released_children;
+static bool g_rtcore_khr_lifecycle_summary_registered = false;
+
+static unsigned rtcore_khr_popcount(unsigned mask) {
+    unsigned count = 0;
+    while (mask != 0) {
+        count += mask & 1u;
+        mask >>= 1;
+    }
+    return count;
+}
+
+static void rtcore_khr_log_lifecycle_summary() {
+    const bool valid =
+        g_rtcore_khr_lifecycle_stats.frame_pushes ==
+            g_rtcore_khr_lifecycle_stats.frame_pops +
+                g_rtcore_khr_lifecycle_stats.frame_fault_unwinds &&
+        g_rtcore_khr_lifecycle_stats.frame_live_bytes == 0 &&
+        g_rtcore_khr_lifecycle_stats.live_frames == 0 &&
+        g_rtcore_khr_lifecycle_stats.child_admits ==
+            g_rtcore_khr_lifecycle_stats.child_releases +
+                g_rtcore_khr_lifecycle_stats.child_fault_unwinds &&
+        g_rtcore_khr_lifecycle_stats.live_children == 0 &&
+        g_rtcore_khr_lifecycle_stats.live_returns == 0 &&
+        g_rtcore_khr_live_children.empty();
+    printf("GPGPU-Sim RTCORE_KHR_LIFECYCLE_FINAL "
+           "frame_pushes=%llu frame_pops=%llu frame_fault_unwinds=%llu "
+           "continuation_live_bytes=%llu continuation_max_live_bytes=%llu "
+           "live_frames=%llu child_admits=%llu child_releases=%llu "
+           "child_fault_unwinds=%llu "
+           "live_children=%llu live_returns=%llu semantic_faults=%llu "
+           "backpressure_retries=%llu conservation_valid=%u\n",
+           g_rtcore_khr_lifecycle_stats.frame_pushes,
+           g_rtcore_khr_lifecycle_stats.frame_pops,
+           g_rtcore_khr_lifecycle_stats.frame_fault_unwinds,
+           g_rtcore_khr_lifecycle_stats.frame_live_bytes,
+           g_rtcore_khr_lifecycle_stats.frame_max_live_bytes,
+           g_rtcore_khr_lifecycle_stats.live_frames,
+           g_rtcore_khr_lifecycle_stats.child_admits,
+           g_rtcore_khr_lifecycle_stats.child_releases,
+           g_rtcore_khr_lifecycle_stats.child_fault_unwinds,
+           g_rtcore_khr_lifecycle_stats.live_children,
+           g_rtcore_khr_lifecycle_stats.live_returns,
+           g_rtcore_khr_lifecycle_stats.semantic_faults,
+           g_rtcore_khr_lifecycle_stats.backpressure_retries,
+           valid ? 1u : 0u);
+    fflush(stdout);
+}
+
+static void rtcore_khr_register_lifecycle_summary() {
+    if (g_rtcore_khr_lifecycle_summary_registered) return;
+    g_rtcore_khr_lifecycle_summary_registered = true;
+    std::atexit(rtcore_khr_log_lifecycle_summary);
+}
+
+extern "C" void rtcore_khr_lifecycle_note_frame_push(unsigned frame_bytes) {
+    rtcore_khr_register_lifecycle_summary();
+    g_rtcore_khr_lifecycle_stats.frame_pushes++;
+    g_rtcore_khr_lifecycle_stats.live_frames++;
+    g_rtcore_khr_lifecycle_stats.frame_live_bytes += frame_bytes;
+    g_rtcore_khr_lifecycle_stats.frame_max_live_bytes = std::max(
+        g_rtcore_khr_lifecycle_stats.frame_max_live_bytes,
+        g_rtcore_khr_lifecycle_stats.frame_live_bytes);
+}
+
+extern "C" void rtcore_khr_lifecycle_note_frame_pop(unsigned frame_bytes) {
+    if (g_rtcore_khr_lifecycle_stats.live_frames == 0 ||
+        g_rtcore_khr_lifecycle_stats.frame_live_bytes < frame_bytes) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_LIFECYCLE_FAULT "
+                "fault=global_frame_pop_underflow_fail_closed\n");
+        abort();
+    }
+    g_rtcore_khr_lifecycle_stats.frame_pops++;
+    g_rtcore_khr_lifecycle_stats.live_frames--;
+    g_rtcore_khr_lifecycle_stats.frame_live_bytes -= frame_bytes;
+}
+
+extern "C" void rtcore_khr_lifecycle_note_frame_unwind(
+    unsigned frame_count, unsigned live_bytes, const char *reason) {
+    rtcore_khr_register_lifecycle_summary();
+    if (g_rtcore_khr_lifecycle_stats.live_frames < frame_count ||
+        g_rtcore_khr_lifecycle_stats.frame_live_bytes < live_bytes) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_LIFECYCLE_FAULT "
+                "fault=global_frame_unwind_underflow_fail_closed\n");
+        abort();
+    }
+    g_rtcore_khr_lifecycle_stats.frame_fault_unwinds += frame_count;
+    g_rtcore_khr_lifecycle_stats.live_frames -= frame_count;
+    g_rtcore_khr_lifecycle_stats.frame_live_bytes -= live_bytes;
+    g_rtcore_khr_lifecycle_stats.semantic_faults++;
+    printf("GPGPU-Sim RTCORE_KHR_LIFECYCLE_UNWIND reason=%s "
+           "released_frames=%u released_bytes=%u remaining_frames=%llu "
+           "remaining_bytes=%llu\n",
+           reason != NULL ? reason : "unknown", frame_count, live_bytes,
+           g_rtcore_khr_lifecycle_stats.live_frames,
+           g_rtcore_khr_lifecycle_stats.frame_live_bytes);
+    fflush(stdout);
+}
+
+extern "C" bool rtcore_khr_lifecycle_child_admit(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned parent_invocation_id,
+    unsigned child_invocation_id, unsigned child_depth,
+    unsigned participating_mask) {
+    rtcore_khr_register_lifecycle_summary();
+    rtcore_khr_child_lifecycle_key key = {
+        owner_hw_sid, warp_id, child_invocation_id};
+    const unsigned lanes = rtcore_khr_popcount(participating_mask);
+    if (child_invocation_id == 0 || parent_invocation_id == 0 ||
+        child_depth == 0 || lanes == 0 ||
+        g_rtcore_khr_live_children.count(key) != 0 ||
+        g_rtcore_khr_released_children.count(key) != 0) {
+        g_rtcore_khr_lifecycle_stats.semantic_faults++;
+        return false;
+    }
+    rtcore_khr_child_lifecycle_record record = {
+        parent_invocation_id, child_depth, participating_mask, lanes};
+    g_rtcore_khr_live_children[key] = record;
+    g_rtcore_khr_lifecycle_stats.child_admits += lanes;
+    g_rtcore_khr_lifecycle_stats.live_children += lanes;
+    g_rtcore_khr_lifecycle_stats.live_returns += lanes;
+    printf("GPGPU-Sim RTCORE_KHR_CHILD_LEDGER_ADMIT owner_hw_sid=%u "
+           "warp_id=%u parent_invocation_id=%u child_invocation_id=%u "
+           "child_depth=%u lane_mask=0x%08x live_children=%llu "
+           "live_returns=%llu\n",
+           owner_hw_sid, warp_id, parent_invocation_id,
+           child_invocation_id, child_depth, participating_mask,
+           g_rtcore_khr_lifecycle_stats.live_children,
+           g_rtcore_khr_lifecycle_stats.live_returns);
+    fflush(stdout);
+    return true;
+}
+
+extern "C" bool rtcore_khr_lifecycle_child_return_consume_release(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned parent_invocation_id,
+    unsigned child_invocation_id, unsigned child_depth,
+    unsigned participating_mask) {
+    rtcore_khr_child_lifecycle_key key = {
+        owner_hw_sid, warp_id, child_invocation_id};
+    std::map<rtcore_khr_child_lifecycle_key,
+             rtcore_khr_child_lifecycle_record>::iterator it =
+        g_rtcore_khr_live_children.find(key);
+    if (it == g_rtcore_khr_live_children.end() ||
+        it->second.parent_invocation_id != parent_invocation_id ||
+        it->second.child_depth != child_depth ||
+        it->second.participating_mask != participating_mask ||
+        g_rtcore_khr_released_children.count(key) != 0 ||
+        g_rtcore_khr_lifecycle_stats.live_children < it->second.lane_count ||
+        g_rtcore_khr_lifecycle_stats.live_returns < it->second.lane_count) {
+        g_rtcore_khr_lifecycle_stats.semantic_faults++;
+        return false;
+    }
+    const unsigned lanes = it->second.lane_count;
+    g_rtcore_khr_lifecycle_stats.live_returns -= lanes;
+    g_rtcore_khr_lifecycle_stats.live_children -= lanes;
+    g_rtcore_khr_lifecycle_stats.child_releases += lanes;
+    g_rtcore_khr_live_children.erase(it);
+    g_rtcore_khr_released_children.insert(key);
+    printf("GPGPU-Sim RTCORE_KHR_CHILD_RETURN_CONSUME_RELEASE "
+           "owner_hw_sid=%u warp_id=%u parent_invocation_id=%u "
+           "child_invocation_id=%u child_depth=%u lane_mask=0x%08x "
+           "return_consumed=1 release_count=1 live_children=%llu "
+           "live_returns=%llu\n",
+           owner_hw_sid, warp_id, parent_invocation_id,
+           child_invocation_id, child_depth, participating_mask,
+           g_rtcore_khr_lifecycle_stats.live_children,
+           g_rtcore_khr_lifecycle_stats.live_returns);
+    fflush(stdout);
+    return true;
+}
+
+extern "C" void rtcore_khr_lifecycle_unwind_warp(
+    unsigned owner_hw_sid, unsigned warp_id, const char *reason) {
+    unsigned released_lanes = 0;
+    for (std::map<rtcore_khr_child_lifecycle_key,
+                  rtcore_khr_child_lifecycle_record>::iterator it =
+             g_rtcore_khr_live_children.begin();
+         it != g_rtcore_khr_live_children.end();) {
+        if (it->first.owner_hw_sid == owner_hw_sid &&
+            it->first.warp_id == warp_id) {
+            released_lanes += it->second.lane_count;
+            it = g_rtcore_khr_live_children.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (released_lanes > 0) {
+        if (g_rtcore_khr_lifecycle_stats.live_children < released_lanes ||
+            g_rtcore_khr_lifecycle_stats.live_returns < released_lanes) {
+            abort();
+        }
+        g_rtcore_khr_lifecycle_stats.live_children -= released_lanes;
+        g_rtcore_khr_lifecycle_stats.live_returns -= released_lanes;
+        g_rtcore_khr_lifecycle_stats.child_fault_unwinds += released_lanes;
+        g_rtcore_khr_lifecycle_stats.semantic_faults++;
+    }
+    printf("GPGPU-Sim RTCORE_KHR_CHILD_LEDGER_UNWIND owner_hw_sid=%u "
+           "warp_id=%u reason=%s released_lanes=%u live_children=%llu "
+           "live_returns=%llu\n",
+           owner_hw_sid, warp_id, reason != NULL ? reason : "unknown",
+           released_lanes, g_rtcore_khr_lifecycle_stats.live_children,
+           g_rtcore_khr_lifecycle_stats.live_returns);
+    fflush(stdout);
+}
+
 extern "C" unsigned rtcore_khr_max_pipeline_trace_depth()
 {
     return g_rtcore_khr_max_pipeline_trace_depth;
+}
+
+static rtcore::v04::timing_driver::state_v0 &
+rtcore_v04_timing_driver_for(unsigned owner_hw_sid);
+
+static unsigned rtcore_khr_unwind_rt_private_owners(
+    unsigned owner_hw_sid, unsigned warp_id, const char *reason) {
+    rtcore_resident_rt_warp_record_key owner_key = {};
+    owner_key.owner_hw_sid = owner_hw_sid;
+    owner_key.warp_id = warp_id;
+    std::vector<rtcore_resident_rt_warp_record> records;
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator current =
+        g_rtcore_resident_rt_warp_records.find(owner_key);
+    if (current != g_rtcore_resident_rt_warp_records.end())
+        records.push_back(current->second);
+    std::map<rtcore_resident_rt_warp_record_key,
+             std::vector<rtcore_recursive_suspended_parent_owner> >::iterator
+        suspended = g_rtcore_recursive_suspended_parent_owners.find(owner_key);
+    if (suspended != g_rtcore_recursive_suspended_parent_owners.end()) {
+        for (size_t index = 0; index < suspended->second.size(); ++index)
+            records.push_back(suspended->second[index].resident);
+    }
+
+    unsigned released = 0;
+    for (size_t index = 0; index < records.size(); ++index) {
+        const rtcore_resident_rt_warp_record &record = records[index];
+        if (!record.valid) continue;
+        if (record.v04_global384_timing_driver_owned) {
+            rtcore::v04::timing_driver::state_v0 &driver =
+                rtcore_v04_timing_driver_for(owner_hw_sid);
+            const rtcore::v04::timing_driver::status_kind status =
+                rtcore::v04::timing_driver::fault_release(
+                    &driver, record.v04_resident_warp_slot,
+                    owner_hw_sid, record.current_warp_uid, warp_id);
+            if (status != rtcore::v04::timing_driver::kStatusOk) {
+                fprintf(stderr,
+                        "GPGPU-Sim RTCORE_KHR_RT_PRIVATE_UNWIND_FAULT "
+                        "owner_hw_sid=%u warp_id=%u warp_uid=%u "
+                        "resident_slot=%u status=%u\n",
+                        owner_hw_sid, warp_id, record.current_warp_uid,
+                        record.v04_resident_warp_slot,
+                        static_cast<unsigned>(status));
+                abort();
+            }
+        }
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            if ((record.active_mask & (1u << lane)) == 0) continue;
+            g_rtcore_replay_lane_requests.erase(
+                record.lane_identity[lane].thread_uid);
+        }
+        rtcore_replay_warp_completion_entry_key record_key = {};
+        record_key.owner_hw_sid = owner_hw_sid;
+        record_key.warp_uid = record.current_warp_uid;
+        record_key.warp_id = warp_id;
+        record_key.active_mask = record.active_mask;
+        g_rtcore_replay_warp_completion_entries.erase(record_key);
+        g_rtcore_continuation_warp_boundary_states.erase(record_key);
+        g_rtcore_resident_warp_continuation_states.erase(record_key);
+        ++released;
+    }
+    g_rtcore_resident_rt_warp_records.erase(owner_key);
+    g_rtcore_recursive_suspended_parent_owners.erase(owner_key);
+    g_rtcore_retire_lifecycle_busy_owners.erase(owner_hw_sid);
+    printf("GPGPU-Sim RTCORE_KHR_RT_PRIVATE_UNWIND owner_hw_sid=%u "
+           "warp_id=%u reason=%s released_logical_owners=%u "
+           "remaining_resident_records=0 remaining_suspended_owners=0\n",
+           owner_hw_sid, warp_id, reason != NULL ? reason : "unknown",
+           released);
+    fflush(stdout);
+    return released;
 }
 
 static rtcore::v04::timing_driver::state_v0 &
@@ -2159,6 +2481,17 @@ rtcore_prepare_commit_v04_global384_nested_timing_owner_plan(
         timing_driver::prepare_nested_submit(staged, identity, &timing_plan);
     if (prepare_status == timing_driver::kStatusResidentCapacityExceeded ||
         prepare_status == timing_driver::kStatusRequestCapacityExceeded) {
+        rtcore_khr_register_lifecycle_summary();
+        g_rtcore_khr_lifecycle_stats.backpressure_retries++;
+        printf("GPGPU-Sim RTCORE_KHR_BACKPRESSURE_RETRY "
+               "owner_hw_sid=%u warp_id=%u child_warp_uid=%u "
+               "reason=%s semantic_fault=0 retry_count=%llu\n",
+               owner_hw_sid, warp_id, warp_uid,
+               prepare_status == timing_driver::kStatusResidentCapacityExceeded
+                   ? "resident_capacity"
+                   : "request_capacity",
+               g_rtcore_khr_lifecycle_stats.backpressure_retries);
+        fflush(stdout);
         return RTCORE_V04_GLOBAL384_TIMING_OWNER_WAIT;
     }
     if (prepare_status != timing_driver::kStatusOk ||
@@ -36263,6 +36596,8 @@ void VulkanRayTracing::endTraceRay(const ptx_instruction *pI, ptx_thread_info *t
     Traversal_data *completed_traversal =
         thread->RT_thread_data->traversal_data.back();
     if (!thread->RT_thread_data->report_intersection_frames.empty()) {
+        unwindKHRContinuation(
+            pI, thread, "trace_retired_with_live_report_frame_fail_closed");
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
                 "fault=trace_retired_with_live_report_frame_fail_closed\n",
@@ -36277,6 +36612,64 @@ void VulkanRayTracing::endTraceRay(const ptx_instruction *pI, ptx_thread_info *t
     itable->clear(pI, thread);
     warp_intersection_table* atable = anyhit_table[thread->get_ctaid().x][thread->get_ctaid().y];
     atable->clear(pI, thread);
+}
+
+void VulkanRayTracing::unwindKHRContinuation(
+    const ptx_instruction *pI, ptx_thread_info *thread, const char *reason) {
+    if (thread == NULL || thread->RT_thread_data == NULL) return;
+    Vulkan_RT_thread_data *rt = thread->RT_thread_data;
+    const unsigned frame_count =
+        static_cast<unsigned>(rt->continuation_frame_ledger.size());
+    const unsigned live_bytes =
+        static_cast<unsigned>(rt->continuation_live_bytes);
+    const unsigned callable_count =
+        static_cast<unsigned>(rt->callable_data_bindings.size());
+    const unsigned report_count =
+        static_cast<unsigned>(rt->report_intersection_frames.size());
+    const unsigned traversal_count =
+        static_cast<unsigned>(rt->traversal_data.size());
+
+    rt->continuation_frame_ledger.clear();
+    rt->continuation_live_bytes = 0;
+    rt->continuation_faulted = true;
+    rt->callable_data_bindings.clear();
+    rt->report_intersection_frames.clear();
+    rt->committed_procedural_attributes.clear();
+    rt->traversal_data.clear();
+    rt->all_hit_data.clear();
+    if (frame_count > 0 || live_bytes > 0) {
+        rtcore_khr_lifecycle_note_frame_unwind(
+            frame_count, live_bytes, reason);
+    }
+    rtcore_khr_lifecycle_unwind_warp(
+        thread->get_hw_sid(), thread->get_hw_wid(), reason);
+    rtcore_khr_unwind_rt_private_owners(
+        thread->get_hw_sid(), thread->get_hw_wid(), reason);
+    rtcore_khr_unwind_shader_continuation_dispatcher(
+        thread->get_hw_sid(), thread->get_hw_wid(), reason);
+
+    if (pI != NULL) {
+        warp_intersection_table *itable =
+            intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+        warp_intersection_table *atable =
+            anyhit_table[thread->get_ctaid().x][thread->get_ctaid().y];
+        if (itable != NULL) itable->clear(pI, thread);
+        if (atable != NULL) atable->clear(pI, thread);
+    }
+    printf("GPGPU-Sim RTCORE_KHR_THREAD_UNWIND thread_uid=%u reason=%s "
+           "released_frames=%u released_bytes=%u released_callables=%u "
+           "released_reports=%u released_traversals=%u "
+           "remaining_frames=0 remaining_bytes=0 remaining_children=0 "
+           "remaining_returns=0\n",
+           thread->get_uid(), reason != NULL ? reason : "unknown",
+           frame_count, live_bytes, callable_count, report_count,
+           traversal_count);
+    fflush(stdout);
+}
+
+extern "C" void rtcore_khr_unwind_thread_continuation(
+    ptx_thread_info *thread, const char *reason) {
+    VulkanRayTracing::unwindKHRContinuation(NULL, thread, reason);
 }
 
 bool VulkanRayTracing::mt_ray_triangle_test(
@@ -36341,6 +36734,7 @@ void VulkanRayTracing::setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreat
 		getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK");
 	if (pCreateInfos != NULL && continuation_candidate != NULL &&
 		strcmp(continuation_candidate, "1") == 0) {
+		rtcore_khr_register_lifecycle_summary();
 		const unsigned requested =
 			pCreateInfos->maxPipelineRayRecursionDepth;
 		if (requested == 0 || requested > kRtcoreRecursiveOwnerStackCapacity) {
@@ -36352,9 +36746,28 @@ void VulkanRayTracing::setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreat
 			abort();
 		}
 		g_rtcore_khr_max_pipeline_trace_depth = requested;
+		const char *capacity_text =
+			getenv("VULKAN_SIM_RTCORE_CONTINUATION_STACK_BYTES");
+		unsigned long continuation_capacity = 4096;
+		if (capacity_text != NULL && capacity_text[0] != '\0') {
+			char *end = NULL;
+			continuation_capacity = strtoul(capacity_text, &end, 10);
+			if (end == capacity_text || end == NULL || *end != '\0' ||
+				continuation_capacity == 0 ||
+				(continuation_capacity & 7u) != 0 ||
+				continuation_capacity > (1u << 20)) {
+				fprintf(stderr,
+					"GPGPU-Sim RTCORE_KHR_PIPELINE_STACK_FAULT "
+					"fault=invalid_configured_capacity_fail_closed\n");
+				abort();
+			}
+		}
 		printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_CONFIG "
-			   "pipeline_trace_depth=%u capacity=%zu validated=1\n",
-			   requested, kRtcoreRecursiveOwnerStackCapacity);
+			   "pipeline_trace_depth=%u supported_trace_depth=%zu "
+			   "supported_callable_depth=8 continuation_capacity_bytes=%lu "
+			   "validated=1\n",
+			   requested, kRtcoreRecursiveOwnerStackCapacity,
+			   continuation_capacity);
 	}
 	std::cout << "gpgpusim: set pipeline" << std::endl;
 }
@@ -37019,6 +37432,10 @@ void VulkanRayTracing::beginReportIntersection(
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_REPORT_FAULT "
                 "fault=invalid_report_context_or_capacity_fail_closed\n");
+        if (pI != NULL && thread != NULL && thread->RT_thread_data != NULL)
+            unwindKHRContinuation(
+                pI, thread,
+                "invalid_report_context_or_capacity_fail_closed");
         abort();
     }
 
@@ -37057,6 +37474,9 @@ void VulkanRayTracing::beginReportIntersection(
         return;
     }
     if (shader_counter < 0) {
+        unwindKHRContinuation(
+            pI, thread,
+            "missing_intersection_shader_identity_fail_closed");
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
                 "fault=missing_intersection_shader_identity_fail_closed\n",
@@ -37070,6 +37490,9 @@ void VulkanRayTracing::beginReportIntersection(
     warp_intersection_table *table = intersection_table[cta_x][cta_y];
     if (table == NULL || !table->shader_exists(
             tid, static_cast<uint32_t>(shader_counter), pI, thread)) {
+        unwindKHRContinuation(
+            pI, thread,
+            "intersection_table_identity_missing_fail_closed");
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
                 "fault=intersection_table_identity_missing_fail_closed\n",
@@ -37112,6 +37535,8 @@ void VulkanRayTracing::beginReportIntersection(
     if (attribute != NULL) {
         if (attribute->address == 0 || attribute->size == 0 ||
             attribute->size > 64) {
+            unwindKHRContinuation(
+                pI, thread, "attribute_capacity_invalid_fail_closed");
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
                     "attribute_size=%u "
@@ -37142,6 +37567,8 @@ void VulkanRayTracing::beginReportIntersection(
                 anyhit_shader_id, RTCORE_RESIDENT_DISPATCH_STAGE_ANY_HIT,
                 &dispatch) != 1 || dispatch.valid != 1 ||
             dispatch.function == NULL) {
+            unwindKHRContinuation(
+                pI, thread, "unresolved_anyhit_entry_fail_closed");
             fprintf(stderr,
                     "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
                     "shader_id=%u "
@@ -37207,6 +37634,9 @@ bool VulkanRayTracing::finishReportIntersection(
         frame.caller == NULL || frame.trace_depth != rt->traversal_data.size() ||
         frame.callable_depth != rt->callable_data_bindings.size() ||
         rt->traversal_data.back() != frame.traversal) {
+        unwindKHRContinuation(
+            frame.instruction, thread,
+            "report_frame_identity_or_depth_mismatch_fail_closed");
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
                 "fault=report_frame_identity_or_depth_mismatch_fail_closed\n",
@@ -37357,6 +37787,10 @@ void VulkanRayTracing::callCallableShader(
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT "
                 "fault=candidate_disabled_or_invalid_thread_fail_closed\n");
+        if (pI != NULL && thread != NULL && thread->RT_thread_data != NULL)
+            unwindKHRContinuation(
+                pI, thread,
+                "candidate_disabled_or_invalid_thread_fail_closed");
         abort();
     }
 
@@ -37375,6 +37809,8 @@ void VulkanRayTracing::callCallableShader(
     if (dispatch_status != 1 || dispatch_entry.valid != 1 ||
         dispatch_entry.function == NULL || dispatch_entry.entry_id != shader_id ||
         dispatch_entry.stage != RTCORE_RESIDENT_DISPATCH_STAGE_CALLABLE) {
+        unwindKHRContinuation(
+            pI, thread, "unresolved_callable_entry_fail_closed");
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT sbt_index=%u "
                 "shader_id=%u status=%d "
@@ -37396,6 +37832,8 @@ void VulkanRayTracing::callCallableShader(
         !thread->RT_thread_data->push_callable_data_binding(
             callable_data_address, callable_data_size, dispatch_entry.function,
             sbt_index, shader_id)) {
+        unwindKHRContinuation(
+            pI, thread, "callable_data_binding_push_fail_closed");
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT sbt_index=%u "
                 "shader_id=%u callable_data=0x%llx "
@@ -37418,6 +37856,8 @@ void VulkanRayTracing::callCallableShader(
     fflush(stdout);
     callShader(pI, thread, dispatch_entry.function);
     if (thread->RT_thread_data->traversal_data.size() != trace_depth_before) {
+        unwindKHRContinuation(
+            pI, thread, "trace_depth_mutated_during_callable_launch");
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT thread_uid=%u "
                 "fault=trace_depth_mutated_during_callable_launch\n",

@@ -402,6 +402,9 @@ public:
                        const ptx_instruction *pI,
                        ptx_thread_info *thread);
     static void endTraceRay(const ptx_instruction *pI, ptx_thread_info *thread);
+    static void unwindKHRContinuation(const ptx_instruction *pI,
+                                      ptx_thread_info *thread,
+                                      const char *reason);
     
     static void load_descriptor(const ptx_instruction *pI, ptx_thread_info *thread);
 
@@ -556,5 +559,23 @@ public:
     static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS);
     static void* gpgpusim_alloc(uint32_t size);
 };
+
+extern "C" bool rtcore_khr_lifecycle_child_admit(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned parent_invocation_id,
+    unsigned child_invocation_id, unsigned child_depth,
+    unsigned participating_mask);
+extern "C" bool rtcore_khr_lifecycle_child_return_consume_release(
+    unsigned owner_hw_sid, unsigned warp_id, unsigned parent_invocation_id,
+    unsigned child_invocation_id, unsigned child_depth,
+    unsigned participating_mask);
+extern "C" void rtcore_khr_lifecycle_unwind_warp(
+    unsigned owner_hw_sid, unsigned warp_id, const char *reason);
+extern "C" void rtcore_khr_lifecycle_note_frame_push(unsigned frame_bytes);
+extern "C" void rtcore_khr_lifecycle_note_frame_pop(unsigned frame_bytes);
+extern "C" void rtcore_khr_lifecycle_note_frame_unwind(unsigned frame_count,
+                                                         unsigned live_bytes,
+                                                         const char *reason);
+extern "C" void rtcore_khr_unwind_thread_continuation(
+    ptx_thread_info *thread, const char *reason);
 
 #endif /* VULKAN_RAY_TRACING_H */

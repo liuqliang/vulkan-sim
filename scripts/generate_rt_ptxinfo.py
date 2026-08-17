@@ -45,6 +45,9 @@ RT_HARD_OPS = [
     "rt_terminate_ray",
     "rt_report_terminate",
     "rt_report_active",
+    "rt_continuation_frame_push",
+    "rt_continuation_frame_pop",
+    "rt_continuation_frame_fault",
 ]
 
 
