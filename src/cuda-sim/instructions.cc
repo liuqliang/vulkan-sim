@@ -38279,6 +38279,46 @@ static const char *rtcore_khr_continuation_frame_kind_name(uint32_t kind) {
   }
 }
 
+void rt_trace_depth_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (!rtcore_khr_recursive_trace_enabled() || pI == NULL || thread == NULL ||
+      thread->RT_thread_data == NULL || pI->get_num_operands() != 1) {
+    if (thread != NULL && thread->RT_thread_data != NULL)
+      VulkanRayTracing::unwindKHRContinuation(
+          pI, thread, "invalid_trace_depth_query_fail_closed");
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_FAULT "
+            "thread_uid=%u fault=invalid_trace_depth_query_fail_closed\n",
+            thread != NULL ? thread->get_uid() : 0);
+    abort();
+  }
+
+  const uint32_t depth = static_cast<uint32_t>(
+      thread->RT_thread_data->traversal_data.size());
+  const uint32_t pipeline_trace_depth = rtcore_khr_max_pipeline_trace_depth();
+  if (depth >= pipeline_trace_depth || depth >= RTCORE_MAX_TRACE_SITES) {
+    VulkanRayTracing::unwindKHRContinuation(
+        pI, thread, "trace_allocation_depth_overflow_fail_closed");
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_FAULT "
+            "thread_uid=%u recursion_depth=%u pipeline_trace_depth=%u "
+            "allocation_depth_capacity=%llu "
+            "fault=trace_allocation_depth_overflow_fail_closed\n",
+            thread->get_uid(), depth, pipeline_trace_depth,
+            static_cast<unsigned long long>(RTCORE_MAX_TRACE_SITES));
+    abort();
+  }
+
+  ptx_reg_t result = {};
+  result.u32 = depth;
+  thread->set_operand_value(
+      pI->operand_lookup(0), result, U32_TYPE, thread, pI);
+  printf("GPGPU-Sim RTCORE_KHR_TRACE_ALLOCATION_DEPTH thread_uid=%u "
+         "recursion_depth=%u allocation_slot=%u static_site_identity_only=1 "
+         "physical_cta_admission=0 physical_warp_admission=0\n",
+         thread->get_uid(), depth, depth);
+  fflush(stdout);
+}
+
 static void rtcore_khr_continuation_frame_fail_closed(
     const ptx_instruction *pI, ptx_thread_info *thread,
     const char *reason) {

@@ -2532,7 +2532,7 @@ extern "C" bool rtcore_suspend_v04_recursive_parent_owner(
     } else if (parent == g_rtcore_resident_rt_warp_records.end() ||
                !parent->second.valid ||
                parent->second.current_warp_uid != parent_warp_uid ||
-               parent->second.active_mask != active_mask) {
+               (active_mask & ~parent->second.active_mask) != 0) {
         failure = "recursive_parent_resident_shell_mismatch";
     } else if (stack.size() >= kRtcoreRecursiveOwnerStackCapacity) {
         failure = "recursive_owner_stack_overflow";

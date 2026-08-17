@@ -2813,6 +2813,80 @@ void simt_stack::push_call(address_type target_pc,
   m_stack.push_back(call_entry);
 }
 
+bool simt_stack::defer_rtcore_partial_return(
+    address_type return_pc, const simt_mask_t &returned_mask,
+    const simt_mask_t &live_call_mask) {
+  if (m_stack.size() < 2 || !returned_mask.any() ||
+      !live_call_mask.any() || m_stack.back().m_pc != return_pc ||
+      (m_stack.back().m_active_mask & ~returned_mask).any()) {
+    return false;
+  }
+  for (size_t index = m_stack.size() - 1; index-- > 0;) {
+    const simt_stack_entry &candidate = m_stack[index];
+    if ((candidate.m_active_mask & live_call_mask).any() &&
+        (candidate.m_active_mask & ~live_call_mask).none() &&
+        candidate.m_pc != return_pc) {
+      // The entries above candidate are already-returned paths.  Keep the
+      // structural top entry (which may be a CALL marker) below the live path
+      // so a final RET still sees the original stack type.  Moving the whole
+      // top entry to candidate would strand a stale returned path above the
+      // CALL marker and desynchronize per-thread PCs from the SIMT stack.
+      simt_mask_t covered_returned_mask;
+      for (size_t covered = index + 1; covered < m_stack.size(); ++covered) {
+        const simt_stack_entry &entry = m_stack[covered];
+        if ((entry.m_active_mask & ~returned_mask).any() ||
+            (covered + 1 < m_stack.size() &&
+             entry.m_type == STACK_ENTRY_TYPE_CALL)) {
+          return false;
+        }
+        covered_returned_mask |= entry.m_active_mask;
+      }
+      if (covered_returned_mask != returned_mask) return false;
+
+      const simt_stack_entry live_entry = candidate;
+      m_stack.back().m_pc = return_pc;
+      m_stack.back().m_active_mask =
+          returned_mask | live_entry.m_active_mask;
+      m_stack.erase(m_stack.begin() + index, m_stack.end() - 1);
+      m_stack.push_back(live_entry);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool simt_stack::reconverge_rtcore_return_paths(
+    address_type return_pc, const simt_mask_t &cohort_mask,
+    bool *merged_paths) {
+  if (merged_paths != NULL) *merged_paths = false;
+  if (m_stack.empty() || !cohort_mask.any() ||
+      m_stack.back().m_pc != return_pc) {
+    return false;
+  }
+  simt_mask_t observed_mask;
+  std::vector<size_t> matching_indices;
+  for (size_t index = m_stack.size(); index-- > 0;) {
+    const simt_stack_entry &entry = m_stack[index];
+    if (entry.m_pc == return_pc && entry.m_active_mask.any() &&
+        (entry.m_active_mask & ~cohort_mask).none()) {
+      observed_mask |= entry.m_active_mask;
+      matching_indices.push_back(index);
+      if (observed_mask == cohort_mask) break;
+    }
+  }
+  if (observed_mask != cohort_mask || matching_indices.empty() ||
+      matching_indices.front() != m_stack.size() - 1) {
+    return false;
+  }
+  m_stack.back().m_active_mask = cohort_mask;
+  for (size_t match = 1; match < matching_indices.size(); ++match) {
+    m_stack.erase(m_stack.begin() + matching_indices[match]);
+  }
+  if (merged_paths != NULL) *merged_paths = matching_indices.size() > 1;
+  return m_stack.back().m_pc == return_pc &&
+         m_stack.back().m_active_mask == cohort_mask;
+}
+
 void simt_stack::resume(char *fname) {
   reset();
 

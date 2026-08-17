@@ -583,6 +583,7 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == RT_CONTINUATION_FRAME_PUSH_OP) ||
       (m_opcode == RT_CONTINUATION_FRAME_POP_OP) ||
       (m_opcode == RT_CONTINUATION_FRAME_FAULT_OP) ||
+      (m_opcode == RT_TRACE_DEPTH_OP) ||
       (m_opcode == CALL_CLOSEST_HIT_SHADER_OP) || (m_opcode == LD_RAY_LAUNCH_ID_OP) ||
       (m_opcode == LD_RAY_LAUNCH_SIZE_OP) || (m_opcode == LD_VK_DESC_OP) ||
       (m_opcode == IMG_DEREF_ST_OP) || (m_opcode == RT_ALLOC_MEM_OP) ||
@@ -640,6 +641,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != RT_CONTINUATION_FRAME_PUSH_OP) &&
       (m_opcode != RT_CONTINUATION_FRAME_POP_OP) &&
       (m_opcode != RT_CONTINUATION_FRAME_FAULT_OP) &&
+      (m_opcode != RT_TRACE_DEPTH_OP) &&
       (m_opcode != CALL_CLOSEST_HIT_SHADER_OP) && (m_opcode != LD_RAY_LAUNCH_ID_OP) &&
       (m_opcode != LD_RAY_LAUNCH_SIZE_OP) && (m_opcode != LD_VK_DESC_OP) &&
       (m_opcode != IMG_DEREF_ST_OP) && (m_opcode != RT_ALLOC_MEM_OP) &&
@@ -1412,6 +1414,9 @@ void ptx_instruction::set_input_output_registers() {
     case RT_CONTINUATION_FRAME_POP_OP:
       operand_classification = {1, 1, 1};
       break;
+    case RT_TRACE_DEPTH_OP:
+      operand_classification = {2};
+      break;
     case LD_RAY_LAUNCH_SIZE_OP:
       operand_classification = {1, 1, 1};
       break;
@@ -2025,6 +2030,16 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
   bool skip = false;
   int op_classification = 0;
   addr_t pc = next_instr();
+  if (pc != inst.pc) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_RESIDENT_DISPATCH_FRAME_FAULT "
+            "hw_sid=%u hw_warp_id=%u lane_id=%u thread_pc=0x%llx "
+            "issued_pc=0x%llx fault=functional_timing_pc_mismatch_fail_closed\n",
+            get_hw_sid(), get_hw_wid(), lane_id,
+            static_cast<unsigned long long>(pc),
+            static_cast<unsigned long long>(inst.pc));
+    fflush(stderr);
+  }
   assert(pc ==
          inst.pc);  // make sure timing model and functional model are in sync
   const ptx_instruction *pI = m_func_info->get_instruction(pc);

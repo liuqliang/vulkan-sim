@@ -204,5 +204,6 @@ OP_DEF(RT_REPORT_ACTIVE_OP,rt_report_active_impl,"rt_report_active",0,11)
 OP_DEF(RT_CONTINUATION_FRAME_PUSH_OP,rt_continuation_frame_push_impl,"rt_continuation_frame_push",0,11)
 OP_DEF(RT_CONTINUATION_FRAME_POP_OP,rt_continuation_frame_pop_impl,"rt_continuation_frame_pop",0,11)
 OP_DEF(RT_CONTINUATION_FRAME_FAULT_OP,rt_continuation_frame_fault_impl,"rt_continuation_frame_fault",0,11)
+OP_DEF(RT_TRACE_DEPTH_OP,rt_trace_depth_impl,"rt_trace_depth",0,11)
 
 OP_DEF(TXL_OP,txl_impl,"txl",0,14)

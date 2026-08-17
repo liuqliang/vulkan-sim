@@ -457,6 +457,7 @@ class ptx_thread_info {
                            const symbol *return_var_src,
                            const symbol *return_var_dst, unsigned call_uid);
   bool callstack_pop_plus();
+  size_t get_callstack_depth() const { return m_callstack.size(); }
   void dump_callstack() const;
   std::string get_location() const;
   const ptx_instruction *get_inst() const;

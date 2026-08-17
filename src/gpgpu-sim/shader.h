@@ -3210,6 +3210,12 @@ class shader_core_ctx : public core_t {
       unsigned default_hit_result, bool requires_handoff_return,
       unsigned *return_pc,
       unsigned *return_rpc);
+  bool rtcore_defer_partial_shader_return(
+      unsigned warp_id, unsigned return_pc, unsigned returned_lane_mask,
+      unsigned live_call_lane_mask);
+  bool rtcore_reconverge_shader_return(
+      unsigned warp_id, unsigned return_pc, unsigned cohort_lane_mask,
+      bool *merged_paths);
 
   // used by functional simulation:
   // modifiers

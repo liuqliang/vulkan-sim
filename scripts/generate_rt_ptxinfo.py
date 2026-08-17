@@ -48,6 +48,7 @@ RT_HARD_OPS = [
     "rt_continuation_frame_push",
     "rt_continuation_frame_pop",
     "rt_continuation_frame_fault",
+    "rt_trace_depth",
 ]
 
 

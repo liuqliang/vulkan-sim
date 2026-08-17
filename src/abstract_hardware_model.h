@@ -1866,6 +1866,12 @@ class simt_stack {
     void reset();
     void launch(address_type start_pc, const simt_mask_t &active_mask);
     void push_call(address_type target_pc, const simt_mask_t &active_mask);
+    bool defer_rtcore_partial_return(address_type return_pc,
+                                     const simt_mask_t &returned_mask,
+                                     const simt_mask_t &live_call_mask);
+    bool reconverge_rtcore_return_paths(address_type return_pc,
+                                        const simt_mask_t &cohort_mask,
+                                        bool *merged_paths);
     void update(simt_mask_t &thread_done, addr_vector_t &next_pc, address_type recvg_pc, op_type next_inst_op, unsigned next_inst_size, address_type next_inst_pc, bool predicated);
 
     const simt_mask_t &get_active_mask() const;
