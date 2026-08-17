@@ -48,6 +48,7 @@ static const unsigned RTCORE_HANDOFF_WINDOW_SLOT_BYTES = 0x80;
 #include "../cuda-sim/ptx-stats.h"
 #include "../cuda-sim/ptx_sim.h"
 #include "../cuda-sim/rtcore_replay_interface.h"
+#include "../cuda-sim/rtcore_resident_dispatch_entry.h"
 #include "../cuda-sim/rtcore_v04_conservation_recorder.h"
 #include "../cuda-sim/rtcore_v04_handoff_shared_timing.h"
 #include "../cuda-sim/rtcore_v04_handoff_storage_profile.h"
@@ -644,6 +645,16 @@ static const unsigned RTCORE_SHADER_CONTINUATION_REASON_TRACE_DONE_NO_SHADER =
     5;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_FAULT = 6;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED = 7;
+static const unsigned RTCORE_RESIDENT_DISPATCH_MAX_DEPTH = 8;
+
+struct rtcore_resident_dispatch_frame_v0 {
+  unsigned entry_id;
+  unsigned stage;
+  unsigned cohort_index;
+  unsigned return_pc;
+  unsigned return_rpc;
+  unsigned return_token;
+};
 
 static bool rtcore_handoff_publication_access_kind(unsigned access_kind) {
   return access_kind == RTCORE_V02_LSU_ACCESS_HANDOFF_PUBLICATION_STORE ||
@@ -885,6 +896,11 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
       lane_v04_packed_request_keys[index] = 0;
       lane_v04_request_generations[index] = 0;
       lane_handoff_response_chunk_mask[index] = 0;
+      lane_dispatch_depth[index] = 0;
+      for (unsigned depth = 0; depth < RTCORE_RESIDENT_DISPATCH_MAX_DEPTH;
+           ++depth) {
+        lane_dispatch_frames[index][depth] = {};
+      }
       for (unsigned word = 0; word < rtcore::abi_v04::kWordCount; ++word) {
         lane_handoff_words[index][word] = 0;
       }
@@ -960,6 +976,9 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   unsigned lane_v04_request_generations[32];
   uint8_t lane_handoff_response_chunk_mask[32];
   uint32_t lane_handoff_words[32][rtcore::abi_v04::kWordCount];
+  unsigned lane_dispatch_depth[32];
+  rtcore_resident_dispatch_frame_v0
+      lane_dispatch_frames[32][RTCORE_RESIDENT_DISPATCH_MAX_DEPTH];
 };
 
 static bool rtcore_v04_direct_completion(
@@ -2401,6 +2420,59 @@ rtcore_service_shader_continuation_pseudo_op(
         abort();
       }
     }
+    const unsigned completed_dispatch_stage =
+        rtcore_resident_dispatch_stage_for_reason_v0(completed_reason);
+    unsigned remaining_logical_frame_depth = 0;
+    for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
+      if ((completed_lane_mask & (1u << lane)) == 0) continue;
+      const unsigned depth = entry.lane_dispatch_depth[lane];
+      if (depth == 0 ||
+          completed_dispatch_stage ==
+              RTCORE_RESIDENT_DISPATCH_STAGE_INVALID) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_RESIDENT_DISPATCH_FRAME_FAULT "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                "entry_id=%u depth=%u "
+                "fault=logical_dispatch_underflow_fail_closed\n",
+                owner_hw_sid, entry.warp_uid, entry.warp_id, lane,
+                completed_shader_id, depth);
+        abort();
+      }
+      const rtcore_resident_dispatch_frame_v0 &frame =
+          entry.lane_dispatch_frames[lane][depth - 1];
+      if (frame.entry_id != completed_shader_id ||
+          frame.stage != completed_dispatch_stage ||
+          frame.cohort_index != completed_cohort_index ||
+          frame.return_pc != entry.return_pc ||
+          frame.return_rpc != entry.return_rpc ||
+          frame.return_token != completed_conservation_cohort_seq) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_RESIDENT_DISPATCH_FRAME_FAULT "
+                "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+                "entry_id=%u stage=%u token=%u "
+                "fault=stale_or_mismatched_dispatch_return_fail_closed\n",
+                owner_hw_sid, entry.warp_uid, entry.warp_id, lane,
+                completed_shader_id, completed_dispatch_stage,
+                completed_conservation_cohort_seq);
+        abort();
+      }
+      entry.lane_dispatch_frames[lane][depth - 1] = {};
+      entry.lane_dispatch_depth[lane] = depth - 1;
+      remaining_logical_frame_depth = std::max(
+          remaining_logical_frame_depth, depth - 1);
+    }
+    printf("GPGPU-Sim RTCORE_RESIDENT_DISPATCH_FRAME_RETURN "
+           "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+           "cohort_lane_mask=0x%08x entry_id=%u stage=%s token=%u "
+           "remaining_logical_frame_depth=%u validated=1 "
+           "return_cycle=%llu\n",
+           owner_hw_sid, entry.warp_uid, entry.warp_id,
+           completed_cohort_index, completed_lane_mask,
+           completed_shader_id,
+           rtcore_resident_dispatch_stage_name_v0(completed_dispatch_stage),
+           completed_conservation_cohort_seq,
+           remaining_logical_frame_depth, current_cycle);
+    fflush(stdout);
     const unsigned completed_dispatch_lane_mask =
         terminated_final_cohort
             ? completed_lane_mask
@@ -2865,17 +2937,36 @@ rtcore_service_shader_continuation_pseudo_op(
 
   entry.target_shader_id_ready_mask |= cohort_lane_mask;
   const unsigned cohort_shader_id = decoded_shader_id;
-  function_info *target_func =
-      rtcore_resolve_compatibility_shader_function(cohort_shader_id);
-  if (target_func == NULL) {
+  const unsigned cohort_dispatch_stage =
+      rtcore_resident_dispatch_stage_for_reason_v0(cohort_reason);
+  rtcore_resident_dispatch_entry_v0 dispatch_entry = {};
+  const int dispatch_entry_status =
+      rtcore_resolve_resident_dispatch_entry_v0(
+          cohort_shader_id, cohort_dispatch_stage, &dispatch_entry);
+  function_info *target_func = dispatch_entry.function;
+  if (dispatch_entry_status != 1 || dispatch_entry.valid != 1 ||
+      cohort_dispatch_stage == RTCORE_RESIDENT_DISPATCH_STAGE_INVALID ||
+      dispatch_entry.entry_id != cohort_shader_id ||
+      dispatch_entry.stage != cohort_dispatch_stage ||
+      target_func == NULL) {
     fprintf(stderr,
-            "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
+            "GPGPU-Sim RTCORE_RESIDENT_DISPATCH_ENTRY_FAULT "
             "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
-            "cohort_shader_id=%u fault=unresolved_target_fail_closed\n",
+            "cohort_shader_id=%u expected_stage=%u status=%d "
+            "fault=unresolved_or_stage_mismatched_entry_fail_closed\n",
             owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index,
-            cohort_shader_id);
+            cohort_shader_id, cohort_dispatch_stage, dispatch_entry_status);
     abort();
   }
+  printf("GPGPU-Sim RTCORE_RESIDENT_DISPATCH_ENTRY_VALIDATE "
+         "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+         "entry_id=%u stage=%s registration_index=%u validated=1 "
+         "validation_cycle=%llu\n",
+         owner_hw_sid, entry.warp_uid, entry.warp_id, cohort_index,
+         dispatch_entry.entry_id,
+         rtcore_resident_dispatch_stage_name_v0(dispatch_entry.stage),
+         dispatch_entry.registration_index, current_cycle);
+  fflush(stdout);
   unsigned return_pc = 0;
   unsigned return_rpc = 0;
   unsigned long long handoff_window_base = 0;
@@ -2994,6 +3085,21 @@ rtcore_service_shader_continuation_pseudo_op(
       cohort_reason == RTCORE_SHADER_CONTINUATION_REASON_ANY_HIT_REQUIRED
           ? 2u
           : 1u;
+  for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
+    if ((cohort_lane_mask & (1u << lane)) == 0) continue;
+    if (entry.lane_dispatch_depth[lane] >=
+        RTCORE_RESIDENT_DISPATCH_MAX_DEPTH) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_RESIDENT_DISPATCH_FRAME_FAULT "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u lane_id=%u "
+              "entry_id=%u depth=%u capacity=%u "
+              "fault=logical_dispatch_depth_overflow_fail_closed\n",
+              owner_hw_sid, entry.warp_uid, entry.warp_id, lane,
+              cohort_shader_id, entry.lane_dispatch_depth[lane],
+              RTCORE_RESIDENT_DISPATCH_MAX_DEPTH);
+      abort();
+    }
+  }
   assert(shader->rtcore_launch_shader_continuation_cohort(
       warp_id, cohort_lane_mask, target_func, handoff_window_base,
       default_hit_result, requires_handoff_return, &return_pc, &return_rpc));
@@ -3059,6 +3165,22 @@ rtcore_service_shader_continuation_pseudo_op(
   }
   const unsigned conservation_cohort_seq =
       entry.conservation_next_cohort_seq++;
+  unsigned cohort_logical_frame_depth = 0;
+  for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
+    if ((cohort_lane_mask & (1u << lane)) == 0) continue;
+    const unsigned depth = entry.lane_dispatch_depth[lane];
+    rtcore_resident_dispatch_frame_v0 &frame =
+        entry.lane_dispatch_frames[lane][depth];
+    frame.entry_id = dispatch_entry.entry_id;
+    frame.stage = dispatch_entry.stage;
+    frame.cohort_index = cohort_index;
+    frame.return_pc = return_pc;
+    frame.return_rpc = return_rpc;
+    frame.return_token = conservation_cohort_seq;
+    entry.lane_dispatch_depth[lane] = depth + 1;
+    cohort_logical_frame_depth =
+        std::max(cohort_logical_frame_depth, depth + 1);
+  }
   rtcore_record_v04_conservation_cohort_event_or_abort(
       owner_hw_sid, entry,
       rtcore::v04::conservation::kEventCohortLaunch,
@@ -3079,6 +3201,7 @@ rtcore_service_shader_continuation_pseudo_op(
          "cohort_index=%u generation=%u aligned_32b_addr=0x%llx "
          "cohort_lane_mask=0x%08x cohort_shader_id=%u "
          "cohort_reason=%u handoff_return_required=%u "
+         "validated_entry_stage=%s logical_frame_depth=%u "
          "target_pc=0x%llx return_pc=0x%x return_rpc=0x%x "
          "cohort_cursor=%u cohort_count=%u launch_cycle=%llu "
          "metadata_request_cycle=%llu metadata_response_cycle=%llu "
@@ -3089,6 +3212,8 @@ rtcore_service_shader_continuation_pseudo_op(
          entry.metadata_lookup_aligned_32b_addr, cohort_lane_mask,
          cohort_shader_id, cohort_reason,
          requires_handoff_return ? 1u : 0u,
+         rtcore_resident_dispatch_stage_name_v0(dispatch_entry.stage),
+         cohort_logical_frame_depth,
          static_cast<unsigned long long>(target_func->get_start_PC()),
          return_pc, return_rpc, entry.cohort_cursor, entry.cohort_count,
          current_cycle, entry.metadata_lookup_request_cycle,
@@ -11777,6 +11902,9 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
             m_sid, warp_id, cohort_lane_mask);
     abort();
   }
+  const unsigned physical_cta_count_before = m_n_active_cta;
+  const unsigned physical_warp_count_before = m_active_warps;
+  const unsigned dynamic_warp_id_before = m_dynamic_warp_id;
 
   const bool v04_builtin_consumer_enabled =
       rtcore_v04_shader_builtin_consumer_runtime_enabled();
@@ -11903,6 +12031,26 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
   m_simt_stack[warp_id]->push_call(target_pc, cohort_mask);
   m_warp[warp_id]->ibuffer_flush();
   m_warp[warp_id]->set_next_pc(target_pc);
+  if (m_n_active_cta != physical_cta_count_before ||
+      m_active_warps != physical_warp_count_before ||
+      m_dynamic_warp_id != dynamic_warp_id_before) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_RESIDENT_DISPATCH_ADMISSION_FAULT "
+            "owner_hw_sid=%u warp_id=%u cta_before=%u cta_after=%u "
+            "warps_before=%u warps_after=%u dynamic_before=%u "
+            "dynamic_after=%u fault=physical_admission_changed_fail_closed\n",
+            m_sid, warp_id, physical_cta_count_before, m_n_active_cta,
+            physical_warp_count_before, m_active_warps,
+            dynamic_warp_id_before, m_dynamic_warp_id);
+    abort();
+  }
+  printf("GPGPU-Sim RTCORE_RESIDENT_DISPATCH_ADMISSION_GUARD "
+         "owner_hw_sid=%u warp_id=%u cohort_lane_mask=0x%08x "
+         "active_cta_count=%u active_warp_count=%u dynamic_warp_id_next=%u "
+         "new_cta_allocations=0 new_warp_allocations=0 guarded=1\n",
+         m_sid, warp_id, cohort_lane_mask, m_n_active_cta, m_active_warps,
+         m_dynamic_warp_id);
+  fflush(stdout);
   return true;
 }
 

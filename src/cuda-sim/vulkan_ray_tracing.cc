@@ -27,6 +27,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "vulkan_ray_tracing.h"
+#include "rtcore_resident_dispatch_entry.h"
 #include "vulkan_rt_thread_data.h"
 #include "rtcore_replay_interface.h"
 #include "rtcore_procedural_hit_ordering.h"
@@ -346,6 +347,8 @@ std::ofstream VulkanRayTracing::imageFile;
 std::map<std::string, std::string> outputImages;
 bool VulkanRayTracing::firstTime = true;
 std::vector<shader_stage_info> VulkanRayTracing::shaders;
+static unsigned rtcore_resident_dispatch_stage_from_mesa(
+    gl_shader_stage stage);
 // RayDebugGPUData VulkanRayTracing::rayDebugGPUData[2000][2000] = {0};
 struct DESCRIPTOR_SET_STRUCT* VulkanRayTracing::descriptorSet = NULL;
 void* VulkanRayTracing::launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS] = {NULL};
@@ -36267,12 +36270,16 @@ uint32_t VulkanRayTracing::registerShaders(char * shaderPath, gl_shader_stage sh
             deviceFunction = "MESA_SHADER_INTERSECTION";
             break;
         case MESA_SHADER_CALLABLE:
-            // shader.function_name = "callable_" + std::to_string(shader.ID);
             strcpy(shader.function_name, "callable_");
             strcat(shader.function_name, std::to_string(shader.ID).c_str());
-            deviceFunction = "";
-            assert(0);
+            deviceFunction = "MESA_SHADER_CALLABLE";
             break;
+        default:
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_RESIDENT_DISPATCH_ENTRY_FAULT "
+                    "entry_id=%u fault=unsupported_registration_stage\n",
+                    shader.ID);
+            abort();
     }
     deviceFunction += "_func" + std::to_string(shader.ID) + "_main";
     // deviceFunction += "_main";
@@ -36309,7 +36316,28 @@ uint32_t VulkanRayTracing::registerShaders(char * shaderPath, gl_shader_stage sh
 
     context->register_function(fat_cubin_handle, shader.function_name, deviceFunction.c_str());
 
+    for (unsigned index = 0; index < VulkanRayTracing::shaders.size();
+         ++index) {
+        if (VulkanRayTracing::shaders[index].ID == shader.ID) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_RESIDENT_DISPATCH_ENTRY_FAULT "
+                    "entry_id=%u existing_stage=%u new_stage=%u "
+                    "fault=duplicate_entry_id_fail_closed\n",
+                    shader.ID,
+                    static_cast<unsigned>(VulkanRayTracing::shaders[index].type),
+                    static_cast<unsigned>(shader.type));
+            abort();
+        }
+    }
     VulkanRayTracing::shaders.push_back(shader);
+    printf("GPGPU-Sim RTCORE_RESIDENT_DISPATCH_ENTRY_REGISTER "
+           "entry_id=%u stage=%s registration_index=%zu "
+           "function_name=%s validated=1\n",
+           shader.ID,
+           rtcore_resident_dispatch_stage_name_v0(
+               rtcore_resident_dispatch_stage_from_mesa(shader.type)),
+           VulkanRayTracing::shaders.size() - 1, shader.function_name);
+    fflush(stdout);
 
     return shader.ID;
 
@@ -36774,18 +36802,12 @@ void VulkanRayTracing::callAnyHitShader(const ptx_instruction *pI, ptx_thread_in
 
 function_info *VulkanRayTracing::rtcoreResolveCompatibilityShaderFunction(
     uint32_t shaderID) {
-    if (shaderID >= shaders.size()) {
+    rtcore_resident_dispatch_entry_v0 entry = {};
+    if (rtcore_resolve_resident_dispatch_entry_v0(
+            shaderID, RTCORE_RESIDENT_DISPATCH_STAGE_INVALID, &entry) != 1) {
         return NULL;
     }
-    gpgpu_context *ctx = GPGPU_Context();
-    if (ctx == NULL) {
-        return NULL;
-    }
-    CUctx_st *context = GPGPUSim_Context(ctx);
-    if (context == NULL) {
-        return NULL;
-    }
-    return context->get_kernel(shaders[shaderID].function_name);
+    return entry.function;
 }
 
 extern "C" function_info *rtcore_resolve_compatibility_shader_function(
@@ -36793,36 +36815,132 @@ extern "C" function_info *rtcore_resolve_compatibility_shader_function(
     return VulkanRayTracing::rtcoreResolveCompatibilityShaderFunction(shaderID);
 }
 
+static unsigned rtcore_resident_dispatch_stage_from_mesa(
+    gl_shader_stage stage) {
+    switch (stage) {
+    case MESA_SHADER_RAYGEN:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_RAYGEN;
+    case MESA_SHADER_MISS:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_MISS;
+    case MESA_SHADER_CLOSEST_HIT:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_CLOSEST_HIT;
+    case MESA_SHADER_ANY_HIT:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_ANY_HIT;
+    case MESA_SHADER_INTERSECTION:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_INTERSECTION;
+    case MESA_SHADER_CALLABLE:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_CALLABLE;
+    default:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_INVALID;
+    }
+}
+
+const char *rtcore_resident_dispatch_stage_name_v0(unsigned stage) {
+    switch (stage) {
+    case RTCORE_RESIDENT_DISPATCH_STAGE_RAYGEN:
+        return "raygen";
+    case RTCORE_RESIDENT_DISPATCH_STAGE_MISS:
+        return "miss";
+    case RTCORE_RESIDENT_DISPATCH_STAGE_CLOSEST_HIT:
+        return "closest_hit";
+    case RTCORE_RESIDENT_DISPATCH_STAGE_ANY_HIT:
+        return "any_hit";
+    case RTCORE_RESIDENT_DISPATCH_STAGE_INTERSECTION:
+        return "intersection";
+    case RTCORE_RESIDENT_DISPATCH_STAGE_CALLABLE:
+        return "callable";
+    default:
+        return "invalid";
+    }
+}
+
+extern "C" unsigned rtcore_resident_dispatch_stage_for_reason_v0(
+    unsigned reason) {
+    switch (reason) {
+    case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_MISS:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_MISS;
+    case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_CLOSEST_HIT_READY:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_CLOSEST_HIT;
+    case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_ANY_HIT;
+    case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_INTERSECTION;
+    default:
+        return RTCORE_RESIDENT_DISPATCH_STAGE_INVALID;
+    }
+}
+
+int VulkanRayTracing::rtcoreResolveResidentDispatchEntry(
+    unsigned entry_id, unsigned expected_stage,
+    rtcore_resident_dispatch_entry_v0 *entry_out) {
+    if (entry_out == NULL) return -1;
+    *entry_out = {};
+    const shader_stage_info *matched = NULL;
+    unsigned matched_index = 0;
+    for (unsigned index = 0; index < VulkanRayTracing::shaders.size(); ++index) {
+        const shader_stage_info &candidate = VulkanRayTracing::shaders[index];
+        if (candidate.ID != entry_id) continue;
+        if (matched != NULL) return -1;
+        matched = &candidate;
+        matched_index = index;
+    }
+    if (matched == NULL) return 0;
+    const unsigned stage =
+        rtcore_resident_dispatch_stage_from_mesa(matched->type);
+    if (stage == RTCORE_RESIDENT_DISPATCH_STAGE_INVALID ||
+        (expected_stage != RTCORE_RESIDENT_DISPATCH_STAGE_INVALID &&
+         stage != expected_stage)) {
+        return -1;
+    }
+    gpgpu_context *ctx = GPGPU_Context();
+    CUctx_st *context = ctx != NULL ? GPGPUSim_Context(ctx) : NULL;
+    function_info *function = context != NULL
+                                  ? context->get_kernel(matched->function_name)
+                                  : NULL;
+    if (function == NULL) return -1;
+    entry_out->valid = 1;
+    entry_out->entry_id = entry_id;
+    entry_out->stage = stage;
+    entry_out->registration_index = matched_index;
+    entry_out->function = function;
+    return 1;
+}
+
+extern "C" int rtcore_resolve_resident_dispatch_entry_v0(
+    unsigned entry_id, unsigned expected_stage,
+    rtcore_resident_dispatch_entry_v0 *entry_out) {
+    return VulkanRayTracing::rtcoreResolveResidentDispatchEntry(
+        entry_id, expected_stage, entry_out);
+}
+
 int VulkanRayTracing::rtcoreCompatibilityShaderTargetKind(unsigned shader_id,
                                                            unsigned reason) {
     if (shader_id == VK_SHADER_UNUSED_KHR) {
         return 0;
     }
-    if (shader_id >= VulkanRayTracing::shaders.size()) {
-        return -1;
-    }
-    gl_shader_stage expected_stage = MESA_SHADER_NONE;
+    gl_shader_stage expected_mesa_stage = MESA_SHADER_NONE;
     switch (reason) {
     case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_MISS:
-        expected_stage = MESA_SHADER_MISS;
+        expected_mesa_stage = MESA_SHADER_MISS;
         break;
     case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_CLOSEST_HIT_READY:
-        expected_stage = MESA_SHADER_CLOSEST_HIT;
+        expected_mesa_stage = MESA_SHADER_CLOSEST_HIT;
         break;
     case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_ANY_HIT_REQUIRED:
-        expected_stage = MESA_SHADER_ANY_HIT;
+        expected_mesa_stage = MESA_SHADER_ANY_HIT;
         break;
     case RTCORE_REPLAY_CONTINUATION_PACKET_REASON_INTERSECTION_REQUIRED:
-        expected_stage = MESA_SHADER_INTERSECTION;
+        expected_mesa_stage = MESA_SHADER_INTERSECTION;
         break;
     default:
         break;
     }
-    if (expected_stage == MESA_SHADER_NONE ||
-        VulkanRayTracing::shaders[shader_id].type != expected_stage) {
-        return -1;
-    }
-    return 1;
+    const unsigned expected_stage =
+        rtcore_resident_dispatch_stage_from_mesa(expected_mesa_stage);
+    if (expected_stage == RTCORE_RESIDENT_DISPATCH_STAGE_INVALID) return -1;
+    rtcore_resident_dispatch_entry_v0 entry = {};
+    return rtcore_resolve_resident_dispatch_entry_v0(
+        shader_id, expected_stage, &entry);
 }
 
 extern "C" int rtcore_compatibility_shader_target_kind(unsigned shader_id,

@@ -43,6 +43,7 @@
 
 // #include "ptx_ir.h"
 #include "ptx_ir.h"
+#include "rtcore_resident_dispatch_entry.h"
 #include "../../libcuda/gpgpu_context.h"
 #include "../abstract_hardware_model.h"
 #include "compiler/shader_enums.h"
@@ -433,6 +434,9 @@ public:
                       uint32_t launch_depth,
                       uint64_t launch_size_addr);
     static function_info* rtcoreResolveCompatibilityShaderFunction(uint32_t shaderID);
+    static int rtcoreResolveResidentDispatchEntry(
+        unsigned entry_id, unsigned expected_stage,
+        rtcore_resident_dispatch_entry_v0 *entry_out);
     static int rtcoreCompatibilityShaderTargetKind(uint32_t shaderID,
                                                    unsigned reason);
     static bool rtcoreLoadCompatibilitySbtShaderId(
