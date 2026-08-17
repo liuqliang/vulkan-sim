@@ -197,5 +197,6 @@ OP_DEF(CALL_MISS_SHADER_OP,call_miss_shader_impl,"call_miss_shader",0,13)
 OP_DEF(CALL_CLOSEST_HIT_SHADER_OP,call_closest_hit_shader_impl,"call_closest_hit_shader",0,13)
 OP_DEF(CALL_INTERSECTION_SHADER_OP,call_intersection_shader_impl,"call_intersection_shader",0,13)
 OP_DEF(CALL_ANYHIT_SHADER_OP,call_anyhit_shader_impl,"call_anyhit_shader",0,13)
+OP_DEF(RT_EXECUTE_CALLABLE_OP,rt_execute_callable_impl,"rt_execute_callable",0,13)
 
 OP_DEF(TXL_OP,txl_impl,"txl",0,14)

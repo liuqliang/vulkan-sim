@@ -448,6 +448,10 @@ public:
     static void callClosestHitShader(const ptx_instruction *pI, ptx_thread_info *thread);
     static void callIntersectionShader(const ptx_instruction *pI, ptx_thread_info *thread, uint32_t shader_counter);
     static void callAnyHitShader(const ptx_instruction *pI, ptx_thread_info *thread, uint32_t shader_counter);
+    static void callCallableShader(const ptx_instruction *pI,
+                                   ptx_thread_info *thread,
+                                   uint32_t sbt_index,
+                                   uint64_t callable_data_address);
     static void setDescriptor(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type);
     static void* getDescriptorAddress(uint32_t setID, uint32_t binding);
 

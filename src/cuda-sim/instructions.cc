@@ -4946,6 +4946,22 @@ void ret_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       fflush(stdout);
     }
 
+  if (thread->RT_thread_data != NULL) {
+    callable_data_binding_entry binding = {};
+    function_info *returning_function = thread->func_info();
+    if (thread->RT_thread_data->pop_callable_data_binding(
+            returning_function, &binding)) {
+      printf("GPGPU-Sim RTCORE_KHR_CALLABLE_FRAME_POP "
+             "thread_uid=%u sbt_index=%u shader_id=%u "
+             "callable_data=0x%llx callable_data_size=%u "
+             "remaining_callable_depth=%zu validated_lifo=1\n",
+             thread->get_uid(), binding.sbt_index, binding.shader_id,
+             (unsigned long long)binding.address, binding.size,
+             thread->RT_thread_data->callable_data_bindings.size());
+      fflush(stdout);
+    }
+  }
+
   bool empty = thread->callstack_pop();
   if (empty) {
     thread->set_done();
@@ -38129,6 +38145,28 @@ void call_anyhit_shader_impl(const ptx_instruction *pI, ptx_thread_info *thread)
   VulkanRayTracing::callAnyHitShader(pI, thread, shader_counter);
 }
 
+void rt_execute_callable_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  if (pI == NULL || thread == NULL || pI->get_num_operands() != 2) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT "
+            "fault=invalid_execute_callable_operands_fail_closed\n");
+    abort();
+  }
+  const operand_info &sbt_index_operand = pI->operand_lookup(0);
+  const operand_info &callable_data_operand = pI->operand_lookup(1);
+  const ptx_reg_t sbt_index = thread->get_operand_value(
+      sbt_index_operand, sbt_index_operand, U32_TYPE, thread, 1);
+  const ptx_reg_t callable_data = thread->get_operand_value(
+      callable_data_operand, callable_data_operand, B64_TYPE, thread, 1);
+  printf("GPGPU-Sim RTCORE_KHR_CALLABLE_EXECUTE thread_uid=%u "
+         "sbt_index=%u callable_data=0x%llx\n",
+         thread->get_uid(), sbt_index.u32,
+         (unsigned long long)callable_data.u64);
+  fflush(stdout);
+  VulkanRayTracing::callCallableShader(
+      pI, thread, sbt_index.u32, callable_data.u64);
+}
+
 void image_deref_store_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   VSIM_DPRINTF("gpgpusim: image_deref_store implementation\n");
   if(print_debug_insts)
@@ -38262,6 +38300,31 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   uint32_t size = src1_data.u32;
   nir_variable_mode type = (nir_variable_mode)src2_data.u32;
   uint64_t address = NULL;
+
+  if (type == nir_var_shader_call_data) {
+    callable_data_binding_entry binding = {};
+    if (thread->RT_thread_data->current_callable_data_binding(
+            thread->func_info(), &binding)) {
+      if (binding.size != size) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT thread_uid=%u "
+                "shader_id=%u caller_size=%u callee_size=%u "
+                "fault=callable_data_size_mismatch_fail_closed\n",
+                thread->get_uid(), binding.shader_id, binding.size, size);
+        abort();
+      }
+      data.u64 = binding.address;
+      thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
+      printf("GPGPU-Sim RTCORE_KHR_CALLABLE_DATA_BIND "
+             "thread_uid=%u shader_id=%u callable_data=0x%llx "
+             "size=%u callable_depth=%zu\n",
+             thread->get_uid(), binding.shader_id,
+             (unsigned long long)binding.address, binding.size,
+             thread->RT_thread_data->callable_data_bindings.size());
+      fflush(stdout);
+      return;
+    }
+  }
   
   // printf("########## variable name = %s, size = %d\n", name.c_str(), size);
   variable_decleration_entry* variable_decleration = thread->RT_thread_data->get_variable_decleration_entry(type, name, size);

@@ -37033,6 +37033,85 @@ void VulkanRayTracing::callAnyHitShader(const ptx_instruction *pI, ptx_thread_in
     callShader(pI, thread, entry);
 }
 
+void VulkanRayTracing::callCallableShader(
+    const ptx_instruction *pI, ptx_thread_info *thread, uint32_t sbt_index,
+    uint64_t callable_data_address) {
+    const char *candidate =
+        getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK");
+    if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
+        candidate == NULL || strcmp(candidate, "1") != 0) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT "
+                "fault=candidate_disabled_or_invalid_thread_fail_closed\n");
+        abort();
+    }
+
+    const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+    uint32_t shader_id = 0;
+    if (!rtcore_require_compat_sbt_shader_id(
+            pI, "callable", metadata.callable_sbt,
+            metadata.callable_sbt_stride, metadata.callable_sbt_size,
+            sbt_index, 0, &shader_id)) {
+        return;
+    }
+
+    rtcore_resident_dispatch_entry_v0 dispatch_entry = {};
+    const int dispatch_status = rtcoreResolveResidentDispatchEntry(
+        shader_id, RTCORE_RESIDENT_DISPATCH_STAGE_CALLABLE, &dispatch_entry);
+    if (dispatch_status != 1 || dispatch_entry.valid != 1 ||
+        dispatch_entry.function == NULL || dispatch_entry.entry_id != shader_id ||
+        dispatch_entry.stage != RTCORE_RESIDENT_DISPATCH_STAGE_CALLABLE) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT sbt_index=%u "
+                "shader_id=%u status=%d "
+                "fault=unresolved_callable_entry_fail_closed\n",
+                sbt_index, shader_id, dispatch_status);
+        abort();
+    }
+
+    uint32_t callable_data_size = 0;
+    for (std::vector<variable_decleration_entry>::const_iterator it =
+             thread->RT_thread_data->variable_decleration_table.begin();
+         it != thread->RT_thread_data->variable_decleration_table.end(); ++it) {
+        if (it->address == callable_data_address) {
+            callable_data_size = it->size;
+            break;
+        }
+    }
+    if (callable_data_address == 0 || callable_data_size == 0 ||
+        !thread->RT_thread_data->push_callable_data_binding(
+            callable_data_address, callable_data_size, dispatch_entry.function,
+            sbt_index, shader_id)) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT sbt_index=%u "
+                "shader_id=%u callable_data=0x%llx "
+                "fault=callable_data_binding_push_fail_closed\n",
+                sbt_index, shader_id,
+                (unsigned long long)callable_data_address);
+        abort();
+    }
+
+    const size_t trace_depth_before =
+        thread->RT_thread_data->traversal_data.size();
+    printf("GPGPU-Sim RTCORE_KHR_CALLABLE_FRAME_PUSH "
+           "thread_uid=%u sbt_index=%u shader_id=%u callable_data=0x%llx "
+           "callable_data_size=%u callable_depth=%zu trace_depth=%zu "
+           "physical_cta_admission=0 physical_warp_admission=0\n",
+           thread->get_uid(), sbt_index, shader_id,
+           (unsigned long long)callable_data_address, callable_data_size,
+           thread->RT_thread_data->callable_data_bindings.size(),
+           trace_depth_before);
+    fflush(stdout);
+    callShader(pI, thread, dispatch_entry.function);
+    if (thread->RT_thread_data->traversal_data.size() != trace_depth_before) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT thread_uid=%u "
+                "fault=trace_depth_mutated_during_callable_launch\n",
+                thread->get_uid());
+        abort();
+    }
+}
+
 function_info *VulkanRayTracing::rtcoreResolveCompatibilityShaderFunction(
     uint32_t shaderID) {
     rtcore_resident_dispatch_entry_v0 entry = {};
@@ -38002,6 +38081,27 @@ void VulkanRayTracing::callShader(const ptx_instruction *pI, ptx_thread_info *th
 
   thread->callstack_push(callee_pc + pI->inst_size(), callee_rpc,
                          return_var_src, return_var_dst, call_uid_next++);
+
+  // callstack_push advances past the caller's frame.  Shader-to-shader calls
+  // can introduce their own .local continuation stack, so materialize the
+  // callee frame before its first local load/store just as the resident
+  // dispatcher does for TraceRay shader transfers.
+  const unsigned target_local_frame_base =
+      thread->get_local_mem_stack_pointer();
+  const unsigned target_local_frame_bytes =
+      target_func->local_mem_framesize();
+  if (target_local_frame_bytes > 0 &&
+      (thread->m_local_mem == NULL ||
+       !thread->m_local_mem->ensure_simulator_backing(
+           target_local_frame_base, target_local_frame_bytes))) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT thread_uid=%u "
+            "local_frame_base=%u local_frame_bytes=%u "
+            "fault=callee_local_frame_backing_unavailable_fail_closed\n",
+            thread->get_uid(), target_local_frame_base,
+            target_local_frame_bytes);
+    abort();
+  }
 
   copy_buffer_list_into_frame(thread, arg_values);
 

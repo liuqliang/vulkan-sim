@@ -37,7 +37,12 @@ import subprocess
 
 inputfile = sys.argv[1]
 
-RT_HARD_OPS = ["rt_publish_trace_context", "rt_submit", "rt_retire_context"]
+RT_HARD_OPS = [
+    "rt_publish_trace_context",
+    "rt_submit",
+    "rt_retire_context",
+    "rt_execute_callable",
+]
 
 
 def ptx_mov_opcode(ptx_type):

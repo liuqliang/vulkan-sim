@@ -576,6 +576,7 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == CALL_OP) || (m_opcode == TRACE_RAY_OP) ||
       (m_opcode == RT_PUBLISH_TRACE_CONTEXT_OP) || (m_opcode == RT_SUBMIT_OP) ||
       (m_opcode == RT_RETIRE_CONTEXT_OP) || (m_opcode == CALL_MISS_SHADER_OP) ||
+      (m_opcode == RT_EXECUTE_CALLABLE_OP) ||
       (m_opcode == CALL_CLOSEST_HIT_SHADER_OP) || (m_opcode == LD_RAY_LAUNCH_ID_OP) ||
       (m_opcode == LD_RAY_LAUNCH_SIZE_OP) || (m_opcode == LD_VK_DESC_OP) ||
       (m_opcode == IMG_DEREF_ST_OP) || (m_opcode == RT_ALLOC_MEM_OP) ||
@@ -626,6 +627,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != CALL_OP) && (m_opcode != TRACE_RAY_OP) &&
       (m_opcode != RT_PUBLISH_TRACE_CONTEXT_OP) && (m_opcode != RT_SUBMIT_OP) &&
       (m_opcode != RT_RETIRE_CONTEXT_OP) && (m_opcode != CALL_MISS_SHADER_OP) &&
+      (m_opcode != RT_EXECUTE_CALLABLE_OP) &&
       (m_opcode != CALL_CLOSEST_HIT_SHADER_OP) && (m_opcode != LD_RAY_LAUNCH_ID_OP) &&
       (m_opcode != LD_RAY_LAUNCH_SIZE_OP) && (m_opcode != LD_VK_DESC_OP) &&
       (m_opcode != IMG_DEREF_ST_OP) && (m_opcode != RT_ALLOC_MEM_OP) &&
@@ -870,6 +872,7 @@ void ptx_instruction::set_opcode_and_latency() {
     case CALL_CLOSEST_HIT_SHADER_OP:
     case CALL_INTERSECTION_SHADER_OP:
     case CALL_ANYHIT_SHADER_OP:
+    case RT_EXECUTE_CALLABLE_OP:
       op = CALL_OPS;
       break;
 
@@ -1381,6 +1384,9 @@ void ptx_instruction::set_input_output_registers() {
       operand_classification = {2, 1, 1};
       break;
     case RT_RETIRE_CONTEXT_OP:
+      operand_classification = {1, 1};
+      break;
+    case RT_EXECUTE_CALLABLE_OP:
       operand_classification = {1, 1};
       break;
     case LD_RAY_LAUNCH_SIZE_OP:

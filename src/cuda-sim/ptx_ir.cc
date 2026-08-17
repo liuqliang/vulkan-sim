@@ -362,6 +362,7 @@ void function_info::create_basic_blocks() {
         case CALL_CLOSEST_HIT_SHADER_OP:
         case CALL_INTERSECTION_SHADER_OP:
         case CALL_ANYHIT_SHADER_OP:
+        case RT_EXECUTE_CALLABLE_OP:
           if (pI->has_pred()) {
             printf("GPGPU-Sim PTX: Warning found predicated call\n");
             // Check if this is the last instruction

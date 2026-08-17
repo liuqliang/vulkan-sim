@@ -27,6 +27,14 @@ typedef struct variable_decleration_entry{
   uint32_t size;
 } variable_decleration_entry;
 
+typedef struct callable_data_binding_entry {
+    uint64_t address;
+    uint32_t size;
+    function_info *callee;
+    uint32_t sbt_index;
+    uint32_t shader_id;
+} callable_data_binding_entry;
+
 typedef struct Hit_data{
     VkGeometryTypeKHR geometryType;
     uint32_t hit_kind;
@@ -71,9 +79,53 @@ typedef struct Traversal_data {
 
 typedef struct Vulkan_RT_thread_data {
     std::vector<variable_decleration_entry> variable_decleration_table;
+    std::vector<callable_data_binding_entry> callable_data_bindings;
 
     std::vector<Traversal_data*> traversal_data;
     std::vector<Hit_data*> all_hit_data;
+
+    bool push_callable_data_binding(uint64_t address, uint32_t size,
+                                    function_info *callee,
+                                    uint32_t sbt_index,
+                                    uint32_t shader_id) {
+        if (address == 0 || size == 0 || callee == NULL ||
+            callable_data_bindings.size() >= 32) {
+            return false;
+        }
+        callable_data_binding_entry entry = {};
+        entry.address = address;
+        entry.size = size;
+        entry.callee = callee;
+        entry.sbt_index = sbt_index;
+        entry.shader_id = shader_id;
+        callable_data_bindings.push_back(entry);
+        return true;
+    }
+
+    bool current_callable_data_binding(
+            function_info *callee,
+            callable_data_binding_entry *entry) const {
+        if (callee == NULL || entry == NULL ||
+            callable_data_bindings.empty() ||
+            callable_data_bindings.back().callee != callee) {
+            return false;
+        }
+        *entry = callable_data_bindings.back();
+        return entry->address != 0 && entry->size != 0;
+    }
+
+    bool pop_callable_data_binding(function_info *callee,
+                                   callable_data_binding_entry *entry) {
+        if (callee == NULL || callable_data_bindings.empty() ||
+            callable_data_bindings.back().callee != callee) {
+            return false;
+        }
+        if (entry != NULL) {
+            *entry = callable_data_bindings.back();
+        }
+        callable_data_bindings.pop_back();
+        return true;
+    }
 
 
     variable_decleration_entry* get_variable_decleration_entry(nir_variable_mode type, std::string name, uint32_t size) {

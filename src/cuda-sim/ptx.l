@@ -195,6 +195,7 @@ call_miss_shader   TC; yylval->int_value = CALL_MISS_SHADER_OP; return OPCODE;
 call_closest_hit_shader   TC; yylval->int_value = CALL_CLOSEST_HIT_SHADER_OP; return OPCODE;
 call_intersection_shader   TC; yylval->int_value = CALL_INTERSECTION_SHADER_OP; return OPCODE;
 call_anyhit_shader   TC; yylval->int_value = CALL_ANYHIT_SHADER_OP; return OPCODE;
+rt_execute_callable   TC; yylval->int_value = RT_EXECUTE_CALLABLE_OP; return OPCODE;
 image_deref_store   TC; yylval->int_value = IMG_DEREF_ST_OP; return OPCODE;
 image_deref_load   TC; yylval->int_value = IMG_DEREF_LD_OP; return OPCODE;
 store_deref TC; yylval->int_value = ST_DEREF_OP; return OPCODE;
