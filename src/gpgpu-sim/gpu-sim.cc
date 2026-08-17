@@ -1615,11 +1615,9 @@ void shader_core_ctx::rt_mem_instruction_stats(const warp_inst_t &inst) {
 
 bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
   // Jin: concurrent kernels on one SM
-  if (m_config->gpgpu_concurrent_kernel_sm ||
-      rtcore_full_continuation_stack_enabled()) {
-    if (m_config->gpgpu_concurrent_kernel_sm &&
-        m_config->max_cta(kernel) < 1)
-      return false;
+  if (m_config->gpgpu_concurrent_kernel_sm) {
+    if (m_config->max_cta(kernel) < 1) return false;
+
     return occupy_shader_resource_1block(kernel, false);
   } else {
     const gpgpu_ptx_sim_info *kernel_info =
@@ -1697,8 +1695,7 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
 
 void shader_core_ctx::release_shader_resource_1block(unsigned hw_ctaid,
                                                      kernel_info_t &k) {
-  if (m_config->gpgpu_concurrent_kernel_sm ||
-      rtcore_full_continuation_stack_enabled()) {
+  if (m_config->gpgpu_concurrent_kernel_sm) {
     unsigned threads_per_cta = k.threads_per_cta();
     const class function_info *kernel = k.entry();
     unsigned int padded_cta_size = threads_per_cta;
@@ -1730,71 +1727,6 @@ void shader_core_ctx::release_shader_resource_1block(unsigned hw_ctaid,
   }
 }
 
-unsigned shader_core_ctx::rtcore_register_allocation_for_warp(
-    unsigned warp_id) const {
-  assert(warp_id < m_config->max_warps_per_shader);
-  ptx_thread_info *representative = NULL;
-  for (unsigned lane = 0; lane < m_config->warp_size; ++lane) {
-    representative = m_thread[warp_id * m_config->warp_size + lane];
-    if (representative != NULL) {
-      break;
-    }
-  }
-  if (representative == NULL) {
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
-            "owner_hw_sid=%u warp_id=%u phase=register_charge "
-            "reason=no_thread_for_warp\n",
-            m_sid, warp_id);
-    fflush(stderr);
-    abort();
-  }
-  const gpgpu_ptx_sim_info *kernel_info =
-      ptx_sim_kernel_info(representative->get_kernel().entry());
-  return m_config->warp_size * ((kernel_info->regs + 3) & ~3);
-}
-
-void shader_core_ctx::rtcore_release_warp_register_allocation(
-    unsigned warp_id, unsigned warp_uid, unsigned register_count) {
-  assert(rtcore_full_continuation_stack_enabled());
-  assert(register_count == rtcore_register_allocation_for_warp(warp_id));
-  if (m_occupied_regs < register_count) {
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_REGISTER_CONTINUATION_FAULT "
-            "owner_hw_sid=%u warp_id=%u phase=register_release "
-            "occupied_registers=%u register_count=%u reason=underflow\n",
-            m_sid, warp_id, m_occupied_regs, register_count);
-    fflush(stderr);
-    abort();
-  }
-  m_occupied_regs -= register_count;
-  printf("GPGPU-Sim RTCORE_REGISTER_CONTINUATION_REGISTER_RELEASE "
-         "owner_hw_sid=%u warp_uid=%u warp_id=%u register_count=%u "
-         "occupied_registers=%u capacity_registers=%u\n",
-         m_sid, warp_uid, warp_id, register_count, m_occupied_regs,
-         m_config->gpgpu_shader_registers);
-  fflush(stdout);
-}
-
-bool shader_core_ctx::rtcore_try_reacquire_warp_register_allocation(
-    unsigned warp_id, unsigned warp_uid, unsigned register_count) {
-  assert(rtcore_full_continuation_stack_enabled());
-  assert(register_count == rtcore_register_allocation_for_warp(warp_id));
-  if (register_count > m_config->gpgpu_shader_registers ||
-      m_occupied_regs >
-          m_config->gpgpu_shader_registers - register_count) {
-    return false;
-  }
-  m_occupied_regs += register_count;
-  printf("GPGPU-Sim RTCORE_REGISTER_CONTINUATION_REGISTER_REACQUIRE "
-         "owner_hw_sid=%u warp_uid=%u warp_id=%u register_count=%u "
-         "occupied_registers=%u capacity_registers=%u\n",
-         m_sid, warp_uid, warp_id, register_count, m_occupied_regs,
-         m_config->gpgpu_shader_registers);
-  fflush(stdout);
-  return true;
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////
 
 /**
@@ -1813,10 +1745,7 @@ unsigned exec_shader_core_ctx::sim_init_thread(
 }
 
 void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
-  const bool dynamic_resource_accounting =
-      m_config->gpgpu_concurrent_kernel_sm ||
-      rtcore_full_continuation_stack_enabled();
-  if (!dynamic_resource_accounting)
+  if (!m_config->gpgpu_concurrent_kernel_sm)
     set_max_cta(kernel);
   else
     assert(occupy_shader_resource_1block(kernel, true));
@@ -1827,7 +1756,7 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   unsigned free_cta_hw_id = (unsigned)-1;
 
   unsigned max_cta_per_core;
-  if (!dynamic_resource_accounting)
+  if (!m_config->gpgpu_concurrent_kernel_sm)
     max_cta_per_core = kernel_max_cta_per_shader;
   else
     max_cta_per_core = m_config->max_cta_per_core;
@@ -1852,7 +1781,7 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
 
   unsigned int start_thread, end_thread;
 
-  if (!dynamic_resource_accounting) {
+  if (!m_config->gpgpu_concurrent_kernel_sm) {
     start_thread = free_cta_hw_id * padded_cta_size;
     end_thread = start_thread + cta_size;
   } else {

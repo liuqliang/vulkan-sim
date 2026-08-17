@@ -178,8 +178,6 @@ ptx_thread_info::ptx_thread_info(kernel_info_t &kernel) : m_kernel(kernel) {
   m_last_dram_callback.function = NULL;
   m_last_dram_callback.instruction = NULL;
   m_regs.push_back(reg_map_t());
-  m_rtcore_continuation_prepared = false;
-  m_rtcore_continuation_committed = false;
   m_debug_trace_regs_modified.push_back(reg_map_t());
   m_debug_trace_regs_read.push_back(reg_map_t());
   m_callstack.push_back(stack_entry());
@@ -192,49 +190,6 @@ ptx_thread_info::ptx_thread_info(kernel_info_t &kernel) : m_kernel(kernel) {
   m_last_set_operand_value = ptx_reg_t();
   
   RT_thread_data = new Vulkan_RT_thread_data;
-}
-
-size_t ptx_thread_info::rtcore_prepare_register_continuation() {
-  if (m_rtcore_continuation_prepared ||
-      m_rtcore_continuation_committed || m_regs.empty()) {
-    return 0;
-  }
-
-  m_rtcore_continuation_regs = m_regs;
-  m_rtcore_continuation_prepared = true;
-  size_t saved_values = 0;
-  for (std::list<reg_map_t>::const_iterator frame =
-           m_rtcore_continuation_regs.begin();
-       frame != m_rtcore_continuation_regs.end(); ++frame) {
-    saved_values += frame->size();
-  }
-  return saved_values;
-}
-
-bool ptx_thread_info::rtcore_commit_register_continuation() {
-  if (!m_rtcore_continuation_prepared ||
-      m_rtcore_continuation_committed ||
-      m_rtcore_continuation_regs.empty() || m_regs.empty()) {
-    return false;
-  }
-
-  m_regs.clear();
-  m_rtcore_continuation_committed = true;
-  return true;
-}
-
-bool ptx_thread_info::rtcore_restore_register_continuation() {
-  if (!m_rtcore_continuation_prepared ||
-      !m_rtcore_continuation_committed ||
-      m_rtcore_continuation_regs.empty() || !m_regs.empty()) {
-    return false;
-  }
-
-  m_regs.swap(m_rtcore_continuation_regs);
-  m_rtcore_continuation_regs.clear();
-  m_rtcore_continuation_prepared = false;
-  m_rtcore_continuation_committed = false;
-  return true;
 }
 
 const ptx_version &ptx_thread_info::get_ptx_version() const {
