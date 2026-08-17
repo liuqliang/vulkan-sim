@@ -162,6 +162,11 @@ status_kind prepare_new_submit(
     new_submit_plan_v0 *plan);
 status_kind commit_new_submit(state_v0 *state,
                               const new_submit_plan_v0 &plan);
+status_kind prepare_nested_submit(
+    const state_v0 &state, const request_owner::warp_identity_v0 &identity,
+    new_submit_plan_v0 *plan);
+status_kind commit_nested_submit(state_v0 *state,
+                                 const new_submit_plan_v0 &plan);
 
 status_kind prepare_resubmit(
     const state_v0 &state, uint8_t resident_warp_slot,

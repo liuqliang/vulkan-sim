@@ -2045,6 +2045,26 @@ static unsigned g_rtcore_next_resident_rt_warp_generation = 1;
 static std::map<unsigned, rtcore::v04::timing_driver::state_v0>
     g_rtcore_v04_timing_drivers;
 
+struct rtcore_recursive_suspended_parent_owner {
+    unsigned child_warp_uid;
+    rtcore_resident_rt_warp_record resident;
+    std::map<unsigned, rtcore_replay_lane_request> lane_requests;
+
+    rtcore_recursive_suspended_parent_owner()
+        : child_warp_uid(0), resident(), lane_requests() {}
+};
+
+static std::map<rtcore_resident_rt_warp_record_key,
+                std::vector<rtcore_recursive_suspended_parent_owner> >
+    g_rtcore_recursive_suspended_parent_owners;
+static const size_t kRtcoreRecursiveOwnerStackCapacity = 8;
+static unsigned g_rtcore_khr_max_pipeline_trace_depth = 1;
+
+extern "C" unsigned rtcore_khr_max_pipeline_trace_depth()
+{
+    return g_rtcore_khr_max_pipeline_trace_depth;
+}
+
 static rtcore::v04::timing_driver::state_v0 &
 rtcore_v04_timing_driver_for(unsigned owner_hw_sid)
 {
@@ -2109,6 +2129,175 @@ rtcore_prepare_commit_v04_global384_timing_owner_plan(
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged;
     *owner_plan = timing_plan.owner_plan;
     return RTCORE_V04_GLOBAL384_TIMING_OWNER_READY;
+}
+
+extern "C" rtcore_v04_global384_timing_owner_status
+rtcore_prepare_commit_v04_global384_nested_timing_owner_plan(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask,
+    rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan)
+{
+    namespace request_owner = rtcore::v04::request_owner;
+    namespace timing_driver = rtcore::v04::timing_driver;
+    if (owner_plan == NULL || active_mask == 0 ||
+        !rtcore_v04_root_node_ready_packet_enabled() ||
+        !rtcore_v04_live_timing_driver_control_enabled() ||
+        !rtcore_v04_live_timing_driver_control_prerequisites_enabled() ||
+        !rtcore_v04_live_global_memory_adapter_configuration_valid()) {
+        return RTCORE_V04_GLOBAL384_TIMING_OWNER_FAULT;
+    }
+    *owner_plan = request_owner::new_warp_plan_v0();
+    timing_driver::state_v0 staged =
+        rtcore_v04_timing_driver_for(owner_hw_sid);
+    request_owner::warp_identity_v0 identity = {};
+    identity.owner_hw_sid = owner_hw_sid;
+    identity.warp_uid = warp_uid;
+    identity.warp_id = warp_id;
+    identity.active_mask = active_mask;
+    timing_driver::new_submit_plan_v0 timing_plan = {};
+    const timing_driver::status_kind prepare_status =
+        timing_driver::prepare_nested_submit(staged, identity, &timing_plan);
+    if (prepare_status == timing_driver::kStatusResidentCapacityExceeded ||
+        prepare_status == timing_driver::kStatusRequestCapacityExceeded) {
+        return RTCORE_V04_GLOBAL384_TIMING_OWNER_WAIT;
+    }
+    if (prepare_status != timing_driver::kStatusOk ||
+        timing_driver::commit_nested_submit(&staged, timing_plan) !=
+            timing_driver::kStatusOk) {
+        return RTCORE_V04_GLOBAL384_TIMING_OWNER_FAULT;
+    }
+    rtcore_v04_timing_driver_for(owner_hw_sid) = staged;
+    *owner_plan = timing_plan.owner_plan;
+    printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_RT_OWNER_ADMIT "
+           "owner_hw_sid=%u child_warp_uid=%u warp_id=%u "
+           "active_mask=0x%08x resident_slot=%u "
+           "physical_cta_admission=0 physical_warp_admission=0 "
+           "result=accepted\n",
+           owner_hw_sid, warp_uid, warp_id, active_mask,
+           owner_plan->resident_warp_slot);
+    fflush(stdout);
+    return RTCORE_V04_GLOBAL384_TIMING_OWNER_READY;
+}
+
+extern "C" bool rtcore_suspend_v04_recursive_parent_owner(
+    unsigned owner_hw_sid, unsigned parent_warp_uid,
+    unsigned child_warp_uid, unsigned warp_id, unsigned active_mask,
+    const char **failure_reason)
+{
+    const char *failure = "accepted";
+    rtcore_resident_rt_warp_record_key key = {};
+    key.owner_hw_sid = owner_hw_sid;
+    key.warp_id = warp_id;
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_resident_rt_warp_record>::iterator parent =
+        g_rtcore_resident_rt_warp_records.find(key);
+    std::vector<rtcore_recursive_suspended_parent_owner> &stack =
+        g_rtcore_recursive_suspended_parent_owners[key];
+    if (parent_warp_uid == 0 || child_warp_uid == 0 ||
+        parent_warp_uid == child_warp_uid || active_mask == 0) {
+        failure = "invalid_recursive_owner_identity";
+    } else if (parent == g_rtcore_resident_rt_warp_records.end() ||
+               !parent->second.valid ||
+               parent->second.current_warp_uid != parent_warp_uid ||
+               parent->second.active_mask != active_mask) {
+        failure = "recursive_parent_resident_shell_mismatch";
+    } else if (stack.size() >= kRtcoreRecursiveOwnerStackCapacity) {
+        failure = "recursive_owner_stack_overflow";
+    }
+
+    rtcore_recursive_suspended_parent_owner snapshot;
+    if (strcmp(failure, "accepted") == 0) {
+        snapshot.child_warp_uid = child_warp_uid;
+        snapshot.resident = parent->second;
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            const unsigned lane_mask = 1u << lane;
+            if ((active_mask & lane_mask) == 0) continue;
+            const unsigned thread_uid =
+                snapshot.resident.lane_identity[lane].thread_uid;
+            std::map<unsigned, rtcore_replay_lane_request>::const_iterator
+                request = g_rtcore_replay_lane_requests.find(thread_uid);
+            if (thread_uid == 0 ||
+                (request != g_rtcore_replay_lane_requests.end() &&
+                 (!request->second.valid ||
+                  request->second.warp_uid != parent_warp_uid))) {
+                failure = "recursive_parent_lane_request_mismatch";
+                break;
+            }
+            // The live timing path is allowed to retire its host-side replay
+            // request after boundary commit; the resident timing-driver lane
+            // control and shell remain authoritative in that case.  Preserve
+            // a request only when one is still pinned.
+            if (request != g_rtcore_replay_lane_requests.end()) {
+                snapshot.lane_requests[thread_uid] = request->second;
+            }
+        }
+    }
+    if (strcmp(failure, "accepted") == 0) {
+        stack.push_back(snapshot);
+        g_rtcore_resident_rt_warp_records.erase(parent);
+        printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_PARENT_OWNER_SUSPEND "
+               "owner_hw_sid=%u warp_id=%u parent_warp_uid=%u "
+               "child_warp_uid=%u active_mask=0x%08x owner_depth=%zu "
+               "parent_rt_owner_retained=1\n",
+               owner_hw_sid, warp_id, parent_warp_uid, child_warp_uid,
+               active_mask, stack.size());
+        fflush(stdout);
+    } else if (stack.empty()) {
+        g_rtcore_recursive_suspended_parent_owners.erase(key);
+    }
+    if (failure_reason != NULL) *failure_reason = failure;
+    return strcmp(failure, "accepted") == 0;
+}
+
+extern "C" bool rtcore_restore_v04_recursive_parent_owner_if_present(
+    unsigned owner_hw_sid, unsigned child_warp_uid, unsigned warp_id,
+    unsigned long long service_cycle, bool *restored,
+    const char **failure_reason)
+{
+    if (restored != NULL) *restored = false;
+    const char *failure = "accepted";
+    rtcore_resident_rt_warp_record_key key = {};
+    key.owner_hw_sid = owner_hw_sid;
+    key.warp_id = warp_id;
+    std::map<rtcore_resident_rt_warp_record_key,
+             std::vector<rtcore_recursive_suspended_parent_owner> >::iterator
+        found = g_rtcore_recursive_suspended_parent_owners.find(key);
+    if (found == g_rtcore_recursive_suspended_parent_owners.end() ||
+        found->second.empty()) {
+        if (failure_reason != NULL) *failure_reason = "not_present";
+        return true;
+    }
+    rtcore_recursive_suspended_parent_owner snapshot = found->second.back();
+    if (snapshot.child_warp_uid != child_warp_uid ||
+        g_rtcore_resident_rt_warp_records.find(key) !=
+            g_rtcore_resident_rt_warp_records.end()) {
+        failure = "recursive_parent_restore_identity_mismatch";
+    }
+    if (strcmp(failure, "accepted") == 0) {
+        g_rtcore_resident_rt_warp_records[key] = snapshot.resident;
+        for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator
+                 request = snapshot.lane_requests.begin();
+             request != snapshot.lane_requests.end(); ++request) {
+            g_rtcore_replay_lane_requests[request->first] = request->second;
+        }
+        found->second.pop_back();
+        if (found->second.empty()) {
+            g_rtcore_recursive_suspended_parent_owners.erase(found);
+        }
+        if (restored != NULL) *restored = true;
+        printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_PARENT_OWNER_RESTORE "
+               "owner_hw_sid=%u warp_id=%u child_warp_uid=%u "
+               "parent_warp_uid=%u active_mask=0x%08x "
+               "parent_resident_generation=%u restore_cycle=%llu "
+               "validated=1\n",
+               owner_hw_sid, warp_id, child_warp_uid,
+               snapshot.resident.current_warp_uid,
+               snapshot.resident.active_mask,
+               snapshot.resident.resident_generation, service_cycle);
+        fflush(stdout);
+    }
+    if (failure_reason != NULL) *failure_reason = failure;
+    return strcmp(failure, "accepted") == 0;
 }
 
 extern "C" bool rtcore_validate_v04_global384_timing_owner_plan(
@@ -2183,11 +2372,20 @@ extern "C" bool rtcore_rollback_v04_global384_timing_preissue(
     }
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged;
     if (shell_present) g_rtcore_resident_rt_warp_records.erase(record);
+    bool recursive_parent_restored = false;
+    const char *recursive_restore_failure = "accepted";
+    if (!rtcore_restore_v04_recursive_parent_owner_if_present(
+            owner_hw_sid, warp_uid, warp_id, 0,
+            &recursive_parent_restored, &recursive_restore_failure)) {
+        return false;
+    }
     printf("GPGPU-Sim RTCORE_V04_GLOBAL384_TIMING_PREISSUE_ROLLBACK "
            "owner_hw_sid=%u warp_uid=%u warp_id=%u active_mask=0x%08x "
-           "resident_slot=%u resident_shell_released=%u result=released\n",
+           "resident_slot=%u resident_shell_released=%u "
+           "recursive_parent_restored=%u result=released\n",
            owner_hw_sid, warp_uid, warp_id, active_mask,
-           owner_plan->resident_warp_slot, shell_present ? 1u : 0u);
+           owner_plan->resident_warp_slot, shell_present ? 1u : 0u,
+           recursive_parent_restored ? 1u : 0u);
     fflush(stdout);
     return true;
 }
@@ -19138,6 +19336,7 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
         record ? record->v04_continuation_lifecycle
                      .completion_transaction_generation
                : 0;
+    bool recursive_parent_restored = false;
     if (record && strcmp(reason, "accepted") == 0) {
         if (rtcore_v04_request_owner_binding_enabled()) {
             const char *owner_fault = "ok";
@@ -19313,6 +19512,19 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
             fflush(stderr);
             abort();
         }
+        const char *recursive_restore_failure = "accepted";
+        if (!rtcore_restore_v04_recursive_parent_owner_if_present(
+                owner_hw_sid, submit_warp_uid, warp_id, service_cycle,
+                &recursive_parent_restored, &recursive_restore_failure)) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_OWNER_FAULT "
+                    "owner_hw_sid=%u warp_id=%u child_warp_uid=%u "
+                    "fault=%s\n",
+                    owner_hw_sid, warp_id, submit_warp_uid,
+                    recursive_restore_failure);
+            fflush(stderr);
+            abort();
+        }
     }
 
     const unsigned occupancy_after =
@@ -19330,10 +19542,12 @@ extern "C" bool rtcore_commit_retire_resident_rt_warp_lifecycle(
                "owner_hw_sid=%u retire_warp_uid=%u submit_warp_uid=%u "
                "warp_id=%u resident_generation=%u "
                "bound_lane_mask=0x%08x external_resources_released=1 "
-               "resident_record_released=1 resident_occupancy_before=%u "
+               "resident_record_released=1 recursive_parent_restored=%u "
+               "resident_occupancy_before=%u "
                "resident_occupancy_after=%u service_cycle=%llu\n",
                owner_hw_sid, retire_warp_uid, submit_warp_uid, warp_id,
-               resident_generation, bound_mask, occupancy_before,
+               resident_generation, bound_mask,
+               recursive_parent_restored ? 1u : 0u, occupancy_before,
                occupancy_after, service_cycle);
         fflush(stdout);
     }
@@ -36112,6 +36326,25 @@ void VulkanRayTracing::load_descriptor(const ptx_instruction *pI, ptx_thread_inf
 void VulkanRayTracing::setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreateInfos)
 {
     VulkanRayTracing::pCreateInfos = pCreateInfos;
+	const char *continuation_candidate =
+		getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK");
+	if (pCreateInfos != NULL && continuation_candidate != NULL &&
+		strcmp(continuation_candidate, "1") == 0) {
+		const unsigned requested =
+			pCreateInfos->maxPipelineRayRecursionDepth;
+		if (requested == 0 || requested > kRtcoreRecursiveOwnerStackCapacity) {
+			fprintf(stderr,
+				"GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_FAULT "
+				"requested_pipeline_depth=%u capacity=%zu "
+				"fault=pipeline_trace_depth_unsupported_fail_closed\n",
+				requested, kRtcoreRecursiveOwnerStackCapacity);
+			abort();
+		}
+		g_rtcore_khr_max_pipeline_trace_depth = requested;
+		printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_CONFIG "
+			   "pipeline_trace_depth=%u capacity=%zu validated=1\n",
+			   requested, kRtcoreRecursiveOwnerStackCapacity);
+	}
 	std::cout << "gpgpusim: set pipeline" << std::endl;
 }
 

@@ -144,14 +144,17 @@ const request_owner::allocator_state_v0 *request_control(
   return state.initialized ? &state.request_control : NULL;
 }
 
-status_kind prepare_new_submit(
+static status_kind prepare_new_submit_internal(
     const state_v0 &state, const request_owner::warp_identity_v0 &identity,
-    new_submit_plan_v0 *plan) {
+    bool nested_physical_warp, new_submit_plan_v0 *plan) {
   if (!state.initialized || plan == NULL) return kStatusInvalidArgument;
   std::memset(plan, 0, sizeof(*plan));
   const request_owner::status_kind owner_status =
-      request_owner::prepare_new_warp(state.request_control, identity,
-                                      &plan->owner_plan);
+      nested_physical_warp
+          ? request_owner::prepare_nested_warp(
+                state.request_control, identity, &plan->owner_plan)
+          : request_owner::prepare_new_warp(
+                state.request_control, identity, &plan->owner_plan);
   if (owner_status != request_owner::kStatusOk)
     return map_request_owner_status(owner_status);
   plan->valid = true;
@@ -159,8 +162,9 @@ status_kind prepare_new_submit(
   return kStatusOk;
 }
 
-status_kind commit_new_submit(state_v0 *state,
-                              const new_submit_plan_v0 &plan) {
+static status_kind commit_new_submit_internal(
+    state_v0 *state, const new_submit_plan_v0 &plan,
+    bool nested_physical_warp) {
   if (state == NULL) return kStatusInvalidArgument;
   const status_kind epoch_status =
       validate_plan_epoch(*state, plan.valid, plan.expected_mutation_epoch);
@@ -168,8 +172,11 @@ status_kind commit_new_submit(state_v0 *state,
 
   state_v0 staged = *state;
   const request_owner::status_kind owner_status =
-      request_owner::commit_new_warp(&staged.request_control,
-                                     plan.owner_plan);
+      nested_physical_warp
+          ? request_owner::commit_nested_warp(
+                &staged.request_control, plan.owner_plan)
+          : request_owner::commit_new_warp(
+                &staged.request_control, plan.owner_plan);
   if (owner_status != request_owner::kStatusOk)
     return map_request_owner_status(owner_status);
   for (uint32_t lane = 0; lane < request_owner::kLaneCapacity; ++lane) {
@@ -187,6 +194,28 @@ status_kind commit_new_submit(state_v0 *state,
   ++staged.mutation_epoch;
   *state = staged;
   return kStatusOk;
+}
+
+status_kind prepare_new_submit(
+    const state_v0 &state, const request_owner::warp_identity_v0 &identity,
+    new_submit_plan_v0 *plan) {
+  return prepare_new_submit_internal(state, identity, false, plan);
+}
+
+status_kind commit_new_submit(state_v0 *state,
+                              const new_submit_plan_v0 &plan) {
+  return commit_new_submit_internal(state, plan, false);
+}
+
+status_kind prepare_nested_submit(
+    const state_v0 &state, const request_owner::warp_identity_v0 &identity,
+    new_submit_plan_v0 *plan) {
+  return prepare_new_submit_internal(state, identity, true, plan);
+}
+
+status_kind commit_nested_submit(state_v0 *state,
+                                 const new_submit_plan_v0 &plan) {
+  return commit_new_submit_internal(state, plan, true);
 }
 
 status_kind prepare_resubmit(

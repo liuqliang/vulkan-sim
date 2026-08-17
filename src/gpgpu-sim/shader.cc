@@ -646,6 +646,11 @@ static const unsigned RTCORE_SHADER_CONTINUATION_REASON_TRACE_DONE_NO_SHADER =
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_FAULT = 6;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED = 7;
 static const unsigned RTCORE_RESIDENT_DISPATCH_MAX_DEPTH = 8;
+static bool rtcore_khr_recursive_trace_enabled() {
+  const char *value =
+      getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK");
+  return value != NULL && strcmp(value, "1") == 0;
+}
 
 struct rtcore_resident_dispatch_frame_v0 {
   unsigned entry_id;
@@ -866,6 +871,9 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
         v04_native_completion_transaction_generation(0),
         v04_native_identity_valid_mask(0),
         pending_shader_terminal_mask(0),
+        logical_trace_invocation_id(0),
+        parent_trace_invocation_id(0),
+        logical_trace_depth(0),
         conservation_next_cohort_seq(1),
         conservation_inflight_cohort_seq(0) {
     live_publication_round = {};
@@ -962,6 +970,9 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   unsigned v04_native_completion_transaction_generation;
   unsigned v04_native_identity_valid_mask;
   unsigned pending_shader_terminal_mask;
+  unsigned logical_trace_invocation_id;
+  unsigned parent_trace_invocation_id;
+  unsigned logical_trace_depth;
   unsigned conservation_next_cohort_seq;
   unsigned conservation_inflight_cohort_seq;
   rtcore::v04::pre_submit_publication::live_publication_round_request_v0
@@ -1097,9 +1108,62 @@ static bool rtcore_shader_continuation_load_sbt_metadata_request_address(
 static std::map<rtcore_shader_continuation_dispatcher_pending_key,
                 rtcore_shader_continuation_dispatcher_pending_entry>
     g_rtcore_shader_continuation_dispatcher_pending;
+static std::map<
+    rtcore_shader_continuation_dispatcher_pending_key,
+    std::vector<rtcore_shader_continuation_dispatcher_pending_entry> >
+    g_rtcore_shader_continuation_dispatcher_suspended;
+static unsigned g_rtcore_next_trace_invocation_id = 1;
 static unsigned g_rtcore_next_shader_continuation_metadata_lookup_generation =
     1;
 static unsigned g_rtcore_next_shader_continuation_handoff_read_generation = 1;
+
+static void rtcore_complete_shader_continuation_pending(
+    const rtcore_shader_continuation_dispatcher_pending_key &key,
+    unsigned long long completion_cycle) {
+  std::map<rtcore_shader_continuation_dispatcher_pending_key,
+           std::vector<rtcore_shader_continuation_dispatcher_pending_entry> >
+      ::iterator suspended =
+          g_rtcore_shader_continuation_dispatcher_suspended.find(key);
+  if (suspended == g_rtcore_shader_continuation_dispatcher_suspended.end() ||
+      suspended->second.empty()) {
+    g_rtcore_shader_continuation_dispatcher_pending.erase(key);
+    if (suspended != g_rtcore_shader_continuation_dispatcher_suspended.end()) {
+      g_rtcore_shader_continuation_dispatcher_suspended.erase(suspended);
+    }
+    return;
+  }
+  const rtcore_shader_continuation_dispatcher_pending_entry child =
+      g_rtcore_shader_continuation_dispatcher_pending[key];
+  rtcore_shader_continuation_dispatcher_pending_entry parent =
+      suspended->second.back();
+  suspended->second.pop_back();
+  if (parent.logical_trace_invocation_id !=
+          child.parent_trace_invocation_id ||
+      parent.logical_trace_depth + 1 != child.logical_trace_depth ||
+      !parent.call_inflight) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_FAULT "
+            "owner_hw_sid=%u warp_id=%u child_invocation_id=%u "
+            "parent_invocation_id=%u depth=%u "
+            "fault=parent_restore_identity_mismatch_fail_closed\n",
+            key.owner_hw_sid, key.warp_id,
+            child.logical_trace_invocation_id,
+            child.parent_trace_invocation_id, child.logical_trace_depth);
+    abort();
+  }
+  g_rtcore_shader_continuation_dispatcher_pending[key] = parent;
+  if (suspended->second.empty()) {
+    g_rtcore_shader_continuation_dispatcher_suspended.erase(suspended);
+  }
+  printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_PARENT_RESTORE "
+         "owner_hw_sid=%u warp_id=%u child_invocation_id=%u "
+         "parent_invocation_id=%u child_depth=%u parent_depth=%u "
+         "parent_call_inflight=1 restore_cycle=%llu validated=1\n",
+         key.owner_hw_sid, key.warp_id, child.logical_trace_invocation_id,
+         parent.logical_trace_invocation_id, child.logical_trace_depth,
+         parent.logical_trace_depth, completion_cycle);
+  fflush(stdout);
+}
 
 static bool rtcore_validate_v04_native_source_authority(
     const rtcore_shader_continuation_dispatcher_pending_entry &entry,
@@ -1435,10 +1499,56 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
   std::map<rtcore_shader_continuation_dispatcher_pending_key,
            rtcore_shader_continuation_dispatcher_pending_entry>::iterator
       existing = g_rtcore_shader_continuation_dispatcher_pending.find(key);
-  assert(existing == g_rtcore_shader_continuation_dispatcher_pending.end() ||
-         !existing->second.valid);
+  const bool nested_trace =
+      existing != g_rtcore_shader_continuation_dispatcher_pending.end() &&
+      existing->second.valid;
+  if (nested_trace &&
+      (!rtcore_khr_recursive_trace_enabled() ||
+       !existing->second.call_inflight)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_FAULT "
+            "owner_hw_sid=%u warp_id=%u "
+            "fault=unexpected_live_parent_pending_fail_closed\n",
+            owner_hw_sid, warp_id);
+    abort();
+  }
+  const unsigned pipeline_trace_depth =
+      rtcore_khr_max_pipeline_trace_depth();
+  if (nested_trace && existing->second.logical_trace_depth + 1 >=
+                          pipeline_trace_depth) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_FAULT "
+            "owner_hw_sid=%u warp_id=%u parent_invocation_id=%u "
+            "parent_depth=%u pipeline_trace_depth=%u "
+            "fault=trace_depth_overflow_fail_closed\n",
+            owner_hw_sid, warp_id,
+            existing->second.logical_trace_invocation_id,
+            existing->second.logical_trace_depth,
+            pipeline_trace_depth);
+    abort();
+  }
 
   rtcore_shader_continuation_dispatcher_pending_entry entry;
+  entry.logical_trace_invocation_id = g_rtcore_next_trace_invocation_id++;
+  if (g_rtcore_next_trace_invocation_id == 0) {
+    g_rtcore_next_trace_invocation_id = 1;
+  }
+  if (nested_trace) {
+    entry.parent_trace_invocation_id =
+        existing->second.logical_trace_invocation_id;
+    entry.logical_trace_depth = existing->second.logical_trace_depth + 1;
+    g_rtcore_shader_continuation_dispatcher_suspended[key].push_back(
+        existing->second);
+    printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_CHILD_ADMIT "
+           "owner_hw_sid=%u warp_id=%u parent_invocation_id=%u "
+           "child_invocation_id=%u child_depth=%u active_mask=0x%08x "
+           "physical_cta_admission=0 physical_warp_admission=0 "
+           "parent_suspended=1\n",
+           owner_hw_sid, warp_id, entry.parent_trace_invocation_id,
+           entry.logical_trace_invocation_id, entry.logical_trace_depth,
+           active_mask);
+    fflush(stdout);
+  }
   entry.valid = true;
   entry.warp_uid = warp_uid;
   entry.warp_id = warp_id;
@@ -2180,14 +2290,31 @@ static bool rtcore_materialize_shader_continuation_target_selection(
     unsigned long long aligned_32b_addr = 0;
     unsigned component = UINT_MAX;
     const unsigned reason = entry->lane_reasons[lane];
-    if (source_inst == NULL ||
-        !rtcore_validate_v04_native_source_authority(
-            *entry, owner_hw_sid, lane, source_inst, thread) ||
-        !rtcore_shader_continuation_selector_from_handoff(
-            entry->lane_handoff_words[lane], reason, &selector) ||
-        !rtcore_shader_continuation_load_sbt_metadata_request_address(
+    const bool source_ready = source_inst != NULL;
+    const bool authority_ready =
+        source_ready && rtcore_validate_v04_native_source_authority(
+                            *entry, owner_hw_sid, lane, source_inst, thread);
+    const bool selector_ready =
+        rtcore_shader_continuation_selector_from_handoff(
+            entry->lane_handoff_words[lane], reason, &selector);
+    const bool address_ready =
+        source_ready && selector_ready &&
+        rtcore_shader_continuation_load_sbt_metadata_request_address(
             source_inst, thread, reason, selector, &context_ptr,
-            &record_addr, &aligned_32b_addr, &component)) {
+            &record_addr, &aligned_32b_addr, &component);
+    if (!source_ready || !authority_ready || !selector_ready ||
+        !address_ready) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_SHADER_CONTINUATION_TARGET_SELECTION_FAULT "
+              "owner_hw_sid=%u warp_uid=%u warp_id=%u cohort_index=%u "
+              "lane_id=%u reason=%u source_ready=%u authority_ready=%u "
+              "selector_ready=%u address_ready=%u selector=%u "
+              "static_inst_pc=0x%x\n",
+              owner_hw_sid, entry->warp_uid, entry->warp_id, cohort_index,
+              lane, reason, source_ready ? 1u : 0u,
+              authority_ready ? 1u : 0u, selector_ready ? 1u : 0u,
+              address_ready ? 1u : 0u, selector, entry->static_inst_pc);
+      fflush(stderr);
       return false;
     }
     if (first_lane) {
@@ -2530,7 +2657,7 @@ rtcore_service_shader_continuation_pseudo_op(
     entry.conservation_inflight_cohort_seq = 0;
     entry.body_issue_count = 0;
     if (all_cohorts_complete) {
-      g_rtcore_shader_continuation_dispatcher_pending.erase(it);
+      rtcore_complete_shader_continuation_pending(key, current_cycle);
     }
     return result;
   }
@@ -2929,7 +3056,7 @@ rtcore_service_shader_continuation_pseudo_op(
     const bool all_cohorts_complete =
         entry.cohort_cursor >= entry.cohort_count;
     if (all_cohorts_complete) {
-      g_rtcore_shader_continuation_dispatcher_pending.erase(it);
+      rtcore_complete_shader_continuation_pending(key, current_cycle);
     }
     result.issued = true;
     return result;
@@ -11996,6 +12123,23 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
     }
     thread->callstack_push(*return_pc, *return_rpc, NULL, NULL,
                            call_uid_next++);
+    const unsigned target_local_frame_base =
+        thread->get_local_mem_stack_pointer();
+    const unsigned target_local_frame_bytes =
+        target_func->local_mem_framesize();
+    if (target_local_frame_bytes > 0 &&
+        (thread->m_local_mem == NULL ||
+         !thread->m_local_mem->ensure_simulator_backing(
+             target_local_frame_base, target_local_frame_bytes))) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
+              "owner_hw_sid=%u warp_id=%u lane_id=%u "
+              "local_frame_base=%u local_frame_bytes=%u "
+              "fault=local_frame_backing_unavailable_fail_closed\n",
+              m_sid, warp_id, lane, target_local_frame_base,
+              target_local_frame_bytes);
+      abort();
+    }
     if (requires_handoff_lane_pointer) {
       ptx_reg_t handoff_lane_value;
       handoff_lane_value.u64 =
@@ -12050,6 +12194,11 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
          "new_cta_allocations=0 new_warp_allocations=0 guarded=1\n",
          m_sid, warp_id, cohort_lane_mask, m_n_active_cta, m_active_warps,
          m_dynamic_warp_id);
+  printf("GPGPU-Sim RTCORE_RESIDENT_DISPATCH_LOCAL_FRAME "
+         "owner_hw_sid=%u warp_id=%u cohort_lane_mask=0x%08x "
+         "target=%s local_frame_bytes=%u backing_ready=1\n",
+         m_sid, warp_id, cohort_lane_mask, target_func->get_name().c_str(),
+         target_func->local_mem_framesize());
   fflush(stdout);
   return true;
 }
@@ -13541,7 +13690,8 @@ void scheduler_unit::cycle() {
       if (pI != NULL && pI->op == RT_CORE_OP &&
           rtcore_shader_continuation_call_inflight(
               m_shader->get_sid(), warp_id,
-              (*iter)->get_dynamic_warp_id())) {
+              (*iter)->get_dynamic_warp_id()) &&
+          !rtcore_khr_recursive_trace_enabled()) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
                 "owner_hw_sid=%u warp_id=%u dynamic_warp_id=%u "

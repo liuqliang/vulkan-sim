@@ -1080,6 +1080,11 @@ status_kind bridge_v0::service_provisional_publication_fence(
   for (std::map<uint64_t, registered_group_v0>::iterator it =
            registered_groups_.begin();
        it != registered_groups_.end(); ++it) {
+    // A recursive TraceRay can publish its child window while the parent
+    // window remains live-bound for the resident shader call.  Only the
+    // not-yet-bound group belongs to this initial publication fence; the
+    // parent's live group remains available for continuation restoration.
+    if (it->second.live_bound || it->second.release_started) continue;
     const allocation_identity::owner_v0 &owner =
         it->second.execution_owner;
     if (owner.owner_hw_sid != owner_hw_sid ||

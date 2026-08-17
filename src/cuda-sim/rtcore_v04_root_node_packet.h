@@ -206,6 +206,27 @@ rtcore_prepare_commit_v04_global384_timing_owner_plan(
     unsigned active_mask,
     rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan);
 
+extern "C" rtcore_v04_global384_timing_owner_status
+rtcore_prepare_commit_v04_global384_nested_timing_owner_plan(
+    unsigned owner_hw_sid, unsigned warp_uid, unsigned warp_id,
+    unsigned active_mask,
+    rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan);
+
+extern "C" bool rtcore_suspend_v04_recursive_parent_owner(
+    unsigned owner_hw_sid, unsigned parent_warp_uid,
+    unsigned child_warp_uid, unsigned warp_id, unsigned active_mask,
+    const char **failure_reason);
+
+extern "C" bool rtcore_restore_v04_recursive_parent_owner_if_present(
+    unsigned owner_hw_sid, unsigned child_warp_uid, unsigned warp_id,
+    unsigned long long service_cycle, bool *restored,
+    const char **failure_reason);
+
+// The Vulkan pipeline declares the maximum live trace chain.  The resident
+// candidate snapshots that scalar at pipeline creation and checks it before
+// mutating caller continuation or traversal state.
+extern "C" unsigned rtcore_khr_max_pipeline_trace_depth();
+
 extern "C" bool rtcore_validate_v04_global384_timing_owner_plan(
     unsigned owner_hw_sid,
     const rtcore::v04::request_owner::new_warp_plan_v0 *owner_plan);

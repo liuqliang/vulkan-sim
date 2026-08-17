@@ -148,13 +148,14 @@ bool validate_private_frontier_owner_identity(
          fields.request_generation == owner.generation;
 }
 
-status_kind prepare_new_warp(const allocator_state_v0 &state,
-                             const warp_identity_v0 &identity,
-                             new_warp_plan_v0 *plan) {
+static status_kind prepare_new_warp_internal(
+    const allocator_state_v0 &state, const warp_identity_v0 &identity,
+    bool allow_nested_physical_warp, new_warp_plan_v0 *plan) {
   if (plan == NULL || !state.initialized) return kStatusInvalidArgument;
   std::memset(plan, 0, sizeof(*plan));
   if (!valid_identity(identity)) return kStatusInvalidActiveMask;
-  if (find_live_resident(state, identity.owner_hw_sid, identity.warp_id)) {
+  if (!allow_nested_physical_warp &&
+      find_live_resident(state, identity.owner_hw_sid, identity.warp_id)) {
     return kStatusDuplicateWarp;
   }
 
@@ -220,8 +221,9 @@ status_kind prepare_new_warp(const allocator_state_v0 &state,
   return kStatusOk;
 }
 
-status_kind commit_new_warp(allocator_state_v0 *state,
-                            const new_warp_plan_v0 &plan) {
+static status_kind commit_new_warp_internal(
+    allocator_state_v0 *state, const new_warp_plan_v0 &plan,
+    bool allow_nested_physical_warp) {
   if (state == NULL || !state->initialized || !plan.valid) {
     return kStatusInvalidArgument;
   }
@@ -231,8 +233,9 @@ status_kind commit_new_warp(allocator_state_v0 *state,
   if (!valid_identity(plan.identity) ||
       plan.resident_warp_slot >= kResidentWarpCapacity ||
       state->resident_slots[plan.resident_warp_slot].live ||
-      find_live_resident(*state, plan.identity.owner_hw_sid,
-                         plan.identity.warp_id)) {
+      (!allow_nested_physical_warp &&
+       find_live_resident(*state, plan.identity.owner_hw_sid,
+                          plan.identity.warp_id))) {
     return kStatusOwnerMismatch;
   }
   bool selected[kRequestControlCapacity] = {};
@@ -292,6 +295,28 @@ status_kind commit_new_warp(allocator_state_v0 *state,
       (last_request_slot + 1u) % kRequestControlCapacity;
   ++state->mutation_epoch;
   return kStatusOk;
+}
+
+status_kind prepare_new_warp(const allocator_state_v0 &state,
+                             const warp_identity_v0 &identity,
+                             new_warp_plan_v0 *plan) {
+  return prepare_new_warp_internal(state, identity, false, plan);
+}
+
+status_kind commit_new_warp(allocator_state_v0 *state,
+                            const new_warp_plan_v0 &plan) {
+  return commit_new_warp_internal(state, plan, false);
+}
+
+status_kind prepare_nested_warp(const allocator_state_v0 &state,
+                                const warp_identity_v0 &identity,
+                                new_warp_plan_v0 *plan) {
+  return prepare_new_warp_internal(state, identity, true, plan);
+}
+
+status_kind commit_nested_warp(allocator_state_v0 *state,
+                               const new_warp_plan_v0 &plan) {
+  return commit_new_warp_internal(state, plan, true);
 }
 
 status_kind prepare_mask_shrink(

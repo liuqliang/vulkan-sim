@@ -128,6 +128,17 @@ status_kind prepare_new_warp(const allocator_state_v0 &state,
 status_kind commit_new_warp(allocator_state_v0 *state,
                             const new_warp_plan_v0 &plan);
 
+// A recursive TraceRay keeps its caller's logical RT owner live while a
+// distinct child traversal uses another RT-private slot.  The physical shader
+// warp is intentionally the same, so this explicit API is the only admission
+// path that permits an additional live owner with the same (SM, warp_id).
+status_kind prepare_nested_warp(const allocator_state_v0 &state,
+                                const warp_identity_v0 &identity,
+                                new_warp_plan_v0 *plan);
+
+status_kind commit_nested_warp(allocator_state_v0 *state,
+                               const new_warp_plan_v0 &plan);
+
 status_kind prepare_mask_shrink(
     const allocator_state_v0 &state, uint8_t resident_warp_slot,
     uint32_t owner_hw_sid, uint32_t previous_warp_uid,
