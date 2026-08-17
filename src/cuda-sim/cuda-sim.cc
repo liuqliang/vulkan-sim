@@ -2461,6 +2461,16 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
     thd->m_sstarr_mem = sstarr_mem;
     function_info *finfo = thd->func_info();
     symbol_table *st = finfo->get_symtab();
+    const unsigned local_frame_bytes = finfo->local_mem_framesize();
+    if (local_frame_bytes > 0) {
+      // Function-scoped .local symbols use offsets from the PTX thread's
+      // local stack pointer.  Materialize that simulator backing before the
+      // first load/store; otherwise an offset of zero can be mistaken for a
+      // host address by the Vulkan external-memory fallback.
+      const bool local_frame_ready =
+          local_mem->ensure_simulator_backing(0, local_frame_bytes);
+      assert(local_frame_ready);
+    }
     thd->func_info()->param_to_shared(thd->m_shared_mem, st);
     thd->func_info()->param_to_shared(thd->m_sstarr_mem, st);
     thd->m_cta_info = cta_info;
