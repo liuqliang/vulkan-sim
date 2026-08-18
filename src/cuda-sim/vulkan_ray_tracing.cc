@@ -122,6 +122,15 @@ static bool rtcore_v04_numeric_projection_evidence_enabled() {
     return enabled;
 }
 
+static bool rtcore_v04_continuation_attribute_evidence_enabled() {
+    static int enabled = []() {
+        const char *value = getenv(
+            "VULKAN_SIM_RTCORE_V04_CONTINUATION_ATTRIBUTE_EVIDENCE");
+        return value && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
 enum rtcore_v04_compact_runtime_event_kind {
     kCompactShortStackWriteTransfer = 0,
     kCompactPrivateRuntimeWriteArbitration,
@@ -2502,6 +2511,17 @@ static bool rtcore_v04_live_global_memory_adapter_configuration_valid();
 static bool rtcore_v04_live_timing_driver_control_enabled();
 static bool rtcore_v04_root_node_ready_packet_enabled();
 static bool rtcore_v04_live_timing_driver_control_prerequisites_enabled();
+static bool rtcore_v04_request_owner_binding_enabled();
+static bool rtcore_v04_request_owner_binding_prerequisites_enabled();
+static bool rtcore_v04_private_frontier_live_init_enabled();
+static bool rtcore_v04_private_frontier_live_init_prerequisites_enabled();
+static bool rtcore_v04_private_frontier_owner_layout_enabled();
+static bool rtcore_v04_private_frontier_owner_layout_prerequisites_enabled();
+static bool rtcore_v04_typed_stack_pop_next_kernel_enabled();
+static bool rtcore_v04_typed_stack_pop_next_prerequisites_enabled();
+static bool rtcore_replay_admission_enabled();
+static bool rtcore_continuation_model_enabled();
+static bool rtcore_replay_memory_unit_request_offer_enabled();
 
 extern "C" rtcore_v04_global384_timing_owner_status
 rtcore_prepare_commit_v04_global384_timing_owner_plan(
@@ -2516,6 +2536,47 @@ rtcore_prepare_commit_v04_global384_timing_owner_plan(
         !rtcore_v04_live_timing_driver_control_enabled() ||
         !rtcore_v04_live_timing_driver_control_prerequisites_enabled() ||
         !rtcore_v04_live_global_memory_adapter_configuration_valid()) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_GLOBAL384_TIMING_OWNER_DETAIL_FAULT "
+                "phase=prerequisites owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                "active_mask=0x%08x owner_plan=%u root_gate=%u "
+                "timing_gate=%u prerequisites=%u memory_adapter=%u "
+                "owner_binding=%u owner_prerequisites=%u "
+                "private_init=%u private_prerequisites=%u "
+                "owner_layout=%u owner_layout_prerequisites=%u "
+                "stack_pop=%u stack_pop_prerequisites=%u "
+                "replay_admission=%u continuation_model=%u "
+                "memory_offer=%u\n",
+                owner_hw_sid, warp_uid, warp_id, active_mask,
+                owner_plan != NULL ? 1u : 0u,
+                rtcore_v04_root_node_ready_packet_enabled() ? 1u : 0u,
+                rtcore_v04_live_timing_driver_control_enabled() ? 1u : 0u,
+                rtcore_v04_live_timing_driver_control_prerequisites_enabled()
+                    ? 1u
+                    : 0u,
+                rtcore_v04_live_global_memory_adapter_configuration_valid()
+                    ? 1u
+                    : 0u,
+                rtcore_v04_request_owner_binding_enabled() ? 1u : 0u,
+                rtcore_v04_request_owner_binding_prerequisites_enabled()
+                    ? 1u
+                    : 0u,
+                rtcore_v04_private_frontier_live_init_enabled() ? 1u : 0u,
+                rtcore_v04_private_frontier_live_init_prerequisites_enabled()
+                    ? 1u
+                    : 0u,
+                rtcore_v04_private_frontier_owner_layout_enabled() ? 1u
+                                                                    : 0u,
+                rtcore_v04_private_frontier_owner_layout_prerequisites_enabled()
+                    ? 1u
+                    : 0u,
+                rtcore_v04_typed_stack_pop_next_kernel_enabled() ? 1u : 0u,
+                rtcore_v04_typed_stack_pop_next_prerequisites_enabled() ? 1u
+                                                                        : 0u,
+                rtcore_replay_admission_enabled() ? 1u : 0u,
+                rtcore_continuation_model_enabled() ? 1u : 0u,
+                rtcore_replay_memory_unit_request_offer_enabled() ? 1u : 0u);
+        fflush(stderr);
         return RTCORE_V04_GLOBAL384_TIMING_OWNER_FAULT;
     }
     *owner_plan = request_owner::new_warp_plan_v0();
@@ -2534,8 +2595,34 @@ rtcore_prepare_commit_v04_global384_timing_owner_plan(
         return RTCORE_V04_GLOBAL384_TIMING_OWNER_WAIT;
     }
     if (prepare_status != timing_driver::kStatusOk ||
-        timing_driver::commit_new_submit(&staged, timing_plan) !=
-            timing_driver::kStatusOk) {
+        !timing_plan.valid) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_GLOBAL384_TIMING_OWNER_DETAIL_FAULT "
+                "phase=prepare owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                "active_mask=0x%08x status=%s active_residents=%u "
+                "active_lanes=%u plan_valid=%u\n",
+                owner_hw_sid, warp_uid, warp_id, active_mask,
+                timing_driver::status_name(prepare_status),
+                timing_driver::active_resident_count(staged),
+                timing_driver::active_lane_count(staged),
+                timing_plan.valid ? 1u : 0u);
+        fflush(stderr);
+        return RTCORE_V04_GLOBAL384_TIMING_OWNER_FAULT;
+    }
+    const timing_driver::status_kind commit_status =
+        timing_driver::commit_new_submit(&staged, timing_plan);
+    if (commit_status != timing_driver::kStatusOk) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_V04_GLOBAL384_TIMING_OWNER_DETAIL_FAULT "
+                "phase=commit owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                "active_mask=0x%08x status=%s active_residents=%u "
+                "active_lanes=%u plan_valid=%u\n",
+                owner_hw_sid, warp_uid, warp_id, active_mask,
+                timing_driver::status_name(commit_status),
+                timing_driver::active_resident_count(staged),
+                timing_driver::active_lane_count(staged),
+                timing_plan.valid ? 1u : 0u);
+        fflush(stderr);
         return RTCORE_V04_GLOBAL384_TIMING_OWNER_FAULT;
     }
     rtcore_v04_timing_driver_for(owner_hw_sid) = staged;
@@ -8833,6 +8920,25 @@ extern "C" bool rtcore_complete_v04_global384_private_runtime_write(
            snapshot->aligned_32b_addr, snapshot->byte_mask,
            short_owns ? "short_stack" : "primitive",
                completion_cycle);
+        fflush(stdout);
+    }
+    if (rtcore_v04_continuation_attribute_evidence_enabled() &&
+        !short_owns) {
+        uint32_t payload_words[8] = {};
+        memcpy(payload_words, snapshot->payload,
+               sizeof(payload_words));
+        printf("GPGPU-Sim RTCORE_V04_CONTINUATION_ATTRIBUTE_WRITE "
+               "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+               "producer_operation_seq=%u commit_epoch=%u "
+               "address=0x%llx byte_mask=0x%08x "
+               "payload_words=(0x%08x,0x%08x,0x%08x,0x%08x,"
+               "0x%08x,0x%08x,0x%08x,0x%08x)\n",
+               snapshot->owner_hw_sid, snapshot->rt_request_id,
+               snapshot->lane_id, write.operation_seq,
+               write.commit_epoch, snapshot->aligned_32b_addr,
+               snapshot->byte_mask, payload_words[0], payload_words[1],
+               payload_words[2], payload_words[3], payload_words[4],
+               payload_words[5], payload_words[6], payload_words[7]);
         fflush(stdout);
     }
     return true;
@@ -30347,6 +30453,24 @@ static bool rtcore_service_v04_live_stack_terminal_publication(
     if (private_state_384) {
         committed_hit =
             private_read->final_completion.committed_hit;
+        if (rtcore_v04_continuation_attribute_evidence_enabled()) {
+            printf("GPGPU-Sim RTCORE_V04_CONTINUATION_ATTRIBUTE_READ "
+                   "owner_hw_sid=%u request_key=0x%08x lane_id=%u "
+                   "producer_operation_seq=%u commit_epoch=%u "
+                   "attribute_word_count=%u "
+                   "inline_attribute_words=(0x%08x,0x%08x,0x%08x,"
+                   "0x%08x)\n",
+                   owner_hw_sid, terminal.owner.packed_request_key,
+                   terminal.owner.lane_id,
+                   terminal.producer_operation_seq,
+                   terminal.commit_epoch,
+                   committed_hit.attribute_word_count,
+                   committed_hit.inline_attributes[0],
+                   committed_hit.inline_attributes[1],
+                   committed_hit.inline_attributes[2],
+                   committed_hit.inline_attributes[3]);
+            fflush(stdout);
+        }
     }
 
     const unsigned long long lane_offset =

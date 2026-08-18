@@ -17080,9 +17080,19 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
     unsigned dynamic_warp_id, unsigned expected_warp_uid,
     unsigned warp_id, unsigned active_mask,
     unsigned long long issue_cycle) {
+  const auto fail = [&](const char *reason) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND_DETAIL_FAULT "
+            "phase=preissue owner_hw_sid=%u dynamic_warp_id=%u "
+            "warp_uid=%u warp_id=%u active_mask=0x%08x reason=%s\n",
+            owner_hw_sid, dynamic_warp_id, expected_warp_uid, warp_id,
+            active_mask, reason != NULL ? reason : "unknown");
+    fflush(stderr);
+    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+  };
   bool global384 = false;
   if (!rtcore_v04_global384_profile_selected(&global384)) {
-    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    return fail("profile_selector_invalid");
   }
   if (!global384) {
     return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE;
@@ -17091,7 +17101,7 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
       rtcore_v04_functional_only_engine_gate_active();
   const bool timing_driver_owned = !functional_only;
   if (!rtcore_v04_root_node_input_gate_active()) {
-    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    return fail("root_node_input_gate_inactive");
   }
 
   unsigned previous_warp_uid = 0;
@@ -17121,13 +17131,13 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
   if (!rtcore_v04_make_global384_bind_material(
           instruction, lane_threads, owner_hw_sid, dynamic_warp_id,
           warp_id, active_mask, &material)) {
-    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    return fail("bind_material_invalid");
   }
   unsigned lane_request_ids[RTCORE_MAX_LANES_PER_WARP] = {};
   for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
     if ((active_mask & (1u << lane)) == 0) continue;
     if (lane_threads[lane] == NULL || lane_threads[lane]->get_uid() == 0) {
-      return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+      return fail("active_lane_thread_identity_invalid");
     }
     lane_request_ids[lane] = lane_threads[lane]->get_uid();
   }
@@ -17139,7 +17149,7 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
           warp_id, active_mask)) {
     return rtcore_v04_global384_pending_logical_submit_matches(
                pending->second, dynamic_warp_id, warp_id, active_mask)
-               ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT
+               ? fail("pending_logical_submit_uid_mismatch")
                : RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT;
   }
   if (resident_live && expected_warp_uid == previous_warp_uid) {
@@ -17157,7 +17167,7 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
             material.request.allocation_ranges.handoff_base,
             material.request.handoff_lane_stride_bytes, issue_cycle);
     if (poll_status == RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_NOT_APPLICABLE) {
-      return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+      return fail("initial_handoff_poll_not_applicable");
     }
     return rtcore_v04_global384_advance_private_init_after_handoff(
         poll_status, instruction, lane_threads, owner_hw_sid,
@@ -17188,7 +17198,7 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
     for (unsigned lane = 0; lane < RTCORE_MAX_LANES_PER_WARP; ++lane) {
       if ((active_mask & (1u << lane)) == 0) continue;
       if (lane_threads[lane] == NULL || lane_threads[lane]->get_uid() == 0) {
-        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+        return fail("resubmit_lane_thread_identity_invalid");
       }
       lane_request_ids[lane] = lane_threads[lane]->get_uid();
     }
@@ -17225,9 +17235,12 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
                     owner_hw_sid, expected_warp_uid, warp_id, active_mask,
                     &resource_plan);
       if (timing_status != RTCORE_V04_GLOBAL384_TIMING_OWNER_READY) {
+        if (timing_status != RTCORE_V04_GLOBAL384_TIMING_OWNER_WAIT) {
+          return fail("timing_owner_plan_fault");
+        }
         return timing_status == RTCORE_V04_GLOBAL384_TIMING_OWNER_WAIT
                    ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT
-                   : RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+                   : fail("timing_owner_plan_fault");
       }
     } else {
       request_owner::allocator_state_v0 &allocator =
@@ -17236,12 +17249,18 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
           request_owner::prepare_new_warp(allocator, identity,
                                           &resource_plan);
       if (resource_status != request_owner::kStatusOk) {
+        if (resource_status !=
+                request_owner::kStatusResidentCapacityExceeded &&
+            resource_status !=
+                request_owner::kStatusRequestCapacityExceeded) {
+          return fail("functional_owner_plan_fault");
+        }
         return resource_status ==
                            request_owner::kStatusResidentCapacityExceeded ||
                        resource_status ==
                            request_owner::kStatusRequestCapacityExceeded
                    ? RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_WAIT
-                   : RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+                   : fail("functional_owner_plan_fault");
       }
     }
   } else {
@@ -17257,7 +17276,7 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
              : !rtcore_v04_global384_owner_plan_is_live(
                    rtcore_v04_functional_only_allocator(owner_hw_sid),
                    pending->second.owner_plan))) {
-      return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+      return fail("pending_owner_plan_invalid_or_stale");
     }
     resource_plan = pending->second.owner_plan;
   }
@@ -17272,7 +17291,17 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
             resource_plan, timing_driver_owned)) {
       abort();
     }
-    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND_DETAIL "
+            "phase=bridge_begin bridge_status=%s authority_status=%s "
+            "registry_status=%s\n",
+            rtcore::v04::pre_submit_publication::status_name(begin_status),
+            rtcore::v04::allocation_identity::status_name(
+                begin.authority_status),
+            rtcore::v04::address_range_registry::status_name(
+                begin.registry_status));
+    fflush(stderr);
+    return fail("bridge_begin_rejected");
   }
   if (create_pending) {
     if (!timing_driver_owned) {
@@ -17280,7 +17309,7 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
           rtcore_v04_functional_only_allocator(owner_hw_sid);
       if (request_owner::commit_new_warp(&allocator, resource_plan) !=
           request_owner::kStatusOk) {
-        return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+        return fail("functional_owner_plan_commit_failed");
       }
     }
     rtcore_v04_global384_pending_bind_owner owner;
@@ -17366,7 +17395,15 @@ rtcore_service_v04_global384_first_submit_live_bind_internal(
             resource_plan, timing_driver_owned)) {
       abort();
     }
-    return RTCORE_V04_FIRST_SUBMIT_LIVE_BIND_FAULT;
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND_DETAIL "
+            "phase=bridge_commit bridge_status=%s wait_required=%u "
+            "live_bound=%u resident_generation=%u expected_generation=%u\n",
+            rtcore::v04::pre_submit_publication::status_name(commit_status),
+            commit.wait_required, commit.live_bound,
+            commit.resident_warp_generation, resident_generation);
+    fflush(stderr);
+    return fail("bridge_commit_rejected");
   }
   printf("GPGPU-Sim RTCORE_V04_GLOBAL384_FIRST_SUBMIT_BIND "
          "owner_hw_sid=%u dynamic_warp_id=%u warp_uid=%u warp_id=%u "

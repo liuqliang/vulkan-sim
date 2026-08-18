@@ -3205,7 +3205,8 @@ class shader_core_ctx : public core_t {
   unsigned get_sid() const { return m_sid; }
   unsigned get_tpc() const { return m_tpc; }
   bool rtcore_launch_shader_continuation_cohort(
-      unsigned warp_id, unsigned cohort_lane_mask,
+      unsigned warp_id, unsigned dispatch_lane_mask,
+      unsigned cohort_lane_mask,
       function_info *target_func, unsigned long long handoff_window_base,
       unsigned default_hit_result, bool requires_handoff_return,
       unsigned *return_pc,
@@ -3216,6 +3217,7 @@ class shader_core_ctx : public core_t {
   bool rtcore_reconverge_shader_return(
       unsigned warp_id, unsigned return_pc, unsigned cohort_lane_mask,
       bool *merged_paths);
+  bool rtcore_warp_scoreboard_pending(unsigned warp_id) const;
 
   // used by functional simulation:
   // modifiers

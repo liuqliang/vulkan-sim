@@ -2815,6 +2815,47 @@ void simt_stack::push_call(address_type target_pc,
   m_stack.push_back(call_entry);
 }
 
+bool simt_stack::coalesce_rtcore_dispatch_anchor(
+    const simt_mask_t &dispatch_mask, address_type *return_pc,
+    address_type *return_rpc, bool *merged_paths) {
+  if (return_pc == NULL || return_rpc == NULL || merged_paths == NULL ||
+      m_stack.empty() || !dispatch_mask.any()) {
+    return false;
+  }
+  *merged_paths = false;
+  const address_type anchor_pc = m_stack.back().m_pc;
+  const address_type anchor_rpc = m_stack.back().m_recvg_pc;
+  const stack_entry_type anchor_type = m_stack.back().m_type;
+  if (anchor_type != STACK_ENTRY_TYPE_NORMAL) return false;
+
+  simt_mask_t observed_mask;
+  size_t anchor_index = m_stack.size();
+  for (size_t index = m_stack.size(); index-- > 0;) {
+    const simt_stack_entry &entry = m_stack[index];
+    if (entry.m_pc != anchor_pc || entry.m_recvg_pc != anchor_rpc ||
+        entry.m_type != anchor_type ||
+        (entry.m_active_mask & ~dispatch_mask).any()) {
+      break;
+    }
+    if ((observed_mask & entry.m_active_mask).any()) return false;
+    observed_mask |= entry.m_active_mask;
+    anchor_index = index;
+    if (observed_mask == dispatch_mask) break;
+  }
+  if (observed_mask != dispatch_mask || anchor_index >= m_stack.size()) {
+    return false;
+  }
+
+  m_stack[anchor_index].m_active_mask = dispatch_mask;
+  const bool removed_paths = anchor_index + 1 < m_stack.size();
+  m_stack.erase(m_stack.begin() + anchor_index + 1, m_stack.end());
+  *return_pc = anchor_pc;
+  *return_rpc = anchor_rpc;
+  *merged_paths = removed_paths;
+  return m_stack.back().m_pc == anchor_pc &&
+         m_stack.back().m_active_mask == dispatch_mask;
+}
+
 bool simt_stack::defer_rtcore_partial_return(
     address_type return_pc, const simt_mask_t &returned_mask,
     const simt_mask_t &live_call_mask) {
@@ -2843,7 +2884,43 @@ bool simt_stack::defer_rtcore_partial_return(
         }
         covered_returned_mask |= entry.m_active_mask;
       }
-      if (covered_returned_mask != returned_mask) return false;
+      if (covered_returned_mask != returned_mask) {
+        // An earlier divergent RET may already have folded some returned
+        // lanes into the resident CALL marker while later callee paths stayed
+        // live above it.  Those lanes no longer have a separate NORMAL
+        // fragment above this live candidate, but they remain structurally
+        // represented by the exact cohort CALL plus a full-cohort accumulator
+        // at return_pc.  The accumulator can be the CALL itself or a NORMAL
+        // entry immediately above an internal-PC CALL.  Accept only that
+        // bounded shape; an arbitrary lower entry is not return authority.
+        const simt_mask_t retained_returned_mask =
+            returned_mask & ~covered_returned_mask;
+        const simt_mask_t cohort_mask = returned_mask | live_call_mask;
+        size_t exact_call_index = m_stack.size();
+        size_t return_accumulator_index = m_stack.size();
+        for (size_t retained = index; retained-- > 0;) {
+          const simt_stack_entry &entry = m_stack[retained];
+          if (return_accumulator_index == m_stack.size() &&
+              entry.m_pc == return_pc &&
+              entry.m_active_mask == cohort_mask &&
+              (retained_returned_mask & ~entry.m_active_mask).none()) {
+            return_accumulator_index = retained;
+          }
+          if (entry.m_type == STACK_ENTRY_TYPE_CALL &&
+              entry.m_active_mask == cohort_mask) {
+            exact_call_index = retained;
+            if (entry.m_pc == return_pc) {
+              return_accumulator_index = retained;
+            }
+            break;
+          }
+        }
+        if (exact_call_index == m_stack.size() ||
+            return_accumulator_index == m_stack.size() ||
+            exact_call_index > return_accumulator_index) {
+          return false;
+        }
+      }
 
       const simt_stack_entry live_entry = candidate;
       m_stack.back().m_pc = return_pc;
@@ -2865,6 +2942,92 @@ bool simt_stack::reconverge_rtcore_return_paths(
       m_stack.back().m_pc != return_pc) {
     return false;
   }
+
+  // Prefer completing the architectural call before considering a returned
+  // NORMAL fragment as a caller anchor.  A divergent final RET can leave the
+  // layout [caller, CALL, internal reconvergence anchors, returned NORMAL].
+  // The per-thread call-depth check performed by the resident dispatcher has
+  // already proved that every cohort lane returned.  Therefore bounded
+  // NORMAL entries above the exact-cohort CALL are stale callee control
+  // fragments even when an internal anchor has not advanced to return_pc.
+  // The CALL is the resident-dispatch frame that must be popped.
+  for (size_t index = m_stack.size(); index-- > 0;) {
+    const simt_stack_entry &call = m_stack[index];
+    if (call.m_type != STACK_ENTRY_TYPE_CALL ||
+        call.m_active_mask != cohort_mask) {
+      continue;
+    }
+    if (index == 0) return false;
+    for (size_t fragment = index + 1; fragment < m_stack.size(); ++fragment) {
+      const simt_stack_entry &entry = m_stack[fragment];
+      if (entry.m_type == STACK_ENTRY_TYPE_CALL ||
+          !entry.m_active_mask.any() ||
+          (entry.m_active_mask & ~cohort_mask).any()) {
+        return false;
+      }
+    }
+    const bool removed_fragments = index + 1 < m_stack.size();
+    m_stack.erase(m_stack.begin() + index, m_stack.end());
+    if (m_stack.empty()) return false;
+    m_stack.back().m_pc = return_pc;
+    if (return_pc == m_stack.back().m_recvg_pc &&
+        m_stack.back().m_type != STACK_ENTRY_TYPE_CALL) {
+      m_stack.pop_back();
+    }
+    if (m_stack.empty()) return false;
+    if (merged_paths != NULL) *merged_paths = removed_fragments;
+    return m_stack.back().m_pc == return_pc &&
+           (cohort_mask & ~m_stack.back().m_active_mask).none();
+  }
+
+  // A resident RT dispatcher can launch several disjoint shader cohorts from
+  // one completion packet.  After one cohort returns, the caller anchor must
+  // still cover lanes that belong to later cohorts.  In that case the anchor
+  // is deliberately a strict superset of cohort_mask; shrinking it here would
+  // strand the later cohort.  Remove only returned path fragments above the
+  // nearest covering anchor and preserve the anchor mask.
+  for (size_t index = m_stack.size(); index-- > 0;) {
+    const simt_stack_entry &anchor = m_stack[index];
+    if (anchor.m_pc != return_pc ||
+        (cohort_mask & ~anchor.m_active_mask).any()) {
+      continue;
+    }
+    for (size_t fragment = index + 1; fragment < m_stack.size(); ++fragment) {
+      const simt_stack_entry &entry = m_stack[fragment];
+      if (entry.m_pc != return_pc ||
+          (entry.m_active_mask & ~cohort_mask).any()) {
+        return false;
+      }
+    }
+    if (anchor.m_type == STACK_ENTRY_TYPE_CALL) {
+      // Divergent RET paths can reach the caller PC without taking the
+      // ordinary top-is-CALL fast path in update().  In that case the final
+      // returned fragment is folded into the CALL marker by
+      // defer_rtcore_partial_return().  Completing the cohort must still
+      // perform the architectural call pop; retaining this marker would make
+      // the next continuation dispatch treat a stale callee frame as its
+      // caller anchor.
+      if (anchor.m_active_mask != cohort_mask || index == 0) return false;
+      const bool removed_fragments = index + 1 < m_stack.size();
+      m_stack.erase(m_stack.begin() + index, m_stack.end());
+      if (m_stack.empty()) return false;
+      m_stack.back().m_pc = return_pc;
+      if (return_pc == m_stack.back().m_recvg_pc &&
+          m_stack.back().m_type != STACK_ENTRY_TYPE_CALL) {
+        m_stack.pop_back();
+      }
+      if (m_stack.empty()) return false;
+      if (merged_paths != NULL) *merged_paths = removed_fragments;
+      return m_stack.back().m_pc == return_pc &&
+             (cohort_mask & ~m_stack.back().m_active_mask).none();
+    }
+    const bool removed_fragments = index + 1 < m_stack.size();
+    m_stack.erase(m_stack.begin() + index + 1, m_stack.end());
+    if (merged_paths != NULL) *merged_paths = removed_fragments;
+    return !m_stack.empty() && m_stack.back().m_pc == return_pc &&
+           (cohort_mask & ~m_stack.back().m_active_mask).none();
+  }
+
   simt_mask_t observed_mask;
   std::vector<size_t> matching_indices;
   for (size_t index = m_stack.size(); index-- > 0;) {

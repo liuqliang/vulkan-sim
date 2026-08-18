@@ -1879,6 +1879,9 @@ class simt_stack {
     void reset();
     void launch(address_type start_pc, const simt_mask_t &active_mask);
     void push_call(address_type target_pc, const simt_mask_t &active_mask);
+    bool coalesce_rtcore_dispatch_anchor(
+        const simt_mask_t &dispatch_mask, address_type *return_pc,
+        address_type *return_rpc, bool *merged_paths);
     bool defer_rtcore_partial_return(address_type return_pc,
                                      const simt_mask_t &returned_mask,
                                      const simt_mask_t &live_call_mask);

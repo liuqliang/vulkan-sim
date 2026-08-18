@@ -876,7 +876,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
         nested_child_warp_uid(0),
         nested_active_mask(0),
         current_call_requires_handoff_return(false),
-        current_call_live_publication_fence_issued(false),
+        current_call_live_publication_fence_lane_mask(0),
         return_pc(0),
         return_rpc(0),
         current_cohort_index(UINT_MAX),
@@ -968,7 +968,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   unsigned nested_child_warp_uid;
   unsigned nested_active_mask;
   bool current_call_requires_handoff_return;
-  bool current_call_live_publication_fence_issued;
+  unsigned current_call_live_publication_fence_lane_mask;
   unsigned return_pc;
   unsigned return_rpc;
   unsigned current_cohort_index;
@@ -2852,14 +2852,79 @@ rtcore_service_shader_continuation_pseudo_op(
     unsigned shader_terminal_lane_mask = 0;
     if (entry.current_call_requires_handoff_return) {
       if (rtcore_v04_direct_completion(entry) &&
-          !entry.current_call_live_publication_fence_issued) {
+          entry.current_call_live_publication_fence_lane_mask !=
+              completed_lane_mask) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
                 "owner_hw_sid=%u warp_uid=%u warp_id=%u "
-                "cohort_index=%u fault=return_without_epilogue_fence\n",
+                "cohort_index=%u expected_fence_lane_mask=0x%08x "
+                "observed_fence_lane_mask=0x%08x "
+                "fault=return_without_complete_epilogue_fence\n",
                 owner_hw_sid, entry.warp_uid, entry.warp_id,
-                completed_cohort_index);
+                completed_cohort_index, completed_lane_mask,
+                entry.current_call_live_publication_fence_lane_mask);
         abort();
+      }
+      if (rtcore_v04_direct_completion(entry)) {
+        rtcore::v04::pre_submit_publication::
+            live_publication_round_drain_v0 live_drain = {};
+        const bool scoreboard_wait =
+            shader->rtcore_warp_scoreboard_pending(warp_id);
+        const rtcore::v04::pre_submit_publication::status_kind
+            live_drain_status =
+                rtcore::v04::pre_submit_publication::shared_bridge()
+                    .service_live_publication_fence(
+                        entry.live_publication_round,
+                        scoreboard_wait ? 0 : 1, &live_drain);
+        if (live_drain_status !=
+            rtcore::v04::pre_submit_publication::kStatusOk) {
+          fprintf(stderr,
+                  "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
+                  "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                  "cohort_index=%u fault=return_fence_drain_rejected "
+                  "status=%s registry_status=%s\n",
+                  owner_hw_sid, entry.warp_uid, entry.warp_id,
+                  completed_cohort_index,
+                  rtcore::v04::pre_submit_publication::status_name(
+                      live_drain_status),
+                  rtcore::v04::address_range_registry::status_name(
+                      live_drain.registry_status));
+          abort();
+        }
+        if (!live_drain.armed || live_drain.wait_required ||
+            scoreboard_wait) {
+          return result;
+        }
+        if (!live_drain.fence_consumed ||
+            live_drain.release_kind !=
+                rtcore::v04::pre_submit_publication::
+                    kFenceReleaseAckRetain) {
+          fprintf(stderr,
+                  "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
+                  "owner_hw_sid=%u warp_uid=%u warp_id=%u "
+                  "cohort_index=%u fault=return_fence_not_consumed\n",
+                  owner_hw_sid, entry.warp_uid, entry.warp_id,
+                  completed_cohort_index);
+          abort();
+        }
+        printf("GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FENCE_RELEASE "
+               "owner_hw_sid=%u warp_id=%u dynamic_warp_id=%u "
+               "resident_generation=%u window_generation=%u "
+               "completion_generation=%u cohort_index=%u "
+               "released_lane_mask=0x%08x release=ack_retain "
+               "release_site=continuation_return_join "
+               "release_cycle=%llu\n",
+               entry.live_publication_round.owner_hw_sid,
+               entry.live_publication_round.warp_id,
+               entry.live_publication_round.dynamic_warp_id,
+               entry.live_publication_round.resident_warp_generation,
+               entry.live_publication_round.window_generation,
+               entry.live_publication_round
+                   .completion_transaction_generation,
+               entry.live_publication_round.cohort_index,
+               entry.live_publication_round.expected_lane_mask,
+               current_cycle);
+        fflush(stdout);
       }
       for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
         const unsigned lane_mask = 1u << lane;
@@ -3036,7 +3101,7 @@ rtcore_service_shader_continuation_pseudo_op(
             : completed_lane_mask & ~shader_terminal_lane_mask;
     entry.call_inflight = false;
     entry.current_call_requires_handoff_return = false;
-    entry.current_call_live_publication_fence_issued = false;
+    entry.current_call_live_publication_fence_lane_mask = 0;
     entry.current_cohort_index = UINT_MAX;
     entry.metadata_lookup_state =
         RTCORE_SHADER_CONTINUATION_SBT_METADATA_NOT_REQUESTED;
@@ -3658,8 +3723,9 @@ rtcore_service_shader_continuation_pseudo_op(
     }
   }
   assert(shader->rtcore_launch_shader_continuation_cohort(
-      warp_id, cohort_lane_mask, target_func, handoff_window_base,
-      default_hit_result, requires_handoff_return, &return_pc, &return_rpc));
+      warp_id, entry.active_mask, cohort_lane_mask, target_func,
+      handoff_window_base, default_hit_result, requires_handoff_return,
+      &return_pc, &return_rpc));
   if (requires_handoff_return && rtcore_v04_direct_completion(entry)) {
     unsigned live_window_generation = 0;
     for (unsigned lane = 0; lane < warp_size && lane < 32; ++lane) {
@@ -3757,7 +3823,7 @@ rtcore_service_shader_continuation_pseudo_op(
       conservation_cohort_seq;
   entry.call_inflight = true;
   entry.current_call_requires_handoff_return = requires_handoff_return;
-  entry.current_call_live_publication_fence_issued = false;
+  entry.current_call_live_publication_fence_lane_mask = 0;
   entry.return_pc = return_pc;
   entry.return_rpc = return_rpc;
   entry.current_cohort_index = cohort_index;
@@ -3851,7 +3917,7 @@ static bool rtcore_shader_continuation_call_inflight(
 
 static bool rtcore_claim_shader_continuation_live_publication_fence(
     gpgpu_context *context, unsigned owner_hw_sid, unsigned warp_id,
-    unsigned dynamic_warp_id, address_type pc,
+    unsigned dynamic_warp_id, address_type pc, unsigned issued_lane_mask,
     rtcore::v04::pre_submit_publication::
         live_publication_round_request_v0 *round) {
   if (context == NULL || round == NULL) return false;
@@ -3864,7 +3930,6 @@ static bool rtcore_claim_shader_continuation_live_publication_fence(
   if (it == g_rtcore_shader_continuation_dispatcher_pending.end() ||
       !it->second.valid || !it->second.call_inflight ||
       !it->second.current_call_requires_handoff_return ||
-      it->second.current_call_live_publication_fence_issued ||
       !rtcore_v04_direct_completion(it->second) ||
       it->second.dynamic_warp_id != dynamic_warp_id) {
     return false;
@@ -3882,8 +3947,37 @@ static bool rtcore_claim_shader_continuation_live_publication_fence(
   *round = it->second.live_publication_round;
   const bool valid =
       round->completion_transaction_generation != 0 &&
-      round->cohort_index == it->second.current_cohort_index;
-  if (valid) it->second.current_call_live_publication_fence_issued = true;
+      round->cohort_index == it->second.current_cohort_index &&
+      issued_lane_mask != 0 &&
+      (issued_lane_mask & ~round->expected_lane_mask) == 0;
+  if (valid) {
+    if ((it->second.current_call_live_publication_fence_lane_mask &
+         issued_lane_mask) != 0) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_FAULT "
+              "owner_hw_sid=%u warp_id=%u dynamic_warp_id=%u "
+              "cohort_index=%u issued_lane_mask=0x%08x "
+              "prior_fence_lane_mask=0x%08x "
+              "fault=duplicate_epilogue_fence_lane\n",
+              owner_hw_sid, warp_id, dynamic_warp_id,
+              round->cohort_index, issued_lane_mask,
+              it->second.current_call_live_publication_fence_lane_mask);
+      abort();
+    }
+    it->second.current_call_live_publication_fence_lane_mask |=
+        issued_lane_mask;
+    printf("GPGPU-Sim RTCORE_V04_LIVE_PUBLICATION_PATH_FENCE "
+           "owner_hw_sid=%u warp_id=%u dynamic_warp_id=%u "
+           "cohort_index=%u issued_lane_mask=0x%08x "
+           "accumulated_fence_lane_mask=0x%08x "
+           "expected_lane_mask=0x%08x "
+           "path_stall=0 join_drain_required=1\n",
+           owner_hw_sid, warp_id, dynamic_warp_id, round->cohort_index,
+           issued_lane_mask,
+           it->second.current_call_live_publication_fence_lane_mask,
+           round->expected_lane_mask);
+    fflush(stdout);
+  }
   return valid;
 }
 
@@ -12452,9 +12546,11 @@ void shader_core_ctx::get_pdom_stack_top_info(unsigned tid, unsigned *pc,
 }
 
 bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
-    unsigned warp_id, unsigned cohort_lane_mask, function_info *target_func,
+    unsigned warp_id, unsigned dispatch_lane_mask,
+    unsigned cohort_lane_mask, function_info *target_func,
     unsigned long long handoff_window_base, unsigned default_hit_result,
-    bool requires_handoff_return, unsigned *return_pc, unsigned *return_rpc) {
+    bool requires_handoff_return, unsigned *return_pc,
+    unsigned *return_rpc) {
   if (m_config->model != POST_DOMINATOR) {
     fprintf(stderr,
             "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
@@ -12463,7 +12559,9 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
             m_sid, warp_id, static_cast<unsigned>(m_config->model));
     abort();
   }
-  if (warp_id >= m_warp_count || cohort_lane_mask == 0 ||
+  if (warp_id >= m_warp_count || dispatch_lane_mask == 0 ||
+      cohort_lane_mask == 0 ||
+      (cohort_lane_mask & ~dispatch_lane_mask) != 0 ||
       target_func == NULL ||
       return_pc == NULL || return_rpc == NULL ||
       target_func->num_args() != 0 || target_func->has_return()) {
@@ -12534,7 +12632,36 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
     }
   }
 
-  m_simt_stack[warp_id]->get_pdom_stack_top_info(return_pc, return_rpc);
+  bool merged_dispatch_paths = false;
+  address_type dispatch_return_pc = 0;
+  address_type dispatch_return_rpc = 0;
+  if (!m_simt_stack[warp_id]->coalesce_rtcore_dispatch_anchor(
+          simt_mask_t(dispatch_lane_mask), &dispatch_return_pc,
+          &dispatch_return_rpc, &merged_dispatch_paths)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
+            "owner_hw_sid=%u warp_id=%u dispatch_lane_mask=0x%08x "
+            "cohort_lane_mask=0x%08x "
+            "fault=dispatch_anchor_coalesce_failed_fail_closed\n",
+            m_sid, warp_id, dispatch_lane_mask, cohort_lane_mask);
+    m_simt_stack[warp_id]->print(stderr);
+    fflush(stderr);
+    abort();
+  }
+  if (dispatch_return_pc > UINT_MAX ||
+      (dispatch_return_rpc > UINT_MAX &&
+       dispatch_return_rpc != static_cast<address_type>(-1))) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
+            "owner_hw_sid=%u warp_id=%u return_pc=0x%llx "
+            "return_rpc=0x%llx fault=dispatch_anchor_pc_overflow\n",
+            m_sid, warp_id,
+            static_cast<unsigned long long>(dispatch_return_pc),
+            static_cast<unsigned long long>(dispatch_return_rpc));
+    abort();
+  }
+  *return_pc = static_cast<unsigned>(dispatch_return_pc);
+  *return_rpc = static_cast<unsigned>(dispatch_return_rpc);
   const simt_mask_t &caller_active_mask =
       m_simt_stack[warp_id]->get_active_mask();
   simt_mask_t cohort_mask(cohort_lane_mask);
@@ -12548,6 +12675,26 @@ bool shader_core_ctx::rtcore_launch_shader_continuation_cohort(
             caller_active_mask.to_ulong());
     abort();
   }
+  for (unsigned lane = 0; lane < m_config->warp_size && lane < 32; ++lane) {
+    if ((dispatch_lane_mask & (1u << lane)) == 0) continue;
+    ptx_thread_info *thread = m_thread[warp_id * m_config->warp_size + lane];
+    if (thread == NULL || thread->get_pc() != *return_pc) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_SHADER_CONTINUATION_CALL_FRAME_FAULT "
+              "owner_hw_sid=%u warp_id=%u lane_id=%u return_pc=0x%x "
+              "dispatch_lane_mask=0x%08x "
+              "fault=dispatch_thread_not_at_anchor_fail_closed\n",
+              m_sid, warp_id, lane, *return_pc, dispatch_lane_mask);
+      abort();
+    }
+  }
+  printf("GPGPU-Sim RTCORE_KHR_DISPATCH_ANCHOR_COALESCE "
+         "owner_hw_sid=%u warp_id=%u dispatch_lane_mask=0x%08x "
+         "cohort_lane_mask=0x%08x return_pc=0x%x return_rpc=0x%x "
+         "merged_paths=%u validated=1\n",
+         m_sid, warp_id, dispatch_lane_mask, cohort_lane_mask, *return_pc,
+         *return_rpc, merged_dispatch_paths ? 1u : 0u);
+  fflush(stdout);
 
   if (!target_func->is_pdom_set()) {
     if (target_func->get_function_size() > 0) target_func->do_pdom();
@@ -12652,17 +12799,46 @@ bool shader_core_ctx::rtcore_defer_partial_shader_return(
     unsigned warp_id, unsigned return_pc, unsigned returned_lane_mask,
     unsigned live_call_lane_mask) {
   assert(warp_id < m_warp_count);
-  return m_simt_stack[warp_id]->defer_rtcore_partial_return(
+  const bool deferred =
+      m_simt_stack[warp_id]->defer_rtcore_partial_return(
       return_pc, simt_mask_t(returned_lane_mask),
       simt_mask_t(live_call_lane_mask));
+  if (!deferred) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_PARTIAL_RETURN_STACK_DETAIL "
+            "owner_hw_sid=%u warp_id=%u return_pc=0x%x "
+            "returned_lane_mask=0x%08x live_call_lane_mask=0x%08x\n",
+            m_sid, warp_id, return_pc, returned_lane_mask,
+            live_call_lane_mask);
+    m_simt_stack[warp_id]->print(stderr);
+    fflush(stderr);
+  }
+  return deferred;
 }
 
 bool shader_core_ctx::rtcore_reconverge_shader_return(
     unsigned warp_id, unsigned return_pc, unsigned cohort_lane_mask,
     bool *merged_paths) {
   assert(warp_id < m_warp_count);
-  return m_simt_stack[warp_id]->reconverge_rtcore_return_paths(
+  const bool reconverged =
+      m_simt_stack[warp_id]->reconverge_rtcore_return_paths(
       return_pc, simt_mask_t(cohort_lane_mask), merged_paths);
+  if (!reconverged) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_RETURN_RECONVERGENCE_STACK_DETAIL "
+            "owner_hw_sid=%u warp_id=%u return_pc=0x%x "
+            "cohort_lane_mask=0x%08x\n",
+            m_sid, warp_id, return_pc, cohort_lane_mask);
+    m_simt_stack[warp_id]->print(stderr);
+    fflush(stderr);
+  }
+  return reconverged;
+}
+
+bool shader_core_ctx::rtcore_warp_scoreboard_pending(
+    unsigned warp_id) const {
+  assert(warp_id < m_warp_count);
+  return m_scoreboard->pendingWrites(warp_id);
 }
 
 float shader_core_ctx::get_current_occupancy(unsigned long long &active,
@@ -13738,6 +13914,8 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
         rtcore_claim_shader_continuation_live_publication_fence(
             m_gpu->gpgpu_ctx, m_sid, warp_id,
             m_warp[warp_id]->get_dynamic_warp_id(), next_inst->pc,
+            static_cast<unsigned>((*pipe_reg)->get_warp_active_mask()
+                                      .to_ulong()),
             &live_round);
     if (initial_rt_publication && live_rt_publication) {
       fprintf(stderr,
@@ -13748,9 +13926,15 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
               static_cast<unsigned long long>(next_inst->pc));
       abort();
     }
-    m_warp[warp_id]->set_membar(
-        initial_rt_publication,
-        live_rt_publication ? &live_round : NULL);
+    // A live shader-return publication round covers the whole continuation
+    // cohort, while a divergent shader path may execute this fence for only a
+    // subset of its lanes.  Stalling the physical warp here would prevent the
+    // remaining paths from ever publishing their return words.  Record each
+    // path fence above and drain/consume the cohort-wide round only after all
+    // lanes have returned to the continuation join.
+    if (!live_rt_publication) {
+      m_warp[warp_id]->set_membar(initial_rt_publication, NULL);
+    }
   }
 
   updateSIMTDivergenceStructures(warp_id, *pipe_reg);

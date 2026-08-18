@@ -135,10 +135,15 @@ inline dispatcher_read_plan dispatch_attribute_read_plan(
     return plan;
   }
   plan.reads[0].chunk = 3;
+  static constexpr uint32_t kWordsPerChunk = 32u / sizeof(uint32_t);
+  static constexpr uint32_t kAttributeByteOffset =
+      (kInlineAttributeWord0.word % kWordsPerChunk) * sizeof(uint32_t);
+  const uint32_t attribute_byte_count =
+      attributes.word_count * sizeof(uint32_t);
+  const uint32_t attribute_byte_mask =
+      (uint32_t{1} << attribute_byte_count) - 1u;
   plan.reads[0].byte_mask =
-      attributes.word_count == 4
-          ? 0xffffffffu
-          : (uint32_t{1} << (attributes.word_count * 4)) - 1u;
+      attribute_byte_mask << kAttributeByteOffset;
   plan.read_count = 1;
   return plan;
 }
