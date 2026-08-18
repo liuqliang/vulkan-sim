@@ -227,7 +227,15 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       int index = builtin_id >> 16;
       dim3 gdim = this->get_core()->get_kernel_info()->get_grid_dim();
       switch (index) {
-        case 0:
+        case 0: {
+          const char *continuation = getenv(
+              "VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK");
+          if (continuation != NULL && strcmp(continuation, "1") == 0 &&
+              RT_thread_data != NULL) {
+            return RT_thread_data->ccs_lane_control.trace_depth;
+          }
+          return 0;
+        }
         case 1:
         case 2:
         case 3:

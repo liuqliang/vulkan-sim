@@ -6539,7 +6539,17 @@ void txq_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   inst_not_implemented(pI);
 }
 void trap_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  inst_not_implemented(pI);
+  const char *candidate =
+      getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK");
+  if (candidate == NULL || strcmp(candidate, "1") != 0) {
+    inst_not_implemented(pI);
+    return;
+  }
+  rtcore_khr_unwind_thread_continuation(
+      thread, "compiler_lowered_continuation_trap");
+  thread->set_done();
+  thread->exitCore();
+  thread->registerExit();
 }
 void vabsdiff_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   inst_not_implemented(pI);
@@ -7712,8 +7722,20 @@ static bool rtcore_publish_v03_compact_context_image(
 
   rtcore_v03_compact_context_image image;
   memset(&image, 0, sizeof(image));
+  if (thread->RT_thread_data == NULL ||
+      thread->RT_thread_data->traversal_data.size() !=
+          thread->RT_thread_data->ccs_lane_control.trace_depth) {
+    VulkanRayTracing::unwindKHRContinuation(
+        pI, thread, "context_publication_ccs_depth_mismatch_fail_closed");
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_FAULT "
+            "thread_uid=%u "
+            "fault=context_publication_ccs_depth_mismatch_fail_closed\n",
+            thread->get_uid());
+    abort();
+  }
   const uint32_t recursion_depth =
-      static_cast<uint32_t>(thread->RT_thread_data->traversal_data.size());
+      thread->RT_thread_data->ccs_lane_control.trace_depth;
   const uint32_t pipeline_trace_depth =
       rtcore_khr_max_pipeline_trace_depth();
   if (recursion_depth >= pipeline_trace_depth) {
@@ -7727,6 +7749,12 @@ static bool rtcore_publish_v03_compact_context_image(
             pipeline_trace_depth);
     abort();
   }
+  printf("GPGPU-Sim RTCORE_KHR_TRACE_ALLOCATION_DEPTH thread_uid=%u "
+         "recursion_depth=%u allocation_slot=%u "
+         "authority=ccs_lane_control static_site_identity_only=1 "
+         "physical_cta_admission=0 physical_warp_admission=0\n",
+         thread->get_uid(), recursion_depth, recursion_depth);
+  fflush(stdout);
   image.words[RTCORE_CONTEXT_W_HEADER] =
       RTCORE_CONTEXT_STATE_READY_FOR_SUBMIT |
       (recursion_depth << 8) |
@@ -19737,7 +19765,8 @@ static bool rtcore_v04_functional_only_output_carrier_available(
   if (thread == NULL || thread->RT_thread_data == NULL) {
     return false;
   }
-  const std::vector<Traversal_data *> &carriers =
+  const rtcore_khr_ccs_fixed_stack<
+      Traversal_data *, RTCORE_KHR_CCS_LOGICAL_DEPTH> &carriers =
       thread->RT_thread_data->traversal_data;
   return replace_existing
              ? carriers.size() == 1 && carriers.back() != NULL
@@ -19762,7 +19791,7 @@ static void rtcore_v04_functional_only_publish_output_carrier(
       sizeof(Traversal_data), &traversal, thread, pI);
   thread->RT_thread_data->all_hit_data.clear();
   if (!replace_existing) {
-    thread->RT_thread_data->traversal_data.push_back(device_traversal);
+    assert(thread->RT_thread_data->push_traversal_binding(device_traversal));
   }
   printf(
       "GPGPU-Sim RTCORE_V04_FUNCTIONAL_ONLY_OUTPUT_CARRIER "
@@ -23410,7 +23439,8 @@ rtcore_make_legacy_functional_traversal_provider_response(
     mem->write((mem_addr_t)device_traversal_data, sizeof(Traversal_data),
                &response.traversal_snapshot, thread, pI);
     thread->RT_thread_data->all_hit_data.clear();
-    thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
+    assert(thread->RT_thread_data->push_traversal_binding(
+        device_traversal_data));
     response.initialized_default_miss = true;
     response.hit_geometry = response.traversal_snapshot.hit_geometry;
   }
@@ -38238,7 +38268,7 @@ void rt_report_terminate_impl(const ptx_instruction *pI, ptx_thread_info *thread
   }
   ptx_reg_t result = {};
   result.pred =
-      thread->RT_thread_data->last_report_intersection_terminated ? 0 : 1;
+      thread->RT_thread_data->ccs_lane_control.report_terminated ? 0 : 1;
   thread->set_operand_value(pI->dst(), result, PRED_TYPE, thread, pI);
 }
 
@@ -38257,238 +38287,6 @@ void rt_report_active_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t result = {};
   result.pred = active ? 0 : 1;
   thread->set_operand_value(pI->dst(), result, PRED_TYPE, thread, pI);
-}
-
-static uint32_t rtcore_khr_continuation_u32_operand(
-    const ptx_instruction *pI, ptx_thread_info *thread, unsigned index) {
-  const operand_info &operand = pI->operand_lookup(index);
-  return thread->get_operand_value(
-      operand, operand, U32_TYPE, thread, 1).u32;
-}
-
-static const char *rtcore_khr_continuation_frame_kind_name(uint32_t kind) {
-  switch (kind) {
-    case 1:
-      return "trace";
-    case 2:
-      return "callable";
-    case 3:
-      return "report";
-    default:
-      return "invalid";
-  }
-}
-
-void rt_trace_depth_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (!rtcore_khr_recursive_trace_enabled() || pI == NULL || thread == NULL ||
-      thread->RT_thread_data == NULL || pI->get_num_operands() != 1) {
-    if (thread != NULL && thread->RT_thread_data != NULL)
-      VulkanRayTracing::unwindKHRContinuation(
-          pI, thread, "invalid_trace_depth_query_fail_closed");
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_FAULT "
-            "thread_uid=%u fault=invalid_trace_depth_query_fail_closed\n",
-            thread != NULL ? thread->get_uid() : 0);
-    abort();
-  }
-
-  const uint32_t depth = static_cast<uint32_t>(
-      thread->RT_thread_data->traversal_data.size());
-  const uint32_t pipeline_trace_depth = rtcore_khr_max_pipeline_trace_depth();
-  if (depth >= pipeline_trace_depth || depth >= RTCORE_MAX_TRACE_SITES) {
-    VulkanRayTracing::unwindKHRContinuation(
-        pI, thread, "trace_allocation_depth_overflow_fail_closed");
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_FAULT "
-            "thread_uid=%u recursion_depth=%u pipeline_trace_depth=%u "
-            "allocation_depth_capacity=%llu "
-            "fault=trace_allocation_depth_overflow_fail_closed\n",
-            thread->get_uid(), depth, pipeline_trace_depth,
-            static_cast<unsigned long long>(RTCORE_MAX_TRACE_SITES));
-    abort();
-  }
-
-  ptx_reg_t result = {};
-  result.u32 = depth;
-  thread->set_operand_value(
-      pI->operand_lookup(0), result, U32_TYPE, thread, pI);
-  printf("GPGPU-Sim RTCORE_KHR_TRACE_ALLOCATION_DEPTH thread_uid=%u "
-         "recursion_depth=%u allocation_slot=%u static_site_identity_only=1 "
-         "physical_cta_admission=0 physical_warp_admission=0\n",
-         thread->get_uid(), depth, depth);
-  fflush(stdout);
-}
-
-static void rtcore_khr_continuation_frame_fail_closed(
-    const ptx_instruction *pI, ptx_thread_info *thread,
-    const char *reason) {
-  VulkanRayTracing::unwindKHRContinuation(pI, thread, reason);
-  fprintf(stderr,
-          "GPGPU-Sim RTCORE_KHR_CONTINUATION_FRAME_FAULT thread_uid=%u "
-          "reason=%s state_mutated_after_reject=0 "
-          "remaining_frames=0 remaining_bytes=0\n",
-          thread != NULL ? thread->get_uid() : 0,
-          reason != NULL ? reason : "unknown");
-  fflush(stderr);
-}
-
-void rt_continuation_frame_push_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
-      pI->get_num_operands() != 4) {
-    if (thread != NULL && thread->RT_thread_data != NULL)
-      VulkanRayTracing::unwindKHRContinuation(
-          pI, thread, "invalid_push_operands_fail_closed");
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_KHR_CONTINUATION_FRAME_FAULT "
-            "reason=invalid_push_operands_fail_closed\n");
-    abort();
-  }
-  const uint32_t kind =
-      rtcore_khr_continuation_u32_operand(pI, thread, 0);
-  const uint32_t site =
-      rtcore_khr_continuation_u32_operand(pI, thread, 1);
-  const uint32_t frame_bytes =
-      rtcore_khr_continuation_u32_operand(pI, thread, 2);
-  const uint32_t capacity_bytes =
-      rtcore_khr_continuation_u32_operand(pI, thread, 3);
-  Vulkan_RT_thread_data *rt = thread->RT_thread_data;
-  const bool valid = kind >= 1 && kind <= 3 && frame_bytes >= 32 &&
-      (frame_bytes % 8) == 0 && capacity_bytes >= frame_bytes &&
-      (capacity_bytes % 8) == 0 && capacity_bytes <= (1u << 20) &&
-      (rt->continuation_capacity_bytes == 0 ||
-       rt->continuation_capacity_bytes == capacity_bytes) &&
-      rt->continuation_live_bytes <= capacity_bytes - frame_bytes;
-  if (!valid) {
-    const bool capacity_overflow =
-        static_cast<uint64_t>(rt->continuation_live_bytes) + frame_bytes >
-        capacity_bytes;
-    rtcore_khr_continuation_frame_fail_closed(
-        pI, thread,
-        capacity_overflow
-            ? "stack_capacity_overflow_before_child_mutation"
-            : "invalid_frame_push_identity_fail_closed");
-    abort();
-  }
-  rt->continuation_capacity_bytes = capacity_bytes;
-  continuation_frame_ledger_entry entry = {};
-  entry.kind = kind;
-  entry.site = site;
-  entry.frame_bytes = frame_bytes;
-  entry.capacity_bytes = capacity_bytes;
-  entry.generation = rt->continuation_next_generation++;
-  if (rt->continuation_next_generation == 0)
-    rt->continuation_next_generation = 1;
-  rt->continuation_frame_ledger.push_back(entry);
-  rt->continuation_live_bytes += frame_bytes;
-  rt->continuation_max_live_bytes = std::max(
-      rt->continuation_max_live_bytes, rt->continuation_live_bytes);
-  rt->continuation_push_count++;
-  rtcore_khr_lifecycle_note_frame_push(frame_bytes);
-  printf("GPGPU-Sim RTCORE_KHR_CONTINUATION_FRAME_PUSH thread_uid=%u "
-         "kind=%s site=%u frame_bytes=%u capacity_bytes=%u generation=%llu "
-         "frame_depth=%zu live_bytes=%llu max_live_bytes=%llu "
-         "physical_cta_admission=0 physical_warp_admission=0\n",
-         thread->get_uid(), rtcore_khr_continuation_frame_kind_name(kind),
-         site, frame_bytes, capacity_bytes,
-         static_cast<unsigned long long>(entry.generation),
-         rt->continuation_frame_ledger.size(),
-         static_cast<unsigned long long>(rt->continuation_live_bytes),
-         static_cast<unsigned long long>(rt->continuation_max_live_bytes));
-  fflush(stdout);
-}
-
-void rt_continuation_frame_pop_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
-      pI->get_num_operands() != 3) {
-    if (thread != NULL && thread->RT_thread_data != NULL)
-      VulkanRayTracing::unwindKHRContinuation(
-          pI, thread, "invalid_pop_operands_fail_closed");
-    fprintf(stderr,
-            "GPGPU-Sim RTCORE_KHR_CONTINUATION_FRAME_FAULT "
-            "reason=invalid_pop_operands_fail_closed\n");
-    abort();
-  }
-  const uint32_t kind =
-      rtcore_khr_continuation_u32_operand(pI, thread, 0);
-  const uint32_t site =
-      rtcore_khr_continuation_u32_operand(pI, thread, 1);
-  const uint32_t frame_bytes =
-      rtcore_khr_continuation_u32_operand(pI, thread, 2);
-  Vulkan_RT_thread_data *rt = thread->RT_thread_data;
-  if (rt->continuation_frame_ledger.empty()) {
-    rtcore_khr_continuation_frame_fail_closed(
-        pI, thread, "stack_underflow_before_pop");
-    abort();
-  }
-  const continuation_frame_ledger_entry entry =
-      rt->continuation_frame_ledger.back();
-  size_t same_kind_depth = 0;
-  for (size_t index = 0; index < rt->continuation_frame_ledger.size(); ++index)
-    same_kind_depth +=
-        rt->continuation_frame_ledger[index].kind == kind ? 1 : 0;
-  size_t runtime_depth = 0;
-  if (kind == 1)
-    runtime_depth = rt->traversal_data.size();
-  else if (kind == 2)
-    runtime_depth = rt->callable_data_bindings.size();
-  else if (kind == 3)
-    runtime_depth = rt->report_intersection_frames.size();
-  const bool valid = entry.kind == kind && entry.site == site &&
-      entry.frame_bytes == frame_bytes &&
-      rt->continuation_live_bytes >= frame_bytes && same_kind_depth > 0 &&
-      runtime_depth == same_kind_depth - 1;
-  if (!valid) {
-    rtcore_khr_continuation_frame_fail_closed(
-        pI, thread, "frame_identity_depth_or_return_mismatch_fail_closed");
-    abort();
-  }
-  rt->continuation_frame_ledger.pop_back();
-  rt->continuation_live_bytes -= frame_bytes;
-  rt->continuation_pop_count++;
-  rtcore_khr_lifecycle_note_frame_pop(frame_bytes);
-  printf("GPGPU-Sim RTCORE_KHR_CONTINUATION_FRAME_POP thread_uid=%u "
-         "kind=%s site=%u frame_bytes=%u generation=%llu "
-         "remaining_frame_depth=%zu remaining_live_bytes=%llu "
-         "push_count=%llu pop_count=%llu validated_lifo=1 "
-         "return_consumed_before_pop=1\n",
-         thread->get_uid(), rtcore_khr_continuation_frame_kind_name(kind),
-         site, frame_bytes,
-         static_cast<unsigned long long>(entry.generation),
-         rt->continuation_frame_ledger.size(),
-         static_cast<unsigned long long>(rt->continuation_live_bytes),
-         static_cast<unsigned long long>(rt->continuation_push_count),
-         static_cast<unsigned long long>(rt->continuation_pop_count));
-  fflush(stdout);
-}
-
-void rt_continuation_frame_fault_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
-      pI->get_num_operands() != 4) {
-    if (thread != NULL && thread->RT_thread_data != NULL)
-      VulkanRayTracing::unwindKHRContinuation(
-          pI, thread, "invalid_fault_operands_fail_closed");
-    abort();
-  }
-  const uint32_t reason =
-      rtcore_khr_continuation_u32_operand(pI, thread, 0);
-  const uint32_t kind =
-      rtcore_khr_continuation_u32_operand(pI, thread, 1);
-  const uint32_t site =
-      rtcore_khr_continuation_u32_operand(pI, thread, 2);
-  const uint32_t frame_bytes =
-      rtcore_khr_continuation_u32_operand(pI, thread, 3);
-  const char *reason_name = reason == 1
-      ? "local_stack_capacity_overflow"
-      : (reason == 2 ? "local_stack_underflow"
-                     : (reason == 3 ? "local_frame_header_mismatch"
-                                    : "unknown_frame_fault"));
-  printf("GPGPU-Sim RTCORE_KHR_CONTINUATION_FRAME_FAULT_EVENT "
-         "thread_uid=%u reason=%s kind=%s site=%u frame_bytes=%u "
-         "fault_before_child_or_caller_mutation=1\n",
-         thread->get_uid(), reason_name,
-         rtcore_khr_continuation_frame_kind_name(kind), site, frame_bytes);
-  fflush(stdout);
-  rtcore_khr_continuation_frame_fail_closed(pI, thread, reason_name);
 }
 
 void image_deref_store_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

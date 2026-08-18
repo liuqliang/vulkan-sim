@@ -2052,36 +2052,44 @@ static std::map<unsigned, rtcore::v04::timing_driver::state_v0>
 struct rtcore_recursive_suspended_parent_owner {
     unsigned child_warp_uid;
     rtcore_resident_rt_warp_record resident;
-    std::map<unsigned, rtcore_replay_lane_request> lane_requests;
+    unsigned lane_request_valid_mask;
+    unsigned lane_request_thread_uids[32];
+    rtcore_replay_lane_request lane_requests[32];
 
     rtcore_recursive_suspended_parent_owner()
-        : child_warp_uid(0), resident(), lane_requests() {}
-};
-
-static std::map<rtcore_resident_rt_warp_record_key,
-                std::vector<rtcore_recursive_suspended_parent_owner> >
-    g_rtcore_recursive_suspended_parent_owners;
-static const size_t kRtcoreRecursiveOwnerStackCapacity = 8;
-static unsigned g_rtcore_khr_max_pipeline_trace_depth = 1;
-
-struct rtcore_khr_child_lifecycle_key {
-    unsigned owner_hw_sid;
-    unsigned warp_id;
-    unsigned child_invocation_id;
-
-    bool operator<(const rtcore_khr_child_lifecycle_key &other) const {
-        if (owner_hw_sid != other.owner_hw_sid)
-            return owner_hw_sid < other.owner_hw_sid;
-        if (warp_id != other.warp_id) return warp_id < other.warp_id;
-        return child_invocation_id < other.child_invocation_id;
+        : child_warp_uid(0), resident(), lane_request_valid_mask(0) {
+        memset(lane_request_thread_uids, 0,
+               sizeof(lane_request_thread_uids));
     }
 };
 
+typedef rtcore_khr_ccs_fixed_stack<
+    rtcore_recursive_suspended_parent_owner,
+    RTCORE_KHR_CCS_LOGICAL_DEPTH> rtcore_recursive_owner_ccs_stack;
+
+static std::map<rtcore_resident_rt_warp_record_key,
+                rtcore_recursive_owner_ccs_stack>
+    g_rtcore_recursive_suspended_parent_owners;
+static unsigned g_rtcore_khr_max_pipeline_trace_depth = 1;
+
 struct rtcore_khr_child_lifecycle_record {
+    bool valid;
+    unsigned child_invocation_id;
     unsigned parent_invocation_id;
     unsigned child_depth;
     unsigned participating_mask;
     unsigned lane_count;
+};
+
+struct rtcore_khr_child_ccs_row {
+    rtcore_khr_child_lifecycle_record entries[
+        RTCORE_KHR_CCS_LOGICAL_DEPTH];
+    unsigned occupancy;
+    unsigned high_water;
+
+    rtcore_khr_child_ccs_row() : occupancy(0), high_water(0) {
+        memset(entries, 0, sizeof(entries));
+    }
 };
 
 struct rtcore_khr_lifecycle_stats {
@@ -2101,12 +2109,26 @@ struct rtcore_khr_lifecycle_stats {
 };
 
 static rtcore_khr_lifecycle_stats g_rtcore_khr_lifecycle_stats = {};
-static std::map<rtcore_khr_child_lifecycle_key,
-                rtcore_khr_child_lifecycle_record>
+// One fixed child-lifecycle CCS row per resident physical warp.  The map only
+// locates the hardware row by (SM, physical warp); row capacity is the fixed
+// array above and empty rows are removed.
+static std::map<rtcore_resident_rt_warp_record_key,
+                rtcore_khr_child_ccs_row>
     g_rtcore_khr_live_children;
-static std::set<rtcore_khr_child_lifecycle_key>
-    g_rtcore_khr_released_children;
 static bool g_rtcore_khr_lifecycle_summary_registered = false;
+
+template <typename Value>
+static unsigned rtcore_khr_ccs_rows_for_sm(
+    const std::map<rtcore_resident_rt_warp_record_key, Value> &rows,
+    unsigned owner_hw_sid) {
+    unsigned count = 0;
+    for (typename std::map<rtcore_resident_rt_warp_record_key,
+                           Value>::const_iterator it = rows.begin();
+         it != rows.end(); ++it) {
+        if (it->first.owner_hw_sid == owner_hw_sid) ++count;
+    }
+    return count;
+}
 
 static unsigned rtcore_khr_popcount(unsigned mask) {
     unsigned count = 0;
@@ -2118,6 +2140,13 @@ static unsigned rtcore_khr_popcount(unsigned mask) {
 }
 
 static void rtcore_khr_log_lifecycle_summary() {
+    unsigned live_owner_frames = 0;
+    for (std::map<rtcore_resident_rt_warp_record_key,
+                  rtcore_recursive_owner_ccs_stack>::const_iterator it =
+             g_rtcore_recursive_suspended_parent_owners.begin();
+         it != g_rtcore_recursive_suspended_parent_owners.end(); ++it) {
+        live_owner_frames += it->second.size();
+    }
     const bool valid =
         g_rtcore_khr_lifecycle_stats.frame_pushes ==
             g_rtcore_khr_lifecycle_stats.frame_pops +
@@ -2129,14 +2158,18 @@ static void rtcore_khr_log_lifecycle_summary() {
                 g_rtcore_khr_lifecycle_stats.child_fault_unwinds &&
         g_rtcore_khr_lifecycle_stats.live_children == 0 &&
         g_rtcore_khr_lifecycle_stats.live_returns == 0 &&
-        g_rtcore_khr_live_children.empty();
+        g_rtcore_khr_live_children.empty() &&
+        g_rtcore_recursive_suspended_parent_owners.empty();
     printf("GPGPU-Sim RTCORE_KHR_LIFECYCLE_FINAL "
            "frame_pushes=%llu frame_pops=%llu frame_fault_unwinds=%llu "
            "continuation_live_bytes=%llu continuation_max_live_bytes=%llu "
            "live_frames=%llu child_admits=%llu child_releases=%llu "
            "child_fault_unwinds=%llu "
            "live_children=%llu live_returns=%llu semantic_faults=%llu "
-           "backpressure_retries=%llu conservation_valid=%u\n",
+           "backpressure_retries=%llu child_ccs_rows=%zu "
+           "owner_ccs_rows=%zu live_owner_frames=%u "
+           "row_capacity_per_sm=%u depth_capacity=%zu "
+           "conservation_valid=%u\n",
            g_rtcore_khr_lifecycle_stats.frame_pushes,
            g_rtcore_khr_lifecycle_stats.frame_pops,
            g_rtcore_khr_lifecycle_stats.frame_fault_unwinds,
@@ -2150,6 +2183,11 @@ static void rtcore_khr_log_lifecycle_summary() {
            g_rtcore_khr_lifecycle_stats.live_returns,
            g_rtcore_khr_lifecycle_stats.semantic_faults,
            g_rtcore_khr_lifecycle_stats.backpressure_retries,
+           g_rtcore_khr_live_children.size(),
+           g_rtcore_recursive_suspended_parent_owners.size(),
+           live_owner_frames,
+           rtcore::v04::request_owner::kResidentWarpCapacity,
+           RTCORE_KHR_CCS_LOGICAL_DEPTH,
            valid ? 1u : 0u);
     fflush(stdout);
 }
@@ -2211,19 +2249,53 @@ extern "C" bool rtcore_khr_lifecycle_child_admit(
     unsigned child_invocation_id, unsigned child_depth,
     unsigned participating_mask) {
     rtcore_khr_register_lifecycle_summary();
-    rtcore_khr_child_lifecycle_key key = {
-        owner_hw_sid, warp_id, child_invocation_id};
     const unsigned lanes = rtcore_khr_popcount(participating_mask);
-    if (child_invocation_id == 0 || parent_invocation_id == 0 ||
-        child_depth == 0 || lanes == 0 ||
-        g_rtcore_khr_live_children.count(key) != 0 ||
-        g_rtcore_khr_released_children.count(key) != 0) {
+    rtcore_resident_rt_warp_record_key key = {};
+    key.owner_hw_sid = owner_hw_sid;
+    key.warp_id = warp_id;
+    if (g_rtcore_khr_live_children.find(key) ==
+            g_rtcore_khr_live_children.end() &&
+        rtcore_khr_ccs_rows_for_sm(g_rtcore_khr_live_children,
+                                   owner_hw_sid) >=
+            rtcore::v04::request_owner::kResidentWarpCapacity) {
         g_rtcore_khr_lifecycle_stats.semantic_faults++;
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_CCS_ROW_FAULT owner_hw_sid=%u "
+                "warp_id=%u occupancy=%u capacity=%u "
+                "fault=child_ccs_row_capacity_exceeded_fail_closed\n",
+                owner_hw_sid, warp_id,
+                rtcore_khr_ccs_rows_for_sm(g_rtcore_khr_live_children,
+                                           owner_hw_sid),
+                rtcore::v04::request_owner::kResidentWarpCapacity);
         return false;
     }
-    rtcore_khr_child_lifecycle_record record = {
-        parent_invocation_id, child_depth, participating_mask, lanes};
-    g_rtcore_khr_live_children[key] = record;
+    rtcore_khr_child_ccs_row &row = g_rtcore_khr_live_children[key];
+    unsigned free_slot = RTCORE_KHR_CCS_LOGICAL_DEPTH;
+    bool duplicate = false;
+    for (unsigned slot = 0; slot < RTCORE_KHR_CCS_LOGICAL_DEPTH; ++slot) {
+        if (!row.entries[slot].valid &&
+            free_slot == RTCORE_KHR_CCS_LOGICAL_DEPTH)
+            free_slot = slot;
+        if (row.entries[slot].valid &&
+            row.entries[slot].child_invocation_id == child_invocation_id)
+            duplicate = true;
+    }
+    if (child_invocation_id == 0 || parent_invocation_id == 0 ||
+        child_depth == 0 || lanes == 0 || duplicate ||
+        free_slot == RTCORE_KHR_CCS_LOGICAL_DEPTH) {
+        g_rtcore_khr_lifecycle_stats.semantic_faults++;
+        if (row.occupancy == 0) g_rtcore_khr_live_children.erase(key);
+        return false;
+    }
+    rtcore_khr_child_lifecycle_record &record = row.entries[free_slot];
+    record.valid = true;
+    record.child_invocation_id = child_invocation_id;
+    record.parent_invocation_id = parent_invocation_id;
+    record.child_depth = child_depth;
+    record.participating_mask = participating_mask;
+    record.lane_count = lanes;
+    row.occupancy++;
+    row.high_water = std::max(row.high_water, row.occupancy);
     g_rtcore_khr_lifecycle_stats.child_admits += lanes;
     g_rtcore_khr_lifecycle_stats.live_children += lanes;
     g_rtcore_khr_lifecycle_stats.live_returns += lanes;
@@ -2235,6 +2307,10 @@ extern "C" bool rtcore_khr_lifecycle_child_admit(
            child_invocation_id, child_depth, participating_mask,
            g_rtcore_khr_lifecycle_stats.live_children,
            g_rtcore_khr_lifecycle_stats.live_returns);
+    printf("GPGPU-Sim RTCORE_KHR_CCS_CHILD_OCCUPANCY owner_hw_sid=%u "
+           "warp_id=%u occupancy=%u capacity=%zu high_water=%u\n",
+           owner_hw_sid, warp_id, row.occupancy,
+           RTCORE_KHR_CCS_LOGICAL_DEPTH, row.high_water);
     fflush(stdout);
     return true;
 }
@@ -2243,27 +2319,41 @@ extern "C" bool rtcore_khr_lifecycle_child_return_consume_release(
     unsigned owner_hw_sid, unsigned warp_id, unsigned parent_invocation_id,
     unsigned child_invocation_id, unsigned child_depth,
     unsigned participating_mask) {
-    rtcore_khr_child_lifecycle_key key = {
-        owner_hw_sid, warp_id, child_invocation_id};
-    std::map<rtcore_khr_child_lifecycle_key,
-             rtcore_khr_child_lifecycle_record>::iterator it =
+    rtcore_resident_rt_warp_record_key key = {};
+    key.owner_hw_sid = owner_hw_sid;
+    key.warp_id = warp_id;
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_khr_child_ccs_row>::iterator it =
         g_rtcore_khr_live_children.find(key);
-    if (it == g_rtcore_khr_live_children.end() ||
-        it->second.parent_invocation_id != parent_invocation_id ||
-        it->second.child_depth != child_depth ||
-        it->second.participating_mask != participating_mask ||
-        g_rtcore_khr_released_children.count(key) != 0 ||
-        g_rtcore_khr_lifecycle_stats.live_children < it->second.lane_count ||
-        g_rtcore_khr_lifecycle_stats.live_returns < it->second.lane_count) {
+    rtcore_khr_child_lifecycle_record *record = NULL;
+    if (it != g_rtcore_khr_live_children.end()) {
+        for (unsigned slot = 0; slot < RTCORE_KHR_CCS_LOGICAL_DEPTH; ++slot) {
+            if (it->second.entries[slot].valid &&
+                it->second.entries[slot].child_invocation_id ==
+                    child_invocation_id) {
+                record = &it->second.entries[slot];
+                break;
+            }
+        }
+    }
+    if (record == NULL ||
+        record->parent_invocation_id != parent_invocation_id ||
+        record->child_depth != child_depth ||
+        record->participating_mask != participating_mask ||
+        g_rtcore_khr_lifecycle_stats.live_children < record->lane_count ||
+        g_rtcore_khr_lifecycle_stats.live_returns < record->lane_count) {
         g_rtcore_khr_lifecycle_stats.semantic_faults++;
         return false;
     }
-    const unsigned lanes = it->second.lane_count;
+    const unsigned lanes = record->lane_count;
     g_rtcore_khr_lifecycle_stats.live_returns -= lanes;
     g_rtcore_khr_lifecycle_stats.live_children -= lanes;
     g_rtcore_khr_lifecycle_stats.child_releases += lanes;
-    g_rtcore_khr_live_children.erase(it);
-    g_rtcore_khr_released_children.insert(key);
+    *record = {};
+    assert(it->second.occupancy > 0);
+    it->second.occupancy--;
+    const unsigned remaining_occupancy = it->second.occupancy;
+    if (remaining_occupancy == 0) g_rtcore_khr_live_children.erase(it);
     printf("GPGPU-Sim RTCORE_KHR_CHILD_RETURN_CONSUME_RELEASE "
            "owner_hw_sid=%u warp_id=%u parent_invocation_id=%u "
            "child_invocation_id=%u child_depth=%u lane_mask=0x%08x "
@@ -2273,6 +2363,10 @@ extern "C" bool rtcore_khr_lifecycle_child_return_consume_release(
            child_invocation_id, child_depth, participating_mask,
            g_rtcore_khr_lifecycle_stats.live_children,
            g_rtcore_khr_lifecycle_stats.live_returns);
+    printf("GPGPU-Sim RTCORE_KHR_CCS_CHILD_RELEASE owner_hw_sid=%u "
+           "warp_id=%u occupancy=%u capacity=%zu\n",
+           owner_hw_sid, warp_id, remaining_occupancy,
+           RTCORE_KHR_CCS_LOGICAL_DEPTH);
     fflush(stdout);
     return true;
 }
@@ -2280,17 +2374,19 @@ extern "C" bool rtcore_khr_lifecycle_child_return_consume_release(
 extern "C" void rtcore_khr_lifecycle_unwind_warp(
     unsigned owner_hw_sid, unsigned warp_id, const char *reason) {
     unsigned released_lanes = 0;
-    for (std::map<rtcore_khr_child_lifecycle_key,
-                  rtcore_khr_child_lifecycle_record>::iterator it =
-             g_rtcore_khr_live_children.begin();
-         it != g_rtcore_khr_live_children.end();) {
-        if (it->first.owner_hw_sid == owner_hw_sid &&
-            it->first.warp_id == warp_id) {
-            released_lanes += it->second.lane_count;
-            it = g_rtcore_khr_live_children.erase(it);
-        } else {
-            ++it;
+    rtcore_resident_rt_warp_record_key key = {};
+    key.owner_hw_sid = owner_hw_sid;
+    key.warp_id = warp_id;
+    std::map<rtcore_resident_rt_warp_record_key,
+             rtcore_khr_child_ccs_row>::iterator it =
+        g_rtcore_khr_live_children.find(key);
+    if (it != g_rtcore_khr_live_children.end()) {
+        for (unsigned slot = 0; slot < RTCORE_KHR_CCS_LOGICAL_DEPTH; ++slot) {
+            if (it->second.entries[slot].valid) {
+                released_lanes += it->second.entries[slot].lane_count;
+            }
         }
+        g_rtcore_khr_live_children.erase(it);
     }
     if (released_lanes > 0) {
         if (g_rtcore_khr_lifecycle_stats.live_children < released_lanes ||
@@ -2331,7 +2427,7 @@ static unsigned rtcore_khr_unwind_rt_private_owners(
     if (current != g_rtcore_resident_rt_warp_records.end())
         records.push_back(current->second);
     std::map<rtcore_resident_rt_warp_record_key,
-             std::vector<rtcore_recursive_suspended_parent_owner> >::iterator
+             rtcore_recursive_owner_ccs_stack>::iterator
         suspended = g_rtcore_recursive_suspended_parent_owners.find(owner_key);
     if (suspended != g_rtcore_recursive_suspended_parent_owners.end()) {
         for (size_t index = 0; index < suspended->second.size(); ++index)
@@ -2524,7 +2620,16 @@ extern "C" bool rtcore_suspend_v04_recursive_parent_owner(
     std::map<rtcore_resident_rt_warp_record_key,
              rtcore_resident_rt_warp_record>::iterator parent =
         g_rtcore_resident_rt_warp_records.find(key);
-    std::vector<rtcore_recursive_suspended_parent_owner> &stack =
+    if (g_rtcore_recursive_suspended_parent_owners.find(key) ==
+            g_rtcore_recursive_suspended_parent_owners.end() &&
+        rtcore_khr_ccs_rows_for_sm(
+            g_rtcore_recursive_suspended_parent_owners, owner_hw_sid) >=
+            rtcore::v04::request_owner::kResidentWarpCapacity) {
+        if (failure_reason != NULL)
+            *failure_reason = "recursive_owner_ccs_row_capacity";
+        return false;
+    }
+    rtcore_recursive_owner_ccs_stack &stack =
         g_rtcore_recursive_suspended_parent_owners[key];
     if (parent_warp_uid == 0 || child_warp_uid == 0 ||
         parent_warp_uid == child_warp_uid || active_mask == 0) {
@@ -2534,7 +2639,7 @@ extern "C" bool rtcore_suspend_v04_recursive_parent_owner(
                parent->second.current_warp_uid != parent_warp_uid ||
                (active_mask & ~parent->second.active_mask) != 0) {
         failure = "recursive_parent_resident_shell_mismatch";
-    } else if (stack.size() >= kRtcoreRecursiveOwnerStackCapacity) {
+    } else if (stack.size() >= stack.capacity()) {
         failure = "recursive_owner_stack_overflow";
     }
 
@@ -2561,7 +2666,9 @@ extern "C" bool rtcore_suspend_v04_recursive_parent_owner(
             // control and shell remain authoritative in that case.  Preserve
             // a request only when one is still pinned.
             if (request != g_rtcore_replay_lane_requests.end()) {
-                snapshot.lane_requests[thread_uid] = request->second;
+                snapshot.lane_request_valid_mask |= lane_mask;
+                snapshot.lane_request_thread_uids[lane] = thread_uid;
+                snapshot.lane_requests[lane] = request->second;
             }
         }
     }
@@ -2593,7 +2700,7 @@ extern "C" bool rtcore_restore_v04_recursive_parent_owner_if_present(
     key.owner_hw_sid = owner_hw_sid;
     key.warp_id = warp_id;
     std::map<rtcore_resident_rt_warp_record_key,
-             std::vector<rtcore_recursive_suspended_parent_owner> >::iterator
+             rtcore_recursive_owner_ccs_stack>::iterator
         found = g_rtcore_recursive_suspended_parent_owners.find(key);
     if (found == g_rtcore_recursive_suspended_parent_owners.end() ||
         found->second.empty()) {
@@ -2608,10 +2715,12 @@ extern "C" bool rtcore_restore_v04_recursive_parent_owner_if_present(
     }
     if (strcmp(failure, "accepted") == 0) {
         g_rtcore_resident_rt_warp_records[key] = snapshot.resident;
-        for (std::map<unsigned, rtcore_replay_lane_request>::const_iterator
-                 request = snapshot.lane_requests.begin();
-             request != snapshot.lane_requests.end(); ++request) {
-            g_rtcore_replay_lane_requests[request->first] = request->second;
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            const unsigned lane_mask = 1u << lane;
+            if ((snapshot.lane_request_valid_mask & lane_mask) == 0) continue;
+            g_rtcore_replay_lane_requests[
+                snapshot.lane_request_thread_uids[lane]] =
+                    snapshot.lane_requests[lane];
         }
         found->second.pop_back();
         if (found->second.empty()) {
@@ -36559,7 +36668,20 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     rtcore_publish_compact_trace_export(thread, rtcore_trace_export);
     rtcore_admit_compact_trace_for_replay(thread);
     mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);
-    thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
+    if (!thread->RT_thread_data->push_traversal_binding(
+            device_traversal_data)) {
+        unwindKHRContinuation(
+            pI, thread, "ccs_trace_depth_overflow_fail_closed");
+        abort();
+    }
+    printf("GPGPU-Sim RTCORE_KHR_CCS_TRACE_PUSH thread_uid=%u "
+           "site_pc=%llu trace_depth=%u capacity=%zu "
+           "physical_cta_admission=0 physical_warp_admission=0\n",
+           thread->get_uid(),
+           static_cast<unsigned long long>(pI->get_PC()),
+           thread->RT_thread_data->ccs_lane_control.trace_depth,
+           RTCORE_KHR_CCS_LOGICAL_DEPTH);
+    fflush(stdout);
     
     thread->set_rt_transactions(transactions);
     thread->set_rt_store_transactions(store_transactions);
@@ -36606,7 +36728,22 @@ void VulkanRayTracing::endTraceRay(const ptx_instruction *pI, ptx_thread_info *t
     }
     thread->RT_thread_data->clear_committed_procedural_attribute(
         completed_traversal);
-    thread->RT_thread_data->traversal_data.pop_back();
+    Traversal_data *popped_traversal = NULL;
+    if (!thread->RT_thread_data->pop_traversal_binding(
+            &popped_traversal) ||
+        popped_traversal != completed_traversal) {
+        unwindKHRContinuation(
+            pI, thread, "ccs_trace_binding_pop_mismatch_fail_closed");
+        abort();
+    }
+    printf("GPGPU-Sim RTCORE_KHR_CCS_TRACE_POP thread_uid=%u "
+           "site_pc=%llu remaining_trace_depth=%u capacity=%zu "
+           "validated_lifo=1\n",
+           thread->get_uid(),
+           static_cast<unsigned long long>(pI->get_PC()),
+           thread->RT_thread_data->ccs_lane_control.trace_depth,
+           RTCORE_KHR_CCS_LOGICAL_DEPTH);
+    fflush(stdout);
     thread->RT_thread_data->all_hit_data.clear();
     warp_intersection_table* itable = intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
     itable->clear(pI, thread);
@@ -36618,10 +36755,11 @@ void VulkanRayTracing::unwindKHRContinuation(
     const ptx_instruction *pI, ptx_thread_info *thread, const char *reason) {
     if (thread == NULL || thread->RT_thread_data == NULL) return;
     Vulkan_RT_thread_data *rt = thread->RT_thread_data;
-    const unsigned frame_count =
-        static_cast<unsigned>(rt->continuation_frame_ledger.size());
-    const unsigned live_bytes =
-        static_cast<unsigned>(rt->continuation_live_bytes);
+    // Compiler-managed .local frames have no host shadow ledger.  A trap
+    // invalidates the lane execution context; the values below are diagnostic
+    // only and intentionally do not attempt to reconstruct the physical SP.
+    const unsigned frame_count = 0;
+    const unsigned live_bytes = 0;
     const unsigned callable_count =
         static_cast<unsigned>(rt->callable_data_bindings.size());
     const unsigned report_count =
@@ -36629,13 +36767,11 @@ void VulkanRayTracing::unwindKHRContinuation(
     const unsigned traversal_count =
         static_cast<unsigned>(rt->traversal_data.size());
 
-    rt->continuation_frame_ledger.clear();
-    rt->continuation_live_bytes = 0;
-    rt->continuation_faulted = true;
     rt->callable_data_bindings.clear();
     rt->report_intersection_frames.clear();
     rt->committed_procedural_attributes.clear();
     rt->traversal_data.clear();
+    rt->ccs_lane_control = {};
     rt->all_hit_data.clear();
     if (frame_count > 0 || live_bytes > 0) {
         rtcore_khr_lifecycle_note_frame_unwind(
@@ -36737,12 +36873,12 @@ void VulkanRayTracing::setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreat
 		rtcore_khr_register_lifecycle_summary();
 		const unsigned requested =
 			pCreateInfos->maxPipelineRayRecursionDepth;
-		if (requested == 0 || requested > kRtcoreRecursiveOwnerStackCapacity) {
+		if (requested == 0 || requested > RTCORE_KHR_CCS_LOGICAL_DEPTH) {
 			fprintf(stderr,
 				"GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_FAULT "
 				"requested_pipeline_depth=%u capacity=%zu "
 				"fault=pipeline_trace_depth_unsupported_fail_closed\n",
-				requested, kRtcoreRecursiveOwnerStackCapacity);
+				requested, RTCORE_KHR_CCS_LOGICAL_DEPTH);
 			abort();
 		}
 		g_rtcore_khr_max_pipeline_trace_depth = requested;
@@ -36766,7 +36902,7 @@ void VulkanRayTracing::setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreat
 			   "pipeline_trace_depth=%u supported_trace_depth=%zu "
 			   "supported_callable_depth=8 continuation_capacity_bytes=%lu "
 			   "validated=1\n",
-			   requested, kRtcoreRecursiveOwnerStackCapacity,
+			   requested, RTCORE_KHR_CCS_LOGICAL_DEPTH,
 			   continuation_capacity);
 	}
 	std::cout << "gpgpusim: set pipeline" << std::endl;
@@ -37397,7 +37533,7 @@ void VulkanRayTracing::callClosestHitShader(const ptx_instruction *pI, ptx_threa
 }
 
 static uint64_t rtcore_khr_attribute_digest(
-    const std::vector<unsigned char> &image) {
+    const rtcore_khr_ccs_attribute_image &image) {
     uint64_t digest = 1469598103934665603ull;
     for (size_t index = 0; index < image.size(); ++index) {
         digest ^= image[index];
@@ -37427,7 +37563,8 @@ void VulkanRayTracing::beginReportIntersection(
     uint32_t hit_kind) {
     if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
         thread->RT_thread_data->traversal_data.empty() ||
-        thread->RT_thread_data->report_intersection_frames.size() >= 32 ||
+        thread->RT_thread_data->report_intersection_frames.size() >=
+            RTCORE_KHR_CCS_LOGICAL_DEPTH ||
         hit_kind > 0x7fu) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_REPORT_FAULT "
@@ -37440,6 +37577,19 @@ void VulkanRayTracing::beginReportIntersection(
     }
 
     Vulkan_RT_thread_data *rt = thread->RT_thread_data;
+    if (rt->traversal_data.size() != rt->ccs_lane_control.trace_depth ||
+        rt->callable_data_bindings.size() !=
+            rt->ccs_lane_control.callable_depth ||
+        rt->report_intersection_frames.size() !=
+            rt->ccs_lane_control.report_depth) {
+        unwindKHRContinuation(
+            pI, thread, "ccs_report_push_depth_mismatch_fail_closed");
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_REPORT_FAULT thread_uid=%u "
+                "fault=ccs_report_push_depth_mismatch_fail_closed\n",
+                thread->get_uid());
+        abort();
+    }
     memory_space *mem = thread->get_global_memory();
     Traversal_data *traversal = rt->traversal_data.back();
     float tmin = 0.0f;
@@ -37459,7 +37609,7 @@ void VulkanRayTracing::beginReportIntersection(
     const rtcore::procedural_report_ordering ordering =
         rtcore::classify_procedural_report(
             t_hit, tmin, tmax, hit_geometry, current_t);
-    rt->last_report_intersection_terminated = false;
+    rt->ccs_lane_control.report_terminated = false;
     if (ordering != rtcore::RTCORE_PROCEDURAL_REPORT_COMMIT) {
         ptx_reg_t result = {};
         result.pred = 1;
@@ -37501,12 +37651,15 @@ void VulkanRayTracing::beginReportIntersection(
     }
 
     report_intersection_frame_entry frame = {};
+    frame.traversal_address = reinterpret_cast<uint64_t>(traversal);
+    frame.instruction_pc = pI->get_PC();
+    frame.caller_entry_pc = thread->func_info()->get_start_PC();
     frame.instruction = pI;
     frame.caller = thread->func_info();
     frame.traversal = traversal;
     frame.shader_counter = static_cast<uint32_t>(shader_counter);
-    frame.trace_depth = rt->traversal_data.size();
-    frame.callable_depth = rt->callable_data_bindings.size();
+    frame.trace_depth = rt->ccs_lane_control.trace_depth;
+    frame.callable_depth = rt->ccs_lane_control.callable_depth;
     frame.decision = REPORT_INTERSECTION_ACCEPT;
     frame.candidate = {};
     frame.candidate.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
@@ -37580,6 +37733,7 @@ void VulkanRayTracing::beginReportIntersection(
     }
 
     rt->report_intersection_frames.push_back(frame);
+    rt->ccs_lane_control.report_depth++;
     ptx_reg_t pending = {};
     pending.pred = 1;
     thread->set_reg(pI->dst().get_symbol(), pending);
@@ -37631,8 +37785,18 @@ bool VulkanRayTracing::finishReportIntersection(
         rt->report_intersection_frames.back();
     if ((frame.anyhit != NULL && frame.anyhit != returning_function) ||
         frame.traversal == NULL || frame.instruction == NULL ||
-        frame.caller == NULL || frame.trace_depth != rt->traversal_data.size() ||
-        frame.callable_depth != rt->callable_data_bindings.size() ||
+        frame.caller == NULL ||
+        frame.traversal_address !=
+            reinterpret_cast<uint64_t>(frame.traversal) ||
+        frame.instruction_pc != frame.instruction->get_PC() ||
+        frame.caller_entry_pc != frame.caller->get_start_PC() ||
+        rt->report_intersection_frames.size() !=
+            rt->ccs_lane_control.report_depth ||
+        frame.trace_depth != rt->ccs_lane_control.trace_depth ||
+        frame.callable_depth != rt->ccs_lane_control.callable_depth ||
+        rt->traversal_data.size() != rt->ccs_lane_control.trace_depth ||
+        rt->callable_data_bindings.size() !=
+            rt->ccs_lane_control.callable_depth ||
         rt->traversal_data.back() != frame.traversal) {
         unwindKHRContinuation(
             frame.instruction, thread,
@@ -37644,6 +37808,8 @@ bool VulkanRayTracing::finishReportIntersection(
         abort();
     }
     rt->report_intersection_frames.pop_back();
+    assert(rt->ccs_lane_control.report_depth > 0);
+    rt->ccs_lane_control.report_depth--;
 
     const bool accepted =
         frame.decision != REPORT_INTERSECTION_IGNORE;
@@ -37661,6 +37827,7 @@ bool VulkanRayTracing::finishReportIntersection(
             rt->committed_procedural_attribute(frame.traversal);
         if (committed == NULL) {
             committed_procedural_attribute_entry entry = {};
+            entry.traversal_address = frame.traversal_address;
             entry.traversal = frame.traversal;
             rt->committed_procedural_attributes.push_back(entry);
             committed = &rt->committed_procedural_attributes.back();
@@ -37696,7 +37863,7 @@ bool VulkanRayTracing::finishReportIntersection(
     ptx_reg_t result = {};
     result.pred = accepted ? 0 : 1;
     thread->set_reg(frame.instruction->dst().get_symbol(), result);
-    rt->last_report_intersection_terminated = terminated;
+    rt->ccs_lane_control.report_terminated = terminated;
     printf("GPGPU-Sim RTCORE_KHR_REPORT_FRAME_POP thread_uid=%u "
            "shader_counter=%u anyhit_shader_id=%u decision=%s "
            "report_accepted=%u terminate_search=%u attribute_size=%u "

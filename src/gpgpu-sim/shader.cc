@@ -658,6 +658,10 @@ static const unsigned RTCORE_SHADER_CONTINUATION_REASON_TRACE_DONE_NO_SHADER =
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_FAULT = 6;
 static const unsigned RTCORE_SHADER_CONTINUATION_REASON_UNSUPPORTED = 7;
 static const unsigned RTCORE_RESIDENT_DISPATCH_MAX_DEPTH = 8;
+// V0.4 exposes eight resident physical-warp CCS rows per SM.  Host maps below
+// are only sparse decoders for those rows; they may never manufacture a ninth
+// row from host allocator capacity.
+static const unsigned RTCORE_CONTINUATION_CCS_ROWS_PER_SM = 8;
 static bool rtcore_khr_recursive_trace_enabled() {
   const char *value =
       getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK");
@@ -1127,10 +1131,105 @@ static bool rtcore_shader_continuation_load_sbt_metadata_request_address(
 static std::map<rtcore_shader_continuation_dispatcher_pending_key,
                 rtcore_shader_continuation_dispatcher_pending_entry>
     g_rtcore_shader_continuation_dispatcher_pending;
+
+// Physical CCS owner stack for one resident physical warp.  The surrounding
+// map locates the row by (SM, warp slot); recursion capacity is this fixed
+// array, not host allocator availability.
+struct rtcore_shader_continuation_ccs_owner_stack {
+  rtcore_shader_continuation_ccs_owner_stack()
+      : depth(0), high_water(0) {}
+
+  bool empty() const { return depth == 0; }
+  size_t size() const { return depth; }
+  size_t capacity() const { return RTCORE_RESIDENT_DISPATCH_MAX_DEPTH; }
+  rtcore_shader_continuation_dispatcher_pending_entry &back() {
+    assert(depth > 0);
+    return entries[depth - 1];
+  }
+  const rtcore_shader_continuation_dispatcher_pending_entry &back() const {
+    assert(depth > 0);
+    return entries[depth - 1];
+  }
+  bool push_back(
+      const rtcore_shader_continuation_dispatcher_pending_entry &entry) {
+    if (depth >= RTCORE_RESIDENT_DISPATCH_MAX_DEPTH) return false;
+    entries[depth++] = entry;
+    high_water = std::max(high_water, depth);
+    return true;
+  }
+  void pop_back() {
+    assert(depth > 0);
+    entries[--depth] =
+        rtcore_shader_continuation_dispatcher_pending_entry();
+  }
+
+  rtcore_shader_continuation_dispatcher_pending_entry
+      entries[RTCORE_RESIDENT_DISPATCH_MAX_DEPTH];
+  unsigned depth;
+  unsigned high_water;
+};
+
 static std::map<
     rtcore_shader_continuation_dispatcher_pending_key,
-    std::vector<rtcore_shader_continuation_dispatcher_pending_entry> >
+    rtcore_shader_continuation_ccs_owner_stack>
     g_rtcore_shader_continuation_dispatcher_suspended;
+static unsigned g_rtcore_shader_ccs_row_high_water = 0;
+static unsigned g_rtcore_shader_ccs_owner_depth_high_water = 0;
+static bool g_rtcore_shader_ccs_summary_registered = false;
+
+static unsigned rtcore_shader_continuation_ccs_rows_for_sm(
+    unsigned owner_hw_sid) {
+  unsigned rows = 0;
+  for (std::map<rtcore_shader_continuation_dispatcher_pending_key,
+                rtcore_shader_continuation_dispatcher_pending_entry>::
+           const_iterator it =
+           g_rtcore_shader_continuation_dispatcher_pending.begin();
+       it != g_rtcore_shader_continuation_dispatcher_pending.end(); ++it) {
+    if (it->first.owner_hw_sid == owner_hw_sid) ++rows;
+  }
+  for (std::map<rtcore_shader_continuation_dispatcher_pending_key,
+                rtcore_shader_continuation_ccs_owner_stack>::const_iterator
+           it = g_rtcore_shader_continuation_dispatcher_suspended.begin();
+       it != g_rtcore_shader_continuation_dispatcher_suspended.end(); ++it) {
+    if (it->first.owner_hw_sid == owner_hw_sid &&
+        g_rtcore_shader_continuation_dispatcher_pending.find(it->first) ==
+            g_rtcore_shader_continuation_dispatcher_pending.end()) {
+      ++rows;
+    }
+  }
+  return rows;
+}
+
+static void rtcore_shader_continuation_ccs_log_summary() {
+  unsigned live_owner_frames = 0;
+  for (std::map<rtcore_shader_continuation_dispatcher_pending_key,
+                rtcore_shader_continuation_ccs_owner_stack>::const_iterator
+           it = g_rtcore_shader_continuation_dispatcher_suspended.begin();
+       it != g_rtcore_shader_continuation_dispatcher_suspended.end(); ++it) {
+    live_owner_frames += it->second.size();
+  }
+  printf("GPGPU-Sim RTCORE_KHR_SHADER_CCS_FINAL pending_rows=%zu "
+         "suspended_rows=%zu live_owner_frames=%u row_capacity_per_sm=%u "
+         "row_high_water=%u owner_depth_capacity=%u "
+         "owner_depth_high_water=%u conservation_valid=%u\n",
+         g_rtcore_shader_continuation_dispatcher_pending.size(),
+         g_rtcore_shader_continuation_dispatcher_suspended.size(),
+         live_owner_frames, RTCORE_CONTINUATION_CCS_ROWS_PER_SM,
+         g_rtcore_shader_ccs_row_high_water,
+         RTCORE_RESIDENT_DISPATCH_MAX_DEPTH,
+         g_rtcore_shader_ccs_owner_depth_high_water,
+         g_rtcore_shader_continuation_dispatcher_pending.empty() &&
+                 g_rtcore_shader_continuation_dispatcher_suspended.empty()
+             ? 1u
+             : 0u);
+  fflush(stdout);
+}
+
+static void rtcore_shader_continuation_ccs_register_summary() {
+  if (g_rtcore_shader_ccs_summary_registered) return;
+  g_rtcore_shader_ccs_summary_registered = true;
+  std::atexit(rtcore_shader_continuation_ccs_log_summary);
+}
 static unsigned g_rtcore_next_trace_invocation_id = 1;
 static unsigned g_rtcore_next_shader_continuation_metadata_lookup_generation =
     1;
@@ -1179,7 +1278,7 @@ extern "C" void rtcore_khr_unwind_shader_continuation_dispatcher(
       g_rtcore_shader_continuation_dispatcher_pending.erase(key);
   size_t suspended = 0;
   std::map<rtcore_shader_continuation_dispatcher_pending_key,
-           std::vector<rtcore_shader_continuation_dispatcher_pending_entry> >
+           rtcore_shader_continuation_ccs_owner_stack>
       ::iterator it = g_rtcore_shader_continuation_dispatcher_suspended.find(key);
   if (it != g_rtcore_shader_continuation_dispatcher_suspended.end()) {
     suspended = it->second.size();
@@ -1225,7 +1324,7 @@ static void rtcore_complete_shader_continuation_pending(
            rtcore_shader_continuation_dispatcher_pending_entry>::iterator
       pending = g_rtcore_shader_continuation_dispatcher_pending.find(key);
   std::map<rtcore_shader_continuation_dispatcher_pending_key,
-           std::vector<rtcore_shader_continuation_dispatcher_pending_entry> >
+           rtcore_shader_continuation_ccs_owner_stack>
       ::iterator suspended =
           g_rtcore_shader_continuation_dispatcher_suspended.find(key);
   if (suspended == g_rtcore_shader_continuation_dispatcher_suspended.end() ||
@@ -1320,6 +1419,8 @@ static void rtcore_complete_shader_continuation_pending(
     abort();
   }
   suspended->second.pop_back();
+  const size_t remaining_ccs_owner_depth = suspended->second.size();
+  const unsigned ccs_owner_high_water = suspended->second.high_water;
   parent.nested_trace_inflight = false;
   parent.nested_child_warp_uid = 0;
   parent.nested_active_mask = 0;
@@ -1327,6 +1428,10 @@ static void rtcore_complete_shader_continuation_pending(
   if (suspended->second.empty()) {
     g_rtcore_shader_continuation_dispatcher_suspended.erase(suspended);
   }
+  printf("GPGPU-Sim RTCORE_KHR_CCS_OWNER_POP owner_hw_sid=%u "
+         "warp_id=%u occupancy=%zu capacity=%u high_water=%u\n",
+         key.owner_hw_sid, key.warp_id, remaining_ccs_owner_depth,
+         RTCORE_RESIDENT_DISPATCH_MAX_DEPTH, ccs_owner_high_water);
   printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_PARENT_RESTORE "
          "owner_hw_sid=%u warp_id=%u child_invocation_id=%u "
          "parent_invocation_id=%u child_depth=%u parent_depth=%u "
@@ -1663,6 +1768,7 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
   if (candidate_mask == 0 || cohort_count == 0) {
     return;
   }
+  rtcore_shader_continuation_ccs_register_summary();
   assert(cohort_count <= 32);
 
   rtcore_shader_continuation_dispatcher_pending_key key;
@@ -1674,6 +1780,18 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
   const bool nested_trace =
       existing != g_rtcore_shader_continuation_dispatcher_pending.end() &&
       existing->second.valid;
+  if (!nested_trace &&
+      rtcore_shader_continuation_ccs_rows_for_sm(owner_hw_sid) >=
+          RTCORE_CONTINUATION_CCS_ROWS_PER_SM) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_CCS_ROW_FAULT owner_hw_sid=%u "
+            "warp_id=%u occupancy=%u capacity=%u "
+            "fault=resident_ccs_row_capacity_exceeded_fail_closed\n",
+            owner_hw_sid, warp_id,
+            rtcore_shader_continuation_ccs_rows_for_sm(owner_hw_sid),
+            RTCORE_CONTINUATION_CCS_ROWS_PER_SM);
+    abort();
+  }
   if (nested_trace &&
       (!rtcore_khr_recursive_trace_enabled() ||
        !existing->second.call_inflight ||
@@ -1724,8 +1842,27 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
               entry.logical_trace_invocation_id);
       abort();
     }
-    g_rtcore_shader_continuation_dispatcher_suspended[key].push_back(
-        existing->second);
+    rtcore_shader_continuation_ccs_owner_stack &owner_stack =
+        g_rtcore_shader_continuation_dispatcher_suspended[key];
+    if (!owner_stack.push_back(existing->second)) {
+      rtcore_khr_lifecycle_unwind_warp(
+          owner_hw_sid, warp_id,
+          "ccs_owner_stack_capacity_exceeded_fail_closed");
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_KHR_CCS_OWNER_FAULT owner_hw_sid=%u "
+              "warp_id=%u depth=%zu capacity=%zu "
+              "fault=owner_stack_capacity_exceeded_fail_closed\n",
+              owner_hw_sid, warp_id, owner_stack.size(),
+              owner_stack.capacity());
+      abort();
+    }
+    printf("GPGPU-Sim RTCORE_KHR_CCS_OWNER_PUSH owner_hw_sid=%u "
+           "warp_id=%u occupancy=%zu capacity=%zu high_water=%u\n",
+           owner_hw_sid, warp_id, owner_stack.size(),
+           owner_stack.capacity(), owner_stack.high_water);
+    g_rtcore_shader_ccs_owner_depth_high_water = std::max(
+        g_rtcore_shader_ccs_owner_depth_high_water,
+        owner_stack.high_water);
     printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_CHILD_ADMIT "
            "owner_hw_sid=%u warp_id=%u parent_invocation_id=%u "
            "child_invocation_id=%u child_depth=%u active_mask=0x%08x "
@@ -1834,6 +1971,9 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
   entry.enqueue_cycle = enqueue_cycle;
 
   g_rtcore_shader_continuation_dispatcher_pending[key] = entry;
+  g_rtcore_shader_ccs_row_high_water = std::max(
+      g_rtcore_shader_ccs_row_high_water,
+      rtcore_shader_continuation_ccs_rows_for_sm(owner_hw_sid));
 }
 
 static bool rtcore_issue_shader_continuation_sbt_metadata_request(

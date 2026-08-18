@@ -17,8 +17,82 @@
 #include <fstream>
 #include <cmath>
 #include <stack>
+#include <array>
 
 #include "compiler/nir/nir.h"
+
+static const size_t RTCORE_KHR_CCS_LOGICAL_DEPTH = 8;
+static const size_t RTCORE_KHR_CCS_ATTRIBUTE_BYTES = 64;
+
+// Fixed storage used to model one lane row of the scheduler Continuation
+// Control Store (CCS).  Unlike std::vector, capacity is part of the modeled
+// resource and no allocation can occur after construction.
+template <typename T, size_t Capacity>
+class rtcore_khr_ccs_fixed_stack {
+ public:
+  typedef T *iterator;
+  typedef const T *const_iterator;
+
+  rtcore_khr_ccs_fixed_stack() : depth_(0) {}
+
+  size_t size() const { return depth_; }
+  size_t capacity() const { return Capacity; }
+  bool empty() const { return depth_ == 0; }
+  T &back() { assert(depth_ > 0); return entries_[depth_ - 1]; }
+  const T &back() const { assert(depth_ > 0); return entries_[depth_ - 1]; }
+  T &operator[](size_t index) { assert(index < depth_); return entries_[index]; }
+  const T &operator[](size_t index) const {
+    assert(index < depth_); return entries_[index];
+  }
+  iterator begin() { return entries_.data(); }
+  iterator end() { return entries_.data() + depth_; }
+  const_iterator begin() const { return entries_.data(); }
+  const_iterator end() const { return entries_.data() + depth_; }
+
+  void push_back(const T &value) {
+    assert(depth_ < Capacity);
+    entries_[depth_++] = value;
+  }
+  void pop_back() {
+    assert(depth_ > 0);
+    entries_[--depth_] = T();
+  }
+  iterator erase(iterator position) {
+    assert(position >= begin() && position < end());
+    const size_t index = static_cast<size_t>(position - begin());
+    for (size_t current = index + 1; current < depth_; ++current)
+      entries_[current - 1] = entries_[current];
+    entries_[--depth_] = T();
+    return entries_.data() + index;
+  }
+  void clear() {
+    while (depth_ > 0) entries_[--depth_] = T();
+  }
+
+ private:
+  std::array<T, Capacity> entries_;
+  size_t depth_;
+};
+
+class rtcore_khr_ccs_attribute_image {
+ public:
+  rtcore_khr_ccs_attribute_image() : size_(0) { bytes_.fill(0); }
+  size_t size() const { return size_; }
+  void resize(size_t size) {
+    assert(size <= bytes_.size());
+    size_ = size;
+  }
+  unsigned char *data() { return bytes_.data(); }
+  const unsigned char *data() const { return bytes_.data(); }
+  unsigned char operator[](size_t index) const {
+    assert(index < size_);
+    return bytes_[index];
+  }
+
+ private:
+  std::array<unsigned char, RTCORE_KHR_CCS_ATTRIBUTE_BYTES> bytes_;
+  size_t size_;
+};
 
 typedef struct variable_decleration_entry{
   nir_variable_mode type;
@@ -83,6 +157,11 @@ typedef struct Traversal_data {
 } Traversal_data;
 
 typedef struct report_intersection_frame_entry {
+    // Numeric identities are the CCS authority.  Pointers below are decoded
+    // simulator caches and are checked against these stable values.
+    uint64_t traversal_address;
+    uint32_t instruction_pc;
+    uint32_t caller_entry_pc;
     const ptx_instruction *instruction;
     function_info *caller;
     function_info *anyhit;
@@ -92,53 +171,77 @@ typedef struct report_intersection_frame_entry {
     uint32_t shader_id;
     uint64_t attribute_address;
     uint32_t attribute_size;
-    std::vector<unsigned char> attribute_image;
+    rtcore_khr_ccs_attribute_image attribute_image;
     size_t trace_depth;
     size_t callable_depth;
     report_intersection_decision decision;
 } report_intersection_frame_entry;
 
 typedef struct committed_procedural_attribute_entry {
+    uint64_t traversal_address;
     Traversal_data *traversal;
     uint64_t address;
     uint32_t size;
-    std::vector<unsigned char> image;
+    rtcore_khr_ccs_attribute_image image;
 } committed_procedural_attribute_entry;
 
-typedef struct continuation_frame_ledger_entry {
-    uint32_t kind;
-    uint32_t site;
-    uint32_t frame_bytes;
-    uint32_t capacity_bytes;
-    uint64_t generation;
-} continuation_frame_ledger_entry;
-
+typedef struct rtcore_khr_ccs_lane_control {
+    uint8_t trace_depth = 0;
+    uint8_t callable_depth = 0;
+    uint8_t report_depth = 0;
+    uint8_t generation = 1;
+    bool report_terminated = false;
+} rtcore_khr_ccs_lane_control;
 
 typedef struct Vulkan_RT_thread_data {
     std::vector<variable_decleration_entry> variable_decleration_table;
-    std::vector<callable_data_binding_entry> callable_data_bindings;
-    std::vector<report_intersection_frame_entry> report_intersection_frames;
-    std::vector<committed_procedural_attribute_entry>
+    rtcore_khr_ccs_fixed_stack<callable_data_binding_entry,
+        RTCORE_KHR_CCS_LOGICAL_DEPTH> callable_data_bindings;
+    rtcore_khr_ccs_fixed_stack<report_intersection_frame_entry,
+        RTCORE_KHR_CCS_LOGICAL_DEPTH> report_intersection_frames;
+    rtcore_khr_ccs_fixed_stack<committed_procedural_attribute_entry,
+        RTCORE_KHR_CCS_LOGICAL_DEPTH>
         committed_procedural_attributes;
-    std::vector<continuation_frame_ledger_entry> continuation_frame_ledger;
-    uint64_t continuation_live_bytes = 0;
-    uint64_t continuation_max_live_bytes = 0;
-    uint64_t continuation_push_count = 0;
-    uint64_t continuation_pop_count = 0;
-    uint64_t continuation_next_generation = 1;
-    uint32_t continuation_capacity_bytes = 0;
-    bool continuation_faulted = false;
-    bool last_report_intersection_terminated = false;
+    // Modeled scheduler CCS lane-current-control row.
+    rtcore_khr_ccs_lane_control ccs_lane_control;
 
-    std::vector<Traversal_data*> traversal_data;
+    // Compatibility address cache indexed by the physical CCS trace depth.
+    // Traversal bytes remain authoritative in Global384/RequestControlEntry.
+    rtcore_khr_ccs_fixed_stack<Traversal_data*,
+        RTCORE_KHR_CCS_LOGICAL_DEPTH> traversal_data;
     std::vector<Hit_data*> all_hit_data;
+
+    bool push_traversal_binding(Traversal_data *traversal) {
+        if (traversal == NULL ||
+            ccs_lane_control.trace_depth >= RTCORE_KHR_CCS_LOGICAL_DEPTH ||
+            traversal_data.size() != ccs_lane_control.trace_depth) {
+            return false;
+        }
+        traversal_data.push_back(traversal);
+        ccs_lane_control.trace_depth++;
+        return true;
+    }
+
+    bool pop_traversal_binding(Traversal_data **traversal) {
+        if (ccs_lane_control.trace_depth == 0 || traversal_data.empty() ||
+            traversal_data.size() != ccs_lane_control.trace_depth) {
+            return false;
+        }
+        if (traversal != NULL) *traversal = traversal_data.back();
+        traversal_data.pop_back();
+        ccs_lane_control.trace_depth--;
+        return true;
+    }
 
     bool push_callable_data_binding(uint64_t address, uint32_t size,
                                     function_info *callee,
                                     uint32_t sbt_index,
                                     uint32_t shader_id) {
         if (address == 0 || size == 0 || callee == NULL ||
-            callable_data_bindings.size() >= 8) {
+            callable_data_bindings.size() !=
+                ccs_lane_control.callable_depth ||
+            callable_data_bindings.size() >=
+                RTCORE_KHR_CCS_LOGICAL_DEPTH) {
             return false;
         }
         callable_data_binding_entry entry = {};
@@ -148,6 +251,7 @@ typedef struct Vulkan_RT_thread_data {
         entry.sbt_index = sbt_index;
         entry.shader_id = shader_id;
         callable_data_bindings.push_back(entry);
+        ccs_lane_control.callable_depth++;
         return true;
     }
 
@@ -156,6 +260,8 @@ typedef struct Vulkan_RT_thread_data {
             callable_data_binding_entry *entry) const {
         if (callee == NULL || entry == NULL ||
             callable_data_bindings.empty() ||
+            callable_data_bindings.size() !=
+                ccs_lane_control.callable_depth ||
             callable_data_bindings.back().callee != callee) {
             return false;
         }
@@ -166,6 +272,8 @@ typedef struct Vulkan_RT_thread_data {
     bool pop_callable_data_binding(function_info *callee,
                                    callable_data_binding_entry *entry) {
         if (callee == NULL || callable_data_bindings.empty() ||
+            callable_data_bindings.size() !=
+                ccs_lane_control.callable_depth ||
             callable_data_bindings.back().callee != callee) {
             return false;
         }
@@ -173,12 +281,16 @@ typedef struct Vulkan_RT_thread_data {
             *entry = callable_data_bindings.back();
         }
         callable_data_bindings.pop_back();
+        assert(ccs_lane_control.callable_depth > 0);
+        ccs_lane_control.callable_depth--;
         return true;
     }
 
     bool mark_report_intersection_decision(
             function_info *callee, report_intersection_decision decision) {
         if (callee == NULL || report_intersection_frames.empty() ||
+            report_intersection_frames.size() !=
+                ccs_lane_control.report_depth ||
             report_intersection_frames.back().anyhit != callee) {
             return false;
         }
@@ -188,10 +300,13 @@ typedef struct Vulkan_RT_thread_data {
 
     committed_procedural_attribute_entry *committed_procedural_attribute(
             Traversal_data *traversal) {
+        const uint64_t traversal_address =
+            reinterpret_cast<uint64_t>(traversal);
         for (size_t index = 0;
              index < committed_procedural_attributes.size(); ++index) {
-            if (committed_procedural_attributes[index].traversal ==
-                traversal) {
+            if (committed_procedural_attributes[index].traversal_address ==
+                    traversal_address &&
+                committed_procedural_attributes[index].traversal == traversal) {
                 return &committed_procedural_attributes[index];
             }
         }
@@ -199,10 +314,15 @@ typedef struct Vulkan_RT_thread_data {
     }
 
     void clear_committed_procedural_attribute(Traversal_data *traversal) {
-        for (std::vector<committed_procedural_attribute_entry>::iterator it =
+        const uint64_t traversal_address =
+            reinterpret_cast<uint64_t>(traversal);
+        for (rtcore_khr_ccs_fixed_stack<
+                 committed_procedural_attribute_entry,
+                 RTCORE_KHR_CCS_LOGICAL_DEPTH>::iterator it =
                  committed_procedural_attributes.begin();
              it != committed_procedural_attributes.end(); ++it) {
-            if (it->traversal == traversal) {
+            if (it->traversal_address == traversal_address &&
+                it->traversal == traversal) {
                 committed_procedural_attributes.erase(it);
                 return;
             }
