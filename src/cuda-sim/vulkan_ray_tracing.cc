@@ -342,7 +342,6 @@ static bool rtcore_pixel_trace_matches(unsigned x, unsigned y)
 
 // #include "anv_include.h"
 
-VkRayTracingPipelineCreateInfoKHR* VulkanRayTracing::pCreateInfos = NULL;
 VkAccelerationStructureGeometryKHR* VulkanRayTracing::pGeometries = NULL;
 uint32_t VulkanRayTracing::geometryCount = 0;
 VkAccelerationStructureKHR VulkanRayTracing::topLevelAS = NULL;
@@ -2070,7 +2069,6 @@ typedef rtcore_khr_ccs_fixed_stack<
 static std::map<rtcore_resident_rt_warp_record_key,
                 rtcore_recursive_owner_ccs_stack>
     g_rtcore_recursive_suspended_parent_owners;
-static unsigned g_rtcore_khr_max_pipeline_trace_depth = 1;
 
 struct rtcore_khr_child_lifecycle_record {
     bool valid;
@@ -2407,10 +2405,6 @@ extern "C" void rtcore_khr_lifecycle_unwind_warp(
     fflush(stdout);
 }
 
-extern "C" unsigned rtcore_khr_max_pipeline_trace_depth()
-{
-    return g_rtcore_khr_max_pipeline_trace_depth;
-}
 
 static rtcore::v04::timing_driver::state_v0 &
 rtcore_v04_timing_driver_for(unsigned owner_hw_sid);
@@ -36863,52 +36857,6 @@ void VulkanRayTracing::load_descriptor(const ptx_instruction *pI, ptx_thread_inf
 }
 
 
-void VulkanRayTracing::setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreateInfos)
-{
-    VulkanRayTracing::pCreateInfos = pCreateInfos;
-	const char *continuation_candidate =
-		getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK");
-	if (pCreateInfos != NULL && continuation_candidate != NULL &&
-		strcmp(continuation_candidate, "1") == 0) {
-		rtcore_khr_register_lifecycle_summary();
-		const unsigned requested =
-			pCreateInfos->maxPipelineRayRecursionDepth;
-		if (requested == 0 || requested > RTCORE_KHR_CCS_LOGICAL_DEPTH) {
-			fprintf(stderr,
-				"GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_FAULT "
-				"requested_pipeline_depth=%u capacity=%zu "
-				"fault=pipeline_trace_depth_unsupported_fail_closed\n",
-				requested, RTCORE_KHR_CCS_LOGICAL_DEPTH);
-			abort();
-		}
-		g_rtcore_khr_max_pipeline_trace_depth = requested;
-		const char *capacity_text =
-			getenv("VULKAN_SIM_RTCORE_CONTINUATION_STACK_BYTES");
-		unsigned long continuation_capacity = 4096;
-		if (capacity_text != NULL && capacity_text[0] != '\0') {
-			char *end = NULL;
-			continuation_capacity = strtoul(capacity_text, &end, 10);
-			if (end == capacity_text || end == NULL || *end != '\0' ||
-				continuation_capacity == 0 ||
-				(continuation_capacity & 7u) != 0 ||
-				continuation_capacity > (1u << 20)) {
-				fprintf(stderr,
-					"GPGPU-Sim RTCORE_KHR_PIPELINE_STACK_FAULT "
-					"fault=invalid_configured_capacity_fail_closed\n");
-				abort();
-			}
-		}
-		printf("GPGPU-Sim RTCORE_KHR_RECURSIVE_TRACE_DEPTH_CONFIG "
-			   "pipeline_trace_depth=%u supported_trace_depth=%zu "
-			   "supported_callable_depth=8 continuation_capacity_bytes=%lu "
-			   "validated=1\n",
-			   requested, RTCORE_KHR_CCS_LOGICAL_DEPTH,
-			   continuation_capacity);
-	}
-	std::cout << "gpgpusim: set pipeline" << std::endl;
-}
-
-
 void VulkanRayTracing::setGeometries(VkAccelerationStructureGeometryKHR* pGeometries, uint32_t geometryCount)
 {
     VulkanRayTracing::pGeometries = pGeometries;
@@ -37189,12 +37137,77 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
                       uint64_t hit_sbt_size,
                       uint64_t callable_sbt_stride,
                       uint64_t callable_sbt_size,
+                      uint32_t continuation_descriptor_version,
+                      uint32_t continuation_trace_depth,
+                      uint32_t continuation_callable_depth,
+                      uint32_t continuation_report_depth,
+                      uint32_t continuation_trace_frame_bytes,
+                      uint32_t continuation_callable_frame_bytes,
+                      uint32_t continuation_report_frame_bytes,
+                      uint32_t continuation_stack_bytes_per_lane,
+                      uint32_t continuation_ccs_depth_class,
                       bool is_indirect,
                       uint32_t launch_width,
                       uint32_t launch_height,
                       uint32_t launch_depth,
                       uint64_t launch_size_addr) {
     printf("gpgpusim: launching cmd trace ray\n");
+    const bool continuation_candidate =
+        getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK") != NULL &&
+        strcmp(getenv("VULKAN_SIM_RTCORE_MEGAKERNEL_CONTINUATION_STACK"),
+               "1") == 0;
+    if (continuation_candidate) {
+        const uint64_t required_stack_bytes =
+            static_cast<uint64_t>(continuation_trace_depth) *
+                continuation_trace_frame_bytes +
+            static_cast<uint64_t>(continuation_callable_depth) *
+                continuation_callable_frame_bytes +
+            static_cast<uint64_t>(continuation_report_depth) *
+                continuation_report_frame_bytes;
+        const unsigned max_depth = std::max(
+            continuation_trace_depth,
+            std::max(continuation_callable_depth,
+                     continuation_report_depth));
+        unsigned expected_ccs_class = max_depth == 0 ? 0 : 1;
+        while (expected_ccs_class < max_depth) expected_ccs_class <<= 1;
+        if (continuation_descriptor_version != 1 ||
+            continuation_trace_depth > RTCORE_KHR_CCS_LOGICAL_DEPTH ||
+            continuation_callable_depth > RTCORE_KHR_CCS_LOGICAL_DEPTH ||
+            continuation_report_depth > 1 ||
+            continuation_stack_bytes_per_lane > (1u << 20) ||
+            (continuation_stack_bytes_per_lane != 0 &&
+             (continuation_stack_bytes_per_lane & 7u) != 0) ||
+            required_stack_bytes != continuation_stack_bytes_per_lane ||
+            expected_ccs_class != continuation_ccs_depth_class) {
+            fprintf(stderr,
+                    "GPGPU-Sim RTCORE_KHR_PIPELINE_RESOURCE_FAULT "
+                    "descriptor_version=%u trace_depth=%u "
+                    "callable_depth=%u report_depth=%u "
+                    "stack_bytes_per_lane=%u ccs_depth_class=%u "
+                    "fault=invalid_compiled_descriptor_at_launch\n",
+                    continuation_descriptor_version,
+                    continuation_trace_depth,
+                    continuation_callable_depth,
+                    continuation_report_depth,
+                    continuation_stack_bytes_per_lane,
+                    continuation_ccs_depth_class);
+            abort();
+        }
+        rtcore_khr_register_lifecycle_summary();
+        printf("GPGPU-Sim RTCORE_KHR_PIPELINE_RESOURCE_SNAPSHOT "
+               "descriptor_version=%u trace_depth=%u callable_depth=%u "
+               "report_depth=%u stack_bytes_per_lane=%u "
+               "ccs_depth_class=%u launch_analysis=0 validated=1\n",
+               continuation_descriptor_version, continuation_trace_depth,
+               continuation_callable_depth, continuation_report_depth,
+               continuation_stack_bytes_per_lane,
+               continuation_ccs_depth_class);
+    } else if (continuation_descriptor_version != 0) {
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_PIPELINE_RESOURCE_FAULT "
+                "fault=candidate_off_descriptor_must_be_zero\n");
+        abort();
+    }
     // launch_width = 224;
     // launch_height = 160;
     init(launch_width, launch_height);
@@ -37358,6 +37371,24 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     grid->vulkan_metadata.launch_width = launch_width;
     grid->vulkan_metadata.launch_height = launch_height;
     grid->vulkan_metadata.launch_depth = launch_depth;
+    grid->vulkan_metadata.continuation.version =
+        continuation_descriptor_version;
+    grid->vulkan_metadata.continuation.trace_depth =
+        continuation_trace_depth;
+    grid->vulkan_metadata.continuation.callable_depth =
+        continuation_callable_depth;
+    grid->vulkan_metadata.continuation.report_depth =
+        continuation_report_depth;
+    grid->vulkan_metadata.continuation.trace_frame_bytes =
+        continuation_trace_frame_bytes;
+    grid->vulkan_metadata.continuation.callable_frame_bytes =
+        continuation_callable_frame_bytes;
+    grid->vulkan_metadata.continuation.report_frame_bytes =
+        continuation_report_frame_bytes;
+    grid->vulkan_metadata.continuation.stack_bytes_per_lane =
+        continuation_stack_bytes_per_lane;
+    grid->vulkan_metadata.continuation.ccs_depth_class =
+        continuation_ccs_depth_class;
     
     printf("gpgpusim: SBT: raygen %p, miss %p, hit %p, callable %p\n", 
             raygen_sbt, miss_sbt, hit_sbt, callable_sbt);
@@ -37561,10 +37592,15 @@ static void rtcore_khr_write_attribute_image(
 void VulkanRayTracing::beginReportIntersection(
     const ptx_instruction *pI, ptx_thread_info *thread, float t_hit,
     uint32_t hit_kind) {
+    const unsigned pipeline_report_depth =
+        thread != NULL &&
+                thread->get_kernel().vulkan_metadata.continuation.version == 1
+            ? thread->get_kernel().vulkan_metadata.continuation.report_depth
+            : 0;
     if (pI == NULL || thread == NULL || thread->RT_thread_data == NULL ||
         thread->RT_thread_data->traversal_data.empty() ||
         thread->RT_thread_data->report_intersection_frames.size() >=
-            RTCORE_KHR_CCS_LOGICAL_DEPTH ||
+            pipeline_report_depth ||
         hit_kind > 0x7fu) {
         fprintf(stderr,
                 "GPGPU-Sim RTCORE_KHR_REPORT_FAULT "
@@ -37962,6 +37998,21 @@ void VulkanRayTracing::callCallableShader(
     }
 
     const vulkan_kernel_metadata &metadata = thread->get_kernel().vulkan_metadata;
+    if (metadata.continuation.version != 1 ||
+        metadata.continuation.callable_depth == 0 ||
+        thread->RT_thread_data->callable_data_bindings.size() >=
+            metadata.continuation.callable_depth) {
+        unwindKHRContinuation(
+            pI, thread, "compiled_callable_depth_exceeded_fail_closed");
+        fprintf(stderr,
+                "GPGPU-Sim RTCORE_KHR_CALLABLE_FAULT thread_uid=%u "
+                "callable_depth=%zu pipeline_callable_depth=%u "
+                "fault=compiled_callable_depth_exceeded_fail_closed\n",
+                thread->get_uid(),
+                thread->RT_thread_data->callable_data_bindings.size(),
+                metadata.continuation.callable_depth);
+        abort();
+    }
     uint32_t shader_id = 0;
     if (!rtcore_require_compat_sbt_shader_id(
             pI, "callable", metadata.callable_sbt,

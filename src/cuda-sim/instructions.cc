@@ -7737,7 +7737,9 @@ static bool rtcore_publish_v03_compact_context_image(
   const uint32_t recursion_depth =
       thread->RT_thread_data->ccs_lane_control.trace_depth;
   const uint32_t pipeline_trace_depth =
-      rtcore_khr_max_pipeline_trace_depth();
+      metadata.continuation.version == 1
+          ? metadata.continuation.trace_depth
+          : 1;
   if (recursion_depth >= pipeline_trace_depth) {
     VulkanRayTracing::unwindKHRContinuation(
         pI, thread, "context_publication_depth_overflow_fail_closed");
@@ -7913,7 +7915,10 @@ static bool rtcore_decode_v03_compact_context_image(
 
   const bool header_valid =
       decoded->context_state == RTCORE_CONTEXT_STATE_READY_FOR_SUBMIT &&
-      decoded->recursion_depth < rtcore_khr_max_pipeline_trace_depth() &&
+      decoded->recursion_depth <
+          (thread->get_kernel().vulkan_metadata.continuation.version == 1
+               ? thread->get_kernel().vulkan_metadata.continuation.trace_depth
+               : 1) &&
       decoded->context_layout_version ==
           RTCORE_CONTEXT_LAYOUT_V03_COMPACT_320B &&
       (decoded->valid_flags & RTCORE_CONTEXT_VALID_TRACE_INPUT) != 0 &&

@@ -1625,6 +1625,25 @@ bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
     if (!rtcore_handoff_shared_capacity_allows_cta(kernel_info->smem)) {
       return false;
     }
+    const unsigned ccs_depth_class =
+        kernel.vulkan_metadata.continuation.version == 1
+            ? kernel.vulkan_metadata.continuation.ccs_depth_class
+            : 0;
+    if (ccs_depth_class != 0) {
+      const unsigned padded_threads =
+          ((kernel.threads_per_cta() + m_config->warp_size - 1) /
+           m_config->warp_size) * m_config->warp_size;
+      const unsigned rows_per_cta = padded_threads / m_config->warp_size;
+      const unsigned ccs_rows_capacity = 8;
+      const unsigned ccs_lane_depth_capacity =
+          ccs_rows_capacity * m_config->warp_size * 8;
+      if (m_occupied_rtcore_ccs_rows + rows_per_cta > ccs_rows_capacity ||
+          m_occupied_rtcore_ccs_lane_depth_entries +
+                  padded_threads * ccs_depth_class >
+              ccs_lane_depth_capacity) {
+        return false;
+      }
+    }
     return (get_n_active_cta() < m_config->max_cta(kernel));
   }
 }
@@ -1677,11 +1696,40 @@ bool shader_core_ctx::occupy_shader_resource_1block(kernel_info_t &k,
 
   if (m_occupied_ctas + 1 > m_config->max_cta_per_core) return false;
 
+  const unsigned ccs_depth_class =
+      k.vulkan_metadata.continuation.version == 1
+          ? k.vulkan_metadata.continuation.ccs_depth_class
+          : 0;
+  const unsigned ccs_rows =
+      ccs_depth_class == 0 ? 0 : padded_cta_size / warp_size;
+  const unsigned ccs_lane_depth_entries =
+      padded_cta_size * ccs_depth_class;
+  const unsigned ccs_rows_capacity = 8;
+  const unsigned ccs_lane_depth_capacity =
+      ccs_rows_capacity * warp_size * 8;
+  if (m_occupied_rtcore_ccs_rows + ccs_rows > ccs_rows_capacity ||
+      m_occupied_rtcore_ccs_lane_depth_entries +
+              ccs_lane_depth_entries >
+          ccs_lane_depth_capacity)
+    return false;
+
   if (occupy) {
     m_occupied_n_threads += padded_cta_size;
     m_occupied_shmem += kernel_info->smem;
     m_occupied_regs += (padded_cta_size * ((kernel_info->regs + 3) & ~3));
     m_occupied_ctas++;
+    m_occupied_rtcore_ccs_rows += ccs_rows;
+    m_occupied_rtcore_ccs_lane_depth_entries += ccs_lane_depth_entries;
+
+    if (ccs_rows != 0) {
+      printf("GPGPU-Sim RTCORE_KHR_CCS_CTA_ADMIT kernel_uid=%u "
+             "rows=%u depth_class=%u lane_depth_entries=%u "
+             "occupied_rows=%u occupied_lane_depth_entries=%u "
+             "authority=kernel_resource_descriptor\n",
+             k.get_uid(), ccs_rows, ccs_depth_class,
+             ccs_lane_depth_entries, m_occupied_rtcore_ccs_rows,
+             m_occupied_rtcore_ccs_lane_depth_entries);
+    }
 
     SHADER_DPRINTF(LIVENESS,
                    "GPGPU-Sim uArch: Occupied %u threads, %u shared mem, %u "
@@ -1722,8 +1770,54 @@ void shader_core_ctx::release_shader_resource_1block(unsigned hw_ctaid,
     assert(m_occupied_regs >= used_regs);
     m_occupied_regs -= used_regs;
 
+    const unsigned ccs_depth_class =
+        k.vulkan_metadata.continuation.version == 1
+            ? k.vulkan_metadata.continuation.ccs_depth_class
+            : 0;
+    const unsigned ccs_rows =
+        ccs_depth_class == 0 ? 0 : padded_cta_size / warp_size;
+    const unsigned ccs_lane_depth_entries =
+        padded_cta_size * ccs_depth_class;
+    assert(m_occupied_rtcore_ccs_rows >= ccs_rows);
+    assert(m_occupied_rtcore_ccs_lane_depth_entries >=
+           ccs_lane_depth_entries);
+    m_occupied_rtcore_ccs_rows -= ccs_rows;
+    m_occupied_rtcore_ccs_lane_depth_entries -= ccs_lane_depth_entries;
+    if (ccs_rows != 0) {
+      printf("GPGPU-Sim RTCORE_KHR_CCS_CTA_RELEASE kernel_uid=%u "
+             "rows=%u depth_class=%u lane_depth_entries=%u "
+             "occupied_rows=%u occupied_lane_depth_entries=%u\n",
+             k.get_uid(), ccs_rows, ccs_depth_class,
+             ccs_lane_depth_entries, m_occupied_rtcore_ccs_rows,
+             m_occupied_rtcore_ccs_lane_depth_entries);
+    }
+
     assert(m_occupied_ctas >= 1);
     m_occupied_ctas--;
+  } else {
+    const unsigned ccs_depth_class =
+        k.vulkan_metadata.continuation.version == 1
+            ? k.vulkan_metadata.continuation.ccs_depth_class
+            : 0;
+    if (ccs_depth_class != 0) {
+      const unsigned padded_threads =
+          ((k.threads_per_cta() + m_config->warp_size - 1) /
+           m_config->warp_size) * m_config->warp_size;
+      const unsigned ccs_rows = padded_threads / m_config->warp_size;
+      const unsigned ccs_lane_depth_entries =
+          padded_threads * ccs_depth_class;
+      assert(m_occupied_rtcore_ccs_rows >= ccs_rows);
+      assert(m_occupied_rtcore_ccs_lane_depth_entries >=
+             ccs_lane_depth_entries);
+      m_occupied_rtcore_ccs_rows -= ccs_rows;
+      m_occupied_rtcore_ccs_lane_depth_entries -= ccs_lane_depth_entries;
+      printf("GPGPU-Sim RTCORE_KHR_CCS_CTA_RELEASE kernel_uid=%u "
+             "rows=%u depth_class=%u lane_depth_entries=%u "
+             "occupied_rows=%u occupied_lane_depth_entries=%u\n",
+             k.get_uid(), ccs_rows, ccs_depth_class,
+             ccs_lane_depth_entries, m_occupied_rtcore_ccs_rows,
+             m_occupied_rtcore_ccs_lane_depth_entries);
+    }
   }
 }
 
@@ -1745,10 +1839,36 @@ unsigned exec_shader_core_ctx::sim_init_thread(
 }
 
 void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
-  if (!m_config->gpgpu_concurrent_kernel_sm)
+  if (!m_config->gpgpu_concurrent_kernel_sm) {
     set_max_cta(kernel);
-  else
+    const unsigned ccs_depth_class =
+        kernel.vulkan_metadata.continuation.version == 1
+            ? kernel.vulkan_metadata.continuation.ccs_depth_class
+            : 0;
+    if (ccs_depth_class != 0) {
+      const unsigned padded_threads =
+          ((kernel.threads_per_cta() + m_config->warp_size - 1) /
+           m_config->warp_size) * m_config->warp_size;
+      const unsigned ccs_rows = padded_threads / m_config->warp_size;
+      const unsigned ccs_lane_depth_entries =
+          padded_threads * ccs_depth_class;
+      assert(m_occupied_rtcore_ccs_rows + ccs_rows <= 8);
+      assert(m_occupied_rtcore_ccs_lane_depth_entries +
+                 ccs_lane_depth_entries <=
+             8 * m_config->warp_size * 8);
+      m_occupied_rtcore_ccs_rows += ccs_rows;
+      m_occupied_rtcore_ccs_lane_depth_entries += ccs_lane_depth_entries;
+      printf("GPGPU-Sim RTCORE_KHR_CCS_CTA_ADMIT kernel_uid=%u "
+             "rows=%u depth_class=%u lane_depth_entries=%u "
+             "occupied_rows=%u occupied_lane_depth_entries=%u "
+             "authority=kernel_resource_descriptor\n",
+             kernel.get_uid(), ccs_rows, ccs_depth_class,
+             ccs_lane_depth_entries, m_occupied_rtcore_ccs_rows,
+             m_occupied_rtcore_ccs_lane_depth_entries);
+    }
+  } else {
     assert(occupy_shader_resource_1block(kernel, true));
+  }
 
   kernel.inc_running();
 

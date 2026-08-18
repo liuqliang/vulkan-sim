@@ -225,7 +225,6 @@ extern "C" bool rtcore_restore_v04_recursive_parent_owner_if_present(
 // The Vulkan pipeline declares the maximum live trace chain.  The resident
 // candidate snapshots that scalar at pipeline creation and checks it before
 // mutating caller continuation or traversal state.
-extern "C" unsigned rtcore_khr_max_pipeline_trace_depth();
 
 extern "C" bool rtcore_validate_v04_global384_timing_owner_plan(
     unsigned owner_hw_sid,

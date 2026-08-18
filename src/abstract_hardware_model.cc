@@ -1169,6 +1169,7 @@ bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned ti
 
 kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
                              class function_info *entry) {
+  vulkan_metadata = {};
   m_kernel_entry = entry;
   m_grid_dim = gridDim;
   m_block_dim = blockDim;
@@ -1202,6 +1203,7 @@ kernel_info_t::kernel_info_t(
     dim3 gridDim, dim3 blockDim, class function_info *entry,
     std::map<std::string, const struct cudaArray *> nameToCudaArray,
     std::map<std::string, const struct textureInfo *> nameToTextureInfo) {
+  vulkan_metadata = {};
   m_kernel_entry = entry;
   m_grid_dim = gridDim;
   m_block_dim = blockDim;

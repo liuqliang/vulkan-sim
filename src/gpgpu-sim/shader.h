@@ -3643,6 +3643,8 @@ class shader_core_ctx : public core_t {
   unsigned int m_occupied_shmem;
   unsigned int m_occupied_regs;
   unsigned int m_occupied_ctas;
+  unsigned int m_occupied_rtcore_ccs_rows;
+  unsigned int m_occupied_rtcore_ccs_lane_depth_entries;
   std::bitset<MAX_THREAD_PER_SM> m_occupied_hwtid;
   std::map<unsigned int, unsigned int> m_occupied_cta_to_hwtid;
 };

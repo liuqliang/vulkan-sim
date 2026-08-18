@@ -32,11 +32,6 @@
 #include "vulkan_ray_tracing.h"
 // #include "vulkan/anv_private.h"
 
-extern "C" void gpgpusim_setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreateInfos)
-{
-    VulkanRayTracing::setPipelineInfo(pCreateInfos);
-}
-
 extern "C" void gpgpusim_setGeometries(VkAccelerationStructureGeometryKHR* pGeometries, uint32_t geometryCount)
 {
     VulkanRayTracing::setGeometries(pGeometries, geometryCount);
@@ -74,6 +69,15 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
                       uint64_t hit_sbt_size,
                       uint64_t callable_sbt_stride,
                       uint64_t callable_sbt_size,
+                      uint32_t continuation_descriptor_version,
+                      uint32_t continuation_trace_depth,
+                      uint32_t continuation_callable_depth,
+                      uint32_t continuation_report_depth,
+                      uint32_t continuation_trace_frame_bytes,
+                      uint32_t continuation_callable_frame_bytes,
+                      uint32_t continuation_report_frame_bytes,
+                      uint32_t continuation_stack_bytes_per_lane,
+                      uint32_t continuation_ccs_depth_class,
                       bool is_indirect,
                       uint32_t launch_width,
                       uint32_t launch_height,
@@ -89,6 +93,15 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
             miss_sbt_stride, miss_sbt_size,
             hit_sbt_stride, hit_sbt_size,
             callable_sbt_stride, callable_sbt_size,
+            continuation_descriptor_version,
+            continuation_trace_depth,
+            continuation_callable_depth,
+            continuation_report_depth,
+            continuation_trace_frame_bytes,
+            continuation_callable_frame_bytes,
+            continuation_report_frame_bytes,
+            continuation_stack_bytes_per_lane,
+            continuation_ccs_depth_class,
             is_indirect, launch_width, launch_height, launch_depth,
             launch_size_addr);
 }
@@ -135,6 +148,15 @@ extern void gpgpusim_vkCmdTraceRaysKHR_cpp(
                       uint64_t hit_sbt_size,
                       uint64_t callable_sbt_stride,
                       uint64_t callable_sbt_size,
+                      uint32_t continuation_descriptor_version,
+                      uint32_t continuation_trace_depth,
+                      uint32_t continuation_callable_depth,
+                      uint32_t continuation_report_depth,
+                      uint32_t continuation_trace_frame_bytes,
+                      uint32_t continuation_callable_frame_bytes,
+                      uint32_t continuation_report_frame_bytes,
+                      uint32_t continuation_stack_bytes_per_lane,
+                      uint32_t continuation_ccs_depth_class,
                       bool is_indirect,
                       uint32_t launch_width,
                       uint32_t launch_height,
@@ -150,6 +172,15 @@ extern void gpgpusim_vkCmdTraceRaysKHR_cpp(
             miss_sbt_stride, miss_sbt_size,
             hit_sbt_stride, hit_sbt_size,
             callable_sbt_stride, callable_sbt_size,
+            continuation_descriptor_version,
+            continuation_trace_depth,
+            continuation_callable_depth,
+            continuation_report_depth,
+            continuation_trace_frame_bytes,
+            continuation_callable_frame_bytes,
+            continuation_report_frame_bytes,
+            continuation_stack_bytes_per_lane,
+            continuation_ccs_depth_class,
             is_indirect, launch_width, launch_height, launch_depth,
             launch_size_addr);
 }

@@ -338,7 +338,6 @@ struct lvp_descriptor;
 class VulkanRayTracing
 {
 private:
-    static VkRayTracingPipelineCreateInfoKHR* pCreateInfos;
     static VkAccelerationStructureGeometryKHR* pGeometries;
     static uint32_t geometryCount;
     static VkAccelerationStructureKHR topLevelAS;
@@ -408,7 +407,6 @@ public:
     
     static void load_descriptor(const ptx_instruction *pI, ptx_thread_info *thread);
 
-    static void setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreateInfos);
     static void setGeometries(VkAccelerationStructureGeometryKHR* pGeometries, uint32_t geometryCount);
     static void setAccelerationStructure(VkAccelerationStructureKHR accelerationStructure);
     static void setDescriptorSet(struct DESCRIPTOR_SET_STRUCT *set);
@@ -431,6 +429,15 @@ public:
                       uint64_t hit_sbt_size,
                       uint64_t callable_sbt_stride,
                       uint64_t callable_sbt_size,
+                      uint32_t continuation_descriptor_version,
+                      uint32_t continuation_trace_depth,
+                      uint32_t continuation_callable_depth,
+                      uint32_t continuation_report_depth,
+                      uint32_t continuation_trace_frame_bytes,
+                      uint32_t continuation_callable_frame_bytes,
+                      uint32_t continuation_report_frame_bytes,
+                      uint32_t continuation_stack_bytes_per_lane,
+                      uint32_t continuation_ccs_depth_class,
                       bool is_indirect,
                       uint32_t launch_width,
                       uint32_t launch_height,

@@ -360,6 +360,18 @@ struct CUstream_st;
 extern std::map<void *, void **> pinned_memory;
 extern std::map<void *, size_t> pinned_memory_size;
 
+typedef struct rtcore_continuation_resource_descriptor {
+  uint32_t version;
+  uint32_t trace_depth;
+  uint32_t callable_depth;
+  uint32_t report_depth;
+  uint32_t trace_frame_bytes;
+  uint32_t callable_frame_bytes;
+  uint32_t report_frame_bytes;
+  uint32_t stack_bytes_per_lane;
+  uint32_t ccs_depth_class;
+} rtcore_continuation_resource_descriptor;
+
 typedef struct vulkan_kernel_metadata {
   void *raygen_sbt;
   void *miss_sbt;
@@ -380,6 +392,7 @@ typedef struct vulkan_kernel_metadata {
   uint32_t launch_width;
   uint32_t launch_height;
   uint32_t launch_depth;
+  rtcore_continuation_resource_descriptor continuation;
 } vulkan_kernel_metadata;
 
 class kernel_info_t {

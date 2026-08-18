@@ -894,6 +894,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
         logical_trace_invocation_id(0),
         parent_trace_invocation_id(0),
         logical_trace_depth(0),
+        pipeline_trace_depth(1),
         conservation_next_cohort_seq(1),
         conservation_inflight_cohort_seq(0) {
     live_publication_round = {};
@@ -996,6 +997,7 @@ struct rtcore_shader_continuation_dispatcher_pending_entry {
   unsigned logical_trace_invocation_id;
   unsigned parent_trace_invocation_id;
   unsigned logical_trace_depth;
+  unsigned pipeline_trace_depth;
   unsigned conservation_next_cohort_seq;
   unsigned conservation_inflight_cohort_seq;
   rtcore::v04::pre_submit_publication::live_publication_round_request_v0
@@ -1762,7 +1764,7 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
     const unsigned long long cohort_sbt_record_addrs[32],
     const unsigned long long cohort_sbt_aligned_32b_addrs[32],
     const unsigned cohort_sbt_record_components[32],
-    unsigned static_inst_pc,
+    unsigned static_inst_pc, unsigned pipeline_trace_depth,
     const rtcore_replay_warp_completion_entry_snapshot &snapshot,
     unsigned long long enqueue_cycle) {
   if (candidate_mask == 0 || cohort_count == 0) {
@@ -1805,8 +1807,16 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
             owner_hw_sid, warp_id);
     abort();
   }
-  const unsigned pipeline_trace_depth =
-      rtcore_khr_max_pipeline_trace_depth();
+  if (pipeline_trace_depth == 0 || pipeline_trace_depth > 8 ||
+      (nested_trace &&
+       existing->second.pipeline_trace_depth != pipeline_trace_depth)) {
+    fprintf(stderr,
+            "GPGPU-Sim RTCORE_KHR_PIPELINE_RESOURCE_FAULT "
+            "owner_hw_sid=%u warp_id=%u pipeline_trace_depth=%u "
+            "fault=dispatcher_kernel_snapshot_invalid_fail_closed\n",
+            owner_hw_sid, warp_id, pipeline_trace_depth);
+    abort();
+  }
   if (nested_trace && existing->second.logical_trace_depth + 1 >=
                           pipeline_trace_depth) {
     fprintf(stderr,
@@ -1822,6 +1832,7 @@ static void rtcore_enqueue_shader_continuation_dispatcher_pending(
   }
 
   rtcore_shader_continuation_dispatcher_pending_entry entry;
+  entry.pipeline_trace_depth = pipeline_trace_depth;
   entry.logical_trace_invocation_id = g_rtcore_next_trace_invocation_id++;
   if (g_rtcore_next_trace_invocation_id == 0) {
     g_rtcore_next_trace_invocation_id = 1;
@@ -12322,6 +12333,8 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
   m_occupied_shmem = 0;
   m_occupied_regs = 0;
   m_occupied_ctas = 0;
+  m_occupied_rtcore_ccs_rows = 0;
+  m_occupied_rtcore_ccs_lane_depth_entries = 0;
   m_occupied_hwtid.reset();
   m_occupied_cta_to_hwtid.clear();
 }
@@ -12337,6 +12350,8 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
     m_occupied_shmem = 0;
     m_occupied_regs = 0;
     m_occupied_ctas = 0;
+    m_occupied_rtcore_ccs_rows = 0;
+    m_occupied_rtcore_ccs_lane_depth_entries = 0;
     m_occupied_hwtid.reset();
     m_occupied_cta_to_hwtid.clear();
     m_active_warps = 0;
@@ -20576,6 +20591,7 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
   unsigned candidate_mask = 0;
   unsigned missing_thread_mask = 0;
   unsigned missing_instruction_pointer_mask = 0;
+  unsigned pipeline_trace_depth = 0;
 
   shader_core_ctx *mutable_core = const_cast<shader_core_ctx *>(core);
   ptx_thread_info **thread_info =
@@ -20597,6 +20613,20 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
     if (thread == NULL) {
       missing_thread_mask |= lane_mask;
       continue;
+    }
+    const rtcore_continuation_resource_descriptor &continuation =
+        thread->get_kernel().vulkan_metadata.continuation;
+    const unsigned thread_pipeline_trace_depth =
+        continuation.version == 1 ? continuation.trace_depth : 1;
+    if (pipeline_trace_depth == 0) {
+      pipeline_trace_depth = thread_pipeline_trace_depth;
+    } else if (pipeline_trace_depth != thread_pipeline_trace_depth) {
+      fprintf(stderr,
+              "GPGPU-Sim RTCORE_KHR_PIPELINE_RESOURCE_FAULT "
+              "owner_hw_sid=%u warp_id=%u lane_id=%u "
+              "fault=warp_kernel_snapshot_mismatch_fail_closed\n",
+              owner_hw_sid, warp_id, lane);
+      abort();
     }
 
     const ptx_instruction *pI = thread->get_inst(inst.pc);
@@ -20730,7 +20760,8 @@ static void rtcore_record_shader_continuation_direct_callshader_action(
         0, candidate_mask, cohort_count,
         cohort_lane_masks, cohort_shader_ids, cohort_context_ptrs,
         cohort_sbt_record_addrs, cohort_sbt_aligned_32b_addrs,
-        cohort_sbt_record_components, inst.pc, snapshot, current_cycle);
+        cohort_sbt_record_components, inst.pc, pipeline_trace_depth,
+        snapshot, current_cycle);
   }
 
   printf("GPGPU-Sim RTCORE_SHADER_CONTINUATION_DIRECT_CALLSHADER_ACTION "
