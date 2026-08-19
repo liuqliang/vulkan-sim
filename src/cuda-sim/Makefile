@@ -67,7 +67,29 @@ VULKAN_PATHS += -I$(MESA_PATH)/build/src/intel/vulkan/
 VULKAN_PATHS += -I$(MESA_PATH)/build/src/intel/vulkan/
 VULKAN_PATHS += -I$(MESA_PATH)/src/vulkan/wsi/
 
-LLVM_PATH = -I/usr/lib/llvm-10/include
+LLVM_CONFIG ?= $(shell command -v llvm-config-17 || command -v llvm-config || true)
+LLVM_INCLUDE_DIR :=
+
+ifneq ($(LLVM_DIR),)
+ifneq ($(wildcard $(LLVM_DIR)/include/llvm/Config/llvm-config.h),)
+LLVM_INCLUDE_DIR := $(LLVM_DIR)/include
+endif
+endif
+
+ifeq ($(strip $(LLVM_INCLUDE_DIR)),)
+ifneq ($(wildcard /usr/lib/llvm-17/include/llvm/Config/llvm-config.h),)
+LLVM_INCLUDE_DIR := /usr/lib/llvm-17/include
+else ifneq ($(wildcard /usr/lib/llvm-18/include/llvm/Config/llvm-config.h),)
+LLVM_INCLUDE_DIR := /usr/lib/llvm-18/include
+else ifneq ($(strip $(LLVM_CONFIG)),)
+LLVM_INCLUDE_DIR := $(shell $(LLVM_CONFIG) --includedir 2>/dev/null)
+endif
+endif
+
+LLVM_PATH =
+ifneq ($(strip $(LLVM_INCLUDE_DIR)),)
+LLVM_PATH = -I$(LLVM_INCLUDE_DIR)
+endif
 
 LIB_Vulkan_Intel_DIR = $(MESA_PATH)/build/install/lib/x86_64-linux-gnu/
 
@@ -165,11 +187,8 @@ $(OUTPUT_DIR)/instructions.h: instructions.cc
 	@echo "created $(OUTPUT_DIR)/instructions.h"
 
 $(OUTPUT_DIR)/ptx_parser_decode.def: $(OUTPUT_DIR)/ptx.tab.c
-ifeq ($(shell uname),Linux)
-	cat $(OUTPUT_DIR)/ptx.tab.h | grep "=" | sed 's/^[ ]\+//' | sed 's/[=,]//g' | sed 's/\([_A-Z1-9]\+\)[ ]\+\([0-9]\+\)/\1 \1/' | sed 's/^/DEF(/' | sed 's/ /,"/' | sed 's/$$/")/' > $(OUTPUT_DIR)/ptx_parser_decode.def
-else
-	cat $(OUTPUT_DIR)/ptx.tab.h | grep "=" | sed -E 's/^ +//' | sed 's/[=,]//g' | sed -E 's/([_A-Z1-9]+).*/\1 \1/' | sed 's/^/DEF(/' | sed 's/ /,"/' | sed 's/$$/")/' > $(OUTPUT_DIR)/ptx_parser_decode.def
-endif
+	awk '/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*-?[0-9]+,/{name=$$1; printf("DEF(%s,\"%s\")\n", name, name);}' \
+		$(OUTPUT_DIR)/ptx.tab.h > $(OUTPUT_DIR)/ptx_parser_decode.def
 
 $(OUTPUT_DIR)/instructions.o: $(OUTPUT_DIR)/instructions.h $(OUTPUT_DIR)/ptx.tab.c
 $(OUTPUT_DIR)/cuda_device_printf.o: $(OUTPUT_DIR)/ptx.tab.c

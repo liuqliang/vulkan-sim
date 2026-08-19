@@ -309,7 +309,7 @@ void traverse_tree(volatile uint8_t* address, bool isTopLevel = true, bool isLea
             float4x4 worldToObjectMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.WorldToObjectm00);
             float4x4 objectToWorldMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.ObjectToWorldm00);
 
-            assert(instanceLeaf.BVHAddress != NULL);
+            assert(instanceLeaf.BVHAddress != 0);
 
             if (print_tree.is_open())
             {
@@ -594,7 +594,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             stack.pop_back();
         }
 
-        while (next_node_addr > 0)
+        while (next_node_addr != NULL)
         {
             // TLAS offset
             device_offset = (uint64_t)tlas_addr - (uint64_t)_topLevelAS;
@@ -718,7 +718,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             float4x4 worldToObjectMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.WorldToObjectm00);
             float4x4 objectToWorldMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.ObjectToWorldm00);
 
-            assert(instanceLeaf.BVHAddress != NULL);
+            assert(instanceLeaf.BVHAddress != 0);
             GEN_RT_BVH botLevelASAddr;
             GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
 
@@ -769,7 +769,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                 
 
                 // traverse bottom level internal nodes
-                while (next_node_addr > 0)
+                while (next_node_addr != NULL)
                 {
                     node_addr = next_node_addr;
                     next_node_addr = NULL;
@@ -2957,4 +2957,3 @@ void* VulkanRayTracing::allocBuffer(void* bufferAddr, uint64_t bufferSize)
     mem->bind_vulkan_buffer(bufferAddr, bufferSize, devPtr);
     return devPtr;
 }
-
